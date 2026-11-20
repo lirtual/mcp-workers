@@ -1,3 +1,4 @@
+import { validCdp, validCdpEvents } from "./cdp.ts";
 import { isInteraction, validInteraction, interactionExtra } from "./interactions.ts";
 import { type Command, IntentLedger, safeFailureCode } from "./intents.ts";
 const TEMP_RECONNECT_GRACE_MS = 90000;
@@ -17,8 +18,11 @@ type SocketAuth = { protocol?:number; extension_version?:string; endpoint_id?: s
 type PendingMutation = {
   endpoint_id:string;intent_key:string;generation:number;revision:number;socket:WebSocket;
   phase:"preparing"|"dispatched";timer:ReturnType<typeof setTimeout>;
+  resolveResult?:(value:unknown)=>void;progress_count?:number;
 };
 const json = (data: unknown, status = 200) => Response.json(data, { status, headers: { "cache-control": "no-store" } });
+const compatible=(a:SocketAuth|null|undefined)=>a?.protocol===3&&
+  (a.extension_version==="0.2.6"||a.extension_version==="0.3.0");
 const validId = (s: unknown): s is string => typeof s === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(s);
 const hash = async (value: string) => {
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
@@ -57,8 +61,9 @@ export class BrowserOwner implements DurableObject {
     if(!p)return;
     clearTimeout(p.timer);
     this.pendingMutations.delete(operation_id);
-    if(p.phase==="dispatched")this.intents.markUnknown(p.endpoint_id,p.intent_key);
-    else this.intents.abort(p.endpoint_id,p.intent_key);
+    const receipt=p.phase==="dispatched"?this.intents.markUnknown(p.endpoint_id,p.intent_key):
+      this.intents.abort(p.endpoint_id,p.intent_key);
+    p.resolveResult?.({...receipt,...(p.progress_count===undefined?{}:{executed_count:p.progress_count})});
   }
   private readonly pendingReads = new Map<string,{
     endpoint_id:string;generation:number;socket:WebSocket;tool:string;
@@ -164,7 +169,7 @@ export class BrowserOwner implements DurableObject {
   private live(id: string, generation: number) {
     return this.state.getWebSockets().some(s => {
       const a = s.deserializeAttachment() as SocketAuth | null;
-      return a?.authenticated === true && a.protocol===3 && a.extension_version==="0.2.6" && a.endpoint_id === id &&
+      return a?.authenticated === true && compatible(a) && a.endpoint_id === id &&
         a.generation === generation && s.readyState === WebSocket.OPEN &&
         typeof a.last_seen === "number" && Date.now()-a.last_seen < 60000;
     });
@@ -194,9 +199,10 @@ export class BrowserOwner implements DurableObject {
     if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
     let arg: Record<string, unknown>;
     try {
-      if (Number(request.headers.get("content-length") || 0) > 4096) return json({error:"too_large"},413);
+      const maxBody=url.pathname==="/mutate"?32768:4096;
+      if (Number(request.headers.get("content-length") || 0) > maxBody) return json({error:"too_large"},413);
       const body = await request.text();
-      if (body.length > 4096) return json({error:"too_large"},413);
+      if (new TextEncoder().encode(body).byteLength > maxBody) return json({error:"too_large"},413);
       arg = JSON.parse(body) as Record<string, unknown>;
       if (!arg || typeof arg !== "object" || Array.isArray(arg)) throw Error();
     } catch { return json({error:"bad_request"},400); }
@@ -304,13 +310,14 @@ export class BrowserOwner implements DurableObject {
     if (url.pathname === "/create-pair" || url.pathname === "/claim" || url.pathname === "/local-resume") return json({error:"protocol_retired"},410);
     if (url.pathname === "/mutate") {
       const command = arg as Command;
-      const expected=command.action==="tab_open"?["endpoint_id","intent_key","action","url"]:
+      const expected=command.action==="cdp"?["endpoint_id","intent_key","action","tab_id",...(command.session_id===undefined?[]:["session_id"]),"commands"]:
+        command.action==="tab_open"?["endpoint_id","intent_key","action","url"]:
         command.action==="tab_navigate"?["endpoint_id","intent_key","action","tab_id","document_id","url"]:
         command.action==="tab_close"?["endpoint_id","intent_key","action","tab_id","document_id"]:
         isInteraction(command.action)?["endpoint_id","intent_key","action","tab_id","document_id","element_id",...interactionExtra[command.action]]:[];
       if(!expected.length || Object.keys(arg).length!==expected.length ||
           Object.keys(arg).some(key=>!expected.includes(key)) ||
-          isInteraction(command.action)&&!validInteraction(arg))return json({error_code:"invalid_arguments"},400);
+          (isInteraction(command.action)&&!validInteraction(arg)||command.action==="cdp"&&!validCdp(arg)))return json({error_code:"invalid_arguments"},400);
       // Existing keys are checked before current connectivity or Stop state.
       // Replay returns only the original committed receipt; it never dispatches.
       this.intents.reconcile(now);
@@ -328,10 +335,12 @@ export class BrowserOwner implements DurableObject {
         return json({error_code:"busy"},409);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated&&a.protocol===3&&a.extension_version==="0.2.6"&&a.endpoint_id===e.id&&a.generation===e.generation&&
+        return a?.authenticated&&compatible(a)&&a.endpoint_id===e.id&&a.generation===e.generation&&
           typeof a.last_seen==="number"&&now-a.last_seen<60000&&sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
+      if(command.action==="cdp" && (socket.deserializeAttachment() as SocketAuth).extension_version!=="0.3.0")
+        return json({error_code:"unsupported_version"},409);
       // A read may arrive while admit() awaits HMAC. Hold a narrow per-Endpoint
       // admission reservation; it is released after durable admission, before
       // synchronous prepare tracking is installed.
@@ -353,31 +362,39 @@ export class BrowserOwner implements DurableObject {
         this.intents.abort(e.id,command.intent_key);
         return json({operation_id,state:"failed",error_code:"preparation_unavailable"},503);
       }
+      let resolveResult:((value:unknown)=>void)|undefined;
+      const transient=command.action==="cdp"?new Promise<unknown>(resolve=>{resolveResult=resolve;}):null;
       const timer=setTimeout(()=>this.terminateMutation(operation_id),8000);
       this.pendingMutations.set(operation_id,{
         endpoint_id:e.id,intent_key:command.intent_key,generation:e.generation,revision:e.revision,
-        socket,phase:"preparing",timer
+        socket,phase:"preparing",timer,resolveResult,
+        ...(command.action==="cdp"?{progress_count:0}:{})
       });
       try {socket.send(JSON.stringify({type:"prepare_request",operation_id,
         intent_key:command.intent_key,generation:e.generation,command}));}
       catch {this.terminateMutation(operation_id);}
-      return json((this.intents.status(e.id,command.intent_key)));
+      return json(transient?await transient:this.intents.status(e.id,command.intent_key));
     }
     if (url.pathname === "/read") {
       const id=arg.endpoint_id;
-      if(!validId(id) || (arg.tool!=="tabs" && arg.tool!=="snapshot" && arg.tool!=="screenshot") ||
+      if(!validId(id) || (arg.tool!=="tabs" && arg.tool!=="snapshot" && arg.tool!=="screenshot" && arg.tool!=="cdp_events") ||
           ((arg.tool==="snapshot"||arg.tool==="screenshot") && (!Number.isSafeInteger(arg.tab_id) || (arg.tab_id as number)<0)) ||
           (arg.scope!==undefined&&(arg.tool!=="tabs"||!["ordinary","private"].includes(arg.scope as string))) ||
-          Object.keys(arg).some(k=>!["endpoint_id","tool","tab_id","scope"].includes(k)))
+          (arg.tool==="cdp_events"&&!validCdpEvents(Object.fromEntries(Object.entries(arg).filter(([key])=>key!=="tool")))) ||
+          Object.keys(arg).some(k=>!(arg.tool==="cdp_events"?
+            ["endpoint_id","tool","tab_id","action","events","cursor","limit"]:
+            ["endpoint_id","tool","tab_id","scope"]).includes(k)))
         return json({error_code:"invalid_arguments"},400);
       const e=this.endpoint(id);
       if(!e || e.state!=="enabled" || !this.leaseValid(e))return json({error_code:e?.state==="stopped"?"stopped":"revoked"},403);
       const socket=this.state.getWebSockets().find(sock=>{
         const a=sock.deserializeAttachment() as SocketAuth|null;
-        return a?.authenticated && a.protocol===3 && a.extension_version==="0.2.6" && a.endpoint_id===id && a.generation===e.generation &&
+        return a?.authenticated && compatible(a) && a.endpoint_id===id && a.generation===e.generation &&
           typeof a.last_seen==="number" && Date.now()-a.last_seen<60000 && sock.readyState===WebSocket.OPEN;
       });
       if(!socket)return json({error_code:"offline"},503);
+      if(arg.tool==="cdp_events" && (socket.deserializeAttachment() as SocketAuth).extension_version!=="0.3.0")
+        return json({error_code:"unsupported_version"},409);
       if([...this.pendingReads.values()].some(p=>p.endpoint_id===id) ||
          this.admittingEndpoints.has(id) ||
          [...this.pendingMutations.values()].some(p=>p.endpoint_id===id) ||
@@ -396,7 +413,8 @@ export class BrowserOwner implements DurableObject {
         this.pendingReads.set(request_id,{endpoint_id:id,generation:e.generation,socket,resolve,timer,
           tool:arg.tool as string,stageEnteredAt:startedAt});
         try {socket.send(JSON.stringify({type:"read_request",request_id,
-          generation:e.generation,tool:arg.tool,...(arg.tool!=="tabs"?{tab_id:arg.tab_id}:{scope:arg.scope??"ordinary"})}));}
+          generation:e.generation,tool:arg.tool,...(arg.tool!=="tabs"?{tab_id:arg.tab_id}:{scope:arg.scope??"ordinary"}),
+          ...(arg.tool==="cdp_events"?{action:arg.action,events:arg.events,cursor:arg.cursor,limit:arg.limit}:{})}));}
         catch {clearTimeout(timer);this.pendingReads.delete(request_id);resolve({error_code:"offline"});}
       });
       return json(outcome);
@@ -494,7 +512,7 @@ export class BrowserOwner implements DurableObject {
     try { v = JSON.parse(message) as Record<string,unknown>; if (!v || Array.isArray(v)) throw Error(); }
     catch {socket.close(1008,"invalid_frame");return;}
     if (!auth.authenticated) {
-      if (v.type !== "authenticate" || v.protocol !== 3 || v.extension_version !== "0.2.6" || !validId(v.endpoint_id) ||
+      if (v.type !== "authenticate" || ((v.protocol !== 3 || v.extension_version !== "0.3.0") && !(v.protocol===3&&v.extension_version==="0.2.6")) || !validId(v.endpoint_id) ||
           typeof v.credential !== "string" || v.credential.length !== 64) {
         socket.close(1008,"authentication_required");return;
       }
@@ -508,7 +526,7 @@ export class BrowserOwner implements DurableObject {
       const family=["chrome","edge"].includes(v.browser_family as string)?v.browser_family:null;
       const platform=["windows","linux","mac","other"].includes(v.browser_platform as string)?v.browser_platform:null;
       const update=this.sql.exec("UPDATE endpoints SET generation=?,offline_deadline=NULL,idle_deadline=NULL,last_seen_at=?,client_version=?,browser_family=COALESCE(?,browser_family),browser_platform=COALESCE(?,browser_platform),updated_at=? WHERE id=? AND state='enabled' AND generation=? AND revision=?",
-        generation,Date.now(),"0.2.6",family,platform,Date.now(),e.id,current.generation,current.revision);
+        generation,Date.now(),v.extension_version,family,platform,Date.now(),e.id,current.generation,current.revision);
       if(update.rowsWritten!==1){socket.close(1008,"stale_auth");return;}
       for (const other of this.state.getWebSockets()) {
         if (other !== socket && (other.deserializeAttachment() as SocketAuth|null)?.endpoint_id === e.id) {
@@ -516,13 +534,13 @@ export class BrowserOwner implements DurableObject {
           try {other.close(1000,"superseded");} catch {}
         }
       }
-      socket.serializeAttachment({authenticated:true,protocol:3,extension_version:"0.2.6",endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
+      socket.serializeAttachment({authenticated:true,protocol:3,extension_version:v.extension_version as string,endpoint_id:e.id,generation,deadline:0,last_seen:Date.now()} satisfies SocketAuth);
       socket.send(JSON.stringify({type:"authenticated",endpoint_id:e.id,generation,protocol:3}));
       try{await this.scheduleEarlierAlarm(Date.now()+LIVE_AUDIT_MS);}
       catch{this.sql.exec("UPDATE endpoints SET state='revoked',revision=revision+1 WHERE id=?",e.id);this.close(e.id,"revoked");}
       return;
     }
-    if(auth.protocol!==3||auth.extension_version!=="0.2.6"){socket.close(1008,"obsolete_protocol");return;}
+    if(!compatible(auth)){socket.close(1008,"obsolete_protocol");return;}
     const e = this.endpoint(auth.endpoint_id!);
     if (!e || e.state !== "enabled" || !this.leaseValid(e) || e.generation !== auth.generation) {socket.close(1008,"stale_connection");return;}
     if(v.type==="prepare_result"&&validId(v.operation_id)&&v.generation===e.generation){
@@ -576,6 +594,13 @@ export class BrowserOwner implements DurableObject {
         if(pending)this.terminateMutation(v.operation_id);
         else this.intents.markUnknown(e.id,v.intent_key);
       }
+    } else if(v.type==="cdp_progress"&&validId(v.operation_id)&&v.generation===e.generation &&
+      typeof v.intent_key==="string" && Number.isSafeInteger(v.executed_count) &&
+      (v.executed_count as number)>=0 && (v.executed_count as number)<=16){
+      const p=this.pendingMutations.get(v.operation_id);
+      if(p?.socket===socket && p.phase==="dispatched" && p.intent_key===v.intent_key &&
+        p.generation===e.generation && p.progress_count!==undefined)
+        p.progress_count=Math.max(p.progress_count,v.executed_count as number);
     } else if(v.type==="execute_result"&&validId(v.operation_id) &&
        v.generation===e.generation &&
        typeof v.intent_key==="string" && typeof v.execute_token==="string" &&
@@ -591,6 +616,13 @@ export class BrowserOwner implements DurableObject {
       const pending=this.pendingMutations.get(v.operation_id);
       if(pending && pending.socket===socket){
         clearTimeout(pending.timer);this.pendingMutations.delete(v.operation_id);
+        let data:unknown;
+        if(pending.resolveResult && v.data!==undefined){
+          try{const raw=JSON.stringify(v.data);
+            data=raw.length<=131072 && v.data && typeof v.data==="object" && !Array.isArray(v.data)?v.data:{error_code:"invalid_result"};
+          }catch{data={error_code:"invalid_result"};}
+        }
+        pending.resolveResult?.({...result,...(data===undefined?{}:{data})});
       }
     } else if (v.type === "read_progress" && validId(v.request_id) &&
        v.generation===e.generation && typeof v.stage==="string" && this.readStages.has(v.stage)) {
