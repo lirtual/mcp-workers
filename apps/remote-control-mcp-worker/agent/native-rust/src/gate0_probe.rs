@@ -113,12 +113,22 @@ impl Gate0Probe {
                     // Only a fresh file; never overwrite arbitrary user data.
                     // If effect/commit status is uncertain, preserve replay guard.
                     let write = (|| -> std::io::Result<()> {
-                        let mut file = OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&self.target)?;
+                        let mut options = OpenOptions::new();
+                        options.write(true).create_new(true);
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::OpenOptionsExt;
+                            options.mode(0o600);
+                        }
+                        let mut file = options.open(&self.target)?;
                         file.write_all(text.as_bytes())?;
-                        file.sync_all()
+                        file.sync_all()?;
+                        // Persist the new directory entry before committing the
+                        // completed receipt, not just its content and inode.
+                        let parent = self.target.parent().ok_or_else(|| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidInput, "probe root")
+                        })?;
+                        fs::File::open(parent)?.sync_all()
                     })();
                     let state = if write.is_ok() {
                         "completed"

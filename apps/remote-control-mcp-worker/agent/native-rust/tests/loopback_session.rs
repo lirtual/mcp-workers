@@ -168,6 +168,10 @@ fn signed_socket_disposable_write_receipt_and_replay_guard_survive_restart() {
     worker.join().unwrap();
 
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "once");
+    assert_eq!(
+        std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     let mut reopened = Gate0Probe::new(tmp.path()).unwrap();
     let status = reopened
         .handle(
