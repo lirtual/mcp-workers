@@ -7,7 +7,7 @@ import { attachFixedPortalServer } from './register-mcp-portal-server.mjs';
 export const BROWSER_UUIDV7_PATTERN = '^[a-f0-9]{8}-[a-f0-9]{4}-7[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$';
 const INTENT_TOOLS = [
   'browser_click','browser_fill','browser_keypress','browser_scroll','browser_select',
-  'browser_tab_open','browser_tab_navigate','browser_tab_close','browser_operation_status',
+  'browser_tab_open','browser_tab_navigate','browser_tab_close','browser_operation_status','browser_cdp',
 ];
 export function verifyBrowserToolSchemas(tools) {
   const byName = new Map(tools.map(tool => [tool.name, tool]));
@@ -29,11 +29,12 @@ export const BROWSER_TOOLS = [
   'browser_endpoints','browser_tabs','browser_snapshot',
   'browser_screenshot','browser_tab_open','browser_tab_navigate',
   'browser_tab_close','browser_stop','browser_revoke','browser_operation_status',
+  'browser_cdp','browser_cdp_events',
 ].sort();
 export function attachBrowserPortal(env, transport = fetch) {
   return attachFixedPortalServer(env, {
     id: 'browser', name: 'Browser', origin: 'https://browser.lirtual.dpdns.org/mcp',
-    description: 'Owner-activated Chrome/Edge Browser MCP (Spec #418 + #531)', tools: BROWSER_TOOLS,
+    description: 'Owner-activated Chrome/Edge Browser MCP (Spec #418 + #531 + #917)', tools: BROWSER_TOOLS,
     verifyTools: verifyBrowserToolSchemas,
   }, transport);
 }
