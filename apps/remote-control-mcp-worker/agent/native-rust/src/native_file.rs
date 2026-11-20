@@ -98,3 +98,194 @@ pub fn run_disposable_file_session(
     session?;
     Ok(())
 }
+
+// This is the Gate 1 native file-session candidate. The older disposable
+// Gate 0 probe above remains an isolated regression fixture until migration.
+use crate::native_read::{self, ReadCommand};
+use crate::native_write::{NativeWriteError, NativeWriteExecutor};
+use serde_json::{json, Value};
+
+pub(crate) enum NativeFileCommand {
+    Read(ReadCommand),
+    Write {
+        request_id: String,
+        operation_id: String,
+        arguments: Value,
+    },
+    Status {
+        request_id: String,
+        operation_id: String,
+    },
+}
+
+/// Parse the entire authenticated file frame before enqueueing it. Unknown
+/// tools are a 1008 policy violation, not an invitation to execute a command.
+pub(crate) fn parse_native_file_frame(frame: &str) -> Result<NativeFileCommand, ()> {
+    if frame.len() > 65_536 {
+        return Err(());
+    }
+    let message: Value = serde_json::from_str(frame).map_err(|_| ())?;
+    let object = message.as_object().ok_or(())?;
+    if object.get("kind").and_then(Value::as_str) == Some("read") {
+        return native_read::parse_read_frame(frame)
+            .map(NativeFileCommand::Read)
+            .map_err(|_| ());
+    }
+    if object.len() != 5 || object.get("kind").and_then(Value::as_str) != Some("operation") {
+        return Err(());
+    }
+    let request_id = object.get("request_id").and_then(Value::as_str).ok_or(())?;
+    if !crate::identity::valid_device_id(request_id) {
+        return Err(());
+    }
+    let operation_id = object
+        .get("operation_id")
+        .and_then(Value::as_str)
+        .ok_or(())?;
+    if !crate::receipts::valid_id(operation_id) {
+        return Err(());
+    }
+    let tool = object.get("tool").and_then(Value::as_str).ok_or(())?;
+    let arguments = object.get("arguments").ok_or(())?;
+    match tool {
+        "write_file" if crate::native_write::valid_write_args(arguments) => {
+            Ok(NativeFileCommand::Write {
+                request_id: request_id.to_owned(),
+                operation_id: operation_id.to_owned(),
+                arguments: arguments.clone(),
+            })
+        }
+        "get_operation_status"
+            if arguments.as_object().is_some_and(|args| {
+                args.len() == 1
+                    && args.get("operation_id").and_then(Value::as_str) == Some(operation_id)
+            }) =>
+        {
+            Ok(NativeFileCommand::Status {
+                request_id: request_id.to_owned(),
+                operation_id: operation_id.to_owned(),
+            })
+        }
+        _ => Err(()),
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum NativeFileError {
+    #[error(transparent)]
+    Session(#[from] SessionError),
+    #[error(transparent)]
+    Write(#[from] NativeWriteError),
+    #[error("unexpected authenticated file frame")]
+    Policy,
+    #[error("native file response queue is full")]
+    Queue,
+    #[error("native file executor panicked")]
+    Panicked,
+}
+
+fn execute_native_file(
+    mut writes: NativeWriteExecutor,
+    stop: &Arc<AtomicBool>,
+    requests: &Receiver<ExecutionRequest>,
+    replies: &SyncSender<ExecutionResponse>,
+) -> Result<(), NativeFileError> {
+    while !stop.load(Ordering::Acquire) {
+        let request = match requests.recv_timeout(Duration::from_millis(100)) {
+            Ok(request) => request,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+        let Some(frame) = request.frame_if_active() else {
+            continue;
+        };
+        let command = parse_native_file_frame(frame).map_err(|_| NativeFileError::Policy)?;
+        if !request.lease().is_active() {
+            continue;
+        }
+        let response = match command {
+            NativeFileCommand::Read(read) => native_read::execute_read_frame(&read),
+            NativeFileCommand::Write {
+                request_id,
+                operation_id,
+                arguments,
+            } => {
+                let result = writes.write_file_with_lease(&operation_id, &arguments, || {
+                    request.lease().is_active()
+                });
+                let outcome = match result {
+                    Ok(outcome) => outcome,
+                    Err(NativeWriteError::LeaseRevoked) => continue,
+                    Err(error) => {
+                        // An unpersistable mutation may already have had an
+                        // effect. Stop this candidate; never retry that ID.
+                        stop.store(true, Ordering::Release);
+                        return Err(error.into());
+                    }
+                };
+                json!({"kind":"operation_result","request_id":request_id,
+                    "result":{"operation_id":operation_id,"status":outcome.state,"receipt":outcome.receipt}}).to_string()
+            }
+            NativeFileCommand::Status {
+                request_id,
+                operation_id,
+            } => {
+                let receipt = writes.get_receipt(&operation_id)?;
+                let status = receipt.as_ref().map_or("not_found", |r| r.state.as_str());
+                json!({"kind":"operation_result","request_id":request_id,
+                    "result":{"operation_id":operation_id,"status":status,"receipt":receipt}})
+                .to_string()
+            }
+        };
+        if !request.lease().is_active() {
+            continue;
+        }
+        match replies.try_send(request.response(response)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                stop.store(true, Ordering::Release);
+                return Err(NativeFileError::Queue);
+            }
+            Err(TrySendError::Disconnected(_)) => break,
+        }
+    }
+    Ok(())
+}
+
+/// A non-installable file runtime: receipt exclusivity is obtained before
+/// signed WSS admission. Only native file reads, write_file and receipt query
+/// are allowed; Shell, sessions, install and upgrade are rejected with 1008.
+pub fn run_native_file_session(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    receipt_directory: &Path,
+    stop: &Arc<AtomicBool>,
+    timing: HeartbeatTiming,
+) -> Result<(), NativeFileError> {
+    let writes = NativeWriteExecutor::open(receipt_directory)?;
+    let (request_sender, requests) = sync_channel(4);
+    let (reply_sender, replies) = sync_channel(4);
+    let worker_stop = Arc::clone(stop);
+    let worker = std::thread::spawn(move || {
+        let result = execute_native_file(writes, &worker_stop, &requests, &reply_sender);
+        if result.is_err() {
+            worker_stop.store(true, Ordering::Release);
+        }
+        result
+    });
+    let session = session::maintain_native_file_transport(
+        endpoint,
+        private_pem,
+        device_id,
+        stop,
+        &request_sender,
+        &replies,
+        timing,
+    );
+    stop.store(true, Ordering::Release);
+    let executor = worker.join().map_err(|_| NativeFileError::Panicked)?;
+    executor?;
+    session?;
+    Ok(())
+}

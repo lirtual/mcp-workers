@@ -339,7 +339,28 @@ impl AuthenticatedSocket {
             outgoing,
             &lease,
             || CleanupStatus::Uncertain,
-            true,
+            FramePolicy::ReadOnly,
+        );
+        lease.revoke();
+        result
+    }
+
+    /// Strict file candidate: admit only native reads, write_file and receipt
+    /// queries. All unexpected frames close 1008 before execution queueing.
+    pub fn pump_native_file(
+        &mut self,
+        stop: &Arc<AtomicBool>,
+        incoming: &SyncSender<ExecutionRequest>,
+        outgoing: &Receiver<ExecutionResponse>,
+    ) -> Result<(), SessionError> {
+        let lease = ExecutionLease::new(stop);
+        let result = self.pump_scoped(
+            stop,
+            incoming,
+            outgoing,
+            &lease,
+            || CleanupStatus::Uncertain,
+            FramePolicy::NativeFiles,
         );
         lease.revoke();
         result
@@ -356,7 +377,7 @@ impl AuthenticatedSocket {
         cleanup: F,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
-        let result = self.pump_scoped(stop, incoming, outgoing, &lease, cleanup, false);
+        let result = self.pump_scoped(stop, incoming, outgoing, &lease, cleanup, FramePolicy::Any);
         lease.revoke();
         result
     }
@@ -368,7 +389,7 @@ impl AuthenticatedSocket {
         outgoing: &Receiver<ExecutionResponse>,
         lease: &ExecutionLease,
         cleanup: F,
-        native_read_only: bool,
+        policy: FramePolicy,
     ) -> Result<(), SessionError> {
         while !stop.load(Ordering::Acquire) {
             for _ in 0..4 {
@@ -403,12 +424,19 @@ impl AuthenticatedSocket {
                     );
                     return Err(SessionError::Policy);
                 }
-                if native_read_only && parse_read_frame(&frame).is_err() {
+                let permitted = match policy {
+                    FramePolicy::Any => true,
+                    FramePolicy::ReadOnly => parse_read_frame(&frame).is_ok(),
+                    FramePolicy::NativeFiles => {
+                        crate::native_file::parse_native_file_frame(&frame).is_ok()
+                    }
+                };
+                if !permitted {
                     // A signed connection is not an authorization to interpret
                     // unexpected traffic. Keep failure scoped to this socket.
                     let _ = self.socket.close(Some(CloseFrame {
                         code: CloseCode::Policy,
-                        reason: "invalid native read request".into(),
+                        reason: "invalid native operation".into(),
                     }));
                     return Err(SessionError::Policy);
                 }
@@ -504,9 +532,16 @@ fn wait_or_stop(duration: Duration, stop: &AtomicBool) {
 /// previous execution work. A stop or superseding socket ends gracefully;
 /// owner policy or incompatible protocol ends permanently.
 #[derive(Clone, Copy)]
+enum FramePolicy {
+    Any,
+    ReadOnly,
+    NativeFiles,
+}
+
+#[derive(Clone, Copy)]
 struct TransportMode {
     timing: HeartbeatTiming,
-    native_read_only: bool,
+    policy: FramePolicy,
 }
 
 pub fn maintain_authenticated_transport(
@@ -527,7 +562,7 @@ pub fn maintain_authenticated_transport(
         outgoing,
         TransportMode {
             timing,
-            native_read_only: false,
+            policy: FramePolicy::Any,
         },
     )
 }
@@ -552,7 +587,32 @@ pub fn maintain_native_read_transport(
         outgoing,
         TransportMode {
             timing,
-            native_read_only: true,
+            policy: FramePolicy::ReadOnly,
+        },
+    )
+}
+
+/// The non-installable native file executor shares the signed WSS and Grant
+/// transport, but rejects every unimplemented operation before queueing.
+pub fn maintain_native_file_transport(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    stop: &Arc<AtomicBool>,
+    incoming: &SyncSender<ExecutionRequest>,
+    outgoing: &Receiver<ExecutionResponse>,
+    timing: HeartbeatTiming,
+) -> Result<(), SessionError> {
+    maintain_transport_mode(
+        endpoint,
+        private_pem,
+        device_id,
+        stop,
+        incoming,
+        outgoing,
+        TransportMode {
+            timing,
+            policy: FramePolicy::NativeFiles,
         },
     )
 }
@@ -572,10 +632,10 @@ fn maintain_transport_mode(
             Ok(mut socket) => {
                 socket.set_heartbeat_timing(mode.timing)?;
                 let connected_at = Instant::now();
-                let pump = if mode.native_read_only {
-                    socket.pump_native_read(stop, incoming, outgoing)
-                } else {
-                    socket.pump(stop, incoming, outgoing)
+                let pump = match mode.policy {
+                    FramePolicy::Any => socket.pump(stop, incoming, outgoing),
+                    FramePolicy::ReadOnly => socket.pump_native_read(stop, incoming, outgoing),
+                    FramePolicy::NativeFiles => socket.pump_native_file(stop, incoming, outgoing),
                 };
                 match pump {
                     Ok(()) | Err(SessionError::Superseded) => return Ok(()),
