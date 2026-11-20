@@ -84,7 +84,9 @@ fn public_identity_is_rejected_before_network_or_receipt_creation() {
 }
 
 #[test]
-fn sigterm_stops_disconnected_nonproduction_process_without_retry_loop() {
+fn sigterm_stops_retrying_nonproduction_process_without_reconnect_loop() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -92,6 +94,10 @@ fn sigterm_stops_disconnected_nonproduction_process_without_retry_loop() {
     let identity = root.path().join("gate0-test-key.pem");
     fs::write(&identity, "DISPOSABLE-INVALID-KEY-NEVER-USED").unwrap();
     set_private(&identity);
+    // Own the exact local test port so an unrelated Worker cannot reject this
+    // disposable identity before SIGTERM and make the test timing-dependent.
+    let listener = TcpListener::bind("127.0.0.1:8777").expect("isolated test port");
+    listener.set_nonblocking(true).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local", TEST_DEVICE])
         .arg(root.path())
@@ -99,7 +105,33 @@ fn sigterm_stops_disconnected_nonproduction_process_without_retry_loop() {
         .stderr(Stdio::null())
         .spawn()
         .expect("start nonproduction process");
-    thread::sleep(Duration::from_millis(250));
+    let ready_deadline = Instant::now() + Duration::from_secs(3);
+    let (mut stream, _) = loop {
+        match listener.accept() {
+            Ok(value) => break value,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= ready_deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("candidate did not request a local signed challenge");
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("local test listener failed: {error}"),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    let mut incoming = [0u8; 1024];
+    let count = stream.read(&mut incoming).unwrap();
+    assert!(incoming[..count].starts_with(b"POST /agent/session/challenge"));
+    stream
+        .write_all(
+            b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    thread::sleep(Duration::from_millis(100));
     if let Some(status) = child.try_wait().unwrap() {
         panic!("candidate exited before stop signal: {status}");
     }
@@ -118,4 +150,19 @@ fn sigterm_stops_disconnected_nonproduction_process_without_retry_loop() {
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[test]
+fn nested_disposable_named_directory_is_not_a_valid_test_root() {
+    let parent = private_root();
+    let nested = parent.path().join("rca-rust-probe-nested");
+    fs::create_dir(&nested).unwrap();
+    fs::set_permissions(&nested, fs::Permissions::from_mode(0o700)).unwrap();
+    let output = run(&nested);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("untrusted disposable root"),
+        "{:?}",
+        output
+    );
 }

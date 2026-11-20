@@ -25,6 +25,7 @@ mod linux {
             return false;
         };
         root.is_absolute()
+            && root.parent() == Some(Path::new("/tmp"))
             && root
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -136,9 +137,8 @@ mod linux {
         );
         stop.store(true, Ordering::Release);
         monitor.join().map_err(|_| "stop monitor failed")?;
-        if SIGNAL_STOP.load(Ordering::Acquire) {
-            return Ok(());
-        }
+        // A simultaneous SIGTERM never turns a real executor or receipt error
+        // into a successful process exit. Normal cancellation already yields Ok.
         outcome.map_err(|_| "nonproduction signed session failed")
     }
 }
