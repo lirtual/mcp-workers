@@ -76,8 +76,10 @@ function selectedAssetUrl(url,tag,target){
 export function validateManualUpgrade(state,input){
   const pins=normalizeUpgradePins(state,input);
   const {home=os.homedir(),tag,commit,url,sha256,size}=pins;
-  if(process.getuid()===0||!VERSION.test(tag))
+  if(!VERSION.test(tag))
     throw Error("Manual upgrade requires a stable reviewed release");
+  if(process.getuid()===0&&(home!==os.userInfo().homedir||process.env.HOME!==home))
+    throw Error("Root upgrade requires the root OS account HOME");
   let asset=null;
   if(commit===undefined){
     if(!selectedAssetUrl(url,tag,state?.info?.target)||!/^[a-f0-9]{64}$/.test(sha256||"")||
@@ -164,7 +166,8 @@ export function activateManualUpgrade(prepared,{
   invoke=spawnSync,env=process.env,
 }={}){
   const result=invoke(prepared.runner,[prepared.script,"--upgrade",
-    "--endpoint",prepared.endpoint],{
+    "--endpoint",prepared.endpoint,
+    ...(process.getuid()===0?["--allow-root"]:[])],{
     stdio:"inherit",env:{...env,RC_AGENT_NO_POST_START:"1"},
   });
   if(result.error||result.signal||result.status!==0)

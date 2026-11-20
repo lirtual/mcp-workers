@@ -4,6 +4,7 @@
  */
 import { lstatSync, readFileSync, readlinkSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 const APP="apps/remote-control-agent";
@@ -155,8 +156,9 @@ export function assertSafeUninstallUnit(unit,home,versions){
 }
 
 export function planLocalUninstall(state,{home,scan=noOwnedAgentProcesses}={}){
-  if(process.getuid()===0)throw Error("Root cannot uninstall this Agent");
   if(!home||!path.isAbsolute(home))throw Error("Missing trusted home");
+  if(process.getuid()===0&&(home!==os.userInfo().homedir||process.env.HOME!==home))
+    throw Error("Root uninstall requires the root OS account HOME");
   const base=path.join(home,".local/share/mcp-workers/remote-control/programs");
   const versions=state.versions.map(v=>path.join(base,v));
   if(versions.some((v,i)=>!VERSION.test(state.versions[i])||
@@ -181,7 +183,9 @@ export function planLocalUninstall(state,{home,scan=noOwnedAgentProcesses}={}){
 }
 export function executeLocalUninstall(plan,{scan=noOwnedAgentProcesses,
   invoke=spawnSync,confirm=false}={}){
-  if(!confirm||process.getuid()===0)throw Error("Explicit uninstall confirmation required");
+  if(!confirm)throw Error("Explicit uninstall confirmation required");
+  if(process.getuid()===0&&(plan.home!==os.userInfo().homedir||process.env.HOME!==plan.home))
+    throw Error("Root uninstall requires the root OS account HOME");
   // Revalidate ownership again before any stop/removal.
   for(const version of plan.versions)verifyOwnedProgram(version);
   if(plan.launcher!==verifyOwnedLauncher(plan.home,plan.versions))

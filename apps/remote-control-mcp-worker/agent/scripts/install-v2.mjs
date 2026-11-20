@@ -12,7 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { DatabaseSync } from "node:sqlite";
-import { constants, existsSync, readFileSync } from "node:fs";
+import { constants, existsSync, lstatSync, readFileSync } from "node:fs";
 import { access, lstat, mkdir, open, readFile, readlink, readdir, rename, rm, rmdir, symlink } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import os from "node:os";
@@ -69,10 +69,13 @@ export function keyForInstallMode(home, mode) {
 }
 
 export function parseInstallArgs(argv) {
-  const result = { action: "install", endpoint: undefined, name: undefined, foreground: false, showFingerprint: false };
+  const result = { action: "install", endpoint: undefined, name: undefined, foreground: false, showFingerprint: false, allowRoot: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--show-fingerprint") {
+    if (arg === "--allow-root") {
+      if (result.allowRoot) throw new Error("Duplicate root option.");
+      result.allowRoot = true;
+    } else if (arg === "--show-fingerprint") {
       if (result.showFingerprint) throw new Error("Duplicate fingerprint option.");
       result.showFingerprint = true;
     } else if (arg === "--foreground") {
@@ -104,6 +107,63 @@ export function parseInstallArgs(argv) {
     throw new Error("Invalid device label.");
   }
   return result;
+}
+
+/** Deliberate local root opt-in; credentials never cross OS-user homes. */
+export function assertRootOptIn({
+  uid = process.getuid?.(), allowRoot = false, home = os.homedir(),
+  accountHome = os.userInfo().homedir, env = process.env,
+  stdin = process.stdin, stdout = process.stdout, inspect = lstatSync,
+} = {}) {
+  if (uid !== 0) {
+    if (allowRoot) throw new Error("--allow-root is only valid under UID 0.");
+    return false;
+  }
+  if (!allowRoot || !stdin?.isTTY || !stdout?.isTTY) {
+    throw new Error("Root operations require --allow-root in a real local terminal.");
+  }
+  if (!path.isAbsolute(home) || home !== accountHome || env.HOME !== accountHome) {
+    throw new Error("Root account HOME must match the OS account; inherited HOME refused.");
+  }
+  for (let current = home; ; current = path.dirname(current)) {
+    const info = inspect(current);
+    if (!info.isDirectory() || info.isSymbolicLink() ||
+        info.uid !== 0 || (info.mode & 0o022) !== 0) {
+      throw new Error("Root HOME has an unsafe or writable parent path.");
+    }
+    if (current === home && (info.mode & 0o077) !== 0) {
+      throw new Error("Root HOME must be owned and private to UID 0.");
+    }
+    if (current === path.dirname(current)) break;
+  }
+  if ((env.XDG_RUNTIME_DIR && env.XDG_RUNTIME_DIR !== "/run/user/0") ||
+      (env.DBUS_SESSION_BUS_ADDRESS &&
+       env.DBUS_SESSION_BUS_ADDRESS !== "unix:path=/run/user/0/bus")) {
+    throw new Error("Inherited non-root systemd or D-Bus environment refused.");
+  }
+  return true;
+}
+
+/** A permanent root Agent must survive logout without modifying OS linger policy. */
+export function assertRootUserManager({
+  uid = process.getuid?.(), foreground = false, env = process.env,
+  inspect = lstatSync, invoke = spawnSync,
+} = {}) {
+  if (uid !== 0 || foreground) return;
+  if (env.XDG_RUNTIME_DIR !== "/run/user/0") {
+    throw new Error("Root user service requires XDG_RUNTIME_DIR=/run/user/0.");
+  }
+  const runtime = inspect("/run/user/0");
+  if (!runtime.isDirectory() || runtime.isSymbolicLink() ||
+      runtime.uid !== 0 || (runtime.mode & 0o077) !== 0) {
+    throw new Error("Root user-manager runtime directory is not private.");
+  }
+  const linger = invoke("loginctl", ["show-user", "root", "-p", "Linger", "--value"],
+    {encoding: "utf8", timeout: 5000, stdio: "pipe"});
+  if (linger.error || linger.signal || linger.status !== 0 ||
+      linger.stdout.trim() !== "yes") {
+    throw new Error("Root user-manager linger is unavailable; permanent install refused.");
+  }
 }
 
 export function trustedEndpoint(value) {
@@ -552,11 +612,12 @@ export function assertNativeSupervisorProbe(binary, invoke = spawnSync) {
   }
 }
 
-async function preflight(action, foreground) {
-  if (process.platform !== "linux" || process.getuid?.() === 0 ||
+async function preflight(action, foreground, allowRoot) {
+  if (process.platform !== "linux" || (process.getuid?.() === 0 && !allowRoot) ||
       Number(process.versions.node.split(".")[0]) !== 24) {
-    throw new Error("Install as a non-root Linux user with Node.js 24.");
+    throw new Error("Install as a Linux user with Node.js 24; root requires --allow-root.");
   }
+  assertRootUserManager({foreground});
   systemdLiteral(process.execPath);
   systemdLiteral(packageRoot);
   const release = await readFile("/proc/sys/kernel/osrelease", "utf8");
@@ -1256,7 +1317,7 @@ export async function preflightManagerLauncher(home, program) {
 /** Publish only our own user-local launcher. Never overwrite foreign commands.
  * Called after successful service activation, not at download or pairing time.
  */
-export async function installManagerLauncher(home, program, {updateShellProfile=true}={}) {
+export async function installManagerLauncher(home, program, {updateShellProfile=process.getuid?.()!==0}={}) {
   await preflightManagerLauncher(home, program);
   const parent = path.join(home, ".local");
   const bin = path.join(parent, "bin");
@@ -1334,6 +1395,10 @@ export function printPortableCliHint(stdout, launcher, home, currentPath = proce
 export async function runLockedInstallerCli(argv, {
   home = os.homedir(), invoke = spawnSync, node = process.execPath,
 } = {}) {
+  // Refuse root before creating even the installer lock; no environment-based bypass.
+  if (process.getuid?.() === 0) {
+    assertRootOptIn({allowRoot: parseInstallArgs(argv).allowRoot, home});
+  }
   // An internal marker avoids recursive wrapping. It does not confer rights;
   // the authenticated device key and owner challenge remain independent.
   if (process.env.RC_V2_INSTALL_FLOCKED === "1") {
@@ -1375,6 +1440,9 @@ export async function runInstaller(args, {
   startForeground = launchForeground,
 } = {}) {
   const options = parseInstallArgs(args);
+  const rootOptIn = assertRootOptIn({allowRoot:options.allowRoot,home,stdin,stdout});
+  // The root manager uses its own verified bus; never inherit a sudo caller's bus.
+  if (rootOptIn && !process.env.XDG_RUNTIME_DIR) process.env.XDG_RUNTIME_DIR = "/run/user/0";
   if (portable && ["uninstall", "resume"].includes(options.action)) {
     throw new Error("Portable uninstall/resume requires separately reviewed lifecycle CLI.");
   }
@@ -1407,7 +1475,15 @@ export async function runInstaller(args, {
   const unitPath = path.join(home, ".config", "systemd", "user", UNIT);
   const keyPath = keyForInstallMode(home, options.grantType ?? "permanent");
   systemdLiteral(home);
-  const host = await preflight(options.action, options.foreground);
+  if (rootOptIn) {
+    stdout.write("WARNING: RCA will run with UID 0, including approved Shell commands.\n");
+    const rl = createInterface({input:stdin,output:stdout,terminal:true});
+    let approved;
+    try { approved = await rl.question("Type ALLOW-ROOT to confirm: "); }
+    finally { rl.close(); }
+    if (approved?.trim() !== "ALLOW-ROOT") throw new Error("Root consent was not confirmed.");
+  }
+  const host = await preflight(options.action, options.foreground, options.allowRoot);
   await recoverInterruptedUpgrade({home, unitPath});
   if (options.action !== "uninstall") trustedEndpoint(options.endpoint);
   // Read-only collision gate BEFORE creating a device key or pending cloud grant.
@@ -1593,7 +1669,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     // Only print fixed, hard-coded classifications; never echo external
     // exception messages, endpoint query strings or private credential data.
     const safeErrors = [
-      "Install as a non-root Linux user with Node.js 24.",
+      "Install as a Linux user with Node.js 24; root requires --allow-root.",
+      "Root operations require --allow-root in a real local terminal.",
+      "Root user service requires XDG_RUNTIME_DIR=/run/user/0.",
+      "Root user-manager linger is unavailable; permanent install refused.",
+      "Root consent was not confirmed.",
       "Missing or unusable cc compiler.",
       "The systemd user manager or requested user service action is unavailable.",
       "Missing or unusable systemd-analyze.",

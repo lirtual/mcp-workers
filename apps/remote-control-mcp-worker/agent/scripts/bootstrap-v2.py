@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import platform
+import pwd
 import re
 import subprocess
 import shutil
@@ -351,13 +352,40 @@ def clean_orphaned_staging(parent):
             entry.unlink()
 
 
-def preflight(tag, commit, endpoint, stage_only=False):
-    # Remote staging is data-only; the existing manual installer still demands
-    # a real console, and no noninteractive path may pair or switch systemd.
-    if (sys.platform != "linux" or os.getuid() == 0
-            or (not stage_only and
-                (not sys.stdin.isatty() or not sys.stdout.isatty()))):
-        raise ValueError("Run as a non-root Linux user in a real interactive terminal")
+def root_opt_in(allow_root, stage_only=False):
+    """Root pairing is local-only, independently confirmed by the verified Node installer."""
+    if os.getuid() != 0:
+        if allow_root:
+            raise ValueError("--allow-root is only valid under UID 0")
+        return
+    if stage_only:
+        raise ValueError("Stage-only verification requires a non-root account")
+    if not allow_root or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Root pairing requires --allow-root in a real local terminal")
+    account_home = pwd.getpwuid(0).pw_dir
+    if not os.path.isabs(account_home) or os.environ.get("HOME") != account_home:
+        raise ValueError("Root HOME must match the root OS account")
+    home = pathlib.Path(account_home)
+    for item in (home, *home.parents):
+        info = item.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022):
+            raise ValueError("Unsafe or writable root HOME path")
+        if item == home and stat.S_IMODE(info.st_mode) & 0o077:
+            raise ValueError("Root HOME must be UID 0 private")
+    if (os.environ.get("XDG_RUNTIME_DIR") not in (None, "/run/user/0") or
+            os.environ.get("DBUS_SESSION_BUS_ADDRESS") not in
+            (None, "unix:path=/run/user/0/bus")):
+        raise ValueError("Inherited non-root session bus refused")
+
+
+def preflight(tag, commit, endpoint, stage_only=False, allow_root=False):
+    # Data-only stage remains non-root; root pairing needs local explicit intent.
+    root_opt_in(allow_root, stage_only)
+    if (sys.platform != "linux" or
+            (not stage_only and
+             (not sys.stdin.isatty() or not sys.stdout.isatty()))):
+        raise ValueError("Run on Linux in a real interactive terminal")
     cpu = platform.machine().lower()
     if cpu not in ("x86_64", "aarch64"):
         raise ValueError("Only Linux x86_64 and ARM64 are supported")
@@ -378,14 +406,15 @@ def preflight(tag, commit, endpoint, stage_only=False):
 
 
 def install(tag, commit, endpoint, name=None, upgrade=False,
-            stage_only=False, asset_sha256=None):
+            stage_only=False, asset_sha256=None, allow_root=False):
     if stage_only:
         if name is not None or upgrade or not isinstance(asset_sha256, str) or \
                 not re.fullmatch(r"[0-9a-f]{64}", asset_sha256):
             raise ValueError("Stage-only requires exactly one reviewed SHA-256 and no install action")
     elif asset_sha256 is not None:
         raise ValueError("An asset SHA-256 is only accepted for stage-only verification")
-    target = preflight(tag, commit, endpoint, stage_only=stage_only)
+    target = preflight(tag, commit, endpoint, stage_only=stage_only,
+                       allow_root=allow_root)
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
     location = program_home(os.path.expanduser("~"))
     version = location / (tag + "-" + target)
@@ -443,6 +472,8 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             command += ["--name", name]
         if upgrade:
             command += ["--upgrade"]
+        if allow_root:
+            command += ["--allow-root"]
         print("Verified GitHub Release " + tag + " for " + target
               + ". Local permanent/temporary pairing requires independent MCP approval.",
               flush=True)
@@ -760,6 +791,8 @@ def main():
     actions.add_argument("--purge-local-identity", action="store_true",
                          help="separate explicit v2 key/ID purge after uninstall; shared SQLite retained")
     parser.add_argument("--name")
+    parser.add_argument("--allow-root", action="store_true",
+                        help="explicit local UID 0 opt-in; independent terminal confirmation required")
     parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
     parser.add_argument("--asset-sha256", help="independently reviewed architecture SHA-256 for --stage-only")
     args = parser.parse_args()
@@ -813,7 +846,7 @@ def main():
             if not args.tag or not args.commit or not args.endpoint:
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
-                    args.stage_only, args.asset_sha256)
+                    args.stage_only, args.asset_sha256, args.allow_root)
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)
