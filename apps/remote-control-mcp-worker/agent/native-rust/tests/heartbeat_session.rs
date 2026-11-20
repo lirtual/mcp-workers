@@ -1,6 +1,8 @@
 //! Existing Worker rc-v2 contract through a real signed loopback challenge/WSS.
 //! This tests transport framing, not durable grant revocation inside the DO.
-use rca_native_agent::session::{connect_authenticated, HeartbeatTiming, SessionError};
+use rca_native_agent::session::{
+    connect_authenticated, ExecutionRequest, HeartbeatTiming, SessionError,
+};
 use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -228,16 +230,18 @@ fn transport_heartbeat_and_grant_probe_run_while_an_operation_is_busy() {
             }
         }
     });
-    let (requests_tx, requests_rx) = mpsc::sync_channel::<String>(4);
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
     let (answers_tx, answers_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         let request = requests_rx.recv_timeout(Duration::from_secs(3)).unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&request).unwrap()["kind"],
+            serde_json::from_str::<serde_json::Value>(request.frame_if_active().unwrap()).unwrap()
+                ["kind"],
             "operation"
         );
         thread::sleep(Duration::from_millis(700));
-        answers_tx.send(json!({"kind":"operation_result","request_id":"33333333-3333-3333-3333-333333333333","result":{"operation_id":"test-long-operation","status":"completed"}}).to_string()).unwrap();
+        assert!(request.lease().is_active());
+        answers_tx.send(request.response(json!({"kind":"operation_result","request_id":"33333333-3333-3333-3333-333333333333","result":{"operation_id":"test-long-operation","status":"completed"}}).to_string())).unwrap();
     });
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     agent
@@ -249,5 +253,176 @@ fn transport_heartbeat_and_grant_probe_run_while_an_operation_is_busy() {
         .unwrap();
     agent.pump(&stop, &requests_tx, &answers_rx).unwrap();
     worker.join().unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn policy_close_revokes_queued_write_before_executor_starts() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        socket
+            .send(Message::Text(json!({"kind":"operation","tool":"write_file","request_id":"44444444-4444-4444-4444-444444444444"}).to_string().into()))
+            .unwrap();
+        thread::sleep(Duration::from_millis(200)); // Ensure the command entered the queue.
+        socket
+            .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                reason: "grant revoked".into(),
+            })))
+            .unwrap();
+    });
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
+    let (_answers_tx, answers_rx) = mpsc::channel();
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    let stop = AtomicBool::new(false);
+    assert!(matches!(
+        agent.pump(&stop, &requests_tx, &answers_rx),
+        Err(SessionError::Policy)
+    ));
+    let queued = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(
+        queued.frame_if_active().is_none(),
+        "revoked queued write must not begin"
+    );
+    assert!(
+        !queued.lease().is_active(),
+        "transport exit must invalidate executor lease"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn stale_result_from_revoked_socket_is_not_sent_on_replacement_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let mut first = accept_signed_socket(listener.try_clone().unwrap());
+        first
+            .send(Message::Text(
+                json!({"kind":"operation","request_id":"55555555-5555-5555-5555-555555555555"})
+                    .to_string()
+                    .into(),
+            ))
+            .unwrap();
+        thread::sleep(Duration::from_millis(150));
+        first
+            .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                reason: "revoked".into(),
+            })))
+            .unwrap();
+        drop(first);
+        let mut second = accept_signed_socket(listener);
+        second
+            .send(Message::Text(
+                json!({"kind":"operation","request_id":"66666666-6666-6666-6666-666666666666"})
+                    .to_string()
+                    .into(),
+            ))
+            .unwrap();
+        let response = second.read().unwrap().to_text().unwrap().to_string();
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        assert_eq!(value["request_id"], "66666666-6666-6666-6666-666666666666");
+        server_stop.store(true, Ordering::SeqCst);
+    });
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
+    // Intentionally reuse the outgoing channel across sessions to test isolation.
+    let (answers_tx, answers_rx) = mpsc::channel();
+    let mut first = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    assert!(matches!(
+        first.pump(&stop, &requests_tx, &answers_rx),
+        Err(SessionError::Policy)
+    ));
+    let stale = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(stale.frame_if_active().is_none());
+    answers_tx
+        .send(
+            stale
+                .response(json!({"request_id":"55555555-5555-5555-5555-555555555555"}).to_string()),
+        )
+        .unwrap();
+
+    let worker =
+        thread::spawn(move || {
+            let fresh = requests_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert!(fresh.frame_if_active().is_some());
+            answers_tx
+                .send(fresh.response(
+                    json!({"request_id":"66666666-6666-6666-6666-666666666666"}).to_string(),
+                ))
+                .unwrap();
+        });
+    let mut second = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    second.pump(&stop, &requests_tx, &answers_rx).unwrap();
+    worker.join().unwrap();
+    server.join().unwrap();
+}
+
+#[test]
+fn worker_revoke_cleanup_revokes_queued_work_and_defaults_to_unconfirmed() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        socket.send(Message::Text(json!({"kind":"operation","tool":"write_file","request_id":"77777777-7777-7777-7777-777777777777"}).to_string().into())).unwrap();
+        socket.send(Message::Text(json!({"kind":"revoke_cleanup","request_id":"88888888-8888-8888-8888-888888888888"}).to_string().into())).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(
+            receipt,
+            json!({"kind":"revoke_cleanup_result","request_id":"88888888-8888-8888-8888-888888888888","status":"uncertain"})
+        );
+        socket
+            .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                reason: "revoked".into(),
+            })))
+            .unwrap();
+    });
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
+    let (_answers_tx, answers_rx) = mpsc::channel();
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    let stop = AtomicBool::new(false);
+    assert!(matches!(
+        agent.pump(&stop, &requests_tx, &answers_rx),
+        Err(SessionError::Policy)
+    ));
+    let queued = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert!(
+        queued.frame_if_active().is_none(),
+        "revocation must fence in-flight and queued writes first"
+    );
+    assert!(
+        requests_rx.try_recv().is_err(),
+        "control frame must never queue as a write"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn verified_local_cleanup_may_be_confirmed_only_by_explicit_callback() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let mut socket = accept_signed_socket(listener);
+        socket.send(Message::Text(json!({"kind":"revoke_cleanup","request_id":"99999999-9999-9999-9999-999999999999"}).to_string().into())).unwrap();
+        let receipt: serde_json::Value =
+            serde_json::from_str(socket.read().unwrap().to_text().unwrap()).unwrap();
+        assert_eq!(receipt["status"], "confirmed");
+    });
+    let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
+    let (_answers_tx, answers_rx) = mpsc::channel();
+    let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
+    let stop = AtomicBool::new(false);
+    let callback = || rca_native_agent::session::CleanupStatus::Confirmed;
+    assert!(matches!(
+        agent.pump_with_cleanup(&stop, &requests_tx, &answers_rx, callback),
+        Err(SessionError::Policy)
+    ));
+    assert!(requests_rx.try_recv().is_err());
     server.join().unwrap();
 }

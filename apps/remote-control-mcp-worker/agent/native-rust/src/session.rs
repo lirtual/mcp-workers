@@ -1,14 +1,15 @@
 //! Nonproduction signed WSS login against the existing RCA Worker interface.
-//! No background reconnect, receive dispatch, or automatic owner grant is provided.
+//! No automatic reconnect, local operation executor, or automatic Owner Grant is provided.
 use crate::identity::{signed_session_proof, valid_device_id};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::io::{self, Read};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tungstenite::client::IntoClientRequest;
@@ -68,6 +69,82 @@ impl Default for HeartbeatTiming {
             auth_interval: Duration::from_secs(900),
         }
     }
+}
+
+/// Owner revocation cleanup is confirmed only after the actual runtime has
+/// verified all owned processes have stopped. A non-executing transport cannot
+/// make that claim, so its default response is always Uncertain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanupStatus {
+    Confirmed,
+    Uncertain,
+}
+
+impl CleanupStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Uncertain => "uncertain",
+        }
+    }
+}
+
+/// A connection-scoped revocation signal. Executors must check this before
+/// starting a side effect and at cancellable boundaries while work is in flight.
+/// A revoked lease does not imply the underlying OS operation was rolled back:
+/// interrupted or unknown operations require normal idempotent receipt recovery.
+#[derive(Clone, Debug)]
+pub struct ExecutionLease(Arc<AtomicBool>);
+
+impl ExecutionLease {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(true)))
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+
+    fn revoke(&self) {
+        self.0.store(false, Ordering::Release);
+    }
+
+    fn same_incarnation(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// An operation may only begin while its connection lease remains active.
+/// The executor must additionally use the lease to cancel in-flight work.
+#[derive(Debug)]
+pub struct ExecutionRequest {
+    frame: String,
+    lease: ExecutionLease,
+}
+
+impl ExecutionRequest {
+    pub fn frame_if_active(&self) -> Option<&str> {
+        self.lease.is_active().then_some(self.frame.as_str())
+    }
+
+    pub fn lease(&self) -> &ExecutionLease {
+        &self.lease
+    }
+
+    pub fn response(&self, frame: String) -> ExecutionResponse {
+        ExecutionResponse {
+            frame,
+            lease: self.lease.clone(),
+        }
+    }
+}
+
+/// A response is bound to the WebSocket incarnation that accepted the request;
+/// stale responses cannot be replayed on a replacement connection.
+#[derive(Debug)]
+pub struct ExecutionResponse {
+    frame: String,
+    lease: ExecutionLease,
 }
 
 pub struct AuthenticatedSocket {
@@ -211,21 +288,52 @@ impl AuthenticatedSocket {
         }
     }
 
-    /// Transport owns the WebSocket and performs liveness checks even while
-    /// an independent executor processes a command. The bounded incoming
-    /// queue fails closed instead of buffering unlimited remote requests.
-    /// A new connection must use new channels: stale responses never cross
-    /// WebSocket incarnations or get replayed automatically.
+    /// Liveness continues while the executor works. Each pump creates a new
+    /// lease, invalidated on *every* exit (policy close, timeout, stop, queue
+    /// overflow, or I/O error). Queued requests then refuse new execution.
+    /// In-flight mutations must cooperatively abort and reconcile Unknown
+    /// outcomes via the operation receipt protocol, not blindly retry them.
     pub fn pump(
         &mut self,
         stop: &AtomicBool,
-        incoming: &SyncSender<String>,
-        outgoing: &Receiver<String>,
+        incoming: &SyncSender<ExecutionRequest>,
+        outgoing: &Receiver<ExecutionResponse>,
+    ) -> Result<(), SessionError> {
+        // The transport has no verified process ownership or cleanup ability.
+        self.pump_with_cleanup(stop, incoming, outgoing, || CleanupStatus::Uncertain)
+    }
+
+    /// The caller may report Confirmed only after aborting and verifying every
+    /// owned process. Bound cleanup to the Worker's 2.5s ACK window. Regardless
+    /// of callback outcome, ordinary queued work was revoked first.
+    pub fn pump_with_cleanup<F: FnOnce() -> CleanupStatus>(
+        &mut self,
+        stop: &AtomicBool,
+        incoming: &SyncSender<ExecutionRequest>,
+        outgoing: &Receiver<ExecutionResponse>,
+        cleanup: F,
+    ) -> Result<(), SessionError> {
+        let lease = ExecutionLease::new();
+        let result = self.pump_scoped(stop, incoming, outgoing, &lease, cleanup);
+        lease.revoke();
+        result
+    }
+
+    fn pump_scoped<F: FnOnce() -> CleanupStatus>(
+        &mut self,
+        stop: &AtomicBool,
+        incoming: &SyncSender<ExecutionRequest>,
+        outgoing: &Receiver<ExecutionResponse>,
+        lease: &ExecutionLease,
+        cleanup: F,
     ) -> Result<(), SessionError> {
         while !stop.load(Ordering::Acquire) {
             for _ in 0..4 {
                 match outgoing.try_recv() {
-                    Ok(reply) => self.send_text(&reply)?,
+                    Ok(reply) if reply.lease.same_incarnation(lease) => {
+                        self.send_text(&reply.frame)?;
+                    }
+                    Ok(_) => {} // Discard results from a prior socket incarnation.
                     Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                 }
             }
@@ -235,11 +343,50 @@ impl AuthenticatedSocket {
                 Err(error) => return Err(error),
             };
             if let Some(frame) = frame {
-                incoming.try_send(frame).map_err(|_| SessionError::Queue)?;
+                if let Some(request_id) = revocation_request_id(&frame)? {
+                    lease.revoke(); // Abort queued and in-flight operations before cleanup.
+                    let status = cleanup();
+                    // Even if the socket died while cleanup ran, revocation is
+                    // permanent. The Worker will honestly report unconfirmed.
+                    let _ = self.send_text(
+                        &json!({"kind":"revoke_cleanup_result","request_id":request_id,
+                            "status":status.as_str()})
+                        .to_string(),
+                    );
+                    return Err(SessionError::Policy);
+                }
+                incoming
+                    .try_send(ExecutionRequest {
+                        frame,
+                        lease: lease.clone(),
+                    })
+                    .map_err(|_| SessionError::Queue)?;
             }
         }
         Ok(())
     }
+}
+
+/// A malformed Owner cleanup request is never eligible for operation dispatch.
+fn revocation_request_id(frame: &str) -> Result<Option<String>, SessionError> {
+    let Ok(value) = serde_json::from_str::<Value>(frame) else {
+        return Ok(None);
+    };
+    if value.get("kind").and_then(Value::as_str) != Some("revoke_cleanup") {
+        return Ok(None);
+    }
+    let object = value.as_object().ok_or(SessionError::Protocol)?;
+    if object.len() != 2 {
+        return Err(SessionError::Protocol);
+    }
+    let request_id = object
+        .get("request_id")
+        .and_then(Value::as_str)
+        .ok_or(SessionError::Protocol)?;
+    if !valid_device_id(request_id) {
+        return Err(SessionError::Protocol);
+    }
+    Ok(Some(request_id.to_owned()))
 }
 
 fn trusted_endpoint(address: &str) -> Result<Url, SessionError> {
