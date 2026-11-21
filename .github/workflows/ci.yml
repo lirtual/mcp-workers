@@ -203,8 +203,11 @@ jobs:
         working-directory: apps/remote-control-mcp-worker/agent/native-rust
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Run Rust core tests on host OS (no Owner identity)
+        timeout-minutes: 8
         working-directory: apps/remote-control-mcp-worker/agent/native-rust
-        run: cargo test --locked --all-targets
+        # A hung platform-specific test must leave a bounded CI failure with
+        # enough progress output to identify the last running test binary.
+        run: cargo test --locked --all-targets -- --nocapture
 
   database-integration:
     name: Database integration

@@ -101,7 +101,7 @@ pub(crate) fn permitted_path(path: &str) -> bool {
                     | "lpt8"
                     | "lpt9"
             )
-        });
+        })
     }
     #[cfg(not(windows))]
     {
