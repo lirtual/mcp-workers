@@ -270,6 +270,65 @@ fn actual_owner_mcp_file_mutation_and_revoke_roundtrip() {
         }
         println!("REAL_WORKER_NATIVE_EDIT_EXACT_COUNT_NO_REPLAY_PASSED");
 
+        // Real local Owner -> SQLite DO -> signed WSS -> native bounded search.
+        let search_root = root.join("owner-search-fixture");
+        std::fs::create_dir(&search_root).map_err(|_| "search mkdir failed")?;
+        for n in 0..25 {
+            std::fs::write(
+                search_root.join(format!("native-hit-{n:02}.txt")),
+                "search-text\n",
+            )
+            .map_err(|_| "search fixture write failed")?;
+        }
+        let first = tool(
+            "search_files",
+            json!({"device_id":device_id,
+            "path":search_root,"pattern":"native-hit","search_type":"filename"}),
+        )?;
+        if first["results"].as_array().map(Vec::len) != Some(20) || first["has_more"] != true {
+            return Err(format!("Owner first search page invalid: {first}"));
+        }
+        let cursor = first["session_id"]
+            .as_str()
+            .ok_or("missing cursor")?
+            .to_owned();
+        let second = tool(
+            "search_next",
+            json!({"device_id":device_id,"session_id":cursor}),
+        )?;
+        if second["results"].as_array().map(Vec::len) != Some(5) || second["status"] != "complete" {
+            return Err(format!("Owner next search page invalid: {second}"));
+        }
+        if tool(
+            "search_next",
+            json!({"device_id":device_id,"session_id":cursor}),
+        )
+        .is_ok()
+        {
+            return Err("Owner reused consumed search cursor".into());
+        }
+        let content = tool(
+            "search_files",
+            json!({"device_id":device_id,
+            "path":search_root,"pattern":"search-text","search_type":"content"}),
+        )?;
+        if content["results"].as_array().map(Vec::len) != Some(20)
+            || content["results"][0]["line"] != 1
+        {
+            return Err(format!("Owner content search invalid: {content}"));
+        }
+        let cursor = content["session_id"]
+            .as_str()
+            .ok_or("missing content cursor")?;
+        let stopped = tool(
+            "stop_search",
+            json!({"device_id":device_id,"session_id":cursor}),
+        )?;
+        if stopped["status"] != "stopped" {
+            return Err(format!("Owner search stop invalid: {stopped}"));
+        }
+        println!("REAL_WORKER_NATIVE_SEARCH_PAGE_CONTENT_STOP_PASSED");
+
         let revoke = tool("revoke_device", json!({"device_id":device_id}))?;
         if revoke["status"] != "revoked" {
             return Err(format!("revoke did not settle: {revoke}"));

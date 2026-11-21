@@ -629,3 +629,99 @@ fn signed_file_session_edits_exact_text_with_receipt_and_policy_denial() {
     assert_eq!(store.get("edit-op").unwrap().unwrap().state, "completed");
     assert!(store.get("invalid-edit").unwrap().is_none());
 }
+
+#[test]
+fn signed_file_search_pages_content_stop_and_bad_args_stay_connected() {
+    let root = tempfile::tempdir().unwrap();
+    let receipts = root.path().join("receipts");
+    let search_root = root.path().join("files");
+    std::fs::create_dir(&search_root).unwrap();
+    for i in 0..25 {
+        std::fs::write(search_root.join(format!("match-{i:02}.txt")), "needle\n").unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let end = Arc::clone(&stop);
+    let server =
+        thread::spawn(move || {
+            let mut socket = signed_socket(listener);
+            let mut read =
+                |n: usize, tool: &str, arguments: Value| -> Value {
+                    let request_id = format!("00000000-0000-0000-0000-{n:012}");
+                    socket.send(Message::Text(json!({
+                "kind":"read","request_id":request_id,"tool":tool,"arguments":arguments
+            }).to_string().into())).unwrap();
+                    let reply: Value =
+                        serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                    assert_eq!(reply["kind"], "read_result");
+                    assert_eq!(reply["request_id"], request_id);
+                    reply
+                };
+            assert_eq!(
+                read(
+                    1,
+                    "start_search",
+                    json!({
+                        "path":search_root,"pattern":"","search_type":"filename"
+                    })
+                )["status"],
+                "failed"
+            );
+            let first = read(
+                2,
+                "start_search",
+                json!({
+                    "path":search_root,"pattern":"match","search_type":"filename"
+                }),
+            );
+            let page: Value = serde_json::from_str(first["text"].as_str().unwrap()).unwrap();
+            assert_eq!(page["results"].as_array().unwrap().len(), 20);
+            assert_eq!(page["status"], "running");
+            let id = page["session_id"].as_str().unwrap().to_owned();
+            let next = read(3, "get_more_search_results", json!({"session_id":id}));
+            let page: Value = serde_json::from_str(next["text"].as_str().unwrap()).unwrap();
+            assert_eq!(page["results"].as_array().unwrap().len(), 5);
+            assert_eq!(page["status"], "complete");
+            assert_eq!(
+                read(4, "get_more_search_results", json!({"session_id":id}))["status"],
+                "failed"
+            );
+            let content = read(
+                5,
+                "start_search",
+                json!({
+                    "path":search_root,"pattern":"needle","search_type":"content"
+                }),
+            );
+            let page: Value = serde_json::from_str(content["text"].as_str().unwrap()).unwrap();
+            assert_eq!(page["results"].as_array().unwrap().len(), 20);
+            assert_eq!(page["results"][0]["line"], 1);
+            let id = page["session_id"].as_str().unwrap().to_owned();
+            let stopped = read(6, "stop_search", json!({"session_id":id}));
+            let page: Value = serde_json::from_str(stopped["text"].as_str().unwrap()).unwrap();
+            assert_eq!(page["status"], "stopped");
+            assert_eq!(
+                read(7, "get_more_search_results", json!({"session_id":id}))["status"],
+                "failed"
+            );
+            let valid = read(
+                8,
+                "read_file",
+                json!({"path":search_root.join("match-00.txt")}),
+            );
+            assert_eq!(valid["status"], "completed");
+            assert_eq!(valid["text"], "needle");
+            end.store(true, Ordering::Release);
+        });
+    let result = run_native_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipts,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+}

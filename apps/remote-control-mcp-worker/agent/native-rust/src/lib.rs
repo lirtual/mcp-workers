@@ -16,6 +16,7 @@ pub mod native_file;
 #[cfg(target_os = "linux")]
 pub mod native_process;
 pub mod native_read;
+mod native_search;
 pub mod native_write;
 pub mod receipts;
 pub mod session;

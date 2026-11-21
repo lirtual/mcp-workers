@@ -108,11 +108,13 @@ use crate::linux_supervisor::CleanupState;
 #[cfg(target_os = "linux")]
 use crate::native_process::{self, NativeProcessEngine, ProcessRead};
 use crate::native_read::{self, ReadCommand};
+use crate::native_search::{self, SearchFrame, SearchSessions};
 use crate::native_write::{NativeWriteError, NativeWriteExecutor};
 use serde_json::{json, Value};
 
 pub(crate) enum NativeFileCommand {
     Read(ReadCommand),
+    Search(SearchFrame),
     Mutation {
         request_id: String,
         operation_id: String,
@@ -146,6 +148,9 @@ pub(crate) fn parse_native_file_frame(frame: &str) -> Result<NativeFileCommand, 
     let message: Value = serde_json::from_str(frame).map_err(|_| ())?;
     let object = message.as_object().ok_or(())?;
     if object.get("kind").and_then(Value::as_str) == Some("read") {
+        if let Some(search) = native_search::parse_frame(object) {
+            return search.map(NativeFileCommand::Search);
+        }
         return native_read::parse_read_frame(frame)
             .map(NativeFileCommand::Read)
             .map_err(|_| ());
@@ -287,6 +292,7 @@ fn execute_native_file(
 ) -> Result<(), NativeFileError> {
     #[cfg(target_os = "linux")]
     let mut processes = managed.map(NativeProcessEngine::new);
+    let mut searches = SearchSessions::default();
     while !stop.load(Ordering::Acquire) {
         #[cfg(target_os = "linux")]
         if let Some(process) = processes.as_mut() {
@@ -316,6 +322,7 @@ fn execute_native_file(
         }
         let response = match command {
             NativeFileCommand::Read(read) => native_read::execute_read_frame(&read),
+            NativeFileCommand::Search(search) => searches.execute(&search),
             NativeFileCommand::Mutation {
                 request_id,
                 operation_id,
@@ -432,9 +439,9 @@ fn execute_native_file(
 }
 
 /// A non-installable file runtime: receipt exclusivity is obtained before
-/// signed WSS admission. Only native file reads, write_file, create_directory,
-/// delete_file, move_file, edit_block and receipt lookup are allowed; Shell/sessions/install/upgrade
-/// are rejected with 1008.
+/// signed WSS admission. Native file reads, bounded in-memory search,
+/// write_file, create_directory, delete_file, move_file, edit_block and receipt
+/// lookup are admitted; Shell/sessions/install/upgrade are rejected with 1008.
 pub fn run_native_file_session(
     endpoint: &str,
     private_pem: &str,
