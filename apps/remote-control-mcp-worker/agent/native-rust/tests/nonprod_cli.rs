@@ -1,5 +1,5 @@
-//! Public-process checks for the unshipped Linux x64 RCA candidate.
-#![cfg(target_os = "linux")]
+//! Public-process checks for the unshipped Unix RCA candidate.
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -8,11 +8,15 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 const TEST_DEVICE: &str = "123e4567-e89b-42d3-a456-426614174000";
+#[cfg(target_os = "linux")]
+const HELPER_ENV: &str = "RCA_NATIVE_SUPERVISOR_BIN";
+#[cfg(target_os = "macos")]
+const HELPER_ENV: &str = "RCA_DARWIN_SUPERVISOR_BIN";
 
 fn run(root: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local", TEST_DEVICE])
-        .arg(root)
+        .arg(root.canonicalize().unwrap())
         .output()
         .expect("nonproduction executable should launch")
 }
@@ -100,7 +104,7 @@ fn sigterm_stops_retrying_nonproduction_process_without_reconnect_loop() {
     listener.set_nonblocking(true).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local", TEST_DEVICE])
-        .arg(root.path())
+        .arg(root.path().canonicalize().unwrap())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -153,6 +157,28 @@ fn sigterm_stops_retrying_nonproduction_process_without_reconnect_loop() {
 }
 
 #[test]
+fn symlinked_disposable_root_is_refused_before_receipt_creation() {
+    let target = private_root();
+    // Reserve a direct /tmp child so only the symlink guard can reject it.
+    // canonicalize() must not erase this untrusted caller-supplied path.
+    let alias = tempfile::Builder::new()
+        .prefix("rca-rust-probe-symlink-")
+        .tempfile_in("/tmp")
+        .unwrap();
+    let link_path = alias.path().canonicalize().unwrap();
+    fs::remove_file(&link_path).unwrap();
+    symlink(target.path().canonicalize().unwrap(), &link_path).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+        .args(["--local", TEST_DEVICE])
+        .arg(&link_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("untrusted disposable root"));
+    assert!(!target.path().join("receipts").exists());
+}
+
+#[test]
 fn nested_disposable_named_directory_is_not_a_valid_test_root() {
     let parent = private_root();
     let nested = parent.path().join("rca-rust-probe-nested");
@@ -175,8 +201,8 @@ fn managed_cli_fails_closed_without_an_explicit_trusted_supervisor() {
     set_private(&identity);
     let no_helper = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local-managed", TEST_DEVICE])
-        .arg(root.path())
-        .env_remove("RCA_NATIVE_SUPERVISOR_BIN")
+        .arg(root.path().canonicalize().unwrap())
+        .env_remove(HELPER_ENV)
         .output()
         .unwrap();
     assert!(!no_helper.status.success());
@@ -192,8 +218,8 @@ fn managed_cli_fails_closed_without_an_explicit_trusted_supervisor() {
     symlink(&helper, &link).unwrap();
     let untrusted = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local-managed", TEST_DEVICE])
-        .arg(root.path())
-        .env("RCA_NATIVE_SUPERVISOR_BIN", &link)
+        .arg(root.path().canonicalize().unwrap())
+        .env(HELPER_ENV, &link)
         .output()
         .unwrap();
     assert!(!untrusted.status.success());

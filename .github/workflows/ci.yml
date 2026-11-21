@@ -236,7 +236,7 @@ jobs:
           chmod 700 "$RUNNER_TEMP/rca-darwin-supervisor"
           RCA_DARWIN_SUPERVISOR_BIN="$RUNNER_TEMP/rca-darwin-supervisor" \
             cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
-            --locked --test darwin_supervisor --test native_process --test native_process_wss -- --ignored --nocapture
+            --locked --test darwin_supervisor --test native_process --test native_process_wss --test cli_managed -- --ignored --nocapture
 
   database-integration:
     name: Database integration
