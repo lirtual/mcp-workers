@@ -312,6 +312,7 @@ mod linux {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/", listener.local_addr().unwrap());
         let upgrade_socket = root.path().join("upgrade.sock");
+        let pid_file = root.path().join("managed.pid");
         let server = thread::spawn(move || {
             let mut socket = connected(listener);
             let started = reply(
@@ -321,11 +322,30 @@ mod linux {
                     "request_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
                     "operation_id":"standard-owned-process",
                     "tool":"start_process",
-                    "arguments":{"command":"sleep 30","timeout_ms":0}
+                    "arguments":{"command":format!("echo $$ > '{}'; exec sleep 30", pid_file.display()),"timeout_ms":0}
                 })
                 .to_string(),
             );
             assert_eq!(started["result"]["status"], "running");
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let pid: i32 = loop {
+                if let Ok(text) = fs::read_to_string(&pid_file) {
+                    if let Ok(pid) = text.trim().parse() {
+                        break pid;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "managed command did not report its PID"
+                );
+                thread::sleep(Duration::from_millis(20));
+            };
+            assert!(pid > 0);
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                0,
+                "managed process must be alive before revoke"
+            );
             assert_eq!(upgrade(&upgrade_socket, "freeze"), "busy\n");
             assert_eq!(upgrade(&upgrade_socket, "verify-frozen"), "busy\n");
             let ack = reply(
@@ -337,6 +357,16 @@ mod linux {
                 .to_string(),
             );
             assert_eq!(ack["status"], "confirmed");
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "confirmed cleanup must not acknowledge a live managed process"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
+            pid
         });
 
         let mut child = StopChild(
@@ -351,7 +381,7 @@ mod linux {
                 .spawn()
                 .unwrap(),
         );
-        server.join().unwrap();
+        let managed_pid = server.join().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         let exit = loop {
             if let Some(exit) = child.0.try_wait().unwrap() {
@@ -366,6 +396,15 @@ mod linux {
         assert!(
             exit.success(),
             "policy stop with confirmed owned cleanup must exit zero"
+        );
+        assert_eq!(
+            unsafe { libc::kill(managed_pid, 0) },
+            -1,
+            "confirmed cleanup must leave no live managed process"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
         );
         let receipts = root
             .path()
