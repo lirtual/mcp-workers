@@ -245,4 +245,88 @@ mod linux {
         assert_eq!(receipt.tool_name, "write_file");
         assert_eq!(fs::read_to_string(target).unwrap(), "outside");
     }
+
+    #[test]
+    #[ignore = "requires disposable Linux runner and actual built C supervisor"]
+    fn actual_c_supervisor_cleanup_is_confirmed_before_standard_cli_exits() {
+        let helper_path = std::env::var("RCA_NATIVE_SUPERVISOR_BIN")
+            .expect("build the existing C helper before physical acceptance");
+        let root = tempfile::tempdir().unwrap();
+        let key = root.path().join("v2-identity.pem");
+        private_file(&key, &common::test_pem());
+        private_file(
+            &root.path().join("v2-identity.pem.device-id"),
+            &format!("{ID}\n"),
+        );
+        let bin = root.path().join("rca-standard-linux-candidate");
+        fs::copy(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"), &bin).unwrap();
+        let helper = root.path().join("session-supervisor");
+        fs::copy(helper_path, &helper).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let mut socket = connected(listener);
+            let started = reply(
+                &mut socket,
+                json!({
+                    "kind":"operation",
+                    "request_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "operation_id":"standard-owned-process",
+                    "tool":"start_process",
+                    "arguments":{"command":"sleep 30","timeout_ms":0}
+                })
+                .to_string(),
+            );
+            assert_eq!(started["result"]["status"], "running");
+            let ack = reply(
+                &mut socket,
+                json!({
+                    "kind":"revoke_cleanup",
+                    "request_id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                })
+                .to_string(),
+            );
+            assert_eq!(ack["status"], "confirmed");
+        });
+
+        let mut child = StopChild(
+            Command::new(&bin)
+                .env_clear()
+                .env("HOME", root.path())
+                .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
+                .env("REMOTE_CONTROL_AGENT_ENDPOINT", &endpoint)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        server.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let exit = loop {
+            if let Some(exit) = child.0.try_wait().unwrap() {
+                break exit;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "confirmed cleanup failed to exit candidate"
+            );
+            thread::sleep(Duration::from_millis(20));
+        };
+        assert!(
+            exit.success(),
+            "policy stop with confirmed owned cleanup must exit zero"
+        );
+        let receipts = root
+            .path()
+            .join(".local/state/mcp-workers/remote-control-agent");
+        let receipt = ReceiptStore::open(&receipts)
+            .unwrap()
+            .get("standard-owned-process")
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.state, "completed");
+        assert_eq!(receipt.tool_name, "start_process");
+    }
 }
