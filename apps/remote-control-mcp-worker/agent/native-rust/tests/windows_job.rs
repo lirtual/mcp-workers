@@ -98,6 +98,12 @@ fn restricted_stdio_round_trip_and_true_eof_after_exit() {
     io.stdin.write_all(b"hello\n").unwrap();
     drop(io.stdin);
     assert_eq!(job.wait_for_exit(Duration::from_secs(10)).unwrap(), Some(0));
+    // Parent process completion alone does not establish child Job cleanup.
+    // Verify kernel accounting before expecting pipe EOF.
+    assert_eq!(
+        job.terminate_and_wait(Duration::from_secs(3)).unwrap(),
+        JobCleanup::Confirmed
+    );
     assert_eq!(job.active_processes().unwrap(), 0);
     let mut stdout = String::new();
     let mut stderr = String::new();
@@ -105,10 +111,6 @@ fn restricted_stdio_round_trip_and_true_eof_after_exit() {
     io.stderr.read_to_string(&mut stderr).unwrap();
     assert!(stdout.contains("OUT:hello"), "stdout: {stdout:?}");
     assert!(stderr.contains("ERR:hello"), "stderr: {stderr:?}");
-    assert_eq!(
-        job.terminate_and_wait(Duration::from_secs(2)).unwrap(),
-        JobCleanup::Confirmed
-    );
 }
 
 #[test]
