@@ -25,17 +25,25 @@ const release=path.join(root,"release"), key=path.join(root,"v2-identity.pem");
 let child;
 const env={PATH:"/usr/bin:/bin",HOME:root,REMOTE_CONTROL_AGENT_ENDPOINT:endpoint,
            REMOTE_CONTROL_AGENT_KEY_PATH:key};
-function start(program,args=[]) {
-  child=spawn(program,args,{env,stdio:["ignore","ignore","pipe"]});
-  child.stderr.on("data",()=>{});
-  return child;
+async function start(program,args=[]) {
+  const proc=spawn(program,args,{env,stdio:["ignore","ignore","pipe"]});
+  child=proc;
+  proc.stderr?.on("data",()=>{});
+  proc.on("error",error=>{proc.spawnFailure=error});
+  await new Promise((resolve,reject)=>{
+    proc.once("spawn",resolve);
+    proc.once("error",reject);
+  });
+  return proc;
 }
-async function waitExit(proc,timeout=15000) {
+async function waitExit(proc,timeout=15000,ignoreSpawnError=false) {
   let end=Date.now()+timeout;
   while(proc.exitCode===null && proc.signalCode===null){
+    if(proc.spawnFailure && !ignoreSpawnError)throw proc.spawnFailure;
     if(Date.now()>end) throw Error("child exit timeout");
     await delay(50);
   }
+  if(proc.spawnFailure && !ignoreSpawnError)throw proc.spawnFailure;
 }
 async function stop(proc){
   assert.equal(proc.kill("SIGTERM"),true);
@@ -57,6 +65,7 @@ async function rpc(name,args){
 async function ready(proc,id){
   let end=Date.now()+35000;
   for(;;){
+    if(proc.spawnFailure)throw proc.spawnFailure;
     if(proc.exitCode!==null || proc.signalCode!==null)throw Error("Agent exited before ready");
     const devices=await rpc("list_devices",{});
     const rows=Array.isArray(devices)?devices:devices.devices;
@@ -68,6 +77,7 @@ async function ready(proc,id){
 async function receiptReady(proc,id,operationId,expected) {
   const end=Date.now()+35000;
   for(;;){
+    if(proc.spawnFailure)throw proc.spawnFailure;
     if(proc.exitCode!==null || proc.signalCode!==null)throw Error("Agent exited before receipt query");
     const result=await rpc("get_operation_status",{device_id:id,operation_id:operationId});
     if(result.status===expected)return result;
@@ -117,7 +127,7 @@ try{
   const nativeHelper=path.join(candidateDir,"session-supervisor");
   await copyFile(supervisor,nativeHelper);await chmod(nativeHelper,0o700);
 
-  let agent=start(node,[path.join(app,"v2-main.js")]);
+  let agent=await start(node,[path.join(app,"v2-main.js")]);
   await ready(agent,id);
   await receiptReady(agent,id,"handoff-probe-001","not_found");
   const first=path.join(root,"first.txt");
@@ -130,7 +140,7 @@ try{
   assert.equal(await upgrade("verify-frozen"),"ready\n");
   await stop(agent);
 
-  agent=start(native);
+  agent=await start(native);
   await ready(agent,id);
   await receiptReady(agent,id,req1.operation_id,"completed");
   await writeFile(first,"node-sentinel");
@@ -152,12 +162,13 @@ try{
   await mkdir(broken,{mode:0o700});
   const badNative=path.join(broken,"rca-standard-linux-candidate");
   await copyFile(rust,badNative);await chmod(badNative,0o700);
-  const failed=start(badNative);
+  const failed=await start(process.env.RCA_HANDOFF_TEST_SPAWN_FAILURE==="1"
+    ? path.join(broken,"missing-binary") : badNative);
   await waitExit(failed);
   assert.notEqual(failed.exitCode,0,"missing Supervisor must fail closed");
   child=undefined;
 
-  agent=start(node,[path.join(app,"v2-main.js")]);
+  agent=await start(node,[path.join(app,"v2-main.js")]);
   await ready(agent,id);
   await receiptReady(agent,id,req2.operation_id,"completed");
   await writeFile(second,"rust-sentinel");
@@ -173,9 +184,9 @@ try{
   await stop(agent);
   console.log("NODE_RUST_FAILED_START_NODE_HANDOFF_PASS");
 }finally{
-  if(child && child.exitCode===null && child.signalCode===null){
+  if(child?.pid && child.exitCode===null && child.signalCode===null){
     child.kill("SIGTERM");
-    try{await waitExit(child,3000)}catch{child.kill("SIGKILL");await waitExit(child,3000)}
+    try{await waitExit(child,3000,true)}catch{child.kill("SIGKILL");await waitExit(child,3000,true)}
   }
   await rm(root,{recursive:true,force:true});
 }
