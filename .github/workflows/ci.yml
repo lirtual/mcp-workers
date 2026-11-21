@@ -213,14 +213,15 @@ jobs:
         if: runner.os == 'Windows'
         timeout-minutes: 8
         working-directory: apps/remote-control-mcp-worker/agent/native-rust
-        # Exercise the native Windows ACL positive/negative path against real
-        # disposable NTFS DACLs, plus supported core tests. Full Windows WSS,
-        # file tool parity and installed-state migration remain separate Gate 1.
+        # Exercise real NTFS ACLs, localhost signed file WSS, and native Job
+        # Object process ownership on disposable Windows CI runners. Full
+        # managed WSS commands and installed-state migration remain Gate 1.
         run: >-
           cargo test --locked --lib
           --test golden_digest --test golden_identity --test heartbeat_session
           --test loopback_session --test native_browse --test native_read
           --test native_read_wss --test reconnect_transport --test windows_private_state
+          --test windows_job
           -- --nocapture
       - name: Verify disposable Rust Darwin owned-group process lifecycle
         if: runner.os == 'macOS'
