@@ -79,6 +79,30 @@ fn utf8_pages_align_to_code_points_and_preserve_eof() {
 }
 
 #[test]
+fn unaligned_utf8_offset_cannot_exceed_maximum_page_budget() {
+    let (job, pipes) = WindowsJobSession::start_with_stdio(
+        "$stream=[Console]::OpenStandardOutput();$prefix=[Text.Encoding]::UTF8.GetBytes('中');$tail=[Text.Encoding]::ASCII.GetBytes('A'*70000);$stream.Write($prefix,0,$prefix.Length);$stream.Write($tail,0,$tail.Length);$stream.Flush()",
+    )
+    .unwrap();
+    let (stdin, mut output) = WindowsJobOutput::attach(pipes).unwrap();
+    drop(stdin);
+    confirmed_exit(&job);
+    assert_eq!(
+        output.finish(Duration::from_secs(3)).unwrap(),
+        OutputCleanup::Confirmed
+    );
+    let first = output.page(1, MAX_PAGE_BYTES).unwrap();
+    assert_eq!(first.offset, 0);
+    assert_eq!(first.next_offset, MAX_PAGE_BYTES);
+    assert_eq!(first.output.len(), MAX_PAGE_BYTES);
+    assert!(first.output.starts_with('中'));
+    assert!(!first.eof);
+    let last = output.page(first.next_offset, MAX_PAGE_BYTES).unwrap();
+    assert_eq!(last.output.len(), 70003 - MAX_PAGE_BYTES);
+    assert!(last.eof);
+}
+
+#[test]
 fn live_writer_never_reports_confirmed_output_cleanup() {
     let (job, pipes) = WindowsJobSession::start_with_stdio("Start-Sleep -Seconds 10").unwrap();
     let (stdin, mut output) = WindowsJobOutput::attach(pipes).unwrap();

@@ -138,7 +138,9 @@ impl WindowsJobOutput {
         while start > 0 && start < state.bytes.len() && (state.bytes[start] & 0xc0) == 0x80 {
             start -= 1;
         }
-        let mut end = state.bytes.len().min(start.max(offset + length));
+        // The requested offset may fall within a UTF-8 code point. After
+        // aligning backward, measure the page budget from that aligned start.
+        let mut end = state.bytes.len().min(start.saturating_add(length));
         while end > start && end < state.bytes.len() && (state.bytes[end] & 0xc0) == 0x80 {
             end -= 1;
         }
