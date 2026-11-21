@@ -62,9 +62,9 @@ fn challenge(mut stream: TcpStream) {
 
 #[allow(clippy::result_large_err)]
 fn signed_socket(listener: TcpListener) -> WebSocket<TcpStream> {
-    let (http, _) = listener.accept().unwrap();
+    let http = common::accept_windows_loopback(&listener);
     challenge(http);
-    let (ws, _) = listener.accept().unwrap();
+    let ws = common::accept_windows_loopback(&listener);
     ws.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
     tungstenite::accept_hdr(ws, |req: &Request, mut resp: Response| {
         assert!(req
@@ -105,6 +105,7 @@ fn registry() -> Arc<WindowsManagedSessions> {
 #[test]
 fn signed_windows_start_input_output_receipt_and_owner_revoke() {
     let root = tempfile::tempdir().unwrap();
+    common::seal_windows_dir(root.path());
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
@@ -236,6 +237,7 @@ fn signed_windows_start_input_output_receipt_and_owner_revoke() {
 #[test]
 fn owner_revoke_stops_active_windows_job_before_confirmed_ack() {
     let root = tempfile::tempdir().unwrap();
+    common::seal_windows_dir(root.path());
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
@@ -293,6 +295,7 @@ fn owner_revoke_stops_active_windows_job_before_confirmed_ack() {
 #[test]
 fn invalid_windows_process_command_is_rejected_without_receipt_or_launch() {
     let root = tempfile::tempdir().unwrap();
+    common::seal_windows_dir(root.path());
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
@@ -345,6 +348,7 @@ fn invalid_windows_process_command_is_rejected_without_receipt_or_launch() {
 #[test]
 fn explicit_force_terminate_confirms_windows_job_and_receipt() {
     let root = tempfile::tempdir().unwrap();
+    common::seal_windows_dir(root.path());
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());

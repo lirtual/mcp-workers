@@ -15,3 +15,69 @@ pub fn test_pem() -> String {
         .unwrap()
         .to_string()
 }
+
+#[cfg(windows)]
+pub fn seal_windows_dir(path: &std::path::Path) {
+    use std::process::Command;
+
+    // Match the already-shipped Node private user/SYSTEM DACL on a disposable
+    // test parent before opening the fail-closed SQLite receipt store.
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$acl = [Security.AccessControl.DirectorySecurity]::new()
+$acl.SetOwner($userSid)
+$acl.SetAccessRuleProtection($true, $false)
+$inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+foreach ($sid in @($userSid, $systemSid)) {
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+    $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit,
+    [Security.AccessControl.PropagationFlags]::None,
+    [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($rule)
+}
+[IO.Directory]::SetAccessControl($env:RCA_TEST_PATH, $acl)
+"#;
+    let result = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("RCA_TEST_PATH", path)
+        .output()
+        .expect("disposable PowerShell test fixture");
+    assert!(
+        result.status.success(),
+        "private ACL fixture: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(windows)]
+pub fn accept_windows_loopback(listener: &std::net::TcpListener) -> std::net::TcpStream {
+    use std::io::ErrorKind;
+    use std::time::{Duration, Instant};
+
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                return stream;
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "local test Worker never connected"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => panic!("local test Worker accept failed: {error}"),
+        }
+    }
+}
