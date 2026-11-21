@@ -157,6 +157,28 @@ fn sigterm_stops_retrying_nonproduction_process_without_reconnect_loop() {
 }
 
 #[test]
+fn symlinked_disposable_root_is_refused_before_receipt_creation() {
+    let target = private_root();
+    // Reserve a direct /tmp child so only the symlink guard can reject it.
+    // canonicalize() must not erase this untrusted caller-supplied path.
+    let alias = tempfile::Builder::new()
+        .prefix("rca-rust-probe-symlink-")
+        .tempfile_in("/tmp")
+        .unwrap();
+    let link_path = alias.path().canonicalize().unwrap();
+    fs::remove_file(&link_path).unwrap();
+    symlink(target.path().canonicalize().unwrap(), &link_path).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+        .args(["--local", TEST_DEVICE])
+        .arg(&link_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("untrusted disposable root"));
+    assert!(!target.path().join("receipts").exists());
+}
+
+#[test]
 fn nested_disposable_named_directory_is_not_a_valid_test_root() {
     let parent = private_root();
     let nested = parent.path().join("rca-rust-probe-nested");

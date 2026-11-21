@@ -119,7 +119,7 @@ mod unix {
     }
 
     pub fn run() -> Result<(), &'static str> {
-        // Root support is a distinct Gate 2 contract (#912), not an implicit fallback.
+        // Root is forbidden in this disposable CLI; Linux #912 is a separate gate.
         if unsafe { libc::geteuid() } == 0 {
             return Err("root is disabled for this nonproduction candidate");
         }
