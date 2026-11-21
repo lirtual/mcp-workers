@@ -1,5 +1,5 @@
-//! Public-process checks for the unshipped Linux x64 RCA candidate.
-#![cfg(target_os = "linux")]
+//! Public-process checks for the unshipped Unix RCA candidate.
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -12,7 +12,7 @@ const TEST_DEVICE: &str = "123e4567-e89b-42d3-a456-426614174000";
 fn run(root: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local", TEST_DEVICE])
-        .arg(root)
+        .arg(root.canonicalize().unwrap())
         .output()
         .expect("nonproduction executable should launch")
 }
@@ -100,7 +100,7 @@ fn sigterm_stops_retrying_nonproduction_process_without_reconnect_loop() {
     listener.set_nonblocking(true).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local", TEST_DEVICE])
-        .arg(root.path())
+        .arg(root.path().canonicalize().unwrap())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -175,7 +175,7 @@ fn managed_cli_fails_closed_without_an_explicit_trusted_supervisor() {
     set_private(&identity);
     let no_helper = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local-managed", TEST_DEVICE])
-        .arg(root.path())
+        .arg(root.path().canonicalize().unwrap())
         .env_remove("RCA_NATIVE_SUPERVISOR_BIN")
         .output()
         .unwrap();
@@ -192,7 +192,7 @@ fn managed_cli_fails_closed_without_an_explicit_trusted_supervisor() {
     symlink(&helper, &link).unwrap();
     let untrusted = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local-managed", TEST_DEVICE])
-        .arg(root.path())
+        .arg(root.path().canonicalize().unwrap())
         .env("RCA_NATIVE_SUPERVISOR_BIN", &link)
         .output()
         .unwrap();

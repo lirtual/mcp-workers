@@ -1,6 +1,6 @@
 //! Opt-in real Rust CLI process -> signed loopback WSS -> real C-supervised
 //! command. Verifies SIGTERM, owned process cleanup and persisted SQLite.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 mod common;
 
 use rca_native_agent::receipts::ReceiptStore;
@@ -100,7 +100,7 @@ fn exchange(ws: &mut WebSocket<TcpStream>, request: Value) -> Value {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu with the independently built C supervisor"]
+#[ignore = "requires disposable Unix host with the independently built C supervisor"]
 fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
     let _port = LOCAL_PORT_LOCK.lock().unwrap();
     let helper =
@@ -162,7 +162,7 @@ fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
     let mut child = ScopedChild(
         Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
             .args(["--local-managed", DEVICE_ID])
-            .arg(root.path())
+            .arg(root.path().canonicalize().unwrap())
             .env("RCA_NATIVE_SUPERVISOR_BIN", helper)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -209,7 +209,7 @@ fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu with the independently built C supervisor"]
+#[ignore = "requires disposable Unix host with the independently built C supervisor"]
 fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
     let _port = LOCAL_PORT_LOCK.lock().unwrap();
     let helper =
@@ -253,7 +253,7 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
     let mut child = ScopedChild(
         Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
             .args(["--local-managed", DEVICE_ID])
-            .arg(root.path())
+            .arg(root.path().canonicalize().unwrap())
             .env("RCA_NATIVE_SUPERVISOR_BIN", helper)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -289,7 +289,7 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu with a dedicated signed loopback port"]
+#[ignore = "requires disposable Unix host with a dedicated signed loopback port"]
 fn original_file_only_cli_still_rejects_process_frames_and_exits_on_policy() {
     let _port = LOCAL_PORT_LOCK.lock().unwrap();
     let root = tempfile::Builder::new()
@@ -328,7 +328,7 @@ fn original_file_only_cli_still_rejects_process_frames_and_exits_on_policy() {
     let mut child = ScopedChild(
         Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
             .args(["--local", DEVICE_ID])
-            .arg(root.path())
+            .arg(root.path().canonicalize().unwrap())
             .env_remove("RCA_NATIVE_SUPERVISOR_BIN")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
