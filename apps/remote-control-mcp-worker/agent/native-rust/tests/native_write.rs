@@ -56,6 +56,7 @@ fn rewrite_existing_and_append_keep_hardlink_inode_and_no_replay() {
     let alias = root.path().join("hard.txt");
     fs::write(&file, "before").unwrap();
     fs::hard_link(&file, &alias).unwrap();
+    #[cfg(unix)]
     let before = fs::metadata(&file).unwrap();
     let mut writer = executor(&root);
     let original = json!({"path":file,"content":"after","mode":"rewrite"});
