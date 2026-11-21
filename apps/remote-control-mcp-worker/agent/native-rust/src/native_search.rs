@@ -610,13 +610,28 @@ mod tests {
         assert_eq!(result["status"], "complete");
         let lines = result["results"].as_array().unwrap();
         assert_eq!(lines.len(), 3);
+        // The Node reference uses path.join for relative results, preserving
+        // native separators (backslash on Windows, slash on Unix).
+        let child_a = Path::new("child")
+            .join("a.txt")
+            .to_string_lossy()
+            .into_owned();
+        let child_b = Path::new("child")
+            .join("b.txt")
+            .to_string_lossy()
+            .into_owned();
+        assert!(lines.iter().any(|v| {
+            v["path"].as_str() == Some(child_a.as_str())
+                && v["line"] == 2
+                && v["text"] == "needle Ω😀"
+        }));
         assert!(lines
             .iter()
-            .any(|v| v["path"] == "child/a.txt" && v["line"] == 2 && v["text"] == "needle Ω😀"));
-        assert!(lines
+            .any(|v| { v["path"].as_str() == Some(child_a.as_str()) && v["line"] == 4 }));
+        let preview = lines
             .iter()
-            .any(|v| v["path"] == "child/a.txt" && v["line"] == 4));
-        let preview = lines.iter().find(|v| v["path"] == "child/b.txt").unwrap()["text"]
+            .find(|v| v["path"].as_str() == Some(child_b.as_str()))
+            .unwrap()["text"]
             .as_str()
             .unwrap();
         assert_eq!(preview.encode_utf16().count(), MAX_MATCH_CHARS);
