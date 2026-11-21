@@ -31,6 +31,7 @@ pub mod native_write;
 pub mod receipts;
 pub mod session;
 pub mod session_enrollment;
+pub mod session_registration;
 pub mod session_transport_env;
 #[cfg(windows)]
 pub mod windows_job;
