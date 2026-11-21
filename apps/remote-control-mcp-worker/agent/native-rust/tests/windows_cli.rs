@@ -55,7 +55,9 @@ fn cli_rejects_regular_agent_path_and_invalid_uuid_before_wss() {
 #[test]
 fn owner_stop_prevents_network_and_receipts_without_identity() {
     let disposable = root();
-    fs::write(disposable.path().join(MARKER), "").unwrap();
+    let marker = disposable.path().join(MARKER);
+    fs::write(&marker, "").unwrap();
+    common::seal_windows_file(&marker);
     let stopped = launch("--local-managed", DEVICE, disposable.path());
     assert!(stopped.status.success(), "{:?}", stopped);
     assert!(stderr(&stopped).contains("owner_stopped"), "{:?}", stopped);
@@ -94,6 +96,7 @@ fn unsafe_stop_marker_refuses_launch() {
     let disposable = root();
     let marker = disposable.path().join(MARKER);
     fs::write(&marker, "").unwrap();
+    common::seal_windows_file(&marker);
     grant_everyone_read(&marker);
     let output = launch("--local", DEVICE, disposable.path());
     assert!(!output.status.success());
@@ -110,6 +113,7 @@ fn broad_identity_acl_rejected_before_network_or_receipts() {
     let disposable = root();
     let key = disposable.path().join("gate0-test-key.pem");
     fs::write(&key, common::test_pem()).unwrap();
+    common::seal_windows_file(&key);
     grant_everyone_read(&key);
     let output = launch("--local", DEVICE, disposable.path());
     assert!(!output.status.success());
@@ -140,7 +144,7 @@ use rca_native_agent::receipts::ReceiptStore;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::process::{Child, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -210,19 +214,17 @@ fn exchange(socket: &mut WebSocket<TcpStream>, request: Value) -> Value {
     serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap()
 }
 
-fn wait_for_child(child: &mut Child, expected_success: bool) {
+fn wait_for_child(child: &mut Child) -> Option<ExitStatus> {
     let deadline = Instant::now() + Duration::from_secs(12);
     loop {
         if let Some(status) = child.try_wait().unwrap() {
-            assert_eq!(
-                status.success(),
-                expected_success,
-                "CLI exit status: {status}"
-            );
-            return;
+            return Some(status);
         }
         if Instant::now() >= deadline {
-            panic!("Windows CLI failed to terminate after signed policy close");
+            // Reap the client before joining the test Worker, even when the
+            // test fails, so another test cannot inherit a bound 8777 port.
+            let _ = child.kill();
+            return None;
         }
         thread::sleep(Duration::from_millis(25));
     }
@@ -234,11 +236,9 @@ fn real_windows_cli_managed_wss_revoke_stops_job_and_persists_receipt() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let disposable = root();
-    fs::write(
-        disposable.path().join("gate0-test-key.pem"),
-        common::test_pem(),
-    )
-    .unwrap();
+    let key = disposable.path().join("gate0-test-key.pem");
+    fs::write(&key, common::test_pem()).unwrap();
+    common::seal_windows_file(&key);
     let listener = TcpListener::bind("127.0.0.1:8777").unwrap();
     let server = thread::spawn(move || {
         let mut socket = signed_socket(&listener);
@@ -272,8 +272,14 @@ fn real_windows_cli_managed_wss_revoke_stops_job_and_persists_receipt() {
             .spawn()
             .unwrap(),
     );
-    wait_for_child(&mut child.0, true);
-    server.join().unwrap();
+    let status = wait_for_child(&mut child.0);
+    let server_result = server.join();
+    assert_eq!(
+        status.as_ref().map(ExitStatus::success),
+        Some(true),
+        "CLI: {status:?}"
+    );
+    server_result.unwrap();
     let receipt = ReceiptStore::open(&disposable.path().join("receipts"))
         .unwrap()
         .get("win-cli-managed-914")
@@ -288,11 +294,9 @@ fn windows_file_only_cli_rejects_shell_with_signed_1008() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     let disposable = root();
-    fs::write(
-        disposable.path().join("gate0-test-key.pem"),
-        common::test_pem(),
-    )
-    .unwrap();
+    let key = disposable.path().join("gate0-test-key.pem");
+    fs::write(&key, common::test_pem()).unwrap();
+    common::seal_windows_file(&key);
     let listener = TcpListener::bind("127.0.0.1:8777").unwrap();
     let server = thread::spawn(move || {
         let mut socket = signed_socket(&listener);
@@ -327,8 +331,14 @@ fn windows_file_only_cli_rejects_shell_with_signed_1008() {
             .spawn()
             .unwrap(),
     );
-    wait_for_child(&mut child.0, false);
-    server.join().unwrap();
+    let status = wait_for_child(&mut child.0);
+    let server_result = server.join();
+    assert_eq!(
+        status.as_ref().map(ExitStatus::success),
+        Some(false),
+        "CLI: {status:?}"
+    );
+    server_result.unwrap();
     assert!(ReceiptStore::open(&disposable.path().join("receipts"))
         .unwrap()
         .get("win-cli-forbidden-914")

@@ -42,24 +42,7 @@ fn seal_dir(path: &Path) {
 }
 
 fn seal_file(path: &Path) {
-    powershell(
-        r#"
-$ErrorActionPreference = 'Stop'
-$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-$acl = [Security.AccessControl.FileSecurity]::new()
-$acl.SetOwner($userSid)
-$acl.SetAccessRuleProtection($true, $false)
-foreach ($sid in @($userSid, $systemSid)) {
-  $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-    $sid, [Security.AccessControl.FileSystemRights]::FullControl,
-    [Security.AccessControl.AccessControlType]::Allow)
-  $acl.AddAccessRule($rule)
-}
-[IO.File]::SetAccessControl($env:RCA_TEST_PATH, $acl)
-"#,
-        &[("RCA_TEST_PATH", path)],
-    );
+    common::seal_windows_file(path);
 }
 
 fn broad_grant(path: &Path, directory: bool) {
