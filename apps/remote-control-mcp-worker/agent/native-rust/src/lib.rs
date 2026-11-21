@@ -23,4 +23,6 @@ pub mod native_write;
 pub mod receipts;
 pub mod session;
 #[cfg(windows)]
+pub mod windows_job;
+#[cfg(windows)]
 mod windows_private;
