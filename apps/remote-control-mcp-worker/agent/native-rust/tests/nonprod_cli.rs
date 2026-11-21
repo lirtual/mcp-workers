@@ -166,3 +166,39 @@ fn nested_disposable_named_directory_is_not_a_valid_test_root() {
         output
     );
 }
+
+#[test]
+fn managed_cli_fails_closed_without_an_explicit_trusted_supervisor() {
+    let root = private_root();
+    let identity = root.path().join("gate0-test-key.pem");
+    fs::write(&identity, "DISPOSABLE-INVALID-KEY-NEVER-USED").unwrap();
+    set_private(&identity);
+    let no_helper = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+        .args(["--local-managed", TEST_DEVICE])
+        .arg(root.path())
+        .env_remove("RCA_NATIVE_SUPERVISOR_BIN")
+        .output()
+        .unwrap();
+    assert!(!no_helper.status.success());
+    assert!(
+        String::from_utf8_lossy(&no_helper.stderr).contains("requires an explicit C supervisor")
+    );
+    assert!(!root.path().join("receipts").exists());
+
+    let helper = root.path().join("helper");
+    fs::write(&helper, "not a real C helper").unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    let link = root.path().join("helper-link");
+    symlink(&helper, &link).unwrap();
+    let untrusted = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+        .args(["--local-managed", TEST_DEVICE])
+        .arg(root.path())
+        .env("RCA_NATIVE_SUPERVISOR_BIN", &link)
+        .output()
+        .unwrap();
+    assert!(!untrusted.status.success());
+    assert!(
+        String::from_utf8_lossy(&untrusted.stderr).contains("untrusted nonproduction C supervisor")
+    );
+    assert!(!root.path().join("receipts").exists());
+}
