@@ -146,14 +146,20 @@ fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError> {
+    crate::windows_private::private_path(path, is_dir)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn private_path(_path: &Path, _is_dir: bool) -> Result<(), ReceiptError> {
-    // ACL equivalence is a Gate 1 prerequisite. Never accept unchecked Windows state.
     Err(ReceiptError::UnsafePath)
 }
 
 fn private_directory(directory: &Path) -> Result<(), ReceiptError> {
     if !directory.exists() {
+        #[cfg(windows)]
+        private_path(directory.parent().ok_or(ReceiptError::UnsafePath)?, true)?;
         fs::create_dir(directory)?;
         #[cfg(unix)]
         {

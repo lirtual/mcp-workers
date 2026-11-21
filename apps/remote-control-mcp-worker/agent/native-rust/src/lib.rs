@@ -22,3 +22,5 @@ mod native_search;
 pub mod native_write;
 pub mod receipts;
 pub mod session;
+#[cfg(windows)]
+mod windows_private;
