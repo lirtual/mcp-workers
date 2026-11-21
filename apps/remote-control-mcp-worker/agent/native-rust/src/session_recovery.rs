@@ -149,6 +149,47 @@ pub fn verify_registered_session_device(
     verify_at_origin(identity, registered, &origin)
 }
 
+/// A registration parent must prove its exact device identity to the Worker
+/// before launching any long-lived credential-free Linux Session child.
+/// Only the fixed production origin is reachable from this public boundary.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Error)]
+pub enum SessionLaunchError {
+    #[error(transparent)]
+    Recovery(#[from] SessionRecoveryError),
+    #[error(transparent)]
+    Runner(#[from] crate::session_runner::SessionRunnerError),
+}
+
+#[cfg(target_os = "linux")]
+fn recover_and_spawn_at_origin(
+    identity: &SessionDeviceIdentity,
+    registered: &RegisteredSessionDevice,
+    origin: &Url,
+    executable: &std::path::Path,
+    source: &std::collections::BTreeMap<String, String>,
+) -> Result<std::process::Child, SessionLaunchError> {
+    let (attempt, _) = crate::session_runner::checked_runner_context(source)?;
+    validate_session_identity(identity, &attempt)
+        .map_err(|_| crate::session_runner::SessionRunnerError::IdentityMismatch)?;
+    verify_at_origin(identity, registered, origin)?;
+    // The launcher independently rechecks the expiry and exact Attempt at fork.
+    Ok(crate::session_runner::spawn_credential_free_transport(
+        executable, registered, identity, source,
+    )?)
+}
+
+#[cfg(target_os = "linux")]
+pub fn verify_and_spawn_session_transport(
+    identity: &SessionDeviceIdentity,
+    registered: &RegisteredSessionDevice,
+    executable: &std::path::Path,
+    source: &std::collections::BTreeMap<String, String>,
+) -> Result<std::process::Child, SessionLaunchError> {
+    let origin = Url::parse(ORIGIN).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+    recover_and_spawn_at_origin(identity, registered, &origin, executable, source)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,14 +317,13 @@ mod tests {
                 json!({"status":"verified","device_id":DEVICE}),
             );
         });
+        #[cfg(not(target_os = "linux"))]
         verify_at_origin(&identity, &granted, &origin).unwrap();
-        server.join().unwrap();
 
         #[cfg(target_os = "linux")]
         {
             // The verified grant can now cross the #957 credential-free
             // launch boundary with the same identity and physical Attempt.
-            use crate::session_runner::spawn_credential_free_transport;
             use std::collections::BTreeMap;
             use std::fs;
             use std::os::unix::fs::PermissionsExt;
@@ -315,10 +355,12 @@ mod tests {
             .map(|(k, v)| (k.into(), v.into()))
             .collect();
             let mut child =
-                spawn_credential_free_transport(&executable, &granted, &identity, &source).unwrap();
+                recover_and_spawn_at_origin(&identity, &granted, &origin, &executable, &source)
+                    .unwrap();
             assert!(child.wait().unwrap().success());
             assert_eq!(fs::read_to_string(marker).unwrap(), "synthetic-job\n\n");
         }
+        server.join().unwrap();
     }
 
     #[test]
@@ -346,6 +388,63 @@ mod tests {
         ));
         assert!(
             verify_at_origin(&key, &grant(), &Url::parse("http://example.com/").unwrap()).is_err()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn rejected_worker_identity_never_starts_a_session_child() {
+        use std::collections::BTreeMap;
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let identity = identity();
+        let granted = grant();
+        let root = tempfile::tempdir().unwrap();
+        let executable = root.path().join("child.sh");
+        let marker = root.path().join("executed");
+        fs::write(
+            &executable,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let source: BTreeMap<String, String> = [
+            ("GITHUB_ACTIONS", "true"),
+            ("RUNNER_ENVIRONMENT", "github-hosted"),
+            ("GITHUB_WORKFLOW", "ubuntu"),
+            ("GITHUB_RUN_ID", "44931213131"),
+            ("GITHUB_RUN_ATTEMPT", "1"),
+            ("ATTEMPT_ID", "123e4567-e89b-42d3-a456-426614174004"),
+            ("RUNNER_TEMP", "/tmp"),
+            ("RUNNER_TRACKING_ID", "synthetic-job"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.into(), v.into()))
+        .collect();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let origin = Url::parse(&format!(
+            "http://127.0.0.1:{}/",
+            listener.local_addr().unwrap().port()
+        ))
+        .unwrap();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let (route, _) = recv_request(&mut socket);
+            assert_eq!(route, "POST /agent/session/challenge HTTP/1.1");
+            reply(
+                &mut socket,
+                "200 OK",
+                json!({"device_id":"123e4567-e89b-42d3-a456-426614174002","nonce":NONCE}),
+            );
+        });
+        assert!(matches!(
+            recover_and_spawn_at_origin(&identity, &granted, &origin, &executable, &source),
+            Err(SessionLaunchError::Recovery(SessionRecoveryError::Rejected))
+        ));
+        server.join().unwrap();
+        assert!(
+            !marker.exists(),
+            "unverified Worker identity launched a child"
         );
     }
 
