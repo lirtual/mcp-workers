@@ -64,18 +64,20 @@ fn revoked_windows_registry_stops_owned_job_and_refuses_new_launch() {
 fn owned_windows_stdin_round_trip_is_bounded() {
     let sessions = WindowsManagedSessions::new(Duration::from_secs(10)).unwrap();
     let start = sessions.start(
-        "$stdin=[Console]::OpenStandardInput();$stdout=[Console]::OpenStandardOutput();$buffer=New-Object byte[] 3;$read=$stdin.Read($buffer,0,3);$stdout.Write($buffer,0,$read);$stdout.Flush()",
+        "$stdin=[Console]::OpenStandardInput();$stdout=[Console]::OpenStandardOutput();$buffer=New-Object byte[] 19;$read=$stdin.Read($buffer,0,19);$stdout.Write($buffer,0,$read);$stdout.Flush()",
     ).unwrap();
     assert_eq!(
-        sessions.write_input(&start.session_id, "abc"),
+        sessions.write_input(&start.session_id, "stdin-roundtrip-914"),
         InputOutcome::Completed
     );
     settle(&sessions, &start.session_id, Duration::from_secs(10));
     let output = sessions
-        .read_output(&start.session_id, 0, 128)
+        .read_output(&start.session_id, 0, 8192)
         .unwrap()
         .unwrap();
-    assert_eq!(output.page.output, "abc");
+    // PowerShell may also send CLIXML progress messages through redirected
+    // streams. Keep them intact and prove the exact stdin sentinel arrived.
+    assert!(output.page.output.contains("stdin-roundtrip-914"));
     assert!(output.page.eof);
     assert_eq!(
         sessions.stop_all(Duration::from_secs(2)),
