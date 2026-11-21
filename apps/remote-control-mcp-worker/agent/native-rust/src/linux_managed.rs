@@ -404,7 +404,14 @@ impl LinuxManagedSessions {
         {
             return InputOutcome::Failed;
         }
-        let mut pipe = lock(&entry.stdin);
+        // Contended callers must not wait behind another potentially
+        // one-second pipe write and exceed the remote reply budget.
+        let deadline = Instant::now() + INPUT_WRITE_LIMIT;
+        let mut pipe = match entry.stdin.try_lock() {
+            Ok(pipe) => pipe,
+            Err(std::sync::TryLockError::Poisoned(poison)) => poison.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => return InputOutcome::Unknown,
+        };
         let Some(stdin) = pipe.as_mut() else {
             return InputOutcome::Unknown;
         };
@@ -414,7 +421,6 @@ impl LinuxManagedSessions {
             return InputOutcome::Unknown;
         }
         let bytes = input.as_bytes();
-        let deadline = Instant::now() + INPUT_WRITE_LIMIT;
         let mut sent = 0;
         while sent < bytes.len() {
             if Instant::now() >= deadline {
