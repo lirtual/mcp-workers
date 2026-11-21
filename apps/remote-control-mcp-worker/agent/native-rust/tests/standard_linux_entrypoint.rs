@@ -41,11 +41,9 @@ mod linux {
 
     fn refused(output: &Output, home: &Path) {
         assert!(!output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("startup_unavailable"),
-            "unexpected failure: {:?}",
-            output.stderr
-        );
+        let log: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(log["service"], "remote-control-agent");
+        assert_eq!(log["event"], "startup_unavailable");
         assert!(
             !receipts(home).exists(),
             "must not open receipts on rejected input"
@@ -67,7 +65,9 @@ mod linux {
         );
         let output = invoke(root.path(), &key);
         assert!(output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("owner_stopped"));
+        let log: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(log["service"], "remote-control-agent");
+        assert_eq!(log["event"], "owner_stopped");
         assert!(!receipts(root.path()).exists());
     }
 

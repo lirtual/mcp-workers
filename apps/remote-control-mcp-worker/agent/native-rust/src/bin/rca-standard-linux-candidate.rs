@@ -128,7 +128,7 @@ mod linux {
         private_regular(&key, 8192)?;
         private_regular(&sidecar(&key, ".device-id"), 128)?;
         if owner_stopped(&key)? {
-            eprintln!("{{\\\"service\\\":\\\"remote-control-agent\\\",\\\"event\\\":\\\"owner_stopped\\\"}}");
+            eprintln!(r#"{{"service":"remote-control-agent","event":"owner_stopped"}}"#);
             return Ok(());
         }
         let device_id = fs::read_to_string(sidecar(&key, ".device-id")).map_err(|_| ())?;
@@ -180,7 +180,7 @@ mod linux {
 #[cfg(target_os = "linux")]
 fn main() {
     if linux::run().is_err() {
-        eprintln!("{{\\\"service\\\":\\\"remote-control-agent\\\",\\\"event\\\":\\\"startup_unavailable\\\"}}");
+        eprintln!(r#"{{"service":"remote-control-agent","event":"startup_unavailable"}}"#);
         std::process::exit(1);
     }
 }
