@@ -6,6 +6,7 @@
 #![cfg(windows)]
 
 use base64::Engine;
+use std::fs::File;
 use std::io::{self, ErrorKind};
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
@@ -14,7 +15,10 @@ use std::path::{Component, PathBuf, Prefix};
 use std::ptr::{null, null_mut};
 use std::thread;
 use std::time::{Duration, Instant};
-use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+use windows_sys::Win32::Foundation::{
+    SetHandleInformation, HANDLE, HANDLE_FLAG_INHERIT, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob,
@@ -23,9 +27,13 @@ use windows_sys::Win32::System::JobObjects::{
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
+use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, PROCESS_INFORMATION, STARTUPINFOW,
+    CreateProcessW, DeleteProcThreadAttributeList, GetExitCodeProcess,
+    InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
+    PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTUPINFOW,
 };
 
 const MAX_COMMAND_UNITS: usize = 8192;
@@ -83,6 +91,95 @@ pub enum JobCleanup {
     Unknown,
 }
 
+/// The parent-only ends of three anonymous pipes. The child receives only
+/// the exact opposite handles in a restricted STARTUPINFOEX handle list.
+pub struct WindowsJobIo {
+    pub stdin: File,
+    pub stdout: File,
+    pub stderr: File,
+}
+
+struct Pipe {
+    read: OwnedHandle,
+    write: OwnedHandle,
+}
+
+impl Pipe {
+    fn new(parent_reads: bool) -> io::Result<Self> {
+        let attrs = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: null_mut(),
+            bInheritHandle: 1,
+        };
+        let mut read: HANDLE = null_mut();
+        let mut write: HANDLE = null_mut();
+        if unsafe { CreatePipe(&mut read, &mut write, &attrs, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let pipe = Self {
+            read: unsafe { OwnedHandle::from_raw_handle(read) },
+            write: unsafe { OwnedHandle::from_raw_handle(write) },
+        };
+        let parent = if parent_reads {
+            pipe.read.as_raw_handle()
+        } else {
+            pipe.write.as_raw_handle()
+        };
+        // Uninheritable parent ends avoid both EOF hangs and accidental leaks.
+        if unsafe { SetHandleInformation(parent, HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(pipe)
+    }
+}
+
+struct HandleList {
+    storage: Vec<usize>,
+}
+
+impl HandleList {
+    fn new(handles: &[HANDLE; 3]) -> io::Result<Self> {
+        let mut size = 0usize;
+        unsafe { InitializeProcThreadAttributeList(null_mut(), 1, 0, &mut size) };
+        if size == 0 || size > 1_048_576 {
+            return Err(io::Error::last_os_error());
+        }
+        // The buffer is pointer-aligned and its allocation stays fixed for
+        // the entire Initialize/Update/CreateProcess/Delete sequence.
+        let mut storage = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
+        let ptr = storage.as_mut_ptr().cast();
+        if unsafe { InitializeProcThreadAttributeList(ptr, 1, 0, &mut size) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let list = Self { storage };
+        if unsafe {
+            UpdateProcThreadAttribute(
+                list.as_ptr(),
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                handles.as_ptr().cast(),
+                std::mem::size_of_val(handles),
+                null_mut(),
+                null(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(list)
+    }
+
+    fn as_ptr(&self) -> *mut std::ffi::c_void {
+        self.storage.as_ptr().cast_mut().cast()
+    }
+}
+
+impl Drop for HandleList {
+    fn drop(&mut self) {
+        unsafe { DeleteProcThreadAttributeList(self.as_ptr()) };
+    }
+}
+
 /// Owns both the process HANDLE and the unnamed kill-on-close Job HANDLE.
 /// The process is never resumed unless assignment to the private job succeeds.
 pub struct WindowsJobSession {
@@ -92,6 +189,36 @@ pub struct WindowsJobSession {
 
 impl WindowsJobSession {
     pub fn start(command: &str) -> io::Result<Self> {
+        Self::start_inner(command, None)
+    }
+
+    /// A child never inherits other Agent/service handles, even when they
+    /// happen to be marked inheritable by unrelated runtime code.
+    pub fn start_with_stdio(command: &str) -> io::Result<(Self, WindowsJobIo)> {
+        // Reject before opening any pipe or creating any process.
+        encoded_command(command)?;
+        let stdin = Pipe::new(false)?;
+        let stdout = Pipe::new(true)?;
+        let stderr = Pipe::new(true)?;
+        let inherited = [
+            stdin.read.as_raw_handle(),
+            stdout.write.as_raw_handle(),
+            stderr.write.as_raw_handle(),
+        ];
+        let job = Self::start_inner(command, Some(&inherited))?;
+        Ok((
+            job,
+            WindowsJobIo {
+                stdin: File::from(stdin.write),
+                stdout: File::from(stdout.read),
+                stderr: File::from(stderr.read),
+            },
+        ))
+        // Inheritable child pipe ends close here, giving readers true EOF
+        // once the private Job has no associated writers.
+    }
+
+    fn start_inner(command: &str, stdio: Option<&[HANDLE; 3]>) -> io::Result<Self> {
         let encoded = encoded_command(command)?;
         let executable = powershell()?;
         let path = executable
@@ -129,10 +256,31 @@ impl WindowsJobSession {
             return Err(io::Error::last_os_error());
         }
 
-        let startup = STARTUPINFOW {
-            cb: std::mem::size_of::<STARTUPINFOW>() as u32,
-            ..Default::default()
+        let handle_list = stdio.map(HandleList::new).transpose()?;
+        let mut extended = STARTUPINFOEXW {
+            StartupInfo: STARTUPINFOW {
+                cb: if stdio.is_some() {
+                    std::mem::size_of::<STARTUPINFOEXW>() as u32
+                } else {
+                    std::mem::size_of::<STARTUPINFOW>() as u32
+                },
+                ..Default::default()
+            },
+            lpAttributeList: handle_list.as_ref().map_or(null_mut(), HandleList::as_ptr),
         };
+        if let Some(handles) = stdio {
+            extended.StartupInfo.dwFlags |= STARTF_USESTDHANDLES;
+            extended.StartupInfo.hStdInput = handles[0];
+            extended.StartupInfo.hStdOutput = handles[1];
+            extended.StartupInfo.hStdError = handles[2];
+        }
+        let creation_flags = CREATE_NO_WINDOW
+            | CREATE_SUSPENDED
+            | if stdio.is_some() {
+                EXTENDED_STARTUPINFO_PRESENT
+            } else {
+                0
+            };
         let mut process_info = PROCESS_INFORMATION::default();
         if unsafe {
             CreateProcessW(
@@ -140,11 +288,11 @@ impl WindowsJobSession {
                 command_line.as_mut_ptr(),
                 null(),
                 null(),
-                0,
-                CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                i32::from(stdio.is_some()),
+                creation_flags,
                 null(),
                 null(),
-                &startup,
+                &extended.StartupInfo,
                 &mut process_info,
             )
         } == 0
