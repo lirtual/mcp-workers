@@ -41,11 +41,11 @@ This is **still an unshipped nonproduction Linux runtime**, not a supported Agen
 
 For the opt-in tests, build the repository's existing C helper in the disposable checkout with `node agent/scripts/build-session-supervisor.mjs`, then set `RCA_NATIVE_SUPERVISOR_BIN` to its absolute `agent/.build/session-supervisor` path when invoking `cargo test --locked --test linux_supervisor --test linux_output --test linux_command --test linux_managed --test native_process --test native_process_wss -- --ignored`. Do not use a real device or production identity.
 
-### Linux process-boundary tracer (nonproduction only)
+### Unix process-boundary tracer (nonproduction only)
 
-`cargo run --locked --bin rca-native-nonprod -- --local DEVICE_UUID /tmp/rca-rust-probe-UNIQUE` launches the existing signed native file session as a standalone Linux process. It only connects to the **exact** local Wrangler address `http://127.0.0.1:8777/` and requires a separately approved disposable identity at `gate0-test-key.pem` directly under `/tmp` in an owner-owned, non-symlinked `rca-rust-probe-*` directory (0700; identity 0600, single link). A validated `gate0-test-key.pem.owner-stopped` marker blocks connection; invalid markers fail closed. SIGINT/SIGTERM stop the bounded reconnect loop. Existing Node Agent state paths, root execution and production endpoints are rejected.
+`cargo run --locked --bin rca-native-nonprod -- --local DEVICE_UUID /tmp/rca-rust-probe-UNIQUE` launches the existing signed native file session as a standalone Linux or macOS process. It only connects to the **exact** local Wrangler address `http://127.0.0.1:8777/` and requires a separately approved disposable identity at `gate0-test-key.pem` directly under `/tmp` in an owner-owned, non-symlinked `rca-rust-probe-*` directory (0700; identity 0600, single link). A validated `gate0-test-key.pem.owner-stopped` marker blocks connection; invalid markers fail closed. SIGINT/SIGTERM stop the bounded reconnect loop. Existing Node Agent state paths, root execution and production endpoints are rejected.
 
-An additional explicit **`--local-managed`** mode runs the already-validated Linux managed WSS executor in that same disposable CLI, without changing the default `--local` file-only policy. It requires `RCA_NATIVE_SUPERVISOR_BIN` to point to an absolute, canonical, owner-owned, executable C helper with no group/world write or setuid/setgid bits; missing or unsafe helpers fail before the CLI connects or opens receipts. Both modes remain limited to the exact local Worker, private `rca-rust-probe-*` test root and non-root UID. Example with a separately built C helper and an already approved **disposable** local test identity:
+An additional explicit **`--local-managed`** mode runs the already-validated Linux/Darwin managed WSS executor in that same disposable CLI, without changing the default `--local` file-only policy. On Linux it requires `RCA_NATIVE_SUPERVISOR_BIN`; on macOS, `RCA_DARWIN_SUPERVISOR_BIN`. The selected variable must point to an absolute, canonical, owner-owned, executable platform C helper with no group/world write or setuid/setgid bits; missing or unsafe helpers fail before the CLI connects or opens receipts. Both modes remain limited to the exact local Worker, a canonical private `rca-rust-probe-*` test root directly under `/tmp` (macOS: resolve `/tmp` to `/private/tmp` first), and non-root UID. Example with a separately built C helper and an already approved **disposable** local test identity:
 
 ```sh
 RCA_NATIVE_SUPERVISOR_BIN=/ABSOLUTE/DISPOSABLE/agent/.build/session-supervisor \
@@ -69,7 +69,7 @@ RCA_LOCAL_NATIVE_FILE_ROOT=/tmp/rca-gate1-file-TEST cargo test --locked \
   -- --ignored --exact --nocapture
 ```
 
-For the optional physical CLI process checks, build the existing C helper first, reserve localhost port 8777 for the isolated loopback, and run `RCA_NATIVE_SUPERVISOR_BIN=/ABSOLUTE/DISPOSABLE/agent/.build/session-supervisor cargo test --locked --test cli_managed -- --ignored --test-threads=1`. No actual Worker or temporary Owner Grant is required for this signed loopback test.
+For optional physical CLI process checks, build the platform C helper first and reserve localhost port 8777 for isolated loopback. On Linux set `RCA_NATIVE_SUPERVISOR_BIN`; on macOS set `RCA_DARWIN_SUPERVISOR_BIN` to that private executable, then run `cargo test --locked --test cli_managed -- --ignored --test-threads=1`. These subprocess tests cover signed WSS, persisted receipts, Owner revoke and owned-group cleanup, not real deployment or a Node-to-Rust upgrade. No actual Worker or temporary Owner Grant is required for this signed loopback test.
 
 Node 24 is required only for the interop test. The Rust library does not require Node at runtime.
 

@@ -8,6 +8,10 @@ use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
 const TEST_DEVICE: &str = "123e4567-e89b-42d3-a456-426614174000";
+#[cfg(target_os = "linux")]
+const HELPER_ENV: &str = "RCA_NATIVE_SUPERVISOR_BIN";
+#[cfg(target_os = "macos")]
+const HELPER_ENV: &str = "RCA_DARWIN_SUPERVISOR_BIN";
 
 fn run(root: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
@@ -176,7 +180,7 @@ fn managed_cli_fails_closed_without_an_explicit_trusted_supervisor() {
     let no_helper = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local-managed", TEST_DEVICE])
         .arg(root.path().canonicalize().unwrap())
-        .env_remove("RCA_NATIVE_SUPERVISOR_BIN")
+        .env_remove(HELPER_ENV)
         .output()
         .unwrap();
     assert!(!no_helper.status.success());
@@ -193,7 +197,7 @@ fn managed_cli_fails_closed_without_an_explicit_trusted_supervisor() {
     let untrusted = Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
         .args(["--local-managed", TEST_DEVICE])
         .arg(root.path().canonicalize().unwrap())
-        .env("RCA_NATIVE_SUPERVISOR_BIN", &link)
+        .env(HELPER_ENV, &link)
         .output()
         .unwrap();
     assert!(!untrusted.status.success());

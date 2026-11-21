@@ -1,9 +1,12 @@
-//! Unshipped Linux process tracer for #914; never use a paired production identity.
+//! Unshipped Unix process tracer for #914; never use a paired production identity.
 //! Only an owner-private disposable root and exact localhost Wrangler are accepted.
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unix {
+    #[cfg(target_os = "macos")]
+    use rca_native_agent::darwin_managed::DarwinManagedSessions as ManagedSessions;
     use rca_native_agent::identity::valid_device_id;
-    use rca_native_agent::linux_managed::LinuxManagedSessions;
+    #[cfg(target_os = "linux")]
+    use rca_native_agent::linux_managed::LinuxManagedSessions as ManagedSessions;
     use rca_native_agent::native_file::{
         run_native_file_session, run_native_managed_session, NativeFileError,
     };
@@ -17,6 +20,10 @@ mod linux {
     use std::time::Duration;
 
     const LOCAL_WORKER: &str = "http://127.0.0.1:8777/";
+    #[cfg(target_os = "linux")]
+    const HELPER_ENV: &str = "RCA_NATIVE_SUPERVISOR_BIN";
+    #[cfg(target_os = "macos")]
+    const HELPER_ENV: &str = "RCA_DARWIN_SUPERVISOR_BIN";
     static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
 
     extern "C" fn request_stop(_: libc::c_int) {
@@ -28,7 +35,7 @@ mod linux {
             return false;
         };
         root.is_absolute()
-            && root.parent() == Some(Path::new("/tmp"))
+            && root.parent() == fs::canonicalize("/tmp").ok().as_deref()
             && root
                 .file_name()
                 .and_then(|name| name.to_str())
@@ -73,8 +80,8 @@ mod linux {
         fs::read_to_string(key).map_err(|_| "test identity is unreadable")
     }
 
-    fn explicit_local_supervisor() -> Result<Arc<LinuxManagedSessions>, &'static str> {
-        let value = std::env::var_os("RCA_NATIVE_SUPERVISOR_BIN")
+    fn explicit_local_supervisor() -> Result<Arc<ManagedSessions>, &'static str> {
+        let value = std::env::var_os(HELPER_ENV)
             .ok_or("nonproduction managed mode requires an explicit C supervisor")?;
         let path = Path::new(&value);
         let meta = fs::symlink_metadata(path).map_err(|_| "nonproduction C supervisor missing")?;
@@ -89,7 +96,7 @@ mod linux {
         {
             return Err("untrusted nonproduction C supervisor");
         }
-        LinuxManagedSessions::new(path, Path::new("/bin/sh"), Duration::from_secs(60 * 60))
+        ManagedSessions::new(path, Path::new("/bin/sh"), Duration::from_secs(60 * 60))
             .map(Arc::new)
             .map_err(|_| "invalid nonproduction managed configuration")
     }
@@ -114,7 +121,7 @@ mod linux {
     pub fn run() -> Result<(), &'static str> {
         // Root support is a distinct Gate 2 contract (#912), not an implicit fallback.
         if unsafe { libc::geteuid() } == 0 {
-            return Err("root candidate requires the separate #912 gate");
+            return Err("root is disabled for this nonproduction candidate");
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
         let [mode, device_id, root] = args.as_slice() else {
@@ -194,16 +201,16 @@ mod linux {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn main() {
-    if let Err(message) = linux::run() {
+    if let Err(message) = unix::run() {
         eprintln!("{message}");
         std::process::exit(1);
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn main() {
-    eprintln!("nonproduction native process is Linux-only");
+    eprintln!("nonproduction native process is Unix-only");
     std::process::exit(1);
 }
