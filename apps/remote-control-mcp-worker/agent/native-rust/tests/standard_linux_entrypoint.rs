@@ -7,7 +7,9 @@ mod common;
 mod linux {
     use crate::common;
     use std::fs;
+    use std::io::Read;
     use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::net::UnixListener;
     use std::path::Path;
     use std::process::{Command, Output};
 
@@ -29,6 +31,7 @@ mod linux {
     }
 
     fn identity(root: &Path) -> std::path::PathBuf {
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
         let key = root.join("v2-identity.pem");
         private_file(&key, &common::test_pem());
         private_file(&root.join("v2-identity.pem.device-id"), &format!("{ID}\n"));
@@ -141,18 +144,25 @@ mod linux {
             .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
             .env("REMOTE_CONTROL_AGENT_ENDPOINT", "http://127.0.0.1:1/")
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
         let db = receipts(root.path()).join("operation-receipts.sqlite");
         let mut opened = false;
         for _ in 0..100 {
-            if db.exists() {
+            if db.exists() && root.path().join("upgrade.sock").exists() {
                 opened = true;
                 break;
             }
             if let Some(status) = child.try_wait().unwrap() {
-                panic!("candidate exited before opening the existing Node receipt path: {status}");
+                let mut log = String::new();
+                child
+                    .stderr
+                    .take()
+                    .unwrap()
+                    .read_to_string(&mut log)
+                    .unwrap();
+                panic!("candidate exited before opening the existing Node receipt path: {status} {log}");
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -163,6 +173,56 @@ mod linux {
             "fresh Node-compatible receipt directory was not created"
         );
         assert!(result.success(), "SIGTERM must complete cleanly");
+    }
+
+    #[test]
+    fn active_node_upgrade_listener_is_not_replaced_by_rust_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let key = identity(root.path());
+        let bin = root.path().join("rca-standard-linux-candidate");
+        fs::copy(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"), &bin).unwrap();
+        let helper = root.path().join("session-supervisor");
+        fs::copy(&bin, &helper).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let socket = root.path().join("upgrade.sock");
+        let _node = UnixListener::bind(&socket).unwrap();
+        fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+        let result = Command::new(&bin)
+            .env_clear()
+            .env("HOME", root.path())
+            .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
+            .env("REMOTE_CONTROL_AGENT_ENDPOINT", "http://127.0.0.1:1/")
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "live Node control must block Rust"
+        );
+        assert!(
+            socket.exists(),
+            "must not steal or unlink the Node listener"
+        );
+    }
+
+    #[test]
+    fn unsafe_identity_directory_rejects_upgrade_listener() {
+        let root = tempfile::tempdir().unwrap();
+        let key = identity(root.path());
+        let bin = root.path().join("rca-standard-linux-candidate");
+        fs::copy(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"), &bin).unwrap();
+        let helper = root.path().join("session-supervisor");
+        fs::copy(&bin, &helper).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(&bin)
+            .env_clear()
+            .env("HOME", root.path())
+            .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
+            .env("REMOTE_CONTROL_AGENT_ENDPOINT", "http://127.0.0.1:1/")
+            .output()
+            .unwrap();
+        refused(&output, root.path());
+        assert!(!root.path().join("upgrade.sock").exists());
     }
 
     #[test]

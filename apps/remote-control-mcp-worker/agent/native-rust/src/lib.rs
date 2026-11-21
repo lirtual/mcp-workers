@@ -36,6 +36,8 @@ pub mod session_registration;
 #[cfg(target_os = "linux")]
 pub mod session_runner;
 pub mod session_transport_env;
+#[cfg(target_os = "linux")]
+pub mod upgrade_control;
 #[cfg(windows)]
 pub mod windows_job;
 #[cfg(windows)]

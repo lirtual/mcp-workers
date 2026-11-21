@@ -319,6 +319,19 @@ impl NativeProcessEngine {
         }
     }
 
+    /// Caller must serialize this with request execution and reconcile first.
+    /// A running or uncertain owned OS process is never idle for cutover.
+    #[cfg(target_os = "linux")]
+    pub fn is_quiescent_for_upgrade(&self) -> bool {
+        self.starts.is_empty()
+            && self.sessions.list().iter().all(|session| {
+                matches!(
+                    session.state,
+                    SessionState::Completed | SessionState::Failed
+                ) && session.cleanup == Some(crate::linux_supervisor::CleanupState::Confirmed)
+            })
+    }
+
     /// Process exit reconciliation runs even when no Owner request arrives.
     /// A startup receipt can only become completed after OS-owned process
     /// cleanup confirmation, never just stdout/stderr EOF.

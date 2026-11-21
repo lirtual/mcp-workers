@@ -4,8 +4,8 @@
 mod linux {
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::linux_managed::LinuxManagedSessions;
-    use rca_native_agent::native_file::{run_native_managed_session, NativeFileError};
-    use rca_native_agent::session::{HeartbeatTiming, SessionError};
+    use rca_native_agent::native_file::{run_native_managed_session_with_upgrade, NativeFileError};
+    use rca_native_agent::session::SessionError;
     use std::ffi::OsStr;
     use std::fs;
     use std::io::ErrorKind;
@@ -170,6 +170,8 @@ mod linux {
         signed_session_proof(&private_pem, device_id, "ABCDEFGHIJKLMNOPQRSTUVWX")
             .map_err(|_| ())?;
         let managed = checked_supervisor()?;
+        // Fail closed before creating Node's existing SQLite receipt directory.
+        rca_native_agent::upgrade_control::verify_upgrade_directory(&key).map_err(|_| ())?;
         unsafe {
             libc::umask(0o077);
         }
@@ -188,14 +190,14 @@ mod linux {
         });
         // Exactly the existing Node default receipt location; never create a
         // parallel receipt ledger when switching the runtime.
-        let result = run_native_managed_session(
+        let result = run_native_managed_session_with_upgrade(
             &endpoint,
             &private_pem,
             device_id,
             &receipts,
             managed,
             &stop,
-            HeartbeatTiming::default(),
+            &key,
         );
         stop.store(true, Ordering::Release);
         monitor.join().map_err(|_| ())?;
