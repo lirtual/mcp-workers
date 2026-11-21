@@ -1,6 +1,6 @@
-//! Opt-in real Rust CLI process -> signed loopback WSS -> real C-supervised
+//! Opt-in Unix CLI process -> signed loopback WSS -> real C-supervised
 //! command. Verifies SIGTERM, owned process cleanup and persisted SQLite.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 mod common;
 
 use rca_native_agent::receipts::ReceiptStore;
@@ -20,6 +20,10 @@ use tungstenite::protocol::{Message, WebSocket};
 
 const DEVICE_ID: &str = "f4e1e64e-1e72-410e-8b51-181818181818";
 const OPERATION: &str = "cli-managed-term-914";
+#[cfg(target_os = "linux")]
+const HELPER_ENV: &str = "RCA_NATIVE_SUPERVISOR_BIN";
+#[cfg(target_os = "macos")]
+const HELPER_ENV: &str = "RCA_DARWIN_SUPERVISOR_BIN";
 static LOCAL_PORT_LOCK: Mutex<()> = Mutex::new(());
 
 struct ScopedChild(Child);
@@ -100,16 +104,15 @@ fn exchange(ws: &mut WebSocket<TcpStream>, request: Value) -> Value {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu with the independently built C supervisor"]
+#[ignore = "requires disposable Unix runner with the independently built C supervisor"]
 fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
     let _port = LOCAL_PORT_LOCK.lock().unwrap();
-    let helper =
-        std::env::var("RCA_NATIVE_SUPERVISOR_BIN").expect("explicit C supervisor required");
+    let helper = std::env::var(HELPER_ENV).expect("explicit C supervisor required");
     let helper = Path::new(&helper);
     assert!(helper.is_absolute() && helper.is_file());
     let root = tempfile::Builder::new()
         .prefix("rca-rust-probe-cli-managed-")
-        .tempdir_in("/tmp")
+        .tempdir_in(fs::canonicalize("/tmp").expect("canonical disposable tmp"))
         .unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let key = root.path().join("gate0-test-key.pem");
@@ -163,7 +166,7 @@ fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
         Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
             .args(["--local-managed", DEVICE_ID])
             .arg(root.path())
-            .env("RCA_NATIVE_SUPERVISOR_BIN", helper)
+            .env(HELPER_ENV, helper)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -209,16 +212,15 @@ fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu with the independently built C supervisor"]
+#[ignore = "requires disposable Unix runner with the independently built C supervisor"]
 fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
     let _port = LOCAL_PORT_LOCK.lock().unwrap();
-    let helper =
-        std::env::var("RCA_NATIVE_SUPERVISOR_BIN").expect("explicit C supervisor required");
+    let helper = std::env::var(HELPER_ENV).expect("explicit C supervisor required");
     let helper = Path::new(&helper);
     assert!(helper.is_absolute() && helper.is_file());
     let root = tempfile::Builder::new()
         .prefix("rca-rust-probe-cli-revoke-")
-        .tempdir_in("/tmp")
+        .tempdir_in(fs::canonicalize("/tmp").expect("canonical disposable tmp"))
         .unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let key = root.path().join("gate0-test-key.pem");
@@ -254,7 +256,7 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
         Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
             .args(["--local-managed", DEVICE_ID])
             .arg(root.path())
-            .env("RCA_NATIVE_SUPERVISOR_BIN", helper)
+            .env(HELPER_ENV, helper)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -289,12 +291,12 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu with a dedicated signed loopback port"]
+#[ignore = "requires disposable Unix runner with a dedicated signed loopback port"]
 fn original_file_only_cli_still_rejects_process_frames_and_exits_on_policy() {
     let _port = LOCAL_PORT_LOCK.lock().unwrap();
     let root = tempfile::Builder::new()
         .prefix("rca-rust-probe-cli-file-only-")
-        .tempdir_in("/tmp")
+        .tempdir_in(fs::canonicalize("/tmp").expect("canonical disposable tmp"))
         .unwrap();
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let key = root.path().join("gate0-test-key.pem");
@@ -329,7 +331,7 @@ fn original_file_only_cli_still_rejects_process_frames_and_exits_on_policy() {
         Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
             .args(["--local", DEVICE_ID])
             .arg(root.path())
-            .env_remove("RCA_NATIVE_SUPERVISOR_BIN")
+            .env_remove(HELPER_ENV)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
