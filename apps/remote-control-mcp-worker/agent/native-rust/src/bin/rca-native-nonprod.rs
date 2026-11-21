@@ -4,8 +4,10 @@
 mod linux {
     use rca_native_agent::identity::valid_device_id;
     use rca_native_agent::linux_managed::LinuxManagedSessions;
-    use rca_native_agent::native_file::{run_native_file_session, run_native_managed_session};
-    use rca_native_agent::session::HeartbeatTiming;
+    use rca_native_agent::native_file::{
+        run_native_file_session, run_native_managed_session, NativeFileError,
+    };
+    use rca_native_agent::session::{HeartbeatTiming, SessionError};
     use std::fs;
     use std::io::ErrorKind;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -135,7 +137,8 @@ mod linux {
         let private_pem = read_disposable_identity(&key)?;
         // Managed commands remain opt-in and Linux-only. Installed state
         // paths are rejected; callers must use separately approved test keys.
-        let managed = if mode == "--local-managed" {
+        let managed_mode = mode == "--local-managed";
+        let managed = if managed_mode {
             Some(explicit_local_supervisor()?)
         } else {
             None
@@ -180,9 +183,14 @@ mod linux {
         };
         stop.store(true, Ordering::Release);
         monitor.join().map_err(|_| "stop monitor failed")?;
-        // A simultaneous SIGTERM never turns a real executor or receipt error
-        // into a successful process exit. Normal cancellation already yields Ok.
-        outcome.map_err(|_| "nonproduction signed session failed")
+        // Match the Node service contract: a confirmed 1008/policy shutdown
+        // exits cleanly to avoid a service-manager restart hammer. Unknown
+        // cleanup or any other runtime/receipt failure still exits nonzero.
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(NativeFileError::Session(SessionError::Policy)) if managed_mode => Ok(()),
+            Err(_) => Err("nonproduction signed session failed"),
+        }
     }
 }
 
@@ -198,3 +206,4 @@ fn main() {
 fn main() {
     eprintln!("nonproduction native process is Linux-only");
     std::process::exit(1);
+}

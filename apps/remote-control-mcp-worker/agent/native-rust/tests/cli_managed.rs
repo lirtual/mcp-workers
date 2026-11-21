@@ -265,8 +265,8 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
     loop {
         if let Some(status) = child.0.try_wait().unwrap() {
             assert!(
-                !status.success(),
-                "Owner policy revoke must end the CLI connection"
+                status.success(),
+                "Node-compatible Owner policy revoke must end CLI cleanly: {status}"
             );
             break;
         }
@@ -285,5 +285,79 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
     assert_eq!(
         receipt.state, "completed",
         "Owner cleanup confirmed but final SQLite receipt was not persisted"
+    );
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu with a dedicated signed loopback port"]
+fn original_file_only_cli_still_rejects_process_frames_and_exits_on_policy() {
+    let _port = LOCAL_PORT_LOCK.lock().unwrap();
+    let root = tempfile::Builder::new()
+        .prefix("rca-rust-probe-cli-file-only-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let key = root.path().join("gate0-test-key.pem");
+    fs::write(&key, common::test_pem()).unwrap();
+    fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:8777").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let server = thread::spawn(move || {
+        let mut ws = socket(&listener);
+        ws.send(Message::Text(
+            json!({
+                "kind":"operation",
+                "request_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "operation_id":"cli-file-only-forbidden",
+                "tool":"start_process",
+                "arguments":{"command":"printf SHOULD-NOT-RUN","timeout_ms":0}
+            })
+            .to_string()
+            .into(),
+        ))
+        .unwrap();
+        match ws.read().unwrap() {
+            Message::Close(Some(frame)) => assert_eq!(
+                frame.code,
+                tungstenite::protocol::frame::coding::CloseCode::Policy
+            ),
+            other => panic!("file-only CLI did not reject Shell with 1008: {other:?}"),
+        }
+    });
+    let mut child = ScopedChild(
+        Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+            .args(["--local", DEVICE_ID])
+            .arg(root.path())
+            .env_remove("RCA_NATIVE_SUPERVISOR_BIN")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            assert!(
+                !status.success(),
+                "old file-only mode must retain policy error exit"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "file-only CLI did not close on 1008"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    server.join().unwrap();
+    assert!(
+        ReceiptStore::open(&root.path().join("receipts"))
+            .unwrap()
+            .get("cli-file-only-forbidden")
+            .unwrap()
+            .is_none(),
+        "file-only Shell operation admitted a receipt"
     );
 }
