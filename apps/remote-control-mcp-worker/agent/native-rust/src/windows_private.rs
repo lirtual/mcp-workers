@@ -25,7 +25,13 @@ use windows_sys::Win32::Storage::FileSystem::{
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+#[track_caller]
 fn unsafe_path() -> ReceiptError {
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "Win ACL debug deny at line {}",
+        std::panic::Location::caller().line()
+    );
     ReceiptError::UnsafePath
 }
 
@@ -213,11 +219,14 @@ pub(crate) fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError
 
     // Inspect each component by handle, so an ancestor junction cannot redirect
     // the later ACL/SQLite operations outside the expected private tree.
-    for ancestor in path.ancestors() {
+    for (depth, ancestor) in path.ancestors().enumerate() {
         if ancestor.as_os_str().is_empty() {
             continue;
         }
-        let handle = open_read_control(ancestor)?;
+        let handle = open_read_control(ancestor).inspect_err(|_| {
+            #[cfg(debug_assertions)]
+            eprintln!("Win ACL debug ancestor open depth {depth}");
+        })?;
         let flags = attributes(&handle)?;
         if flags & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(unsafe_path());
