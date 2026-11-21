@@ -16,7 +16,7 @@ fn helper() -> PathBuf {
     path
 }
 
-fn sleep_pid(session: &mut DarwinSupervisorSession) -> i32 {
+fn shell_line(session: &mut DarwinSupervisorSession) -> String {
     let stdout = session.take_stdout().expect("owned shell stdout");
     let mut reader = BufReader::new(stdout);
     let mut fd = libc::pollfd {
@@ -27,6 +27,11 @@ fn sleep_pid(session: &mut DarwinSupervisorSession) -> i32 {
     assert_eq!(unsafe { libc::poll(&mut fd, 1, 3000) }, 1);
     let mut line = String::new();
     reader.read_line(&mut line).unwrap();
+    line
+}
+
+fn sleep_pid(session: &mut DarwinSupervisorSession) -> i32 {
+    let line = shell_line(session);
     let pid: i32 = line.trim().parse().expect("owned child PID");
     assert!(pid > 0);
     pid
@@ -102,6 +107,24 @@ fn term_stops_only_the_owned_group_without_rust_pid_signals() {
     assert!(!outcome.status.success());
     assert_eq!(outcome.group_cleanup, GroupCleanup::OwnedGroupStopped);
     assert_child_stopped(pid);
+}
+
+#[test]
+#[ignore = "requires existing C helper built only on a disposable macOS CI runner"]
+fn stubborn_group_escalates_from_term_to_owned_group_kill() {
+    let helper = helper();
+    let mut session = DarwinSupervisorSession::start(
+        &helper,
+        Path::new("/bin/sh"),
+        "trap '' TERM; printf 'ready\\n'; while :; do sleep 1; done",
+    )
+    .expect("Rust owned-group launch");
+    assert_eq!(shell_line(&mut session), "ready\n");
+    let outcome = session
+        .terminate_and_wait(Duration::from_millis(150))
+        .expect("owned-group SIGKILL escalation");
+    assert_eq!(outcome.status.code(), Some(137));
+    assert_eq!(outcome.group_cleanup, GroupCleanup::OwnedGroupStopped);
 }
 
 #[test]
