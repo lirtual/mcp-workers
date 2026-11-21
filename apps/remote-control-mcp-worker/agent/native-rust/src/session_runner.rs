@@ -6,7 +6,7 @@ use crate::identity::valid_device_id;
 use crate::session_enrollment::{
     validate_session_identity, SessionDeviceIdentity, SessionPhysicalAttempt,
 };
-use crate::session_registration::RegisteredSessionDevice;
+use crate::session_registration::{valid_session_transport_grant, RegisteredSessionDevice};
 use crate::session_transport_env::apply_transport_environment;
 use std::collections::BTreeMap;
 use std::fs;
@@ -19,7 +19,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-const MAX_SESSION_GRANT_MS: u64 = 300 * 60_000;
 
 #[derive(Debug, Error)]
 pub enum SessionRunnerError {
@@ -86,11 +85,7 @@ pub fn validate_transport_grant(
     grant: &RegisteredSessionDevice,
     now_ms: u64,
 ) -> Result<(), SessionRunnerError> {
-    if !valid_device_id(&grant.device_id)
-        || grant.expires_at <= now_ms
-        || grant.expires_at > MAX_SAFE_INTEGER
-        || grant.expires_at > now_ms.saturating_add(MAX_SESSION_GRANT_MS)
-    {
+    if !valid_session_transport_grant(grant, now_ms) {
         return Err(SessionRunnerError::InvalidGrant);
     }
     Ok(())
