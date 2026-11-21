@@ -40,7 +40,12 @@ fn accept(listener: &TcpListener) -> TcpStream {
     let deadline = Instant::now() + Duration::from_secs(12);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => return stream,
+            Ok((stream, _)) => {
+                // BSD accepted sockets can inherit O_NONBLOCK from the listener.
+                // The signed WebSocket harness requires bounded blocking reads.
+                stream.set_nonblocking(false).unwrap();
+                return stream;
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 assert!(
                     Instant::now() < deadline,
@@ -106,7 +111,9 @@ fn exchange(ws: &mut WebSocket<TcpStream>, request: Value) -> Value {
 #[test]
 #[ignore = "requires disposable Unix host with the independently built C supervisor"]
 fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
-    let _port = LOCAL_PORT_LOCK.lock().unwrap();
+    let _port = LOCAL_PORT_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let helper = std::env::var(HELPER_ENV).expect("explicit C supervisor required");
     let helper = Path::new(&helper);
     assert!(helper.is_absolute() && helper.is_file());
@@ -214,7 +221,9 @@ fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
 #[test]
 #[ignore = "requires disposable Unix host with the independently built C supervisor"]
 fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
-    let _port = LOCAL_PORT_LOCK.lock().unwrap();
+    let _port = LOCAL_PORT_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let helper = std::env::var(HELPER_ENV).expect("explicit C supervisor required");
     let helper = Path::new(&helper);
     assert!(helper.is_absolute() && helper.is_file());
@@ -293,7 +302,9 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
 #[test]
 #[ignore = "requires disposable Unix host with a dedicated signed loopback port"]
 fn original_file_only_cli_still_rejects_process_frames_and_exits_on_policy() {
-    let _port = LOCAL_PORT_LOCK.lock().unwrap();
+    let _port = LOCAL_PORT_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
     let root = tempfile::Builder::new()
         .prefix("rca-rust-probe-cli-file-only-")
         .tempdir_in("/tmp")
