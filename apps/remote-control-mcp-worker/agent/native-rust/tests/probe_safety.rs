@@ -1,4 +1,5 @@
 //! Gate 0's file effect is safe only inside a disposable private test root.
+#![cfg(unix)]
 use rca_native_agent::gate0_probe::{Gate0Probe, ProbeError};
 use serde_json::{json, Value};
 use std::os::unix::fs::PermissionsExt;
