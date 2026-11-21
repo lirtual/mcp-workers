@@ -130,3 +130,44 @@ cargo run --locked --example gate0_nonprod -- \
 2026-11-20 evidence: isolated Wrangler, HTTPS/WSS Quick Tunnel, and disposable Cloudflare-hosted Worker tests passed with temporary grants. No production Worker, existing paired device, account secret or release was changed. All disposable local/tunnel/hosted test credentials and Worker resources are removed or allowed to expire after verification.
 
 **Gate 1 remains Partial:** the native file-read and browse libraries are wired into a non-installable WSS runner, but device-info/capability announcement, search tools, Shell and managed process execution, full Windows filesystem metadata/ACL equivalence, five-platform CLI/install/lifecycle, GitHub-hosted Sessions, release/rollback remain unverified or unimplemented; #912 root and #911 Legacy remain independently gated. The cleanup callback may return `confirmed` only after the future real executor verifies all owned processes stopped; otherwise the current transport reports `uncertain`. Worker rate-limits Grant probes for the first 30 seconds and again within 30 seconds after a prior probe; the default Rust cadence is 15 minutes. The local test-only effect is not a production executor. The current candidate refuses unchecked non-Unix private state. Never point it at a real paired device, current identity, or live receipt directory while another Agent can run.
+
+### Published Node to Rust process handoff (local-only)
+
+The opt-in `agent/tests/rust-release-handoff.mjs` test uses an actual published
+Linux x64 v0.1.56 archive (the immutable asset's fixed SHA-256 is checked before
+extraction), a freshly built Rust Standard candidate and the existing C
+Supervisor. Run only on a disposable Linux host, after installing this
+workspace's pinned dependencies. Start the isolated local Worker using
+`tests/fixtures/wrangler-rust-handoff.json` and a fresh private state
+directory; it must listen only on `127.0.0.1:18777`. Confirm that port
+is free before starting the local Worker from the Worker directory:
+
+```sh
+pnpm exec wrangler dev --config tests/fixtures/wrangler-rust-handoff.json \
+  --local --ip 127.0.0.1 --port 18777 --persist-to /PRIVATE/TEMP/worker-state \
+  --var MCP_ACCESS_TOKEN:disposable-handoff-owner-token-0000000001
+```
+
+From the repository root, build the binaries and run the test with a locally
+downloaded immutable v0.1.56 Linux x64 asset:
+
+```sh
+node apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs
+cargo build --locked --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml --bin rca-standard-linux-candidate
+RCA_HANDOFF_DISPOSABLE=1 \
+RCA_HANDOFF_RELEASE_ARCHIVE=/PRIVATE/TEMP/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz \
+RCA_HANDOFF_RUST_BIN="$PWD/apps/remote-control-mcp-worker/agent/native-rust/target/debug/rca-standard-linux-candidate" \
+RCA_HANDOFF_SUPERVISOR="$PWD/apps/remote-control-mcp-worker/agent/.build/session-supervisor" \
+node apps/remote-control-mcp-worker/agent/tests/rust-release-handoff.mjs
+```
+
+Stop the local Worker and remove its disposable state afterward.
+
+The test creates a temporary paired identity and private home, then exercises a
+Node write, owner-local freeze and exit, Rust signed reconnect with the same
+SQLite file, duplicate/conflict checks, missing-helper startup failure, and
+manual Node restart with Rust's receipt. No production Worker or installed
+identity is used. This is a process-level proof only: it neither invokes the
+real installer nor demonstrates systemd activation, automatic rollback,
+release authenticity beyond the pinned archive digest, or an upgrade-ready Rust
+package.
