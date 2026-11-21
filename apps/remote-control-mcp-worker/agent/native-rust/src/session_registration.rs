@@ -16,8 +16,18 @@ use url::Url;
 
 const RCA_ENROLLMENT_URL: &str = "https://rca.lirtual.dpdns.org/agent/pair/start";
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+const MAX_SESSION_GRANT_MS: u64 = 300 * 60_000;
 const OIDC_RESPONSE_LIMIT: usize = 8192;
 const ENROLLMENT_RESPONSE_LIMIT: usize = 1024;
+
+/// Shared expiry/UUID admission for the long-lived credential-free transport.
+/// Registration responses alone are not proof that a usable grant is safe to launch.
+pub fn valid_session_transport_grant(grant: &RegisteredSessionDevice, now_ms: u64) -> bool {
+    valid_device_id(&grant.device_id)
+        && grant.expires_at > now_ms
+        && grant.expires_at <= MAX_SAFE_INTEGER
+        && grant.expires_at <= now_ms.saturating_add(MAX_SESSION_GRANT_MS)
+}
 
 #[derive(Debug, Error)]
 pub enum SessionRegistrationError {
