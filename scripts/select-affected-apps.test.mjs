@@ -49,6 +49,19 @@ test('Rust-only candidate changes run Rust CI without rebuilding the five unchan
   assert.equal(mixed.rustCandidateChanged, true);
   assert.equal(mixed.agentNativeChanged, true);
   assert.equal(selectionDetails(['apps/remote-control-mcp-worker/src/worker.ts']).rustCandidateChanged, false);
+  const ci = selectionDetails(['.github/workflows/ci.yml']);
+  assert.equal(ci.rustCandidateChanged, true);
+  assert.equal(ci.agentNativeChanged, false);
+});
+
+test('Rust core CI checks each existing Standard native runner without claiming a package release', async () => {
+  const workflow = await readFile(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const rustJob = workflow.split('  rust-agent-candidate:')[1]?.split('  database-integration:')[0];
+  assert.ok(rustJob);
+  assert.match(rustJob, /os: \[ubuntu-24\.04, ubuntu-24\.04-arm, macos-15, macos-15-intel, windows-2025\]/);
+  assert.match(rustJob, /cargo clippy --locked --all-targets -- -D warnings/);
+  assert.match(rustJob, /cargo test --locked --all-targets/);
+  assert.doesNotMatch(rustJob, /upload-artifact|agent-release\.yml/);
 });
 
 test('shared dependency inputs schedule native Agent CI, unlike unrelated Worker edits', () => {
