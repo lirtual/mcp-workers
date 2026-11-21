@@ -7,8 +7,10 @@ use crate::linux_command::valid_command_text;
 use crate::linux_output::{BoundedProcessOutput, OutputPage};
 use crate::linux_supervisor::{CleanupState, SupervisorExit, SupervisorSession};
 use std::collections::HashMap;
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Write};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
+use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -21,6 +23,7 @@ const MAX_LIFETIME: Duration = Duration::from_secs(60 * 60);
 const POLL: Duration = Duration::from_millis(50);
 const STOP_GRACE: Duration = Duration::from_millis(500);
 const DEADLINE_GRACE: Duration = Duration::from_secs(5);
+const INPUT_WRITE_LIMIT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -28,6 +31,14 @@ pub enum SessionState {
     Completed,
     Failed,
     Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputOutcome {
+    Completed,
+    Failed,
+    Unknown,
+    NotFound,
 }
 
 #[derive(Clone, Debug)]
@@ -55,6 +66,7 @@ struct Record {
 struct Entry {
     record: Mutex<Record>,
     output: Mutex<Option<BoundedProcessOutput>>,
+    stdin: Mutex<Option<ChildStdin>>,
     stop: AtomicBool,
 }
 
@@ -130,6 +142,7 @@ fn supervise(mut supervisor: SupervisorSession, entry: Arc<Entry>, deadline: Ins
     if let Some(output) = lock(&entry.output).as_mut() {
         output.stop();
     }
+    lock(&entry.stdin).take();
     let mut state = lock(&entry.record);
     state.deadline_exceeded = expired;
     state.finished_at = Some(Instant::now());
@@ -158,6 +171,7 @@ fn supervise(mut supervisor: SupervisorSession, entry: Arc<Entry>, deadline: Ins
 /// monitored, never free its capacity or claim Owner cleanup was confirmed.
 fn mark_uncertain(entry: &Entry) {
     entry.stop.store(true, Ordering::Release);
+    lock(&entry.stdin).take();
     if let Some(output) = lock(&entry.output).as_mut() {
         output.stop();
     }
@@ -239,6 +253,7 @@ impl LinuxManagedSessions {
                 finished_at: None,
             }),
             output: Mutex::new(None),
+            stdin: Mutex::new(None),
             stop: AtomicBool::new(false),
         });
         {
@@ -290,6 +305,14 @@ impl LinuxManagedSessions {
                 return Err(error);
             }
         };
+        let stdin = match supervisor.take_stdin() {
+            Some(stdin) => stdin,
+            None => {
+                let _ = supervisor.close_control_and_wait(Duration::from_secs(5));
+                mark_uncertain(&entry);
+                return Err(io::Error::other("native stdin missing after launch"));
+            }
+        };
         let output = match BoundedProcessOutput::attach(&mut supervisor) {
             Ok(output) => output,
             Err(error) => {
@@ -299,6 +322,7 @@ impl LinuxManagedSessions {
             }
         };
         *lock(&entry.output) = Some(output);
+        *lock(&entry.stdin) = Some(stdin);
         let worker = Arc::clone(&entry);
         let deadline = spawned_at + self.lifetime;
         if let Err(error) = thread::Builder::new()
@@ -358,6 +382,82 @@ impl LinuxManagedSessions {
                     page,
                 }))
             }
+        }
+    }
+
+    /// A single bounded nonblocking stdin write. The caller must persist a
+    /// distinct receipt before invoking this potentially effectful action:
+    /// Unknown (including a timeout or partial write) must never be replayed.
+    pub fn write_input(&self, id: &str, input: &str) -> InputOutcome {
+        if input.is_empty() || input.len() > 8192 || input.contains(char::from(0)) {
+            return InputOutcome::Failed;
+        }
+        let entry = {
+            let mut registry = lock(&self.inner);
+            Self::prune(&mut registry);
+            registry.entries.get(id).cloned()
+        };
+        let Some(entry) = entry else {
+            return InputOutcome::NotFound;
+        };
+        if entry.stop.load(Ordering::Acquire) || lock(&entry.record).state != SessionState::Running
+        {
+            return InputOutcome::Failed;
+        }
+        let mut pipe = lock(&entry.stdin);
+        let Some(stdin) = pipe.as_mut() else {
+            return InputOutcome::Unknown;
+        };
+        let fd = stdin.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return InputOutcome::Unknown;
+        }
+        let bytes = input.as_bytes();
+        let deadline = Instant::now() + INPUT_WRITE_LIMIT;
+        let mut sent = 0;
+        while sent < bytes.len() {
+            if Instant::now() >= deadline {
+                return InputOutcome::Unknown;
+            }
+            if entry.stop.load(Ordering::Acquire)
+                || lock(&entry.record).state != SessionState::Running
+            {
+                return if sent == 0 {
+                    InputOutcome::Failed
+                } else {
+                    InputOutcome::Unknown
+                };
+            }
+            match stdin.write(&bytes[sent..]) {
+                Ok(0) => return InputOutcome::Unknown,
+                Ok(n) => sent += n,
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return InputOutcome::Unknown;
+                    }
+                    let mut poll = libc::pollfd {
+                        fd,
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    };
+                    let millis = left.min(POLL).as_millis().max(1) as i32;
+                    let result = unsafe { libc::poll(&mut poll, 1, millis) };
+                    if result < 0 && io::Error::last_os_error().kind() != ErrorKind::Interrupted {
+                        return InputOutcome::Unknown;
+                    }
+                }
+                Err(_) => return InputOutcome::Unknown,
+            }
+        }
+        // Natural exit after all bytes reach the pipe does not undo the
+        // write. Concurrent revocation, however, leaves its effect uncertain.
+        if entry.stop.load(Ordering::Acquire) {
+            InputOutcome::Unknown
+        } else {
+            InputOutcome::Completed
         }
     }
 
