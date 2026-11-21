@@ -22,6 +22,18 @@ use tungstenite::protocol::{Message, WebSocket};
 
 const DEVICE_ID: &str = "f4e1e64e-1e72-410e-8b51-181818181818";
 
+// A server-side assertion failure must stop client reconnects so the test
+// reports the original mismatch rather than waiting for the CI timeout.
+struct StopOnPanic(Arc<AtomicBool>);
+
+impl Drop for StopOnPanic {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+}
+
 fn challenge(mut stream: TcpStream) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut first = String::new();
@@ -97,8 +109,9 @@ fn signed_windows_start_input_output_receipt_and_owner_revoke() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let stop = Arc::new(AtomicBool::new(false));
-    let end = Arc::clone(&stop);
+    let server_stop = Arc::clone(&stop);
     let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
         // The genuine PowerShell redirected streams may contain CLIXML progress.
         // The exact byte sentinel, not a stream-wide equality, is the contract.
@@ -191,7 +204,7 @@ fn signed_windows_start_input_output_receipt_and_owner_revoke() {
                 .to_string(),
         );
         assert_eq!(revoke["status"], "confirmed");
-        end.store(true, Ordering::Release);
+        server_stop.store(true, Ordering::Release);
     });
     let managed = registry();
     let result = run_native_managed_session(
@@ -226,7 +239,10 @@ fn owner_revoke_stops_active_windows_job_before_confirmed_ack() {
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
     let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
         let start = reply(
             &mut socket,
@@ -245,7 +261,6 @@ fn owner_revoke_stops_active_windows_job_before_confirmed_ack() {
         assert_eq!(ack["status"], "confirmed");
     });
     let managed = registry();
-    let stop = Arc::new(AtomicBool::new(false));
     let result = run_native_managed_session(
         &endpoint,
         &common::test_pem(),
@@ -281,7 +296,10 @@ fn invalid_windows_process_command_is_rejected_without_receipt_or_launch() {
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
     let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
         socket
             .send(Message::Text(
@@ -302,7 +320,6 @@ fn invalid_windows_process_command_is_rejected_without_receipt_or_launch() {
         }
     });
     let managed = registry();
-    let stop = Arc::new(AtomicBool::new(false));
     let result = run_native_managed_session(
         &endpoint,
         &common::test_pem(),
@@ -331,7 +348,10 @@ fn explicit_force_terminate_confirms_windows_job_and_receipt() {
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
     let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
         let start = reply(
             &mut socket,
@@ -374,7 +394,6 @@ fn explicit_force_terminate_confirms_windows_job_and_receipt() {
         assert_eq!(revoke["status"], "confirmed");
     });
     let managed = registry();
-    let stop = Arc::new(AtomicBool::new(false));
     let result = run_native_managed_session(
         &endpoint,
         &common::test_pem(),
