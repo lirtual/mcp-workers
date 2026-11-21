@@ -166,8 +166,17 @@ Stop the local Worker and remove its disposable state afterward.
 The test creates a temporary paired identity and private home, then exercises a
 Node write, owner-local freeze and exit, Rust signed reconnect with the same
 SQLite file, duplicate/conflict checks, missing-helper startup failure, and
-manual Node restart with Rust's receipt. No production Worker or installed
-identity is used. This is a process-level proof only: it neither invokes the
-real installer nor demonstrates systemd activation, automatic rollback,
-release authenticity beyond the pinned archive digest, or an upgrade-ready Rust
-package.
+manual Node restart with Rust's receipt. It also creates a real running command
+and kills the test Node Agent, independently confirms the recorded command PID
+has stopped executing, then checks the recovered Unknown receipt and no replay
+in Rust and after Node restart. Before that crash scenario, two separately
+admitted identical commands produce two real file effects to confirm that the
+single-effect assertion detects a duplicate. If the crash scenario cannot be
+completed safely, its private evidence directory is retained for inspection.
+The Worker maps an Unknown mutation reply to `timeout_unknown`; only
+`get_operation_status` reports the stored `unknown` state.
+
+No production Worker or installed identity is used. This is a process-level
+proof only: it neither invokes the real installer nor demonstrates systemd
+activation, automatic rollback, release authenticity beyond the pinned archive
+digest, or an upgrade-ready Rust package.

@@ -23,6 +23,7 @@ const root=await mkdtemp("/tmp/rca-handoff-");
 await chmod(root,0o700);
 const release=path.join(root,"release"), key=path.join(root,"v2-identity.pem");
 let child;
+let preserveEvidence=false;
 const env={PATH:"/usr/bin:/bin",HOME:root,REMOTE_CONTROL_AGENT_ENDPOINT:endpoint,
            REMOTE_CONTROL_AGENT_KEY_PATH:key};
 async function start(program,args=[]) {
@@ -85,6 +86,28 @@ async function receiptReady(proc,id,operationId,expected) {
       throw Error("Unexpected receipt status: "+result.status);
     if(Date.now()>end)throw Error("Agent receipt query did not become ready");
     await delay(250);
+  }
+}
+async function processIdentity(pid){
+  try {
+    const value=await readFile("/proc/"+pid+"/stat","utf8");
+    const end=value.lastIndexOf(")");
+    assert.ok(end>0,"malformed process identity");
+    const fields=value.slice(end+2).split(" ");
+    assert.match(fields[19]??"",/^[0-9]+$/,"missing process start time");
+    return {state:fields[0],start:fields[19]};
+  } catch(error) {
+    if(error.code==="ENOENT")return null;
+    throw error;
+  }
+}
+async function waitNotExecuting(pid,start){
+  const end=Date.now()+10000;
+  for(;;){
+    const current=await processIdentity(pid);
+    if(!current || current.start!==start || current.state==="Z" || current.state==="X")return;
+    if(Date.now()>end)throw Error("Owned command did not stop; state preserved");
+    await delay(50);
   }
 }
 async function upgrade(action){
@@ -181,12 +204,80 @@ try{
   assert.equal(restoredDb.ino,originalDb.ino);
   assert.equal(sha(await readFile(key)),identityDigest,"identity preserved");
   assert.equal((await readFile(key+".device-id","utf8")).trim(),id);
+  // Calibrate the external marker against an actual repeated effect: same
+  // command, two distinct IDs. A constant or insensitive assertion cannot pass.
+  const control=path.join(root,"replay-control");
+  const controlCommand="printf x >> '"+control+"'";
+  for(const operationId of ["handoff-control-1","handoff-control-2"]){
+    const result=await rpc("run_command",{device_id:id,operation_id:operationId,
+      command:controlCommand,timeout_ms:1000});
+    if(result.status!=="completed"){
+      assert.equal(result.status,"running");
+      await receiptReady(agent,id,operationId,"completed");
+    }
+  }
+  const controlEffects=await readFile(control,"utf8");
+  assert.equal(controlEffects,"xx","control must detect two real effects");
+  assert.throws(()=>assert.equal(controlEffects,"x"),{code:"ERR_ASSERTION"},
+    "the no-replay assertion must reject a real duplicate effect");
+  console.log("REPLAY_CONTROL_DETECTED");
+
+  // A crash while the command is running is intentionally distinct from the
+  // successful quiescent handoff above; never claim the crash was a safe upgrade.
+  const marker=path.join(root,"unknown-effect"), pidPath=path.join(root,"unknown-pid");
+  const command="printf x >> '"+marker+"'; printf %s $$ > '"+pidPath+"'; exec /bin/sleep 120";
+  const unknownReq={device_id:id,operation_id:"handoff-node-crashed-001",command,timeout_ms:0};
+  preserveEvidence=true;
+  const started=await rpc("run_command",unknownReq);
+  assert.equal(started.status,"running");
+  const markerDeadline=Date.now()+5000;
+  let pid;
+  for(;;){
+    try{pid=Number(await readFile(pidPath,"utf8"));if(Number.isSafeInteger(pid)&&pid>1)break}
+    catch(error){if(error.code!=="ENOENT")throw error}
+    if(Date.now()>markerDeadline)throw Error("Managed command did not create PID marker");
+    await delay(25);
+  }
+  assert.equal(await readFile(marker,"utf8"),"x");
+  const proc=await processIdentity(pid);
+  assert.ok(proc && !["Z","X"].includes(proc.state),"owned command must be executing before crash");
+  assert.equal(await upgrade("freeze"),"busy\n","running work must block upgrade");
+  assert.equal(agent.kill("SIGKILL"),true);
+  await waitExit(agent);
+  assert.equal(agent.signalCode,"SIGKILL");
+  child=undefined;
+  await waitNotExecuting(pid,proc.start);
+  console.log("CRASH_CHILD_STOP_CONFIRMED");
+
+  agent=await start(native);
+  await ready(agent,id);
+  await receiptReady(agent,id,unknownReq.operation_id,"unknown");
+  assert.equal((await rpc("run_command",unknownReq)).status,"timeout_unknown");
+  await receiptReady(agent,id,unknownReq.operation_id,"unknown");
+  assert.equal(await readFile(marker,"utf8"),"x","Rust must not replay unknown operation");
+  assert.equal((await rpc("run_command",{...unknownReq,command:command+" # changed"})).status,"conflict");
+  assert.equal(await readFile(marker,"utf8"),"x");
   await stop(agent);
+
+  agent=await start(node,[path.join(app,"v2-main.js")]);
+  await ready(agent,id);
+  await receiptReady(agent,id,unknownReq.operation_id,"unknown");
+  assert.equal((await rpc("run_command",unknownReq)).status,"timeout_unknown");
+  await receiptReady(agent,id,unknownReq.operation_id,"unknown");
+  assert.equal(await readFile(marker,"utf8"),"x","Node must not replay old unknown operation");
+  assert.equal((await rpc("run_command",{...unknownReq,command:command+" # changed"})).status,"conflict");
+  assert.equal(await readFile(marker,"utf8"),"x");
+  assert.equal((await stat(database)).ino,originalDb.ino);
+  assert.equal(sha(await readFile(key)),identityDigest);
+  await stop(agent);
+  preserveEvidence=false;
   console.log("NODE_RUST_FAILED_START_NODE_HANDOFF_PASS");
+  console.log("NODE_CRASH_UNKNOWN_RUST_NODE_NO_REPLAY_PASS");
 }finally{
   if(child?.pid && child.exitCode===null && child.signalCode===null){
     child.kill("SIGTERM");
     try{await waitExit(child,3000,true)}catch{child.kill("SIGKILL");await waitExit(child,3000,true)}
   }
-  await rm(root,{recursive:true,force:true});
+  if(preserveEvidence)console.error("Crash scenario incomplete; private evidence retained: "+root);
+  else await rm(root,{recursive:true,force:true});
 }
