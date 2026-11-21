@@ -25,6 +25,8 @@ pub mod session;
 #[cfg(windows)]
 pub mod windows_job;
 #[cfg(windows)]
+pub mod windows_managed;
+#[cfg(windows)]
 pub mod windows_output;
 #[cfg(windows)]
 mod windows_private;
