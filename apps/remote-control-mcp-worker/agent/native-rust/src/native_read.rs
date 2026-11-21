@@ -70,7 +70,7 @@ pub(crate) fn permitted_path(path: &str) -> bool {
         {
             return false;
         }
-        return !path[3..].split(['/', '\\']).any(|component| {
+        !path[3..].split(['/', '\\']).any(|component| {
             let stem = component
                 .split('.')
                 .next()
