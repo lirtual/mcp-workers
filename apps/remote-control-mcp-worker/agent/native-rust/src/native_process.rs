@@ -1,16 +1,30 @@
-//! Nonproduction Linux process execution behind the existing signed WSS lease.
+//! Nonproduction managed process execution behind the existing signed WSS lease.
 //! Every possible side effect must be admitted in the *same* SQLite v1 store
 //! as file mutations. An Unknown receipt is never dispatched a second time.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
 
+#[cfg(target_os = "linux")]
 use crate::linux_command::valid_command_text;
+#[cfg(target_os = "linux")]
 use crate::linux_managed::{
-    InputOutcome, LinuxManagedSessions, SessionCapacityReached, SessionSnapshot, SessionState,
+    InputOutcome, LinuxManagedSessions as ManagedSessions, SessionCapacityReached, SessionSnapshot,
+    SessionState,
 };
+#[cfg(target_os = "linux")]
 use crate::linux_output::{MAX_OUTPUT_BYTES, MAX_PAGE_BYTES};
+#[cfg(target_os = "linux")]
 use crate::linux_supervisor::CleanupState;
 use crate::native_read::integer_in_range;
 use crate::receipts::{Admission, Receipt, ReceiptError, ReceiptStore};
+#[cfg(windows)]
+use crate::windows_job::{valid_command_text, JobCleanup as CleanupState};
+#[cfg(windows)]
+use crate::windows_managed::{
+    InputOutcome, SessionCapacityReached, SessionSnapshot, SessionState,
+    WindowsManagedSessions as ManagedSessions,
+};
+#[cfg(windows)]
+use crate::windows_output::{MAX_OUTPUT_BYTES, MAX_PAGE_BYTES};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -215,7 +229,7 @@ fn session_json(snapshot: &SessionSnapshot) -> Value {
 }
 
 pub fn execute_process_read(
-    registry: &LinuxManagedSessions,
+    registry: &ManagedSessions,
     request_id: &str,
     read: &ProcessRead,
 ) -> String {
@@ -286,12 +300,12 @@ pub struct ProcessOutcome {
 }
 
 pub struct NativeProcessEngine {
-    pub sessions: Arc<LinuxManagedSessions>,
+    pub sessions: Arc<ManagedSessions>,
     starts: HashMap<String, String>,
 }
 
 impl NativeProcessEngine {
-    pub fn new(sessions: Arc<LinuxManagedSessions>) -> Self {
+    pub fn new(sessions: Arc<ManagedSessions>) -> Self {
         Self {
             sessions,
             starts: HashMap::new(),
@@ -299,8 +313,8 @@ impl NativeProcessEngine {
     }
 
     /// Process exit reconciliation runs even when no Owner request arrives.
-    /// A startup receipt can only become completed after actual C-supervised
-    /// process confirmation, never just stdout/stderr EOF.
+    /// A startup receipt can only become completed after OS-owned process
+    /// cleanup confirmation, never just stdout/stderr EOF.
     pub fn reconcile(&mut self, receipts: &mut ReceiptStore) -> Result<(), ReceiptError> {
         let starts: Vec<_> = self
             .starts
