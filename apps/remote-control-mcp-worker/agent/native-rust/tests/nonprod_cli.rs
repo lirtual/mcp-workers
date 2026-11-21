@@ -1,5 +1,5 @@
-//! Public-process checks for the unshipped Linux x64 RCA candidate.
-#![cfg(target_os = "linux")]
+//! Public-process checks for the unshipped Unix RCA candidate.
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
@@ -20,7 +20,7 @@ fn run(root: &Path) -> std::process::Output {
 fn private_root() -> TempDir {
     let root = tempfile::Builder::new()
         .prefix("rca-rust-probe-cli-")
-        .tempdir_in("/tmp")
+        .tempdir_in(fs::canonicalize("/tmp").expect("canonical disposable tmp"))
         .expect("private test root");
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
     root
