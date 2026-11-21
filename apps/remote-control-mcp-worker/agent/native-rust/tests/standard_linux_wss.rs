@@ -357,6 +357,15 @@ mod linux {
                 .to_string(),
             );
             assert_eq!(ack["status"], "confirmed");
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                -1,
+                "confirmed cleanup must not acknowledge a live managed process"
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ESRCH)
+            );
             pid
         });
 
