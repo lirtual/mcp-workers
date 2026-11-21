@@ -168,6 +168,34 @@ fn linux_runner_store_recovers_node_identity_and_node_recovers_rust_identity() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn transport_child_requires_an_existing_attempt_identity() {
+    use rca_native_agent::session_enrollment::{
+        load_existing_linux_session_identity, load_or_create_linux_session_identity,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("session-rca/identity.json");
+    assert!(load_existing_linux_session_identity(root.path(), &attempt()).is_err());
+    assert!(
+        !file.exists(),
+        "child may not silently create a new identity"
+    );
+
+    let (_, enrolled) = load_or_create_linux_session_identity(root.path(), &attempt()).unwrap();
+    let (existing_path, recovered) =
+        load_existing_linux_session_identity(root.path(), &attempt()).unwrap();
+    assert_eq!(existing_path, file);
+    assert_eq!(recovered.public_key, enrolled.public_key);
+
+    let mut wrong_attempt = attempt();
+    wrong_attempt.github_run_attempt += 1;
+    assert!(load_existing_linux_session_identity(root.path(), &wrong_attempt).is_err());
+    std::fs::remove_file(&file).unwrap();
+    assert!(load_existing_linux_session_identity(root.path(), &attempt()).is_err());
+    assert!(!file.exists(), "missing child identity must remain missing");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn linux_runner_store_is_attempt_scoped_and_rejects_unsafe_links_and_modes() {
     use rca_native_agent::session_enrollment::load_or_create_linux_session_identity;
     use std::os::unix::fs::{symlink, PermissionsExt};

@@ -262,6 +262,22 @@ mod linux_store {
         File::open(&directory)?.sync_all()?;
         Ok((file.clone(), read_verified(&file, attempt)?))
     }
+
+    /// Child mode must never mint a new key if the one-shot registration
+    /// parent's physical Attempt identity is absent or tampered with.
+    pub(super) fn load_existing(
+        runner_temp: &Path,
+        attempt: &SessionPhysicalAttempt,
+    ) -> Result<(PathBuf, SessionDeviceIdentity), EnrollmentError> {
+        if !valid_attempt(attempt) {
+            return Err(EnrollmentError::InvalidAttempt);
+        }
+        safe_runner_root(runner_temp)?;
+        let directory = runner_temp.join("session-rca");
+        safe_directory(&directory, true)?;
+        let file = directory.join("identity.json");
+        Ok((file.clone(), read_verified(&file, attempt)?))
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -270,4 +286,12 @@ pub fn load_or_create_linux_session_identity(
     attempt: &SessionPhysicalAttempt,
 ) -> Result<(std::path::PathBuf, SessionDeviceIdentity), EnrollmentError> {
     linux_store::load_or_create(runner_temp, attempt)
+}
+
+#[cfg(target_os = "linux")]
+pub fn load_existing_linux_session_identity(
+    runner_temp: &std::path::Path,
+    attempt: &SessionPhysicalAttempt,
+) -> Result<(std::path::PathBuf, SessionDeviceIdentity), EnrollmentError> {
+    linux_store::load_existing(runner_temp, attempt)
 }
