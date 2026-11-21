@@ -223,6 +223,19 @@ jobs:
           --test loopback_session --test native_browse --test native_read
           --test native_read_wss --test reconnect_transport --test windows_private_state
           -- --nocapture
+      - name: Verify disposable Rust Darwin owned-group process lifecycle
+        if: runner.os == 'macOS'
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+            apps/remote-control-mcp-worker/agent/scripts/darwin-session-supervisor.c \
+            -o "$RUNNER_TEMP/rca-darwin-supervisor"
+          chmod 700 "$RUNNER_TEMP/rca-darwin-supervisor"
+          RCA_DARWIN_SUPERVISOR_BIN="$RUNNER_TEMP/rca-darwin-supervisor" \
+            cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
+            --locked --test darwin_supervisor -- --ignored --nocapture
 
   database-integration:
     name: Database integration
