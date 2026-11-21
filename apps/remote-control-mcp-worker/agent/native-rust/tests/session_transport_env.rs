@@ -1,8 +1,8 @@
 //! Keep GitHub one-time OIDC enrollment credentials out of the future
 //! long-lived Rust Session transport process; compare the Node owner contract.
-use rca_native_agent::session_transport_env::{
-    apply_transport_environment, session_transport_environment,
-};
+#[cfg(target_os = "linux")]
+use rca_native_agent::session_transport_env::apply_transport_environment;
+use rca_native_agent::session_transport_env::session_transport_environment;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::Write;
