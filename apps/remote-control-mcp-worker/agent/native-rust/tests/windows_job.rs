@@ -86,3 +86,73 @@ fn invalid_command_is_rejected_before_any_process_creation() {
     let oversized = "a".repeat(8193);
     assert!(WindowsJobSession::start(&oversized).is_err());
 }
+
+#[test]
+fn restricted_stdio_round_trip_and_true_eof_after_exit() {
+    use std::io::{Read, Write};
+
+    let (job, mut io) = WindowsJobSession::start_with_stdio(
+        "$value = [Console]::ReadLine(); [Console]::Out.WriteLine('OUT:' + $value); [Console]::Error.WriteLine('ERR:' + $value)",
+    )
+    .unwrap();
+    io.stdin.write_all(b"hello\n").unwrap();
+    drop(io.stdin);
+    assert_eq!(job.wait_for_exit(Duration::from_secs(10)).unwrap(), Some(0));
+    assert_eq!(job.active_processes().unwrap(), 0);
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    io.stdout.read_to_string(&mut stdout).unwrap();
+    io.stderr.read_to_string(&mut stderr).unwrap();
+    assert!(stdout.contains("OUT:hello"), "stdout: {stdout:?}");
+    assert!(stderr.contains("ERR:hello"), "stderr: {stderr:?}");
+    assert_eq!(
+        job.terminate_and_wait(Duration::from_secs(2)).unwrap(),
+        JobCleanup::Confirmed
+    );
+}
+
+#[test]
+fn restricted_stdio_does_not_inherit_unlisted_agent_handle() {
+    use std::io::Read;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
+
+    let scratch = tempfile::tempfile().unwrap();
+    let handle = scratch.as_raw_handle();
+    assert_ne!(
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
+        0
+    );
+    let script = format!(
+        r#"
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class HandleProbe {{
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool GetHandleInformation(IntPtr h, out uint flags);
+}}
+'@
+$flags = [uint32]0
+if ([HandleProbe]::GetHandleInformation([IntPtr]::new({}), [ref]$flags)) {{
+    [Console]::Out.WriteLine('LEAKED')
+    exit 99
+}}
+[Console]::Out.WriteLine('ISOLATED')
+"#,
+        handle as usize
+    );
+    let (job, io) = WindowsJobSession::start_with_stdio(&script).unwrap();
+    drop(io.stdin);
+    assert_eq!(job.wait_for_exit(Duration::from_secs(15)).unwrap(), Some(0));
+    let mut output = String::new();
+    io.stdout.take(4096).read_to_string(&mut output).unwrap();
+    assert!(
+        output.contains("ISOLATED"),
+        "handle inheritance check: {output:?}"
+    );
+    assert_eq!(
+        job.terminate_and_wait(Duration::from_secs(3)).unwrap(),
+        JobCleanup::Confirmed
+    );
+}
