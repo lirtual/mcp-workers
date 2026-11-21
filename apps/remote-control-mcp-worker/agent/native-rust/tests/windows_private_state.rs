@@ -325,6 +325,12 @@ fn signed_windows_wss_file_write_read_and_receipt_are_durable() {
             assert_eq!(reply["kind"], "operation_result");
             assert_eq!(reply["request_id"], request_id);
             assert_eq!(reply["result"]["status"], expected);
+            if content == "once" && request_id.starts_with("11111111") {
+                // A same-ID retry must not rewrite external changes. A stable
+                // final byte string alone would not detect a replayed write.
+                assert_eq!(std::fs::read_to_string(&server_target).unwrap(), "once");
+                std::fs::write(&server_target, "external-sentinel").unwrap();
+            }
         }
         socket
             .send(Message::Text(
@@ -342,7 +348,7 @@ fn signed_windows_wss_file_write_read_and_receipt_are_durable() {
             serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
         assert_eq!(reply["kind"], "read_result");
         assert_eq!(reply["status"], "completed");
-        assert_eq!(reply["text"], "once");
+        assert_eq!(reply["text"], "external-sentinel");
 
         server_stop.store(true, Ordering::Release);
     });
@@ -356,7 +362,10 @@ fn signed_windows_wss_file_write_read_and_receipt_are_durable() {
     );
     server.join().unwrap();
     assert!(result.is_ok(), "{result:?}");
-    assert_eq!(std::fs::read_to_string(&target).unwrap(), "once");
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "external-sentinel"
+    );
     let receipt = ReceiptStore::open(&receipts)
         .unwrap()
         .get("same-win-op")
