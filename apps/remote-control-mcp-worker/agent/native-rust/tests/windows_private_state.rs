@@ -228,6 +228,8 @@ fn accept_disposable(listener: &TcpListener) -> TcpStream {
     }
 }
 
+// tungstenite's server callback uses a large, library-defined HTTP error.
+#[allow(clippy::result_large_err)]
 fn signed_disposable_socket(listener: &TcpListener) -> WebSocket<TcpStream> {
     let mut http = accept_disposable(listener);
     let mut reader = BufReader::new(http.try_clone().unwrap());
