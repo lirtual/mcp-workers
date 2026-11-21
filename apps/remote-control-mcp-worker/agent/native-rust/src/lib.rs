@@ -32,6 +32,8 @@ pub mod receipts;
 pub mod session;
 pub mod session_enrollment;
 pub mod session_registration;
+#[cfg(target_os = "linux")]
+pub mod session_runner;
 pub mod session_transport_env;
 #[cfg(windows)]
 pub mod windows_job;
