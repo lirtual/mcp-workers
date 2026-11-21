@@ -117,7 +117,15 @@ fn restricted_stdio_does_not_inherit_unlisted_agent_handle() {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
 
-    let scratch = tempfile::tempfile().unwrap();
+    // Windows can reuse the same numeric handle value inside the child
+    // for a different object. Verify *file identity*, not handle validity.
+    let scratch = tempfile::NamedTempFile::new().unwrap();
+    let marker_name = scratch
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .replace('\'', "''");
     let handle = scratch.as_raw_handle();
     assert_ne!(
         unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) },
@@ -129,18 +137,21 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class HandleProbe {{
-    [DllImport("kernel32.dll", SetLastError = true)]
-    public static extern bool GetHandleInformation(IntPtr h, out uint flags);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetFinalPathNameByHandleW(
+        IntPtr h, System.Text.StringBuilder buffer, uint length, uint flags);
 }}
 '@
-$flags = [uint32]0
-if ([HandleProbe]::GetHandleInformation([IntPtr]::new({}), [ref]$flags)) {{
+$path = New-Object System.Text.StringBuilder 32768
+$n = [HandleProbe]::GetFinalPathNameByHandleW([IntPtr]::new({}), $path, [uint32]$path.Capacity, 0)
+if ($n -gt 0 -and $n -lt $path.Capacity -and
+    $path.ToString().EndsWith('{}', [StringComparison]::OrdinalIgnoreCase)) {{
     [Console]::Out.WriteLine('LEAKED')
     exit 99
 }}
 [Console]::Out.WriteLine('ISOLATED')
 "#,
-        handle as usize
+        handle as usize, marker_name
     );
     let (job, io) = WindowsJobSession::start_with_stdio(&script).unwrap();
     drop(io.stdin);
