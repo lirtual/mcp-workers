@@ -17,6 +17,7 @@ pub fn test_pem() -> String {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)] // Common is separately compiled by tests that may not use this fixture.
 pub fn seal_windows_dir(path: &std::path::Path) {
     use std::process::Command;
 
@@ -52,6 +53,7 @@ foreach ($sid in @($userSid, $systemSid)) {
 }
 
 #[cfg(windows)]
+#[allow(dead_code)] // Common is separately compiled by tests that may not use this fixture.
 pub fn accept_windows_loopback(listener: &std::net::TcpListener) -> std::net::TcpStream {
     use std::io::ErrorKind;
     use std::time::{Duration, Instant};
