@@ -1,5 +1,7 @@
 //! Nonproduction RCA Rust candidate. No production entrypoint or release integration.
 //! Only publish after #914 Gate 0–3, independently authorized per platform.
+#[cfg(target_os = "macos")]
+pub mod darwin_supervisor;
 pub mod digest;
 pub mod gate0_probe;
 pub mod identity;
