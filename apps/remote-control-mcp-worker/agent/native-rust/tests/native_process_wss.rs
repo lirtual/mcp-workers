@@ -262,6 +262,15 @@ fn owner_revoke_terminates_active_owned_descendants_before_confirmed_ack() {
         .list()
         .iter()
         .all(|entry| entry.state != rca_native_agent::linux_managed::SessionState::Running));
+    let receipt = ReceiptStore::open(&receipt_dir)
+        .unwrap()
+        .get("p-wss-revoke")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        receipt.state, "completed",
+        "confirmed Owner cleanup must be persisted before SQLite owner exits"
+    );
 }
 
 #[test]

@@ -8,7 +8,7 @@ use rca_native_agent::native_process::{
     execute_process_read, parse_process_mutation, parse_process_read, NativeProcessEngine,
     ProcessMutation, ProcessRead,
 };
-use rca_native_agent::receipts::ReceiptStore;
+use rca_native_agent::receipts::{Admission, ReceiptStore};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -141,31 +141,32 @@ fn digest_goldens_match_node_24_normalized_process_args() {
         start.receipt.unwrap().argument_digest,
         "2e375ea53a2a26589f02b999d73d734f50d50531a8489170f040ede245da076a"
     );
+    // Fixed Node 24 digests cover ReceiptStore's canonical algorithm.
+    // The engine itself correctly rejects first requests to missing sessions
+    // without admission; a real-session action is covered in the next test.
     let sid = "00000000-0000-4000-8000-000000000000";
-    let input = engine
-        .execute(
-            &mut receipts,
+    let input = receipts
+        .admit(
             "p-gold-input",
             "interact_with_process",
             &json!({"session_id":sid,"input":"中😀\n"}),
-            || true,
         )
         .unwrap();
+    let Admission::New(input) = input else {
+        panic!("expected new input receipt");
+    };
     assert_eq!(
-        input.receipt.unwrap().argument_digest,
+        input.argument_digest,
         "91d13bbfd7674d8163bf2816c4513705858a925f22e1897c3168dcac65a70554"
     );
-    let stop = engine
-        .execute(
-            &mut receipts,
-            "p-gold-stop",
-            "force_terminate",
-            &json!({"session_id":sid}),
-            || true,
-        )
+    let stop = receipts
+        .admit("p-gold-stop", "force_terminate", &json!({"session_id":sid}))
         .unwrap();
+    let Admission::New(stop) = stop else {
+        panic!("expected new terminate receipt");
+    };
     assert_eq!(
-        stop.receipt.unwrap().argument_digest,
+        stop.argument_digest,
         "c00f2cfb0ed26267781d6f92441b734949f974c8afe8a2dba14469c7d8cd3420"
     );
     assert_eq!(
@@ -261,7 +262,27 @@ fn start_input_exit_receipt_and_same_id_never_replay() {
     assert_eq!(text["output"], "中😀");
     assert_eq!(text["state"], "completed");
     assert!(text["started_at"].as_str().unwrap().ends_with('Z'));
-    assert!(text["last_observed_at"].as_u64().unwrap() > 0);
+    // Independent Node sessions.ts::snapshot contract: ISO-8601 UTC with
+    // three fractional digits, refreshed on each observation.
+    let observed = text["last_observed_at"].as_str().unwrap();
+    assert_eq!(observed.len(), 24);
+    assert_eq!(&observed[4..5], "-");
+    assert_eq!(&observed[10..11], "T");
+    assert_eq!(&observed[19..20], ".");
+    assert!(observed.ends_with('Z'));
+    std::thread::sleep(Duration::from_millis(20));
+    let again: Value = serde_json::from_str(&execute_process_read(
+        &registry,
+        "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+        &ProcessRead::List,
+    ))
+    .unwrap();
+    let snapshots: Value = serde_json::from_str(again["text"].as_str().unwrap()).unwrap();
+    let later = snapshots[0]["last_observed_at"].as_str().unwrap();
+    assert!(
+        later > observed,
+        "list_sessions must refresh last_observed_at"
+    );
     assert_eq!(
         registry.stop_all(Duration::from_secs(2)),
         CleanupState::Confirmed
@@ -413,6 +434,97 @@ fn owned_terminate_waits_for_confirmed_cleanup() {
     assert_eq!(ended.cleanup, Some(CleanupState::Confirmed));
     assert_eq!(
         registry.stop_all(Duration::from_secs(1)),
+        CleanupState::Confirmed
+    );
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn missing_managed_session_does_not_consume_receipts() {
+    let root = receipt_dir();
+    let mut receipts = ReceiptStore::open(root.path()).unwrap();
+    let registry = sessions();
+    let mut engine = NativeProcessEngine::new(Arc::clone(&registry));
+    let missing = "00000000-0000-4000-8000-000000000000";
+    for (operation, tool, args) in [
+        (
+            "p-missing-input",
+            "interact_with_process",
+            json!({"session_id":missing,"input":"x"}),
+        ),
+        (
+            "p-missing-stop",
+            "force_terminate",
+            json!({"session_id":missing}),
+        ),
+    ] {
+        let result = engine
+            .execute(&mut receipts, operation, tool, &args, || true)
+            .unwrap();
+        assert_eq!(result.state, "not_found");
+        assert!(result.receipt.is_none());
+        assert!(receipts.get(operation).unwrap().is_none());
+    }
+    assert_eq!(registry.stop_all(Duration::ZERO), CleanupState::Confirmed);
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn max_output_page_is_adapted_to_bounded_wss_frame() {
+    let root = receipt_dir();
+    let mut receipts = ReceiptStore::open(root.path()).unwrap();
+    let registry = sessions();
+    let mut engine = NativeProcessEngine::new(Arc::clone(&registry));
+    let started = engine
+        .execute(
+            &mut receipts,
+            "p-large-output",
+            "start_process",
+            &json!({"command":"yes Z | head -c 65536; sleep 2","timeout_ms":0}),
+            || true,
+        )
+        .unwrap();
+    let sid = started.session_id.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while registry
+        .read_output(&sid, 0, 65536)
+        .unwrap()
+        .unwrap()
+        .page
+        .next_offset
+        < 65536
+    {
+        assert!(Instant::now() < deadline, "large output did not arrive");
+        std::thread::sleep(Duration::from_millis(15));
+    }
+    let mut offset = 0usize;
+    let mut output = String::new();
+    while offset < 65536 {
+        let wire = execute_process_read(
+            &registry,
+            "dddddddd-dddd-dddd-dddd-dddddddddddd",
+            &ProcessRead::Output {
+                session_id: sid.clone(),
+                offset,
+                length: 65536,
+            },
+        );
+        assert!(wire.len() <= 65536, "encoded WSS frame exceeded 64 KiB");
+        let frame: Value = serde_json::from_str(&wire).unwrap();
+        assert_eq!(frame["status"], "completed", "{frame}");
+        let page: Value = serde_json::from_str(frame["text"].as_str().unwrap()).unwrap();
+        let next = page["next_offset"].as_u64().unwrap() as usize;
+        assert!(
+            next > offset && next <= 65536,
+            "pagination failed to advance"
+        );
+        output.push_str(page["output"].as_str().unwrap());
+        offset = next;
+    }
+    assert_eq!(output.len(), 65536);
+    assert_eq!(output.as_bytes()[0], b'Z');
+    assert_eq!(
+        registry.stop_all(Duration::from_secs(5)),
         CleanupState::Confirmed
     );
 }

@@ -145,7 +145,7 @@ fn owner_run_input_output_receipt_and_revoke_use_native_process() {
             )?;
             if page["output"] == "中😀" && page["state"] == "completed" {
                 if page["started_at"].as_str().is_none()
-                    || page["last_observed_at"].as_u64().is_none()
+                    || page["last_observed_at"].as_str().is_none()
                 {
                     return Err("Node session timestamps absent".into());
                 }

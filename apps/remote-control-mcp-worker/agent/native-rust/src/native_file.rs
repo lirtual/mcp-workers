@@ -280,6 +280,7 @@ pub enum NativeFileError {
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
     #[cfg(target_os = "linux")] managed: Option<Arc<LinuxManagedSessions>>,
+    #[cfg(target_os = "linux")] cleanup_ready: Option<Receiver<()>>,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
     replies: &SyncSender<ExecutionResponse>,
@@ -415,6 +416,18 @@ fn execute_native_file(
             Err(TrySendError::Disconnected(_)) => break,
         }
     }
+    // Do not close the one SQLite receipt owner until native group cleanup has
+    // finished. A stop flag alone does not prove the C supervisor has exited.
+    #[cfg(target_os = "linux")]
+    if let Some(ready) = cleanup_ready {
+        let _ = ready.recv();
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(process) = processes.as_mut() {
+        process
+            .reconcile(writes.receipt_store_mut())
+            .map_err(NativeWriteError::from)?;
+    }
     Ok(())
 }
 
@@ -437,6 +450,8 @@ pub fn run_native_file_session(
     let worker = std::thread::spawn(move || {
         let result = execute_native_file(
             writes,
+            #[cfg(target_os = "linux")]
+            None,
             #[cfg(target_os = "linux")]
             None,
             &worker_stop,
@@ -482,10 +497,14 @@ pub fn run_native_managed_session(
     let (reply_sender, replies) = sync_channel(4);
     let worker_stop = Arc::clone(stop);
     let worker_managed = Arc::clone(&managed);
+    // A one-shot barrier orders final receipt reconciliation strictly after
+    // C Supervisor cleanup (including the Owner revoke acknowledgement).
+    let (cleanup_notifier, cleanup_ready) = sync_channel(1);
     let worker = std::thread::spawn(move || {
         let result = execute_native_file(
             writes,
             Some(worker_managed),
+            Some(cleanup_ready),
             &worker_stop,
             &requests,
             &reply_sender,
@@ -509,6 +528,7 @@ pub fn run_native_managed_session(
     );
     stop.store(true, Ordering::Release);
     let cleanup = managed.stop_all(Duration::from_secs(8));
+    let _ = cleanup_notifier.send(());
     let executor = worker.join().map_err(|_| NativeFileError::Panicked)?;
     executor?;
     if cleanup != CleanupState::Confirmed {

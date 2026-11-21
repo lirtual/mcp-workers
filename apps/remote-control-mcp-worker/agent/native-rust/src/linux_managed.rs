@@ -25,6 +25,19 @@ const STOP_GRACE: Duration = Duration::from_millis(500);
 const DEADLINE_GRACE: Duration = Duration::from_secs(5);
 const INPUT_WRITE_LIMIT: Duration = Duration::from_secs(1);
 
+/// Only this typed error proves capacity was rejected before any OS launch.
+/// Raw WouldBlock can also come from a thread spawn after the process started.
+#[derive(Debug)]
+pub(crate) struct SessionCapacityReached;
+
+impl std::fmt::Display for SessionCapacityReached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("session capacity reached")
+    }
+}
+
+impl std::error::Error for SessionCapacityReached {}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
     Running,
@@ -45,7 +58,7 @@ pub enum InputOutcome {
 pub struct SessionSnapshot {
     pub session_id: String,
     pub started_at: String,
-    pub last_observed_at: u64,
+    pub last_observed_at: String,
     pub state: SessionState,
     pub exit_code: Option<i32>,
     pub cleanup: Option<CleanupState>,
@@ -58,7 +71,6 @@ pub struct SessionOutput {
 }
 
 struct Record {
-    last_observed_at: u64,
     state: SessionState,
     exit_code: Option<i32>,
     cleanup: Option<CleanupState>,
@@ -106,13 +118,6 @@ fn new_session_id() -> io::Result<String> {
     ))
 }
 
-fn epoch_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Format the same ISO-8601 UTC startup timestamp as Node, using the
 /// existing Linux libc instead of introducing a second date library.
 fn startup_clock() -> io::Result<(String, u64)> {
@@ -142,10 +147,15 @@ fn startup_clock() -> io::Result<(String, u64)> {
 
 fn snapshot(id: &str, entry: &Entry) -> SessionSnapshot {
     let state = lock(&entry.record);
+    // Node refreshes the observation clock on every snapshot (get/list/read).
+    // This timestamp is presentation-only; registry TTL uses finished_at.
+    let last_observed_at = startup_clock()
+        .map(|(iso, _)| iso)
+        .unwrap_or_else(|_| entry.started_at.clone());
     SessionSnapshot {
         session_id: id.to_owned(),
         started_at: entry.started_at.clone(),
-        last_observed_at: state.last_observed_at,
+        last_observed_at,
         state: state.state,
         exit_code: state.exit_code,
         cleanup: state.cleanup,
@@ -186,7 +196,6 @@ fn supervise(mut supervisor: SupervisorSession, entry: Arc<Entry>, deadline: Ins
     let mut state = lock(&entry.record);
     state.deadline_exceeded = expired;
     state.finished_at = Some(Instant::now());
-    state.last_observed_at = epoch_millis();
     match outcome {
         Ok(exit) => {
             state.exit_code = exit.status.code();
@@ -220,7 +229,6 @@ fn mark_uncertain(entry: &Entry) {
     record.state = SessionState::Unknown;
     record.cleanup = Some(CleanupState::Unknown);
     record.finished_at = Some(Instant::now());
-    record.last_observed_at = epoch_millis();
 }
 
 impl LinuxManagedSessions {
@@ -286,11 +294,10 @@ impl LinuxManagedSessions {
             ));
         }
         let id = new_session_id()?;
-        let (started_at, observed_at) = startup_clock()?;
+        let (started_at, _) = startup_clock()?;
         let entry = Arc::new(Entry {
             started_at,
             record: Mutex::new(Record {
-                last_observed_at: observed_at,
                 state: SessionState::Running,
                 exit_code: None,
                 cleanup: None,
@@ -323,7 +330,7 @@ impl LinuxManagedSessions {
             if active >= MAX_SESSIONS {
                 return Err(io::Error::new(
                     ErrorKind::WouldBlock,
-                    "session capacity reached",
+                    SessionCapacityReached,
                 ));
             }
             registry.entries.insert(id.clone(), Arc::clone(&entry));
@@ -334,7 +341,6 @@ impl LinuxManagedSessions {
             record.state = SessionState::Failed;
             record.cleanup = Some(CleanupState::Confirmed); // No native launch.
             record.finished_at = Some(Instant::now());
-            record.last_observed_at = epoch_millis();
             return Err(io::Error::new(
                 ErrorKind::Interrupted,
                 "session revoked before launch",

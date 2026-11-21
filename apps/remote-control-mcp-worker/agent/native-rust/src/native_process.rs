@@ -4,7 +4,9 @@
 #![cfg(target_os = "linux")]
 
 use crate::linux_command::valid_command_text;
-use crate::linux_managed::{InputOutcome, LinuxManagedSessions, SessionSnapshot, SessionState};
+use crate::linux_managed::{
+    InputOutcome, LinuxManagedSessions, SessionCapacityReached, SessionSnapshot, SessionState,
+};
 use crate::linux_output::{MAX_OUTPUT_BYTES, MAX_PAGE_BYTES};
 use crate::linux_supervisor::CleanupState;
 use crate::native_read::integer_in_range;
@@ -19,6 +21,33 @@ const MAX_WIRE_BYTES: usize = 65_536;
 const DEFAULT_PAGE_BYTES: usize = 16 * 1024;
 const MAX_START_WAIT: Duration = Duration::from_millis(1_500);
 const STOP_WAIT: Duration = Duration::from_millis(1_500);
+
+fn confirmed_prelaunch_capacity(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<SessionCapacityReached>())
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+    use std::io;
+
+    #[test]
+    fn raw_wouldblock_after_os_launch_is_never_treated_as_no_effect() {
+        assert!(confirmed_prelaunch_capacity(&io::Error::new(
+            io::ErrorKind::WouldBlock,
+            SessionCapacityReached,
+        )));
+        assert!(!confirmed_prelaunch_capacity(&io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "thread spawn failed after launching the command",
+        )));
+        assert!(!confirmed_prelaunch_capacity(&io::Error::from(
+            io::ErrorKind::WouldBlock,
+        )));
+    }
+}
 
 pub(crate) fn valid_session_id(id: &str) -> bool {
     if id.len() != 36 {
@@ -190,41 +219,64 @@ pub fn execute_process_read(
     request_id: &str,
     read: &ProcessRead,
 ) -> String {
-    let text = match read {
+    let response = |text: String| {
+        json!({"kind":"read_result", "request_id":request_id,
+            "status":"completed", "text":text})
+        .to_string()
+    };
+    match read {
         ProcessRead::List => {
-            Some(json!(registry.list().iter().map(session_json).collect::<Vec<_>>()).to_string())
+            let text =
+                json!(registry.list().iter().map(session_json).collect::<Vec<_>>()).to_string();
+            let wire = response(text);
+            if wire.len() <= MAX_WIRE_BYTES {
+                return wire;
+            }
         }
         ProcessRead::Output {
             session_id,
             offset,
             length,
-        } => registry
-            .read_output(session_id, *offset, *length)
-            .ok()
-            .flatten()
-            .map(|read| {
+        } => {
+            // The outer WSS frame double-escapes output embedded in "text".
+            // Accept Node's 64 KiB requested length, but reduce the returned
+            // page until the actual encoded frame fits the transport limit.
+            let mut page_length = *length;
+            while page_length > 0 {
+                let Some(read) = registry
+                    .read_output(session_id, *offset, page_length)
+                    .ok()
+                    .flatten()
+                else {
+                    return json!({"kind":"read_result","request_id":request_id,
+                        "status":"failed"})
+                    .to_string();
+                };
                 let mut output = session_json(&read.session);
                 output["offset"] = json!(read.page.offset);
                 output["next_offset"] = json!(read.page.next_offset);
                 output["output"] = json!(read.page.output);
                 output["eof"] = json!(read.page.eof);
                 output["truncated"] = json!(read.page.truncated);
-                output.to_string()
-            }),
-        ProcessRead::Failed => None,
-    };
-    if let Some(text) = text {
-        let wire = json!({"kind":"read_result", "request_id":request_id,
-            "status":"completed", "text":text})
-        .to_string();
-        if wire.len() <= MAX_WIRE_BYTES {
-            return wire;
+                let wire = response(output.to_string());
+                if wire.len() <= MAX_WIRE_BYTES {
+                    return wire;
+                }
+                if page_length == 1 {
+                    break;
+                }
+                page_length = (page_length / 2).max(1);
+            }
         }
-        return json!({"kind":"read_result", "request_id":request_id,
-            "status":"failed", "error":"result_too_large"})
-        .to_string();
+        ProcessRead::Failed => {
+            return json!({"kind":"read_result","request_id":request_id,
+                "status":"failed"})
+            .to_string();
+        }
     }
-    json!({"kind":"read_result", "request_id":request_id, "status":"failed"}).to_string()
+    json!({"kind":"read_result", "request_id":request_id,
+        "status":"failed", "error":"result_too_large"})
+    .to_string()
 }
 
 pub struct ProcessOutcome {
@@ -290,6 +342,22 @@ impl NativeProcessEngine {
                 receipt: None,
                 session_id: None,
             });
+        }
+        // Node does not consume a receipt for a first attempt against a missing
+        // session. Existing operation IDs still resolve by their stored digest.
+        match &mutation {
+            ProcessMutation::Input { session_id, .. }
+            | ProcessMutation::Terminate { session_id }
+                if receipts.get(operation_id)?.is_none()
+                    && self.sessions.get(session_id).is_none() =>
+            {
+                return Ok(ProcessOutcome {
+                    state: "not_found",
+                    receipt: None,
+                    session_id: None,
+                });
+            }
+            _ => {}
         }
         let admission = receipts.admit(operation_id, tool, &mutation.normalized())?;
         match admission {
@@ -364,6 +432,10 @@ impl NativeProcessEngine {
                 command,
                 timeout_ms,
             } => {
+                // Include the synchronous C-supervisor handshake in the reply
+                // budget; never add another full wait after slow startup.
+                let deadline =
+                    Instant::now() + Duration::from_millis(timeout_ms).min(MAX_START_WAIT);
                 match self.sessions.start(&command) {
                     Ok(started) => {
                         let sid = started.session_id;
@@ -376,8 +448,6 @@ impl NativeProcessEngine {
                             Some(&sid),
                             false,
                         )?;
-                        let deadline =
-                            Instant::now() + Duration::from_millis(timeout_ms).min(MAX_START_WAIT);
                         while Instant::now() < deadline {
                             if self
                                 .sessions
@@ -404,6 +474,12 @@ impl NativeProcessEngine {
                     }
                     // Handshake errors can occur *after* native launch. Even an
                     // Interrupted error may be a concurrent revoke.
+                    Err(error) if confirmed_prelaunch_capacity(&error) => (
+                        "failed",
+                        "Development command start failed: session_capacity.",
+                        None,
+                        true,
+                    ),
                     Err(_) => (
                         "unknown",
                         "Development command start is uncertain.",
