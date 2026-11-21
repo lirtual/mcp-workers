@@ -145,6 +145,30 @@ mod linux {
     }
 
     #[test]
+    fn stopped_child_never_reopens_identity_or_enters_the_network() {
+        use rca_native_agent::session_runner::{
+            run_verified_linux_session_child, SessionChildError,
+        };
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let root = tempfile::tempdir().unwrap();
+        let env = source(root.path().to_str().unwrap());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let stop = Arc::new(AtomicBool::new(true));
+        let result = run_verified_linux_session_child(
+            &env,
+            &grant(now + 60_000),
+            &root.path().join("missing-supervisor"),
+            &stop,
+        );
+        assert!(matches!(result, Err(SessionChildError::Stopped)));
+        assert!(!root.path().join("session-rca").exists());
+    }
+
+    #[test]
     fn transport_child_rejects_unsafe_supervisor_before_network_or_receipts() {
         use rca_native_agent::session_runner::run_verified_linux_session_child;
         use std::os::unix::fs::symlink;
