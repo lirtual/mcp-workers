@@ -67,11 +67,14 @@ fn powershell() -> io::Result<PathBuf> {
     Ok(shell)
 }
 
+pub(crate) fn valid_command_text(script: &str) -> bool {
+    !script.is_empty()
+        && !script.contains(char::from(0))
+        && script.encode_utf16().take(MAX_COMMAND_UNITS + 1).count() <= MAX_COMMAND_UNITS
+}
+
 fn encoded_command(script: &str) -> io::Result<String> {
-    if script.is_empty()
-        || script.contains(char::from(0))
-        || script.encode_utf16().take(MAX_COMMAND_UNITS + 1).count() > MAX_COMMAND_UNITS
-    {
+    if !valid_command_text(script) {
         return Err(invalid("invalid Windows managed command"));
     }
     // -EncodedCommand avoids shell-quote ambiguity while preserving Node's
