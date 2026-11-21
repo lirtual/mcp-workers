@@ -13,6 +13,8 @@ pub mod linux_output;
 pub mod linux_supervisor;
 pub mod native_browse;
 pub mod native_file;
+#[cfg(target_os = "linux")]
+pub mod native_process;
 pub mod native_read;
 pub mod native_write;
 pub mod receipts;

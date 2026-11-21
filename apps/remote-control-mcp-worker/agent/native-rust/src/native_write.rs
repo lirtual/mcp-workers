@@ -561,6 +561,12 @@ impl NativeWriteExecutor {
         Ok(self.receipts.get(id)?)
     }
 
+    /// The process adapter shares this exact SQLite owner with file writes.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn receipt_store_mut(&mut self) -> &mut ReceiptStore {
+        &mut self.receipts
+    }
+
     /// A live authenticated lease is checked before receipt admission and
     /// again after the running state is persisted, immediately before effect.
     pub fn write_file_with_lease(

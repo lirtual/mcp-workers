@@ -14,7 +14,7 @@ use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_SESSIONS: usize = 10;
 const MAX_HISTORY: usize = 10;
@@ -24,6 +24,19 @@ const POLL: Duration = Duration::from_millis(50);
 const STOP_GRACE: Duration = Duration::from_millis(500);
 const DEADLINE_GRACE: Duration = Duration::from_secs(5);
 const INPUT_WRITE_LIMIT: Duration = Duration::from_secs(1);
+
+/// Only this typed error proves capacity was rejected before any OS launch.
+/// Raw WouldBlock can also come from a thread spawn after the process started.
+#[derive(Debug)]
+pub(crate) struct SessionCapacityReached;
+
+impl std::fmt::Display for SessionCapacityReached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("session capacity reached")
+    }
+}
+
+impl std::error::Error for SessionCapacityReached {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionState {
@@ -44,6 +57,8 @@ pub enum InputOutcome {
 #[derive(Clone, Debug)]
 pub struct SessionSnapshot {
     pub session_id: String,
+    pub started_at: String,
+    pub last_observed_at: String,
     pub state: SessionState,
     pub exit_code: Option<i32>,
     pub cleanup: Option<CleanupState>,
@@ -64,6 +79,7 @@ struct Record {
 }
 
 struct Entry {
+    started_at: String,
     record: Mutex<Record>,
     output: Mutex<Option<BoundedProcessOutput>>,
     stdin: Mutex<Option<ChildStdin>>,
@@ -102,10 +118,44 @@ fn new_session_id() -> io::Result<String> {
     ))
 }
 
+/// Format the same ISO-8601 UTC startup timestamp as Node, using the
+/// existing Linux libc instead of introducing a second date library.
+fn startup_clock() -> io::Result<(String, u64)> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let seconds = elapsed.as_secs() as libc::time_t;
+    let mut utc = std::mem::MaybeUninit::<libc::tm>::uninit();
+    if unsafe { libc::gmtime_r(&seconds, utc.as_mut_ptr()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let utc = unsafe { utc.assume_init() };
+    Ok((
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            utc.tm_year + 1900,
+            utc.tm_mon + 1,
+            utc.tm_mday,
+            utc.tm_hour,
+            utc.tm_min,
+            utc.tm_sec,
+            elapsed.subsec_millis()
+        ),
+        elapsed.as_millis() as u64,
+    ))
+}
+
 fn snapshot(id: &str, entry: &Entry) -> SessionSnapshot {
     let state = lock(&entry.record);
+    // Node refreshes the observation clock on every snapshot (get/list/read).
+    // This timestamp is presentation-only; registry TTL uses finished_at.
+    let last_observed_at = startup_clock()
+        .map(|(iso, _)| iso)
+        .unwrap_or_else(|_| entry.started_at.clone());
     SessionSnapshot {
         session_id: id.to_owned(),
+        started_at: entry.started_at.clone(),
+        last_observed_at,
         state: state.state,
         exit_code: state.exit_code,
         cleanup: state.cleanup,
@@ -244,7 +294,9 @@ impl LinuxManagedSessions {
             ));
         }
         let id = new_session_id()?;
+        let (started_at, _) = startup_clock()?;
         let entry = Arc::new(Entry {
+            started_at,
             record: Mutex::new(Record {
                 state: SessionState::Running,
                 exit_code: None,
@@ -278,7 +330,7 @@ impl LinuxManagedSessions {
             if active >= MAX_SESSIONS {
                 return Err(io::Error::new(
                     ErrorKind::WouldBlock,
-                    "session capacity reached",
+                    SessionCapacityReached,
                 ));
             }
             registry.entries.insert(id.clone(), Arc::clone(&entry));

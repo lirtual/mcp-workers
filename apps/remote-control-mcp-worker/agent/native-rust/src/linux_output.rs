@@ -1,5 +1,6 @@
 //! Bounded, continuously drained stdout/stderr for the nonproduction Linux
-//! managed-process candidate. This is not yet connected to the signed WSS runner.
+//! managed-process candidate. The non-installable Linux runtime can now
+//! expose bounded pages through receipt-protected, authenticated WSS.
 #![cfg(target_os = "linux")]
 
 use crate::linux_supervisor::SupervisorSession;
