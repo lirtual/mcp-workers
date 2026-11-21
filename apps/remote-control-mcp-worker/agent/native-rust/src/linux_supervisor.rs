@@ -8,7 +8,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -159,6 +159,10 @@ impl SupervisorSession {
 
     pub fn take_stderr(&mut self) -> Option<ChildStderr> {
         self.child.stderr.take()
+    }
+
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.stdin.take()
     }
 
     pub fn wait_for_exit(&mut self, timeout: Duration) -> io::Result<Option<SupervisorExit>> {

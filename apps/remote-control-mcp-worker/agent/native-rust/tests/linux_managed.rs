@@ -293,3 +293,137 @@ fn failed_supervisor_handshake_is_not_missing_from_revocation_accounting() {
     assert_eq!(entries[0].cleanup, Some(CleanupState::Unknown));
     assert_eq!(registry.stop_all(Duration::ZERO), CleanupState::Unknown);
 }
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn stdin_delivers_unicode_to_owned_shell_and_rejects_invalid_input() {
+    use rca_native_agent::linux_managed::InputOutcome;
+    let registry = sessions(Duration::from_secs(5));
+    let started = registry
+        .start("IFS= read -r value; printf '%s' \"$value\"")
+        .unwrap();
+    assert_eq!(
+        registry.write_input(&started.session_id, ""),
+        InputOutcome::Failed
+    );
+    assert_eq!(
+        registry.write_input(&started.session_id, "a\0b"),
+        InputOutcome::Failed
+    );
+    assert_eq!(
+        registry.write_input(&started.session_id, &"x".repeat(8193)),
+        InputOutcome::Failed
+    );
+    assert_eq!(
+        registry.write_input("00000000-0000-4000-8000-000000000000", "text"),
+        InputOutcome::NotFound
+    );
+    assert_eq!(
+        registry.write_input(&started.session_id, "中😀\n"),
+        InputOutcome::Completed
+    );
+    let ended = until_finished(&registry, &started.session_id);
+    assert_eq!(ended.state, SessionState::Completed);
+    let output = registry
+        .read_output(&started.session_id, 0, 100)
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.page.output, "中😀");
+    assert_eq!(
+        registry.write_input(&started.session_id, "late"),
+        InputOutcome::Failed
+    );
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn stalled_stdin_pipe_returns_unknown_within_one_second() {
+    use rca_native_agent::linux_managed::InputOutcome;
+    let registry = sessions(Duration::from_secs(5));
+    let started = registry.start("sleep 30").unwrap();
+    let bytes = "x".repeat(8192);
+    let mut backpressured = false;
+    for _ in 0..128 {
+        let begin = Instant::now();
+        match registry.write_input(&started.session_id, &bytes) {
+            InputOutcome::Completed => continue,
+            InputOutcome::Unknown => {
+                assert!(
+                    begin.elapsed() < Duration::from_millis(1800),
+                    "stdin write exceeded bound"
+                );
+                backpressured = true;
+                break;
+            }
+            outcome => panic!("unexpected write outcome before backpressure: {outcome:?}"),
+        }
+    }
+    assert!(
+        backpressured,
+        "unread pipe must eventually apply backpressure"
+    );
+    assert_eq!(
+        registry.stop_all(Duration::from_secs(5)),
+        CleanupState::Confirmed
+    );
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn contending_stdin_writers_do_not_queue_past_reply_budget() {
+    use rca_native_agent::linux_managed::InputOutcome;
+    use std::sync::Arc;
+
+    let registry = Arc::new(sessions(Duration::from_secs(6)));
+    let started = registry.start("sleep 30").unwrap();
+    let bytes = "x".repeat(8192);
+    let mut filled = false;
+    for _ in 0..128 {
+        if registry.write_input(&started.session_id, &bytes) == InputOutcome::Unknown {
+            filled = true;
+            break;
+        }
+    }
+    assert!(
+        filled,
+        "unread pipe must backpressure before the concurrency test"
+    );
+
+    let first = Arc::clone(&registry);
+    let first_id = started.session_id.clone();
+    let first_bytes = bytes.clone();
+    let writer = std::thread::spawn(move || first.write_input(&first_id, &first_bytes));
+    // Let the first writer enter its bounded poll on the full pipe.
+    std::thread::sleep(Duration::from_millis(80));
+    let begin = Instant::now();
+    assert_eq!(
+        registry.write_input(&started.session_id, &bytes),
+        InputOutcome::Unknown
+    );
+    assert!(
+        begin.elapsed() < Duration::from_millis(400),
+        "contending stdin write waited behind another writer"
+    );
+    assert_eq!(writer.join().unwrap(), InputOutcome::Unknown);
+    assert_eq!(
+        registry.stop_all(Duration::from_secs(5)),
+        CleanupState::Confirmed
+    );
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn revoked_session_rejects_new_stdin_effect() {
+    use rca_native_agent::linux_managed::InputOutcome;
+    let registry = sessions(Duration::from_secs(5));
+    let started = registry.start("sleep 30").unwrap();
+    assert!(registry.request_stop(&started.session_id));
+    assert_eq!(
+        registry.write_input(&started.session_id, "not sent"),
+        InputOutcome::Failed
+    );
+    assert_eq!(
+        registry.stop_all(Duration::from_secs(5)),
+        CleanupState::Confirmed
+    );
+}
