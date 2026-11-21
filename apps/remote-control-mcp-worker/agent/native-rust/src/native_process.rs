@@ -1,8 +1,15 @@
 //! Nonproduction managed process execution behind the existing signed WSS lease.
 //! Every possible side effect must be admitted in the *same* SQLite v1 store
 //! as file mutations. An Unknown receipt is never dispatched a second time.
-#![cfg(any(target_os = "linux", windows))]
+#![cfg(any(target_os = "linux", target_os = "macos", windows))]
 
+#[cfg(target_os = "macos")]
+use crate::darwin_managed::{
+    valid_command_text, CleanupState, DarwinManagedSessions as ManagedSessions, InputOutcome,
+    SessionCapacityReached, SessionSnapshot, SessionState,
+};
+#[cfg(target_os = "macos")]
+use crate::darwin_output::{MAX_OUTPUT_BYTES, MAX_PAGE_BYTES};
 #[cfg(target_os = "linux")]
 use crate::linux_command::valid_command_text;
 #[cfg(target_os = "linux")]

@@ -1,5 +1,7 @@
 //! Nonproduction signed WSS login against the existing RCA Worker interface.
 //! No installed Agent lifecycle, local operation executor, or automatic Owner Grant is provided.
+#[cfg(target_os = "macos")]
+use crate::darwin_managed::{CleanupState, DarwinManagedSessions as ManagedSessions};
 use crate::identity::{signed_session_proof, valid_device_id};
 #[cfg(target_os = "linux")]
 use crate::linux_managed::LinuxManagedSessions as ManagedSessions;
@@ -377,7 +379,7 @@ impl AuthenticatedSocket {
     /// Managed process+file candidate. Owner cleanup closes native process
     /// admission and reports Confirmed only after each owned OS process has
     /// independently reached a confirmed state inside the Worker's ACK budget.
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub fn pump_native_managed(
         &mut self,
         stop: &Arc<AtomicBool>,
@@ -465,7 +467,7 @@ impl AuthenticatedSocket {
                     FramePolicy::NativeFiles => {
                         crate::native_file::parse_native_file_frame(&frame).is_ok()
                     }
-                    #[cfg(any(target_os = "linux", windows))]
+                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                     FramePolicy::NativeManaged(_) => {
                         crate::native_file::parse_native_managed_frame(&frame).is_ok()
                     }
@@ -574,7 +576,7 @@ enum FramePolicy {
     Any,
     ReadOnly,
     NativeFiles,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     NativeManaged(Arc<ManagedSessions>),
 }
 
@@ -656,13 +658,13 @@ pub fn maintain_native_file_transport(
     )
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub struct ManagedTransportConfig {
     pub timing: HeartbeatTiming,
     pub managed: Arc<ManagedSessions>,
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn maintain_native_managed_transport(
     endpoint: &str,
     private_pem: &str,
@@ -705,7 +707,7 @@ fn maintain_transport_mode(
                     FramePolicy::Any => socket.pump(stop, incoming, outgoing),
                     FramePolicy::ReadOnly => socket.pump_native_read(stop, incoming, outgoing),
                     FramePolicy::NativeFiles => socket.pump_native_file(stop, incoming, outgoing),
-                    #[cfg(any(target_os = "linux", windows))]
+                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
                     FramePolicy::NativeManaged(managed) => {
                         socket.pump_native_managed(stop, incoming, outgoing, managed)
                     }
