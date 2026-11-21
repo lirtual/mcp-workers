@@ -101,11 +101,13 @@ pub fn run_disposable_file_session(
 
 // This is the Gate 1 native file-session candidate. The older disposable
 // Gate 0 probe above remains an isolated regression fixture until migration.
+#[cfg(target_os = "macos")]
+use crate::darwin_managed::{CleanupState, DarwinManagedSessions as ManagedSessions};
 #[cfg(target_os = "linux")]
 use crate::linux_managed::LinuxManagedSessions as ManagedSessions;
 #[cfg(target_os = "linux")]
 use crate::linux_supervisor::CleanupState;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::native_process::{self, NativeProcessEngine, ProcessRead};
 use crate::native_read::{self, ReadCommand};
 use crate::native_search::{self, SearchFrame, SearchSessions};
@@ -129,12 +131,12 @@ pub(crate) enum NativeFileCommand {
         request_id: String,
         operation_id: String,
     },
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     ProcessRead {
         request_id: String,
         read: ProcessRead,
     },
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     ProcessMutation {
         request_id: String,
         operation_id: String,
@@ -225,7 +227,7 @@ pub(crate) fn parse_native_file_frame(frame: &str) -> Result<NativeFileCommand, 
 
 /// The extended policy admits process frames only in an explicit platform
 /// nonproduction managed runtime. The existing file-only policy is unchanged.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn parse_native_managed_frame(frame: &str) -> Result<NativeFileCommand, ()> {
     if let Ok(file) = parse_native_file_frame(frame) {
         return Ok(file);
@@ -281,26 +283,30 @@ pub enum NativeFileError {
     Queue,
     #[error("native file executor panicked")]
     Panicked,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[error("native managed-session cleanup remains uncertain")]
     CleanupUncertain,
 }
 
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
-    #[cfg(any(target_os = "linux", windows))] managed: Option<Arc<ManagedSessions>>,
-    #[cfg(any(target_os = "linux", windows))] cleanup_ready: Option<Receiver<()>>,
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))] managed: Option<
+        Arc<ManagedSessions>,
+    >,
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))] cleanup_ready: Option<
+        Receiver<()>,
+    >,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
     replies: &SyncSender<ExecutionResponse>,
 ) -> Result<(), NativeFileError> {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let mut processes = managed.map(NativeProcessEngine::new);
     let mut searches = SearchSessions::default();
     while !stop.load(Ordering::Acquire) {
         // Expire idle cursors even if the Owner never sends another request.
         searches.expire();
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if let Some(process) = processes.as_mut() {
             process
                 .reconcile(writes.receipt_store_mut())
@@ -314,14 +320,14 @@ fn execute_native_file(
         let Some(frame) = request.frame_if_active() else {
             continue;
         };
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         let command = if processes.is_some() {
             parse_native_managed_frame(frame)
         } else {
             parse_native_file_frame(frame)
         }
         .map_err(|_| NativeFileError::Policy)?;
-        #[cfg(not(any(target_os = "linux", windows)))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let command = parse_native_file_frame(frame).map_err(|_| NativeFileError::Policy)?;
         if !request.lease().is_active() {
             continue;
@@ -370,7 +376,7 @@ fn execute_native_file(
                 json!({"kind":"operation_result","request_id":request_id,
                     "result":{"operation_id":operation_id,"status":outcome.state,"receipt":outcome.receipt}}).to_string()
             }
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             NativeFileCommand::ProcessRead { request_id, read } => {
                 native_process::execute_process_read(
                     &processes.as_ref().ok_or(NativeFileError::Policy)?.sessions,
@@ -378,7 +384,7 @@ fn execute_native_file(
                     &read,
                 )
             }
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             NativeFileCommand::ProcessMutation {
                 request_id,
                 operation_id,
@@ -431,11 +437,11 @@ fn execute_native_file(
     }
     // Do not close the one SQLite receipt owner until native group cleanup has
     // finished. A stop flag alone does not prove the OS-owned job has exited.
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(ready) = cleanup_ready {
         let _ = ready.recv();
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(process) = processes.as_mut() {
         process
             .reconcile(writes.receipt_store_mut())
@@ -463,9 +469,9 @@ pub fn run_native_file_session(
     let worker = std::thread::spawn(move || {
         let result = execute_native_file(
             writes,
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             None,
-            #[cfg(any(target_os = "linux", windows))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             None,
             &worker_stop,
             &requests,
@@ -492,10 +498,10 @@ pub fn run_native_file_session(
     Ok(())
 }
 
-/// Non-installable Linux/Windows candidate: one SQLite receipt owner serves
+/// Non-installable Linux/macOS/Windows candidate: one SQLite receipt owner serves
 /// both file and process mutations, using platform-owned process isolation.
 /// No installed identity, production URL or advertised capability.
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub fn run_native_managed_session(
     endpoint: &str,
     private_pem: &str,

@@ -1,8 +1,14 @@
-//! Linux process/SQLite compatibility against the independent Node Agent
+//! Unix process/SQLite compatibility against the independent Node Agent
 //! receipt contract and a disposable, actual C-supervised shell.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
-use rca_native_agent::linux_managed::{LinuxManagedSessions, SessionState};
+#[cfg(target_os = "macos")]
+use rca_native_agent::darwin_managed::{
+    CleanupState, DarwinManagedSessions as ManagedSessions, SessionState,
+};
+#[cfg(target_os = "linux")]
+use rca_native_agent::linux_managed::{LinuxManagedSessions as ManagedSessions, SessionState};
+#[cfg(target_os = "linux")]
 use rca_native_agent::linux_supervisor::CleanupState;
 use rca_native_agent::native_process::{
     execute_process_read, parse_process_mutation, parse_process_read, NativeProcessEngine,
@@ -14,12 +20,16 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-fn sessions() -> Arc<LinuxManagedSessions> {
+fn sessions() -> Arc<ManagedSessions> {
+    #[cfg(target_os = "linux")]
     let helper = std::env::var("RCA_NATIVE_SUPERVISOR_BIN")
-        .expect("explicit C supervisor required for physical process tests");
+        .expect("explicit Linux C supervisor required for physical process tests");
+    #[cfg(target_os = "macos")]
+    let helper = std::env::var("RCA_DARWIN_SUPERVISOR_BIN")
+        .expect("explicit Darwin C supervisor required for physical process tests");
     assert!(Path::new(&helper).is_file());
     Arc::new(
-        LinuxManagedSessions::new(
+        ManagedSessions::new(
             Path::new(&helper),
             Path::new("/bin/sh"),
             Duration::from_secs(10),
@@ -122,7 +132,7 @@ fn parses_node_process_arguments_and_rejects_protocol_smuggling() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn digest_goldens_match_node_24_normalized_process_args() {
     let root = receipt_dir();
     let mut receipts = ReceiptStore::open(root.path()).unwrap();
@@ -176,7 +186,7 @@ fn digest_goldens_match_node_24_normalized_process_args() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn start_input_exit_receipt_and_same_id_never_replay() {
     let root = receipt_dir();
     let mut receipts = ReceiptStore::open(root.path()).unwrap();
@@ -304,7 +314,7 @@ fn start_input_exit_receipt_and_same_id_never_replay() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn interrupted_running_receipt_recovers_unknown_without_replay() {
     let root = receipt_dir();
     let registry = sessions();
@@ -345,7 +355,7 @@ fn interrupted_running_receipt_recovers_unknown_without_replay() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn revoked_lease_cannot_launch_or_write_and_keeps_known_no_effect() {
     let root = receipt_dir();
     let mut receipts = ReceiptStore::open(root.path()).unwrap();
@@ -403,7 +413,7 @@ fn revoked_lease_cannot_launch_or_write_and_keeps_known_no_effect() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn owned_terminate_waits_for_confirmed_cleanup() {
     let root = receipt_dir();
     let mut receipts = ReceiptStore::open(root.path()).unwrap();
@@ -439,7 +449,7 @@ fn owned_terminate_waits_for_confirmed_cleanup() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn missing_managed_session_does_not_consume_receipts() {
     let root = receipt_dir();
     let mut receipts = ReceiptStore::open(root.path()).unwrap();
@@ -469,7 +479,7 @@ fn missing_managed_session_does_not_consume_receipts() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn max_output_page_is_adapted_to_bounded_wss_frame() {
     let root = receipt_dir();
     let mut receipts = ReceiptStore::open(root.path()).unwrap();

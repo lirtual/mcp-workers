@@ -1,8 +1,10 @@
-//! Bounded, continuously drained stdout/stderr for the nonproduction Linux
-//! managed-process candidate. The non-installable Linux runtime can now
-//! expose bounded pages through receipt-protected, authenticated WSS.
-#![cfg(target_os = "linux")]
+//! Bounded, continuously drained stdout/stderr for nonproduction Unix
+//! managed commands. EOF is verified independently from OS process cleanup.
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
+#[cfg(target_os = "macos")]
+use crate::darwin_supervisor::DarwinSupervisorSession as SupervisorSession;
+#[cfg(target_os = "linux")]
 use crate::linux_supervisor::SupervisorSession;
 use std::io::{self, ErrorKind, Read};
 use std::os::fd::AsRawFd;

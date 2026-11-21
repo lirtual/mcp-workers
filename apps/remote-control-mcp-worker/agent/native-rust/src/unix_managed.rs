@@ -1,10 +1,19 @@
-//! Nonproduction Linux managed-session registry. It is deliberately not a WSS
-//! executor: durable receipt admission and Owner authorization must precede
-//! any future dispatch into this registry.
-#![cfg(target_os = "linux")]
+//! Nonproduction Unix managed-session registry shared by Linux and Darwin.
+//! Durable receipt admission and Owner authorization precede all dispatch.
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
+#[cfg(target_os = "macos")]
+use crate::darwin_output::{BoundedProcessOutput, OutputPage};
+#[cfg(target_os = "macos")]
+use crate::darwin_supervisor::{
+    DarwinSupervisorExit as SupervisorExit, DarwinSupervisorSession as SupervisorSession,
+    GroupCleanup,
+};
+#[cfg(target_os = "linux")]
 use crate::linux_command::valid_command_text;
+#[cfg(target_os = "linux")]
 use crate::linux_output::{BoundedProcessOutput, OutputPage};
+#[cfg(target_os = "linux")]
 use crate::linux_supervisor::{CleanupState, SupervisorExit, SupervisorSession};
 use std::collections::HashMap;
 use std::io::{self, ErrorKind, Write};
@@ -15,6 +24,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(target_os = "macos")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanupState {
+    Confirmed,
+    Unknown,
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn valid_command_text(command: &str) -> bool {
+    !command.is_empty()
+        && !command.contains(char::from(0))
+        && command.encode_utf16().take(8193).count() <= 8192
+}
+
+#[cfg(target_os = "macos")]
+fn exit_cleanup(exit: &SupervisorExit) -> CleanupState {
+    match exit.group_cleanup {
+        GroupCleanup::OwnedGroupStopped => CleanupState::Confirmed,
+        GroupCleanup::Unknown => CleanupState::Unknown,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn exit_cleanup(exit: &SupervisorExit) -> CleanupState {
+    exit.cleanup
+}
 
 const MAX_SESSIONS: usize = 10;
 const MAX_HISTORY: usize = 10;
@@ -91,14 +127,19 @@ struct Registry {
     entries: HashMap<String, Arc<Entry>>,
 }
 
-/// At most ten owned live/uncertain Linux commands. Completed history is
+/// At most ten owned live/uncertain Unix commands. Completed history is
 /// bounded independently, and an unknown cleanup never frees active capacity.
-pub struct LinuxManagedSessions {
+pub struct UnixManagedSessions {
     helper: PathBuf,
     shell: PathBuf,
     lifetime: Duration,
     inner: Mutex<Registry>,
 }
+
+#[cfg(target_os = "linux")]
+pub type LinuxManagedSessions = UnixManagedSessions;
+#[cfg(target_os = "macos")]
+pub type DarwinManagedSessions = UnixManagedSessions;
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
@@ -119,7 +160,7 @@ fn new_session_id() -> io::Result<String> {
 }
 
 /// Format the same ISO-8601 UTC startup timestamp as Node, using the
-/// existing Linux libc instead of introducing a second date library.
+/// platform libc instead of introducing a second date library.
 fn startup_clock() -> io::Result<(String, u64)> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -199,8 +240,9 @@ fn supervise(mut supervisor: SupervisorSession, entry: Arc<Entry>, deadline: Ins
     match outcome {
         Ok(exit) => {
             state.exit_code = exit.status.code();
-            state.cleanup = Some(exit.cleanup);
-            state.state = if exit.cleanup == CleanupState::Unknown {
+            let cleanup = exit_cleanup(&exit);
+            state.cleanup = Some(cleanup);
+            state.state = if cleanup == CleanupState::Unknown {
                 SessionState::Unknown
             } else if expired {
                 SessionState::Failed
@@ -231,7 +273,7 @@ fn mark_uncertain(entry: &Entry) {
     record.finished_at = Some(Instant::now());
 }
 
-impl LinuxManagedSessions {
+impl UnixManagedSessions {
     pub fn new(helper: &Path, shell: &Path, lifetime: Duration) -> io::Result<Self> {
         if !helper.is_absolute()
             || !shell.is_absolute()
@@ -378,7 +420,7 @@ impl LinuxManagedSessions {
         let worker = Arc::clone(&entry);
         let deadline = spawned_at + self.lifetime;
         if let Err(error) = thread::Builder::new()
-            .name("rca-owned-linux-session".to_owned())
+            .name("rca-owned-unix-session".to_owned())
             .spawn(move || supervise(supervisor, worker, deadline))
         {
             // The closure has dropped the supervisor; its cleanup cannot be
@@ -571,7 +613,7 @@ impl LinuxManagedSessions {
     }
 }
 
-impl Drop for LinuxManagedSessions {
+impl Drop for UnixManagedSessions {
     fn drop(&mut self) {
         let registry = lock(&self.inner);
         for entry in registry.entries.values() {

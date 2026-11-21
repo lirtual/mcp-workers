@@ -1,9 +1,12 @@
-//! Signed rc-v2 loopback: one SQLite owner, owned C-supervised command,
+//! Signed rc-v2 Unix loopback: one SQLite owner, OS-owned command,
 //! no-replay operation receipts, and truthful Owner cleanup acknowledgements.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 mod common;
 
-use rca_native_agent::linux_managed::LinuxManagedSessions;
+#[cfg(target_os = "macos")]
+use rca_native_agent::darwin_managed::{DarwinManagedSessions as ManagedSessions, SessionState};
+#[cfg(target_os = "linux")]
+use rca_native_agent::linux_managed::{LinuxManagedSessions as ManagedSessions, SessionState};
 use rca_native_agent::native_file::{run_native_managed_session, NativeFileError};
 use rca_native_agent::receipts::ReceiptStore;
 use rca_native_agent::session::{HeartbeatTiming, SessionError};
@@ -21,11 +24,50 @@ use tungstenite::protocol::{Message, WebSocket};
 
 const DEVICE_ID: &str = "f4e1e64e-1e72-410e-8b51-181818181818";
 
-fn managed() -> Arc<LinuxManagedSessions> {
-    let helper = std::env::var("RCA_NATIVE_SUPERVISOR_BIN").expect("real C helper required");
+struct StopOnPanic(Arc<AtomicBool>);
+impl Drop for StopOnPanic {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn accept_disposable(listener: &TcpListener) -> TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                return stream;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    Instant::now() < deadline,
+                    "disposable Worker never connected"
+                );
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => panic!("disposable Worker accept failed: {error}"),
+        }
+    }
+}
+
+fn managed() -> Arc<ManagedSessions> {
+    #[cfg(target_os = "linux")]
+    let helper = std::env::var("RCA_NATIVE_SUPERVISOR_BIN").expect("real Linux C helper required");
+    #[cfg(target_os = "macos")]
+    let helper = std::env::var("RCA_DARWIN_SUPERVISOR_BIN").expect("real Darwin C helper required");
     assert!(Path::new(&helper).is_file());
     Arc::new(
-        LinuxManagedSessions::new(
+        ManagedSessions::new(
             Path::new(&helper),
             Path::new("/bin/sh"),
             Duration::from_secs(10),
@@ -62,9 +104,9 @@ fn challenge(mut stream: TcpStream) {
 
 #[allow(clippy::result_large_err)]
 fn signed_socket(listener: TcpListener) -> WebSocket<TcpStream> {
-    let (http, _) = listener.accept().unwrap();
+    let http = accept_disposable(&listener);
     challenge(http);
-    let (ws, _) = listener.accept().unwrap();
+    let ws = accept_disposable(&listener);
     ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     tungstenite::accept_hdr(ws, |req: &Request, mut resp: Response| {
         assert!(req
@@ -100,15 +142,16 @@ fn read(socket: &mut WebSocket<TcpStream>, tool: &str, args: Value) -> Value {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn signed_managed_process_start_input_read_receipt_and_revoke() {
     let root = tempfile::tempdir().unwrap();
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let stop = Arc::new(AtomicBool::new(false));
-    let end = Arc::clone(&stop);
+    let server_stop = Arc::clone(&stop);
     let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
         let args = json!({"command":"IFS= read -r v; printf '%s' \"$v\"","timeout_ms":0});
         let first = reply(
@@ -190,7 +233,7 @@ fn signed_managed_process_start_input_read_receipt_and_revoke() {
             .to_string(),
         );
         assert_eq!(revoke["status"], "confirmed");
-        end.store(true, Ordering::Release);
+        server_stop.store(true, Ordering::Release);
     });
     let registry = managed();
     let result = run_native_managed_session(
@@ -217,13 +260,16 @@ fn signed_managed_process_start_input_read_receipt_and_revoke() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn owner_revoke_terminates_active_owned_descendants_before_confirmed_ack() {
     let root = tempfile::tempdir().unwrap();
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
     let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
         let start = reply(
             &mut socket,
@@ -243,7 +289,6 @@ fn owner_revoke_terminates_active_owned_descendants_before_confirmed_ack() {
         assert_eq!(ack["status"], "confirmed");
     });
     let registry = managed();
-    let stop = Arc::new(AtomicBool::new(false));
     let result = run_native_managed_session(
         &endpoint,
         &common::test_pem(),
@@ -261,7 +306,7 @@ fn owner_revoke_terminates_active_owned_descendants_before_confirmed_ack() {
     assert!(registry
         .list()
         .iter()
-        .all(|entry| entry.state != rca_native_agent::linux_managed::SessionState::Running));
+        .all(|entry| entry.state != SessionState::Running));
     let receipt = ReceiptStore::open(&receipt_dir)
         .unwrap()
         .get("p-wss-revoke")
@@ -274,13 +319,16 @@ fn owner_revoke_terminates_active_owned_descendants_before_confirmed_ack() {
 }
 
 #[test]
-#[ignore = "requires disposable Ubuntu and native C helper"]
+#[ignore = "requires disposable Unix runner and platform C helper"]
 fn malformed_process_operation_stays_forbidden_with_policy_close_1008() {
     let root = tempfile::tempdir().unwrap();
     let receipt_dir = root.path().join("receipts");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
     let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
         socket
             .send(Message::Text(
@@ -301,7 +349,6 @@ fn malformed_process_operation_stays_forbidden_with_policy_close_1008() {
         }
     });
     let registry = managed();
-    let stop = Arc::new(AtomicBool::new(false));
     let result = run_native_managed_session(
         &endpoint,
         &common::test_pem(),
