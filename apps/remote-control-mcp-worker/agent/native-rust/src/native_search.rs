@@ -4,7 +4,11 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
+#[cfg(target_os = "linux")]
+use std::fs::{File, ReadDir};
 use std::io::Read;
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -26,6 +30,19 @@ const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MATCH_CHARS: usize = 240;
 const MAX_LINE_CHARS: usize = 16_384;
 const MAX_WIRE_BYTES: usize = 65_536;
+
+// Open a directory without following a replaced symlink; enumerate the stable
+// descriptor, not its mutable path. /proc/self/fd is an OS-owned fd reference.
+#[cfg(target_os = "linux")]
+fn open_directory_secure(path: &Path) -> Result<(File, ReadDir), ()> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+    let handle = options.open(path).map_err(|_| ())?;
+    let entries = fs::read_dir(format!("/proc/self/fd/{}", handle.as_raw_fd())).map_err(|_| ())?;
+    Ok((handle, entries))
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum SearchType {
@@ -170,15 +187,20 @@ struct Scan<'a> {
     deadline: Instant,
     cancelled: &'a AtomicBool,
     sender: &'a SyncSender<Event>,
+    truncated_flag: &'a AtomicBool,
     counts: Counts,
 }
 impl Scan<'_> {
+    fn mark_truncated(&mut self) {
+        self.counts.truncated = true;
+        self.truncated_flag.store(true, Ordering::Release);
+    }
     fn active(&mut self) -> bool {
         if self.cancelled.load(Ordering::Acquire) {
             return false;
         }
         if Instant::now() >= self.deadline || self.counts.bytes >= MAX_TOTAL_BYTES {
-            self.counts.truncated = true;
+            self.mark_truncated();
             return false;
         }
         true
@@ -189,7 +211,7 @@ impl Scan<'_> {
             return false;
         }
         if self.counts.matches >= MAX_RESULTS {
-            self.counts.truncated = true;
+            self.mark_truncated();
             return false;
         }
         self.active()
@@ -197,7 +219,7 @@ impl Scan<'_> {
     fn content(&mut self, path: &Path, relative: &str, pattern: &str) -> Result<bool, ()> {
         let info = fs::metadata(path).map_err(|_| ())?;
         if info.len() > MAX_FILE_BYTES as u64 {
-            self.counts.truncated = true;
+            self.mark_truncated();
             return Ok(true);
         }
         let mut options = OpenOptions::new();
@@ -210,7 +232,7 @@ impl Scan<'_> {
             return Ok(true);
         }
         if info.len() > MAX_FILE_BYTES as u64 {
-            self.counts.truncated = true;
+            self.mark_truncated();
             return Ok(true);
         }
         // Bound memory even when a regular file grows between stat and read.
@@ -220,12 +242,12 @@ impl Scan<'_> {
             .read_to_end(&mut bytes)
             .map_err(|_| ())?;
         if bytes.len() > MAX_FILE_BYTES {
-            self.counts.truncated = true;
+            self.mark_truncated();
             return Ok(true);
         }
         self.counts.bytes += bytes.len();
         if self.counts.bytes > MAX_TOTAL_BYTES {
-            self.counts.truncated = true;
+            self.mark_truncated();
             return Ok(false);
         }
         let decoded = String::from_utf8_lossy(&bytes);
@@ -236,7 +258,7 @@ impl Scan<'_> {
             let line = line.strip_suffix('\n').unwrap_or(line);
             let line = line.strip_suffix('\r').unwrap_or(line);
             if line.encode_utf16().count() > MAX_LINE_CHARS {
-                self.counts.truncated = true;
+                self.mark_truncated();
                 continue;
             }
             if !line.contains(pattern) {
@@ -279,13 +301,17 @@ impl Scan<'_> {
         if !info.file_type().is_dir() {
             return Err(());
         }
-        for entry in fs::read_dir(directory).map_err(|_| ())? {
+        #[cfg(target_os = "linux")]
+        let (_directory_handle, entries) = open_directory_secure(directory)?;
+        #[cfg(not(target_os = "linux"))]
+        let entries = fs::read_dir(directory).map_err(|_| ())?;
+        for entry in entries {
             if !self.active() {
                 return Ok(false);
             }
             self.counts.entries += 1;
             if self.counts.entries > MAX_ENTRIES {
-                self.counts.truncated = true;
+                self.mark_truncated();
                 return Ok(false);
             }
             let entry = entry.map_err(|_| ())?;
@@ -318,6 +344,7 @@ impl Scan<'_> {
 struct Cursor {
     receiver: Receiver<Event>,
     cancel: Arc<AtomicBool>,
+    truncated_flag: Arc<AtomicBool>,
     created: Instant,
     pending: Option<Hit>,
 }
@@ -347,7 +374,7 @@ impl Default for SearchSessions {
     }
 }
 impl SearchSessions {
-    fn expire(&mut self) {
+    pub(crate) fn expire(&mut self) {
         self.cursors.retain(|_, c| c.created.elapsed() < self.ttl);
     }
     fn new_id() -> Result<String, SearchError> {
@@ -379,6 +406,8 @@ impl SearchSessions {
         let (sender, receiver) = mpsc::sync_channel(1);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
+        let truncated_flag = Arc::new(AtomicBool::new(false));
+        let worker_truncated = Arc::clone(&truncated_flag);
         std::thread::Builder::new()
             .name("rca-native-search".into())
             .spawn(move || {
@@ -386,6 +415,7 @@ impl SearchSessions {
                     deadline: Instant::now() + SCAN_TIME,
                     cancelled: &worker_cancel,
                     sender: &sender,
+                    truncated_flag: &worker_truncated,
                     counts: Counts::default(),
                 };
                 let outcome = scan.walk(&path, Path::new(""), 1, &pattern, kind);
@@ -403,6 +433,7 @@ impl SearchSessions {
             Cursor {
                 receiver,
                 cancel,
+                truncated_flag,
                 created: Instant::now(),
                 pending: None,
             },
@@ -448,6 +479,7 @@ impl SearchSessions {
             }
         }
         let has_more = !finished && (waiting || cursor.pending.is_some());
+        let truncated = truncated || cursor.truncated_flag.load(Ordering::Acquire);
         let page = Page {
             results,
             has_more,
@@ -721,6 +753,7 @@ mod tests {
             deadline: Instant::now() - Duration::from_secs(1),
             cancelled: &cancelled,
             sender: &sender,
+            truncated_flag: &cancelled,
             counts: Counts::default(),
         };
         assert_eq!(
@@ -734,5 +767,82 @@ mod tests {
             Ok(false)
         );
         assert!(scan.counts.truncated);
+    }
+
+    #[test]
+    fn expiry_releases_idle_cursor_without_a_followup_request() {
+        let root = tempfile::tempdir().unwrap();
+        for n in 0..30 {
+            fs::write(root.path().join(format!("match-{n}.txt")), "ok").unwrap();
+        }
+        let mut s = SearchSessions::default();
+        let first = start(&mut s, root.path(), "match", "filename");
+        let cursor = first["session_id"].as_str().unwrap().to_owned();
+        s.ttl = Duration::from_millis(1);
+        thread::sleep(Duration::from_millis(5));
+        // The file executor calls expire() each 100ms even with no new frame.
+        s.expire();
+        assert!(s.cursors.is_empty());
+        assert_eq!(
+            call(
+                &mut s,
+                "get_more_search_results",
+                json!({"session_id":cursor})
+            )["status"],
+            "failed"
+        );
+    }
+
+    #[test]
+    fn running_page_reports_shared_truncation_before_done_event() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let producer = thread::spawn(move || {
+            for n in 0..21 {
+                if sender
+                    .send(Event::Match(Hit::Path {
+                        path: format!("hit-{n}"),
+                    }))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        let id = SearchSessions::new_id().unwrap();
+        let mut s = SearchSessions::default();
+        s.cursors.insert(
+            id.clone(),
+            Cursor {
+                receiver,
+                cancel: Arc::new(AtomicBool::new(false)),
+                truncated_flag: Arc::new(AtomicBool::new(true)),
+                created: Instant::now(),
+                pending: None,
+            },
+        );
+        let result = s.page(&id).unwrap();
+        assert!(result.has_more);
+        assert!(result.truncated);
+        assert_eq!(result.results.len(), PAGE_SIZE);
+        s.stop(&id).unwrap();
+        producer.join().unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn opened_directory_handle_cannot_be_redirected_to_symlink() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let inner = root.path().join("inner");
+        fs::create_dir(&inner).unwrap();
+        fs::write(inner.join("inside.txt"), "inside").unwrap();
+        fs::write(outside.path().join("outside.txt"), "outside").unwrap();
+        let (_handle, entries) = open_directory_secure(&inner).unwrap();
+        fs::rename(&inner, root.path().join("renamed")).unwrap();
+        symlink(outside.path(), &inner).unwrap();
+        let names: Vec<_> = entries.map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("inside.txt")]);
+        assert!(open_directory_secure(&inner).is_err());
     }
 }

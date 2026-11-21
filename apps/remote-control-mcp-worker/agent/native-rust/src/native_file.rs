@@ -294,6 +294,8 @@ fn execute_native_file(
     let mut processes = managed.map(NativeProcessEngine::new);
     let mut searches = SearchSessions::default();
     while !stop.load(Ordering::Acquire) {
+        // Expire idle cursors even if the Owner never sends another request.
+        searches.expire();
         #[cfg(target_os = "linux")]
         if let Some(process) = processes.as_mut() {
             process
