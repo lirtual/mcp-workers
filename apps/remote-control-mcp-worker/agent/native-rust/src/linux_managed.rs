@@ -3,6 +3,7 @@
 //! any future dispatch into this registry.
 #![cfg(target_os = "linux")]
 
+use crate::linux_command::valid_command_text;
 use crate::linux_output::{BoundedProcessOutput, OutputPage};
 use crate::linux_supervisor::{CleanupState, SupervisorExit, SupervisorSession};
 use std::collections::HashMap;
@@ -51,16 +52,15 @@ struct Record {
     finished_at: Option<Instant>,
 }
 
-#[derive(Clone)]
 struct Entry {
-    record: Arc<Mutex<Record>>,
-    output: Arc<Mutex<BoundedProcessOutput>>,
-    stop: Arc<AtomicBool>,
+    record: Mutex<Record>,
+    output: Mutex<Option<BoundedProcessOutput>>,
+    stop: AtomicBool,
 }
 
 struct Registry {
     closed: bool,
-    entries: HashMap<String, Entry>,
+    entries: HashMap<String, Arc<Entry>>,
 }
 
 /// At most ten owned live/uncertain Linux commands. Completed history is
@@ -74,12 +74,6 @@ pub struct LinuxManagedSessions {
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
-}
-
-fn valid_command(command: &str) -> bool {
-    !command.is_empty()
-        && !command.contains('\0')
-        && command.encode_utf16().take(8193).count() <= 8192
 }
 
 fn new_session_id() -> io::Result<String> {
@@ -107,7 +101,7 @@ fn snapshot(id: &str, entry: &Entry) -> SessionSnapshot {
     }
 }
 
-fn supervise(mut supervisor: SupervisorSession, entry: Entry, deadline: Instant) {
+fn supervise(mut supervisor: SupervisorSession, entry: Arc<Entry>, deadline: Instant) {
     let (stopped, expired, outcome): (bool, bool, io::Result<SupervisorExit>) = loop {
         // Reconcile an already-reaped command before applying a later stop or
         // deadline; output-pipe EOF alone is never this evidence.
@@ -133,7 +127,9 @@ fn supervise(mut supervisor: SupervisorSession, entry: Entry, deadline: Instant)
     // The reader threads must be stopped before a finished snapshot is visible.
     // Inherited pipe FDs may outlive the supervised process; output EOF alone
     // never marks a process completed.
-    lock(&entry.output).stop();
+    if let Some(output) = lock(&entry.output).as_mut() {
+        output.stop();
+    }
     let mut state = lock(&entry.record);
     state.deadline_exceeded = expired;
     state.finished_at = Some(Instant::now());
@@ -156,6 +152,19 @@ fn supervise(mut supervisor: SupervisorSession, entry: Entry, deadline: Instant)
             state.cleanup = Some(CleanupState::Unknown);
         }
     }
+}
+
+/// If a native command may have started but cannot be registered or
+/// monitored, never free its capacity or claim Owner cleanup was confirmed.
+fn mark_uncertain(entry: &Entry) {
+    entry.stop.store(true, Ordering::Release);
+    if let Some(output) = lock(&entry.output).as_mut() {
+        output.stop();
+    }
+    let mut record = lock(&entry.record);
+    record.state = SessionState::Unknown;
+    record.cleanup = Some(CleanupState::Unknown);
+    record.finished_at = Some(Instant::now());
 }
 
 impl LinuxManagedSessions {
@@ -210,70 +219,120 @@ impl LinuxManagedSessions {
         }
     }
 
-    /// Launch a command using the already-audited native supervisor. Returns
-    /// after the helper readiness handshake, without waiting for process exit.
-    /// The registry lock serializes startup with revocation and capacity checks.
+    /// Reserve an owned session before touching the OS. Startup does not
+    /// hold the registry lock: concurrent revocation can close admission and
+    /// see the pending session even during a slow supervisor handshake.
     pub fn start(&self, command: &str) -> io::Result<SessionSnapshot> {
-        if !valid_command(command) {
+        if !valid_command_text(command) {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 "invalid command text",
             ));
         }
-        let mut registry = lock(&self.inner);
-        Self::prune(&mut registry);
-        if registry.closed {
-            return Err(io::Error::new(
-                ErrorKind::PermissionDenied,
-                "sessions closed",
-            ));
-        }
-        let active = registry
-            .entries
-            .values()
-            .filter(|entry| {
-                matches!(
-                    lock(&entry.record).state,
-                    SessionState::Running | SessionState::Unknown
-                )
-            })
-            .count();
-        if active >= MAX_SESSIONS {
-            return Err(io::Error::new(
-                ErrorKind::WouldBlock,
-                "session capacity reached",
-            ));
-        }
-
         let id = new_session_id()?;
-        let spawned_at = Instant::now();
-        let mut supervisor = SupervisorSession::start(&self.helper, &self.shell, command)?;
-        let output = Arc::new(Mutex::new(BoundedProcessOutput::attach(&mut supervisor)?));
-        let entry = Entry {
-            record: Arc::new(Mutex::new(Record {
+        let entry = Arc::new(Entry {
+            record: Mutex::new(Record {
                 state: SessionState::Running,
                 exit_code: None,
                 cleanup: None,
                 deadline_exceeded: false,
                 finished_at: None,
-            })),
-            output,
-            stop: Arc::new(AtomicBool::new(false)),
+            }),
+            output: Mutex::new(None),
+            stop: AtomicBool::new(false),
+        });
+        {
+            let mut registry = lock(&self.inner);
+            Self::prune(&mut registry);
+            if registry.closed {
+                return Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "sessions closed",
+                ));
+            }
+            let active = registry
+                .entries
+                .values()
+                .filter(|entry| {
+                    matches!(
+                        lock(&entry.record).state,
+                        SessionState::Running | SessionState::Unknown
+                    )
+                })
+                .count();
+            if active >= MAX_SESSIONS {
+                return Err(io::Error::new(
+                    ErrorKind::WouldBlock,
+                    "session capacity reached",
+                ));
+            }
+            registry.entries.insert(id.clone(), Arc::clone(&entry));
+        }
+
+        if entry.stop.load(Ordering::Acquire) {
+            let mut record = lock(&entry.record);
+            record.state = SessionState::Failed;
+            record.cleanup = Some(CleanupState::Confirmed); // No native launch.
+            record.finished_at = Some(Instant::now());
+            return Err(io::Error::new(
+                ErrorKind::Interrupted,
+                "session revoked before launch",
+            ));
+        }
+
+        let spawned_at = Instant::now();
+        let mut supervisor = match SupervisorSession::start(&self.helper, &self.shell, command) {
+            Ok(supervisor) => supervisor,
+            Err(error) => {
+                // The supervisor handshake can fail after its OS process has
+                // already launched. Its Drop is best effort, not proof of reap.
+                mark_uncertain(&entry);
+                return Err(error);
+            }
         };
-        let response = snapshot(&id, &entry);
-        let worker = entry.clone();
+        let output = match BoundedProcessOutput::attach(&mut supervisor) {
+            Ok(output) => output,
+            Err(error) => {
+                let _ = supervisor.close_control_and_wait(Duration::from_secs(5));
+                mark_uncertain(&entry);
+                return Err(error);
+            }
+        };
+        *lock(&entry.output) = Some(output);
+        let worker = Arc::clone(&entry);
         let deadline = spawned_at + self.lifetime;
-        thread::Builder::new()
+        if let Err(error) = thread::Builder::new()
             .name("rca-owned-linux-session".to_owned())
-            .spawn(move || supervise(supervisor, worker, deadline))?;
-        registry.entries.insert(id, entry);
-        Ok(response)
+            .spawn(move || supervise(supervisor, worker, deadline))
+        {
+            // The closure has dropped the supervisor; its cleanup cannot be
+            // independently verified, so preserve an Unknown owned entry.
+            mark_uncertain(&entry);
+            return Err(error);
+        }
+        if entry.stop.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                ErrorKind::Interrupted,
+                "session revoked during launch",
+            ));
+        }
+        Ok(snapshot(&id, &entry))
     }
 
     pub fn get(&self, id: &str) -> Option<SessionSnapshot> {
         let mut registry = lock(&self.inner);
         Self::prune(&mut registry);
         registry.entries.get(id).map(|entry| snapshot(id, entry))
+    }
+
+    pub fn list(&self) -> Vec<SessionSnapshot> {
+        let mut registry = lock(&self.inner);
+        Self::prune(&mut registry);
+        registry
+            .entries
+            .iter()
+            .map(|(id, entry)| snapshot(id, entry))
+            .collect()
     }
 
     pub fn read_output(
@@ -290,7 +349,10 @@ impl LinuxManagedSessions {
         match entry {
             None => Ok(None),
             Some(entry) => {
-                let page = lock(&entry.output).page(offset, length)?;
+                let page = lock(&entry.output)
+                    .as_ref()
+                    .ok_or_else(|| io::Error::new(ErrorKind::WouldBlock, "session still starting"))?
+                    .page(offset, length)?;
                 Ok(Some(SessionOutput {
                     session: snapshot(id, &entry),
                     page,
@@ -315,7 +377,7 @@ impl LinuxManagedSessions {
     /// Owner revocation closes admission first, then stops every owned
     /// command. Unknown cleanup or a bounded wait timeout fails closed.
     pub fn stop_all(&self, wait: Duration) -> CleanupState {
-        let entries: Vec<Entry> = {
+        let entries: Vec<Arc<Entry>> = {
             let mut registry = lock(&self.inner);
             registry.closed = true;
             let entries: Vec<_> = registry.entries.values().cloned().collect();

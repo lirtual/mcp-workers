@@ -65,14 +65,14 @@ fn starts_without_waiting_for_exit_and_exposes_live_output() {
     let registry = sessions(Duration::from_secs(5));
     let start = Instant::now();
     let snapshot = registry
-        .start("printf '中😀'; exec 1>&- 2>&-; sleep 1.1; exit 7")
+        .start("printf '中😀'; exec 1>&- 2>&-; sleep 1.8; exit 7")
         .unwrap();
     assert!(
-        start.elapsed() < Duration::from_millis(850),
+        start.elapsed() < Duration::from_millis(1400),
         "start must not wait for command exit"
     );
     assert_eq!(snapshot.state, SessionState::Running);
-    let deadline = Instant::now() + Duration::from_millis(900);
+    let deadline = Instant::now() + Duration::from_millis(1350);
     let mut observed = false;
     while Instant::now() < deadline {
         let output = registry
@@ -218,4 +218,78 @@ fn invalid_commands_fail_before_launch() {
         registry.start(&"😀".repeat(4097)).err().unwrap().kind(),
         ErrorKind::InvalidInput
     );
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn revocation_is_not_blocked_by_slow_supervisor_startup() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Arc;
+
+    let fixture = tempfile::tempdir().unwrap();
+    let wrapper = fixture.path().join("delayed-helper");
+    let marker = fixture.path().join("started");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\nprintf started > '{}'\nsleep 0.6\nexec \"$RCA_NATIVE_SUPERVISOR_BIN\" \"$@\"\n",
+            marker.display()
+        ),
+    ).unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let registry = Arc::new(
+        LinuxManagedSessions::new(&wrapper, Path::new("/bin/sh"), Duration::from_secs(5)).unwrap(),
+    );
+    let background = Arc::clone(&registry);
+    let starting = std::thread::spawn(move || background.start("sleep 30"));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "supervisor wrapper was not launched"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let stop_started = Instant::now();
+    assert_eq!(registry.stop_all(Duration::ZERO), CleanupState::Unknown);
+    assert!(
+        stop_started.elapsed() < Duration::from_millis(200),
+        "revocation waited on startup lock"
+    );
+    assert!(
+        starting.join().unwrap().is_err(),
+        "revoked startup must not report success"
+    );
+    assert_eq!(
+        registry.stop_all(Duration::from_secs(5)),
+        CleanupState::Confirmed
+    );
+    assert!(registry
+        .list()
+        .iter()
+        .all(|entry| entry.state != SessionState::Running));
+    assert_eq!(
+        registry.start("printf never").err().unwrap().kind(),
+        ErrorKind::PermissionDenied
+    );
+}
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn failed_supervisor_handshake_is_not_missing_from_revocation_accounting() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = tempfile::tempdir().unwrap();
+    let wrapper = fixture.path().join("reject-helper");
+    std::fs::write(&wrapper, "#!/bin/sh\nexit 125\n").unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    let registry =
+        LinuxManagedSessions::new(&wrapper, Path::new("/bin/sh"), Duration::from_secs(5)).unwrap();
+    assert!(registry.start("printf never").is_err());
+    let entries = registry.list();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].state, SessionState::Unknown);
+    assert_eq!(entries[0].cleanup, Some(CleanupState::Unknown));
+    assert_eq!(registry.stop_all(Duration::ZERO), CleanupState::Unknown);
 }
