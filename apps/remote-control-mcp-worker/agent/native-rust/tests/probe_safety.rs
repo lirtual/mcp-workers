@@ -47,8 +47,9 @@ fn unsafe_root_names_permissions_and_symlinks_fail_closed() {
 #[test]
 fn out_of_scope_and_malformed_frames_cannot_admit_an_effect() {
     let root = private_probe_root();
-    let mut probe = Gate0Probe::new(root.path()).unwrap();
-    let outside = root.path().join("outside.txt");
+    let canonical_root = std::fs::canonicalize(root.path()).unwrap();
+    let mut probe = Gate0Probe::new(&canonical_root).unwrap();
+    let outside = canonical_root.join("outside.txt");
     let write = json!({
         "kind":"operation", "tool":"write_file",
         "request_id":"11111111-1111-1111-1111-111111111111",
@@ -67,14 +68,14 @@ fn out_of_scope_and_malformed_frames_cannot_admit_an_effect() {
         "kind":"operation", "tool":"write_file",
         "request_id":"99999999-9999-9999-9999-999999999999",
         "operation_id":"append-rejected",
-        "arguments":{"path":root.path().join("probe.txt"),"content":"unsafe","mode":"append"},
+        "arguments":{"path":canonical_root.join("probe.txt"),"content":"unsafe","mode":"append"},
     })
     .to_string();
     assert!(matches!(
         probe.handle(&append),
         Err(ProbeError::InvalidFrame)
     ));
-    assert!(!root.path().join("probe.txt").exists());
+    assert!(!canonical_root.join("probe.txt").exists());
 
     let status: Value = serde_json::from_str(
         &probe
@@ -95,7 +96,7 @@ fn out_of_scope_and_malformed_frames_cannot_admit_an_effect() {
     // Even the fixed read target must not follow a pre-existing symlink.
     let secret = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(secret.path(), "outside-secret").unwrap();
-    let target = root.path().join("probe.txt");
+    let target = canonical_root.join("probe.txt");
     std::os::unix::fs::symlink(secret.path(), &target).unwrap();
     let read = json!({
         "kind":"read", "tool":"read_file",
