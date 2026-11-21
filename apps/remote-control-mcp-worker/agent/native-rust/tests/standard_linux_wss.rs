@@ -181,7 +181,21 @@ mod linux {
                     &server_target,
                 ),
             );
-            assert_eq!(denied["result"]["error"]["code"], "unavailable");
+            assert_eq!(denied["kind"], "operation_result");
+            assert_eq!(denied["request_id"], "00000000-0000-0000-0000-000000000000");
+            assert_eq!(denied["result"]["operation_id"], "standard-cli-once");
+            assert_eq!(denied["result"]["status"], "unavailable");
+            let read = reply(
+                &mut socket,
+                json!({
+                    "kind":"read","request_id":"99999999-9999-9999-9999-999999999999",
+                    "tool":"read_file","arguments":{"path":server_target}
+                })
+                .to_string(),
+            );
+            assert_eq!(read["kind"], "read_result");
+            assert_eq!(read["request_id"], "99999999-9999-9999-9999-999999999999");
+            assert_eq!(read["status"], "failed");
             assert!(
                 !server_target.exists(),
                 "frozen admission must have no file effect"

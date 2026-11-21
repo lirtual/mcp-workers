@@ -375,22 +375,28 @@ fn execute_native_file(
         }
         #[cfg(target_os = "linux")]
         if upgrade_frozen {
-            // Existing Node Agent returns 503 before any tool admission while
-            // frozen. The native signed socket likewise refuses all effects.
-            let request_id = serde_json::from_str::<Value>(frame).ok().and_then(|value| {
-                value
-                    .get("request_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            });
-            if let Some(request_id) = request_id {
-                let response = json!({"kind":"operation_result","request_id":request_id,
-                    "result":{"status":"failed","error":{"code":"unavailable"}}})
-                .to_string();
-                if replies.try_send(request.response(response)).is_err() {
-                    stop.store(true, Ordering::Release);
-                    return Err(NativeFileError::Queue);
-                }
+            // Match the existing Node WSS envelopes without effect or receipt
+            // admission. A frozen read is a failed read_result; a frozen
+            // mutation/status query is an unavailable operation_result.
+            let frame: Value = serde_json::from_str(frame).map_err(|_| NativeFileError::Policy)?;
+            let id = frame["request_id"]
+                .as_str()
+                .ok_or(NativeFileError::Policy)?;
+            let response = if frame["kind"] == "read" {
+                json!({"kind":"read_result","request_id":id,"status":"failed"})
+            } else {
+                let operation_id = frame["operation_id"]
+                    .as_str()
+                    .ok_or(NativeFileError::Policy)?;
+                json!({"kind":"operation_result","request_id":id,
+                    "result":{"operation_id":operation_id,"status":"unavailable"}})
+            };
+            if replies
+                .try_send(request.response(response.to_string()))
+                .is_err()
+            {
+                stop.store(true, Ordering::Release);
+                return Err(NativeFileError::Queue);
             }
             continue;
         }
