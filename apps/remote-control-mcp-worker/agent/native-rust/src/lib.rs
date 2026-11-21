@@ -6,6 +6,8 @@ pub mod identity;
 #[cfg(target_os = "linux")]
 pub mod linux_command;
 #[cfg(target_os = "linux")]
+pub mod linux_managed;
+#[cfg(target_os = "linux")]
 pub mod linux_output;
 #[cfg(target_os = "linux")]
 pub mod linux_supervisor;

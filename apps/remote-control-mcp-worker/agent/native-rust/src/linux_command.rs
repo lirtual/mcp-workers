@@ -33,6 +33,13 @@ pub struct CommandResult {
     pub output_eof: bool,
 }
 
+/// Single Node-compatible command-text contract shared by one-shot and managed execution.
+pub(crate) fn valid_command_text(command: &str) -> bool {
+    !command.is_empty()
+        && !command.contains(char::from(0))
+        && command.encode_utf16().take(8193).count() <= 8192
+}
+
 fn output_snapshot(mut drain: BoundedProcessOutput) -> io::Result<(String, bool, bool)> {
     let deadline = Instant::now() + OUTPUT_SETTLE;
     loop {
@@ -78,10 +85,7 @@ pub fn run_command(
         ));
     }
     // Node's parseStartProcess bounds JavaScript UTF-16 string length, not UTF-8 bytes.
-    if command.is_empty()
-        || command.contains('\0')
-        || command.encode_utf16().take(8193).count() > 8192
-    {
+    if !valid_command_text(command) {
         return Err(io::Error::new(
             ErrorKind::InvalidInput,
             "invalid command text",
