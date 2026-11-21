@@ -123,4 +123,67 @@ mod linux {
             .unwrap();
         refused(&output, root.path());
     }
+
+    #[test]
+    fn fresh_standard_home_uses_node_receipt_directory_and_stops_on_sigterm() {
+        let root = tempfile::tempdir().unwrap();
+        let key = identity(root.path());
+        let bin = root.path().join("rca-standard-linux-candidate");
+        fs::copy(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"), &bin).unwrap();
+        // Only executable trust is under test; there are no incoming process
+        // operations, so the disposable sibling is never invoked.
+        let helper = root.path().join("session-supervisor");
+        fs::copy(&bin, &helper).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut child = Command::new(&bin)
+            .env_clear()
+            .env("HOME", root.path())
+            .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
+            .env("REMOTE_CONTROL_AGENT_ENDPOINT", "http://127.0.0.1:1/")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let db = receipts(root.path()).join("operation-receipts.sqlite");
+        let mut opened = false;
+        for _ in 0..100 {
+            if db.exists() {
+                opened = true;
+                break;
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!("candidate exited before opening the existing Node receipt path: {status}");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+        let result = child.wait().unwrap();
+        assert!(
+            opened,
+            "fresh Node-compatible receipt directory was not created"
+        );
+        assert!(result.success(), "SIGTERM must complete cleanly");
+    }
+
+    #[test]
+    fn redirected_receipt_ancestor_fails_before_opening_database_or_transport() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let key = identity(root.path());
+        let bin = root.path().join("rca-standard-linux-candidate");
+        fs::copy(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"), &bin).unwrap();
+        let helper = root.path().join("session-supervisor");
+        fs::copy(&bin, &helper).unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(outside.path(), root.path().join(".local")).unwrap();
+        let output = Command::new(&bin)
+            .env_clear()
+            .env("HOME", root.path())
+            .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
+            .env("REMOTE_CONTROL_AGENT_ENDPOINT", "http://127.0.0.1:1/")
+            .output()
+            .unwrap();
+        refused(&output, root.path());
+        assert!(!outside.path().join("state").exists());
+    }
 }

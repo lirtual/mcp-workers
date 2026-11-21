@@ -98,6 +98,35 @@ mod linux {
         .map_err(|_| ())
     }
 
+    fn standard_receipts(home: &Path) -> Result<PathBuf, ()> {
+        // Node creates this hierarchy recursively on the first authenticated
+        // start. Rust's shared receipt store creates only the final leaf.
+        let mut parent = home.to_path_buf();
+        for part in [".local", "state", "mcp-workers"] {
+            parent.push(part);
+            match fs::symlink_metadata(&parent) {
+                Err(error) if error.kind() == ErrorKind::NotFound => {
+                    fs::create_dir(&parent).map_err(|_| ())?;
+                    fs::set_permissions(&parent, fs::Permissions::from_mode(0o700))
+                        .map_err(|_| ())?;
+                }
+                Err(_) => return Err(()),
+                Ok(_) => {}
+            }
+            let info = fs::symlink_metadata(&parent).map_err(|_| ())?;
+            // Existing Node installations can have traversable 0755
+            // ancestors; reject writable or redirected ancestors.
+            if !info.is_dir()
+                || info.file_type().is_symlink()
+                || info.uid() != unsafe { libc::geteuid() }
+                || info.permissions().mode() & 0o022 != 0
+            {
+                return Err(());
+            }
+        }
+        Ok(parent.join("remote-control-agent"))
+    }
+
     fn install_stop_signals() -> Result<(), ()> {
         unsafe {
             if libc::signal(
@@ -144,6 +173,7 @@ mod linux {
         unsafe {
             libc::umask(0o077);
         }
+        let receipts = standard_receipts(&home)?;
         install_stop_signals()?;
         let stop = Arc::new(AtomicBool::new(false));
         let watch_stop = Arc::clone(&stop);
@@ -158,7 +188,6 @@ mod linux {
         });
         // Exactly the existing Node default receipt location; never create a
         // parallel receipt ledger when switching the runtime.
-        let receipts = home.join(".local/state/mcp-workers/remote-control-agent");
         let result = run_native_managed_session(
             &endpoint,
             &private_pem,
