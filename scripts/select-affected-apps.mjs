@@ -57,7 +57,9 @@ export function selectionDetails(changedFiles) {
   // Shared workspace and dependency inputs can change nested Agent builds.
   // Unrelated Worker-only edits still must not schedule five native platforms.
   const rustDir = 'apps/remote-control-mcp-worker/agent/native-rust/';
-  const rustCandidateChanged = changedFiles.some(file => file.startsWith(rustDir));
+  // A change to the Rust CI contract must exercise the Rust job itself.
+  const rustCandidateChanged = changedFiles.some(file =>
+    file.startsWith(rustDir) || file === '.github/workflows/ci.yml');
   const agentNativeChanged = changedFiles.some(file =>
     (file.startsWith('apps/remote-control-mcp-worker/agent/') && !file.startsWith(rustDir))
     || file === AGENT_NATIVE_WORKFLOW

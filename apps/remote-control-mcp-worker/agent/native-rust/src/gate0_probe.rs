@@ -47,19 +47,21 @@ impl Gate0Probe {
             if meta.uid() != unsafe { libc::geteuid() } || meta.permissions().mode() & 0o077 != 0 {
                 return Err(ProbeError::UnsafeRoot);
             }
+            let canonical = fs::canonicalize(root)?;
+            if canonical != root {
+                return Err(ProbeError::UnsafeRoot);
+            }
+            Ok(Self {
+                receipts: ReceiptStore::open(&root.join("receipts"))?,
+                target: root.join("probe.txt"),
+            })
         }
+        // This narrow test-only probe has no Windows ACL boundary yet.
+        // An unproven owner-private root must not open SQLite or execute.
         #[cfg(not(unix))]
         {
-            return Err(ProbeError::UnsafeRoot);
+            Err(ProbeError::UnsafeRoot)
         }
-        let canonical = fs::canonicalize(root)?;
-        if canonical != root {
-            return Err(ProbeError::UnsafeRoot);
-        }
-        Ok(Self {
-            receipts: ReceiptStore::open(&root.join("receipts"))?,
-            target: root.join("probe.txt"),
-        })
     }
 
     /// One existing WSS operation frame and its bounded response. Invalid

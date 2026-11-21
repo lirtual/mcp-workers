@@ -166,12 +166,15 @@ fn authenticated_transport_executes_disposable_write_with_durable_receipt_only_o
     use rca_native_agent::native_file::run_disposable_file_session;
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::Builder::new()
+    let disposable = tempfile::Builder::new()
         .prefix("rca-rust-probe-")
         .tempdir()
         .unwrap();
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let target = root.path().join("probe.txt");
+    // /var/folders on macOS may alias /private/var/folders; the private
+    // receipt gate deliberately accepts only an already-canonical root.
+    let root = std::fs::canonicalize(disposable.path()).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target = root.join("probe.txt");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let stop = Arc::new(AtomicBool::new(false));
@@ -216,18 +219,20 @@ fn authenticated_transport_executes_disposable_write_with_durable_receipt_only_o
         &endpoint,
         &common::test_pem(),
         DEVICE_ID,
-        root.path(),
+        &root,
         &stop,
         HeartbeatTiming::default(),
     );
-    server.join().unwrap();
+    // A failed private-root preflight must fail the test immediately, not
+    // block forever joining a mock Worker still waiting in accept().
     assert!(result.is_ok(), "{result:?}");
+    server.join().unwrap();
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "once");
     assert_eq!(
         std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let mut reopened = Gate0Probe::new(root.path()).unwrap();
+    let mut reopened = Gate0Probe::new(&root).unwrap();
     let status = reopened
         .handle(
             &json!({"kind":"operation",
@@ -248,12 +253,15 @@ fn disposable_file_session_revocation_closes_before_any_target_write() {
     use rca_native_agent::native_file::{run_disposable_file_session, DisposableFileError};
     use std::os::unix::fs::PermissionsExt;
 
-    let root = tempfile::Builder::new()
+    let disposable = tempfile::Builder::new()
         .prefix("rca-rust-probe-")
         .tempdir()
         .unwrap();
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let target = root.path().join("probe.txt");
+    // /var/folders on macOS may alias /private/var/folders; the private
+    // receipt gate deliberately accepts only an already-canonical root.
+    let root = std::fs::canonicalize(disposable.path()).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let target = root.join("probe.txt");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
@@ -275,11 +283,12 @@ fn disposable_file_session_revocation_closes_before_any_target_write() {
         &endpoint,
         &common::test_pem(),
         DEVICE_ID,
-        root.path(),
+        &root,
         &stop,
         HeartbeatTiming::default(),
     );
-    server.join().unwrap();
+    // Diagnose an unexpected preflight failure before joining the mock
+    // Worker; otherwise accept() can hide the real error indefinitely.
     assert!(
         matches!(
             result,
@@ -287,6 +296,7 @@ fn disposable_file_session_revocation_closes_before_any_target_write() {
         ),
         "{result:?}"
     );
+    server.join().unwrap();
     assert!(!target.exists(), "revoked session must not start a write");
 }
 

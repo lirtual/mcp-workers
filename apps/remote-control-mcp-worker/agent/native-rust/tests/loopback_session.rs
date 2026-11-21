@@ -1,6 +1,7 @@
 //! Disposable loopback signed-WebSocket tracer: no Worker, Owner Grant or
 //! production identity is contacted. This proves the Rust seams can compose,
 //! not that the full five-platform Agent is ready.
+#[cfg(unix)]
 use rca_native_agent::gate0_probe::Gate0Probe;
 use rca_native_agent::session::connect_authenticated;
 use serde_json::{json, Value};
@@ -9,11 +10,13 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use tungstenite::handshake::server::{Request, Response};
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+#[cfg(unix)]
 use tungstenite::Message;
 
 mod common;
 const DEVICE_ID: &str = "12345678-1234-1234-1234-123456789abc";
 const NONCE: &str = "ABCDEFGHIJKLMNOPQRSTUVWX";
+#[cfg(unix)]
 const PROOF: &str =
     "XNSFWbbMsKNoaFInjZPwOeo543Cw3RDICp9di8gFUhlZSksWdzWYp6hnWFoCzAbCm3VAH-mNK1LZCUlbqp_6AQ";
 
@@ -58,6 +61,7 @@ fn respond_challenge(mut stream: TcpStream) {
     stream.flush().unwrap();
 }
 
+#[cfg(unix)]
 fn request_for(id: &str, request_id: &str, args: Value) -> String {
     json!({
         "kind":"operation","operation_id":id,"request_id":request_id,
@@ -67,6 +71,7 @@ fn request_for(id: &str, request_id: &str, args: Value) -> String {
 }
 
 // Tungstenite fixes this handshake callback's error type to a large HTTP response.
+#[cfg(unix)]
 #[allow(clippy::result_large_err)]
 fn local_worker(listener: TcpListener, probe_path: String) {
     let (http, _) = listener.accept().unwrap();
@@ -158,13 +163,17 @@ fn local_worker(listener: TcpListener, probe_path: String) {
     socket.close(None).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn signed_socket_disposable_write_receipt_and_replay_guard_survive_restart() {
     let tmp = tempfile::Builder::new()
         .prefix("rca-rust-probe-")
         .tempdir()
         .unwrap();
-    let target = tmp.path().join("probe.txt");
+    // macOS temp paths may use /var, an alias of /private/var. The
+    // production-equivalent private-root gate requires its canonical path.
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let target = root.join("probe.txt");
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}/", listener.local_addr().unwrap());
     let worker_path = target.to_str().unwrap().to_owned();
@@ -173,8 +182,8 @@ fn signed_socket_disposable_write_receipt_and_replay_guard_survive_restart() {
     // tempfile creates this directory with the process umask; restrict it
     // explicitly before the production-equivalent private-state gate.
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let mut probe = Gate0Probe::new(tmp.path()).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut probe = Gate0Probe::new(&root).unwrap();
     let mut socket = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     assert_eq!(socket.device_id, DEVICE_ID);
     for _ in 0..4 {
@@ -191,7 +200,7 @@ fn signed_socket_disposable_write_receipt_and_replay_guard_survive_restart() {
         std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let mut reopened = Gate0Probe::new(tmp.path()).unwrap();
+    let mut reopened = Gate0Probe::new(&root).unwrap();
     let status = reopened
         .handle(
             &json!({

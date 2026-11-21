@@ -176,11 +176,18 @@ jobs:
       contents: read
 
   rust-agent-candidate:
-    name: RCA Rust Gate 0 (nonproduction)
+    # This is only the unshipped Rust core. Native installation, managed process
+    # ownership, WSS Owner pairing, upgrade and Release require separate gates.
+    name: RCA Rust core (nonproduction) / ${{ matrix.os }}
     needs: checks
     if: needs.checks.outputs.rust_candidate_changed == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Match the existing Node candidate's Standard physical runners.
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -188,12 +195,34 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24.21.0'
-      - name: Validate Rust contract (no Agent build or publish)
+      - name: Check Rust formatting
+        if: matrix.os == 'ubuntu-24.04'
         working-directory: apps/remote-control-mcp-worker/agent/native-rust
-        run: |
-          cargo fmt --all -- --check
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked --all-targets
+        run: cargo fmt --all -- --check
+      - name: Compile and lint Rust core for host OS (no Agent package)
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Unix Rust core tests on host OS (no Owner identity)
+        if: runner.os != 'Windows'
+        timeout-minutes: 8
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        # A hung platform-specific test must leave a bounded CI failure with
+        # enough progress output to identify the last running test binary.
+        run: cargo test --locked --all-targets -- --nocapture
+      - name: Run Windows-supported Rust core and private-state fail-closed checks
+        if: runner.os == 'Windows'
+        timeout-minutes: 8
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        # Windows owner-private SQLite ACL equivalence is not implemented yet:
+        # positive receipt/write tests must remain Gate 1 blocked, not weakened.
+        # Compile all targets above, exercise the supported core, and assert
+        # that unchecked receipt ACLs refuse before creating a database.
+        run: >-
+          cargo test --locked --lib
+          --test golden_digest --test golden_identity --test heartbeat_session
+          --test loopback_session --test native_browse --test native_read
+          --test native_read_wss --test reconnect_transport --test windows_private_state
+          -- --nocapture
 
   database-integration:
     name: Database integration
