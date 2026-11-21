@@ -17,7 +17,6 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, Instant};
 use tungstenite::handshake::server::{Request, Response};
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::protocol::{Message, WebSocket};
@@ -39,26 +38,7 @@ fn powershell(script: &str, values: &[(&str, &Path)]) {
 }
 
 fn seal_dir(path: &Path) {
-    powershell(
-        r#"
-$ErrorActionPreference = 'Stop'
-$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
-$acl = [Security.AccessControl.DirectorySecurity]::new()
-$acl.SetOwner($userSid)
-$acl.SetAccessRuleProtection($true, $false)
-$inherit = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
-foreach ($sid in @($userSid, $systemSid)) {
-  $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-    $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inherit,
-    [Security.AccessControl.PropagationFlags]::None,
-    [Security.AccessControl.AccessControlType]::Allow)
-  $acl.AddAccessRule($rule)
-}
-[IO.Directory]::SetAccessControl($env:RCA_TEST_PATH, $acl)
-"#,
-        &[("RCA_TEST_PATH", path)],
-    );
+    common::seal_windows_dir(path);
 }
 
 fn seal_file(path: &Path) {
@@ -202,30 +182,7 @@ New-Item -ItemType Junction -Path $env:RCA_TEST_PATH -Target $env:RCA_TEST_TARGE
 const WSS_TEST_DEVICE: &str = "f4e1e64e-1e72-410e-8b51-181818181818";
 
 fn accept_disposable(listener: &TcpListener) -> TcpStream {
-    listener.set_nonblocking(true).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(5)))
-                    .unwrap();
-                return stream;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    Instant::now() < deadline,
-                    "local test Worker never connected"
-                );
-                thread::sleep(Duration::from_millis(20));
-            }
-            Err(error) => panic!("local test Worker accept failed: {error}"),
-        }
-    }
+    common::accept_windows_loopback(listener)
 }
 
 // tungstenite's server callback uses a large, library-defined HTTP error.

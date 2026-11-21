@@ -2,10 +2,14 @@
 //! No installed Agent lifecycle, local operation executor, or automatic Owner Grant is provided.
 use crate::identity::{signed_session_proof, valid_device_id};
 #[cfg(target_os = "linux")]
-use crate::linux_managed::LinuxManagedSessions;
+use crate::linux_managed::LinuxManagedSessions as ManagedSessions;
 #[cfg(target_os = "linux")]
 use crate::linux_supervisor::CleanupState;
 use crate::native_read::parse_read_frame;
+#[cfg(windows)]
+use crate::windows_job::JobCleanup as CleanupState;
+#[cfg(windows)]
+use crate::windows_managed::WindowsManagedSessions as ManagedSessions;
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde::Deserialize;
@@ -370,16 +374,16 @@ impl AuthenticatedSocket {
         result
     }
 
-    /// Linux-only process+file candidate. Owner cleanup closes native process
-    /// admission and reports Confirmed only after all C-supervised groups have
+    /// Managed process+file candidate. Owner cleanup closes native process
+    /// admission and reports Confirmed only after each owned OS process has
     /// independently reached a confirmed state inside the Worker's ACK budget.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub fn pump_native_managed(
         &mut self,
         stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
         outgoing: &Receiver<ExecutionResponse>,
-        managed: &Arc<LinuxManagedSessions>,
+        managed: &Arc<ManagedSessions>,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
         let result = self.pump_scoped(
@@ -461,7 +465,7 @@ impl AuthenticatedSocket {
                     FramePolicy::NativeFiles => {
                         crate::native_file::parse_native_file_frame(&frame).is_ok()
                     }
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", windows))]
                     FramePolicy::NativeManaged(_) => {
                         crate::native_file::parse_native_managed_frame(&frame).is_ok()
                     }
@@ -570,8 +574,8 @@ enum FramePolicy {
     Any,
     ReadOnly,
     NativeFiles,
-    #[cfg(target_os = "linux")]
-    NativeManaged(Arc<LinuxManagedSessions>),
+    #[cfg(any(target_os = "linux", windows))]
+    NativeManaged(Arc<ManagedSessions>),
 }
 
 struct TransportMode {
@@ -652,13 +656,13 @@ pub fn maintain_native_file_transport(
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub struct ManagedTransportConfig {
     pub timing: HeartbeatTiming,
-    pub managed: Arc<LinuxManagedSessions>,
+    pub managed: Arc<ManagedSessions>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub fn maintain_native_managed_transport(
     endpoint: &str,
     private_pem: &str,
@@ -701,7 +705,7 @@ fn maintain_transport_mode(
                     FramePolicy::Any => socket.pump(stop, incoming, outgoing),
                     FramePolicy::ReadOnly => socket.pump_native_read(stop, incoming, outgoing),
                     FramePolicy::NativeFiles => socket.pump_native_file(stop, incoming, outgoing),
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", windows))]
                     FramePolicy::NativeManaged(managed) => {
                         socket.pump_native_managed(stop, incoming, outgoing, managed)
                     }

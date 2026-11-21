@@ -562,7 +562,7 @@ impl NativeWriteExecutor {
     }
 
     /// The process adapter shares this exact SQLite owner with file writes.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     pub(crate) fn receipt_store_mut(&mut self) -> &mut ReceiptStore {
         &mut self.receipts
     }

@@ -15,7 +15,7 @@ pub mod linux_output;
 pub mod linux_supervisor;
 pub mod native_browse;
 pub mod native_file;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod native_process;
 pub mod native_read;
 mod native_search;

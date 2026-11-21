@@ -84,3 +84,24 @@ fn owned_windows_stdin_round_trip_is_bounded() {
         JobCleanup::Confirmed
     );
 }
+
+#[test]
+fn owned_windows_session_id_is_canonical_uuid_v4() {
+    let sessions = WindowsManagedSessions::new(Duration::from_secs(10)).unwrap();
+    let started = sessions.start("Start-Sleep -Seconds 15").unwrap();
+    let id = started.session_id.as_bytes();
+    assert_eq!(id.len(), 36);
+    for index in [8, 13, 18, 23] {
+        assert_eq!(id[index], b'-');
+    }
+    assert_eq!(id[14], b'4');
+    assert!(b"89ab".contains(&id[19]));
+    assert!(id.iter().enumerate().all(|(index, byte)| {
+        matches!(index, 8 | 13 | 18 | 23) && *byte == b'-'
+            || !matches!(index, 8 | 13 | 18 | 23) && byte.is_ascii_hexdigit()
+    }));
+    assert_eq!(
+        sessions.stop_all(Duration::from_secs(3)),
+        JobCleanup::Confirmed
+    );
+}
