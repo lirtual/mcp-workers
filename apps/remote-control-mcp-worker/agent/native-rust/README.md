@@ -130,3 +130,27 @@ cargo run --locked --example gate0_nonprod -- \
 2026-11-20 evidence: isolated Wrangler, HTTPS/WSS Quick Tunnel, and disposable Cloudflare-hosted Worker tests passed with temporary grants. No production Worker, existing paired device, account secret or release was changed. All disposable local/tunnel/hosted test credentials and Worker resources are removed or allowed to expire after verification.
 
 **Gate 1 remains Partial:** the native file-read and browse libraries are wired into a non-installable WSS runner, but device-info/capability announcement, search tools, Shell and managed process execution, full Windows filesystem metadata/ACL equivalence, five-platform CLI/install/lifecycle, GitHub-hosted Sessions, release/rollback remain unverified or unimplemented; #912 root and #911 Legacy remain independently gated. The cleanup callback may return `confirmed` only after the future real executor verifies all owned processes stopped; otherwise the current transport reports `uncertain`. Worker rate-limits Grant probes for the first 30 seconds and again within 30 seconds after a prior probe; the default Rust cadence is 15 minutes. The local test-only effect is not a production executor. The current candidate refuses unchecked non-Unix private state. Never point it at a real paired device, current identity, or live receipt directory while another Agent can run.
+
+### Local Linux Rust candidate bundle (unshipped)
+
+For disposable Linux upgrade research only, build the existing C Supervisor and
+Rust Standard candidate, then create and check a private temporary archive:
+
+```sh
+node apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs
+cargo build --locked --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml --bin rca-standard-linux-candidate
+python3 apps/remote-control-mcp-worker/agent/native-rust/tools/linux_candidate_bundle.py build \
+  --agent apps/remote-control-mcp-worker/agent/native-rust/target/debug/rca-standard-linux-candidate \
+  --supervisor apps/remote-control-mcp-worker/agent/.build/session-supervisor \
+  --target linux-x64-glibc --output /ABSOLUTE/PRIVATE/TEMP/candidate.tar.gz
+python3 apps/remote-control-mcp-worker/agent/native-rust/tools/linux_candidate_bundle.py verify \
+  --target linux-x64-glibc /ABSOLUTE/PRIVATE/TEMP/candidate.tar.gz
+```
+
+Use `linux-arm64-glibc` on the corresponding native host. The two executables
+are adjacent in the archive, as required by the candidate entrypoint. Verification
+checks the exact members, modes, ELF architecture and internal SHA-256 hashes.
+The manifest and hashes are self-contained: they do **not** establish source,
+build provenance, ABI compatibility, release authenticity or suitability for
+installation. The tool does not install, deploy, modify the stable Node bundle,
+or produce an official Release. Use only disposable identities and endpoints.

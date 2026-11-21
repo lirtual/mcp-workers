@@ -235,6 +235,29 @@ jobs:
           RCA_NATIVE_SUPERVISOR_BIN="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/.build/session-supervisor" \
             cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
             --locked --test native_process_wss --test standard_linux_wss -- --ignored --nocapture
+      - name: Check unshipped Linux candidate bundle
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=apps/remote-control-mcp-worker/agent/native-rust
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$base/tools" -p 'test_linux_candidate_bundle.py' -v
+          case "$(uname -m)" in
+            x86_64) target=linux-x64-glibc ;;
+            aarch64) target=linux-arm64-glibc ;;
+            *) exit 1 ;;
+          esac
+          cargo build --locked --manifest-path "$base/Cargo.toml" --bin rca-standard-linux-candidate
+          candidate_dir="$(mktemp -d "$RUNNER_TEMP/rca-candidate-XXXXXX")"
+          trap 'rm -rf "$candidate_dir"' EXIT
+          python3 "$base/tools/linux_candidate_bundle.py" build \
+            --agent "$base/target/debug/rca-standard-linux-candidate" \
+            --supervisor apps/remote-control-mcp-worker/agent/.build/session-supervisor \
+            --target "$target" --output "$candidate_dir/candidate.tar.gz"
+          python3 "$base/tools/linux_candidate_bundle.py" verify --target "$target" "$candidate_dir/candidate.tar.gz"
+          tar -xzf "$candidate_dir/candidate.tar.gz" -C "$candidate_dir"
+          cmp "$base/target/debug/rca-standard-linux-candidate" "$candidate_dir/rca-standard-linux-candidate"
+          cmp apps/remote-control-mcp-worker/agent/.build/session-supervisor "$candidate_dir/session-supervisor"
       - name: Verify Darwin owned-group and signed managed WSS on disposable host
         if: runner.os == 'macOS'
         timeout-minutes: 5
