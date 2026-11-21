@@ -157,6 +157,8 @@ pub fn start_session_expiry_watch(
 /// bundled supervisor path. This is not yet a published executable entrypoint.
 #[derive(Debug, Error)]
 pub enum SessionChildError {
+    #[error("Session child was stopped before transport admission")]
+    Stopped,
     #[error(transparent)]
     Runner(#[from] SessionRunnerError),
     #[error("signed Session identity recovery failed")]
@@ -181,6 +183,9 @@ pub fn run_verified_linux_session_child(
     if unsafe { libc::geteuid() } == 0 {
         return Err(SessionRunnerError::InvalidRunner.into());
     }
+    if stop.load(Ordering::Acquire) {
+        return Err(SessionChildError::Stopped);
+    }
     let (file, identity) = checked_transport_child_identity(source, grant)?;
     checked_executable(supervisor)?;
     let managed = crate::linux_managed::LinuxManagedSessions::new(
@@ -192,6 +197,10 @@ pub fn run_verified_linux_session_child(
     .map_err(|_| SessionChildError::Supervisor)?;
     crate::session_recovery::verify_registered_session_device(&identity, grant)
         .map_err(|_| SessionChildError::Recovery)?;
+    // A job cancellation arriving during HTTPS recovery must not admit WSS.
+    if stop.load(Ordering::Acquire) {
+        return Err(SessionChildError::Stopped);
+    }
     let watch = start_session_expiry_watch(grant.expires_at, stop)?;
     let receipts = file
         .parent()
@@ -208,7 +217,13 @@ pub fn run_verified_linux_session_child(
     );
     stop.store(true, Ordering::Release);
     watch.join().map_err(|_| SessionChildError::Watch)?;
-    result.map_err(|_| SessionChildError::Transport)
+    match result {
+        Ok(())
+        | Err(crate::native_file::NativeFileError::Session(crate::session::SessionError::Policy)) => {
+            Ok(())
+        }
+        Err(_) => Err(SessionChildError::Transport),
+    }
 }
 
 fn checked_executable(program: &Path) -> Result<(), SessionRunnerError> {
