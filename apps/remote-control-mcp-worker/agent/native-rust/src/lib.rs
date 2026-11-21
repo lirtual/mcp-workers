@@ -38,3 +38,13 @@ pub mod windows_managed;
 pub mod windows_output;
 #[cfg(windows)]
 mod windows_private;
+
+/// Reuse the Windows NTFS handle/ACL guard for the unshipped CLI boundary.
+/// This is validation only: no path is created or re-owned by this call.
+#[cfg(windows)]
+pub fn validate_windows_private_path(
+    path: &std::path::Path,
+    is_dir: bool,
+) -> Result<(), receipts::ReceiptError> {
+    windows_private::private_path(path, is_dir)
+}

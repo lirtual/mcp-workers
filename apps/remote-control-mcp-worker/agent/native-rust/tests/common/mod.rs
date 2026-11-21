@@ -83,3 +83,38 @@ pub fn accept_windows_loopback(listener: &std::net::TcpListener) -> std::net::Tc
         }
     }
 }
+
+#[cfg(windows)]
+#[allow(dead_code)] // Shared by independent Windows ACL and CLI integration tests.
+pub fn seal_windows_file(path: &std::path::Path) {
+    use std::process::Command;
+
+    // An elevated Windows token may assign a newly created file to the
+    // Administrators group. The installed Node contract requires the actual
+    // user SID as owner, not merely a private parent DACL.
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$acl = [Security.AccessControl.FileSecurity]::new()
+$acl.SetOwner($userSid)
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($sid in @($userSid, $systemSid)) {
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+    $sid, [Security.AccessControl.FileSystemRights]::FullControl,
+    [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($rule)
+}
+[IO.File]::SetAccessControl($env:RCA_TEST_PATH, $acl)
+"#;
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("RCA_TEST_PATH", path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "private file ACL fixture: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
