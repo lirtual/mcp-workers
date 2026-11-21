@@ -324,3 +324,82 @@ fn invalid_windows_process_command_is_rejected_without_receipt_or_launch() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn explicit_force_terminate_confirms_windows_job_and_receipt() {
+    let root = tempfile::tempdir().unwrap();
+    let receipt_dir = root.path().join("receipts");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(listener);
+        let start = reply(
+            &mut socket,
+            operation(
+                "win-wss-stop-start",
+                "start_process",
+                json!({"command":"Start-Sleep -Seconds 15","timeout_ms":0}),
+            ),
+        );
+        assert_eq!(start["result"]["status"], "running");
+        let sid = start["result"]["session_id"].as_str().unwrap().to_owned();
+        let terminate = json!({"session_id":sid});
+        let stop = reply(
+            &mut socket,
+            operation("win-wss-stop", "force_terminate", terminate.clone()),
+        );
+        assert_eq!(stop["result"]["status"], "completed");
+        assert_eq!(
+            reply(
+                &mut socket,
+                operation("win-wss-stop", "force_terminate", terminate)
+            )["result"]["status"],
+            "completed"
+        );
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let list = read(&mut socket, "list_sessions", json!({}));
+            let sessions: Value = serde_json::from_str(list["text"].as_str().unwrap()).unwrap();
+            if sessions[0]["state"] == "completed" {
+                break;
+            }
+            assert!(Instant::now() < deadline, "force_terminate never completed");
+            thread::sleep(Duration::from_millis(25));
+        }
+        let revoke = reply(
+            &mut socket,
+            json!({"kind":"revoke_cleanup","request_id":"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+                .to_string(),
+        );
+        assert_eq!(revoke["status"], "confirmed");
+    });
+    let managed = registry();
+    let stop = Arc::new(AtomicBool::new(false));
+    let result = run_native_managed_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        Arc::clone(&managed),
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(
+        matches!(result, Err(NativeFileError::Session(SessionError::Policy))),
+        "{result:?}"
+    );
+    assert!(managed
+        .list()
+        .iter()
+        .all(|s| s.state == SessionState::Completed && s.cleanup == Some(JobCleanup::Confirmed)));
+    assert_eq!(
+        ReceiptStore::open(&receipt_dir)
+            .unwrap()
+            .get("win-wss-stop")
+            .unwrap()
+            .unwrap()
+            .state,
+        "completed"
+    );
+}
