@@ -135,3 +135,203 @@ fn nested_disposable_root_is_rejected() {
     );
     assert!(!disposable.path().join("receipts").exists());
 }
+
+use rca_native_agent::receipts::ReceiptStore;
+use serde_json::{json, Value};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::process::{Child, Stdio};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
+use tungstenite::handshake::server::{Request, Response};
+use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
+use tungstenite::protocol::{Message, WebSocket};
+
+static LOCAL_PORT_LOCK: Mutex<()> = Mutex::new(());
+
+struct ScopedChild(Child);
+impl Drop for ScopedChild {
+    fn drop(&mut self) {
+        if matches!(self.0.try_wait(), Ok(None)) {
+            let _ = self.0.kill();
+        }
+        let _ = self.0.wait();
+    }
+}
+
+#[allow(clippy::result_large_err)] // same concrete HTTP handshake error as other WSS fixtures
+fn signed_socket(listener: &TcpListener) -> WebSocket<TcpStream> {
+    let mut http = common::accept_windows_loopback(listener);
+    let mut reader = BufReader::new(http.try_clone().unwrap());
+    let mut first = String::new();
+    reader.read_line(&mut first).unwrap();
+    assert!(first.starts_with("POST /agent/session/challenge HTTP/1.1"));
+    let mut length = 0;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        if line == "\r\n" {
+            break;
+        }
+        if line.to_ascii_lowercase().starts_with("content-length:") {
+            length = line.split(':').nth(1).unwrap().trim().parse().unwrap();
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["device_id"],
+        DEVICE
+    );
+    let response = json!({"device_id":DEVICE,"nonce":"ABCDEFGHIJKLMNOPQRSTUVWX"}).to_string();
+    write!(http, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", response.len(), response).unwrap();
+
+    let socket = common::accept_windows_loopback(listener);
+    tungstenite::accept_hdr(socket, |req: &Request, mut resp: Response| {
+        assert!(req
+            .headers()
+            .get(SEC_WEBSOCKET_PROTOCOL)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("rc-v2, rcv2."));
+        resp.headers_mut()
+            .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
+        Ok(resp)
+    })
+    .unwrap()
+}
+
+fn exchange(socket: &mut WebSocket<TcpStream>, request: Value) -> Value {
+    socket
+        .send(Message::Text(request.to_string().into()))
+        .unwrap();
+    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap()
+}
+
+fn wait_for_child(child: &mut Child, expected_success: bool) {
+    let deadline = Instant::now() + Duration::from_secs(12);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert_eq!(
+                status.success(),
+                expected_success,
+                "CLI exit status: {status}"
+            );
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!("Windows CLI failed to terminate after signed policy close");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+#[test]
+fn real_windows_cli_managed_wss_revoke_stops_job_and_persists_receipt() {
+    let _port = LOCAL_PORT_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let disposable = root();
+    fs::write(
+        disposable.path().join("gate0-test-key.pem"),
+        common::test_pem(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:8777").unwrap();
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(&listener);
+        let started = exchange(
+            &mut socket,
+            json!({
+                "kind":"operation",
+                "request_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                "operation_id":"win-cli-managed-914",
+                "tool":"start_process",
+                "arguments":{"command":"Start-Sleep -Seconds 30","timeout_ms":0}
+            }),
+        );
+        assert_eq!(started["result"]["status"], "running", "{started}");
+        let revoked = exchange(
+            &mut socket,
+            json!({
+                "kind":"revoke_cleanup",
+                "request_id":"cccccccc-cccc-cccc-cccc-cccccccccccc"
+            }),
+        );
+        assert_eq!(revoked["status"], "confirmed", "{revoked}");
+    });
+    let mut child = ScopedChild(
+        Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+            .args(["--local-managed", DEVICE])
+            .arg(disposable.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for_child(&mut child.0, true);
+    server.join().unwrap();
+    let receipt = ReceiptStore::open(&disposable.path().join("receipts"))
+        .unwrap()
+        .get("win-cli-managed-914")
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.state, "completed");
+}
+
+#[test]
+fn windows_file_only_cli_rejects_shell_with_signed_1008() {
+    let _port = LOCAL_PORT_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let disposable = root();
+    fs::write(
+        disposable.path().join("gate0-test-key.pem"),
+        common::test_pem(),
+    )
+    .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:8777").unwrap();
+    let server = thread::spawn(move || {
+        let mut socket = signed_socket(&listener);
+        socket
+            .send(Message::Text(
+                json!({
+                    "kind":"operation",
+                    "request_id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "operation_id":"win-cli-forbidden-914",
+                    "tool":"start_process",
+                    "arguments":{"command":"Write-Output SHOULD-NOT-RUN","timeout_ms":0}
+                })
+                .to_string()
+                .into(),
+            ))
+            .unwrap();
+        match socket.read().unwrap() {
+            Message::Close(Some(frame)) => assert_eq!(
+                frame.code,
+                tungstenite::protocol::frame::coding::CloseCode::Policy
+            ),
+            other => panic!("file-only CLI did not reject Shell: {other:?}"),
+        }
+    });
+    let mut child = ScopedChild(
+        Command::new(env!("CARGO_BIN_EXE_rca-native-nonprod"))
+            .args(["--local", DEVICE])
+            .arg(disposable.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    wait_for_child(&mut child.0, false);
+    server.join().unwrap();
+    assert!(ReceiptStore::open(&disposable.path().join("receipts"))
+        .unwrap()
+        .get("win-cli-forbidden-914")
+        .unwrap()
+        .is_none());
+}
