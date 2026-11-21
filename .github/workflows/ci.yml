@@ -223,6 +223,7 @@ jobs:
           --test native_read_wss --test reconnect_transport --test windows_private_state
           --test windows_job --test windows_output --test windows_managed
           --test windows_managed_wss --test windows_cli
+          --test session_enrollment --test session_transport_env
           -- --nocapture
       - name: Verify Darwin owned-group and signed managed WSS on disposable host
         if: runner.os == 'macOS'
