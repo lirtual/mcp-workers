@@ -13,6 +13,7 @@ mod linux {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::process::{Child, Command, Stdio};
     use std::thread;
@@ -130,6 +131,17 @@ mod linux {
         .to_string()
     }
 
+    fn upgrade(socket: &Path, action: &str) -> String {
+        let mut stream = UnixStream::connect(socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream.write_all(format!("{action}\n").as_bytes()).unwrap();
+        let mut result = String::new();
+        stream.read_to_string(&mut result).unwrap();
+        result
+    }
+
     fn reply(socket: &mut WebSocket<TcpStream>, frame: String) -> Value {
         socket.send(Message::Text(frame.into())).unwrap();
         serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap()
@@ -138,6 +150,7 @@ mod linux {
     #[test]
     fn existing_identity_signed_wss_is_one_sqlite_owner_with_policy_shutdown() {
         let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let key = root.path().join("v2-identity.pem");
         private_file(&key, &common::test_pem());
         private_file(
@@ -155,8 +168,40 @@ mod linux {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/", listener.local_addr().unwrap());
         let server_target = target.clone();
+        let upgrade_socket = root.path().join("upgrade.sock");
         let server = thread::spawn(move || {
             let mut socket = connected(listener);
+            assert_eq!(upgrade(&upgrade_socket, "freeze"), "ready\n");
+            assert_eq!(upgrade(&upgrade_socket, "verify-frozen"), "ready\n");
+            let denied = reply(
+                &mut socket,
+                operation(
+                    "00000000-0000-0000-0000-000000000000",
+                    "denied",
+                    &server_target,
+                ),
+            );
+            assert_eq!(denied["kind"], "operation_result");
+            assert_eq!(denied["request_id"], "00000000-0000-0000-0000-000000000000");
+            assert_eq!(denied["result"]["operation_id"], "standard-cli-once");
+            assert_eq!(denied["result"]["status"], "unavailable");
+            let read = reply(
+                &mut socket,
+                json!({
+                    "kind":"read","request_id":"99999999-9999-9999-9999-999999999999",
+                    "tool":"read_file","arguments":{"path":server_target}
+                })
+                .to_string(),
+            );
+            assert_eq!(read["kind"], "read_result");
+            assert_eq!(read["request_id"], "99999999-9999-9999-9999-999999999999");
+            assert_eq!(read["status"], "failed");
+            assert!(
+                !server_target.exists(),
+                "frozen admission must have no file effect"
+            );
+            assert_eq!(upgrade(&upgrade_socket, "release"), "released\n");
+            assert_eq!(upgrade(&upgrade_socket, "verify-frozen"), "busy\n");
             let first = reply(
                 &mut socket,
                 operation(
@@ -252,6 +297,7 @@ mod linux {
         let helper_path = std::env::var("RCA_NATIVE_SUPERVISOR_BIN")
             .expect("build the existing C helper before physical acceptance");
         let root = tempfile::tempdir().unwrap();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let key = root.path().join("v2-identity.pem");
         private_file(&key, &common::test_pem());
         private_file(
@@ -265,6 +311,7 @@ mod linux {
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let upgrade_socket = root.path().join("upgrade.sock");
         let server = thread::spawn(move || {
             let mut socket = connected(listener);
             let started = reply(
@@ -279,6 +326,8 @@ mod linux {
                 .to_string(),
             );
             assert_eq!(started["result"]["status"], "running");
+            assert_eq!(upgrade(&upgrade_socket, "freeze"), "busy\n");
+            assert_eq!(upgrade(&upgrade_socket, "verify-frozen"), "busy\n");
             let ack = reply(
                 &mut socket,
                 json!({

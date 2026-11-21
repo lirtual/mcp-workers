@@ -112,6 +112,8 @@ use crate::native_process::{self, NativeProcessEngine, ProcessRead};
 use crate::native_read::{self, ReadCommand};
 use crate::native_search::{self, SearchFrame, SearchSessions};
 use crate::native_write::{NativeWriteError, NativeWriteExecutor};
+#[cfg(target_os = "linux")]
+use crate::upgrade_control::{UpgradeCommand, UpgradeRequest, UpgradeServer};
 #[cfg(windows)]
 use crate::windows_job::JobCleanup as CleanupState;
 #[cfg(windows)]
@@ -283,6 +285,9 @@ pub enum NativeFileError {
     Queue,
     #[error("native file executor panicked")]
     Panicked,
+    #[cfg(target_os = "linux")]
+    #[error("owner-local upgrade control unavailable")]
+    UpgradeUnavailable,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[error("native managed-session cleanup remains uncertain")]
     CleanupUncertain,
@@ -296,12 +301,15 @@ fn execute_native_file(
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] cleanup_ready: Option<
         Receiver<()>,
     >,
+    #[cfg(target_os = "linux")] upgrade_requests: Option<Receiver<UpgradeRequest>>,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
     replies: &SyncSender<ExecutionResponse>,
 ) -> Result<(), NativeFileError> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let mut processes = managed.map(NativeProcessEngine::new);
+    #[cfg(target_os = "linux")]
+    let mut upgrade_frozen = false;
     let mut searches = SearchSessions::default();
     while !stop.load(Ordering::Acquire) {
         // Expire idle cursors even if the Owner never sends another request.
@@ -311,6 +319,39 @@ fn execute_native_file(
             process
                 .reconcile(writes.receipt_store_mut())
                 .map_err(NativeWriteError::from)?;
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(control) = upgrade_requests.as_ref() {
+            while let Ok(request) = control.try_recv() {
+                let answer = match request.command {
+                    UpgradeCommand::Freeze
+                        if !upgrade_frozen
+                            && !stop.load(Ordering::Acquire)
+                            && processes
+                                .as_ref()
+                                .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
+                    {
+                        upgrade_frozen = true;
+                        "ready\n"
+                    }
+                    UpgradeCommand::Freeze => "busy\n",
+                    UpgradeCommand::VerifyFrozen
+                        if upgrade_frozen
+                            && !stop.load(Ordering::Acquire)
+                            && processes
+                                .as_ref()
+                                .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
+                    {
+                        "ready\n"
+                    }
+                    UpgradeCommand::VerifyFrozen => "busy\n",
+                    UpgradeCommand::Release => {
+                        upgrade_frozen = false;
+                        "released\n"
+                    }
+                };
+                let _ = request.reply.send(answer);
+            }
         }
         let request = match requests.recv_timeout(Duration::from_millis(100)) {
             Ok(request) => request,
@@ -330,6 +371,33 @@ fn execute_native_file(
         #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         let command = parse_native_file_frame(frame).map_err(|_| NativeFileError::Policy)?;
         if !request.lease().is_active() {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        if upgrade_frozen {
+            // Match the existing Node WSS envelopes without effect or receipt
+            // admission. A frozen read is a failed read_result; a frozen
+            // mutation/status query is an unavailable operation_result.
+            let frame: Value = serde_json::from_str(frame).map_err(|_| NativeFileError::Policy)?;
+            let id = frame["request_id"]
+                .as_str()
+                .ok_or(NativeFileError::Policy)?;
+            let response = if frame["kind"] == "read" {
+                json!({"kind":"read_result","request_id":id,"status":"failed"})
+            } else {
+                let operation_id = frame["operation_id"]
+                    .as_str()
+                    .ok_or(NativeFileError::Policy)?;
+                json!({"kind":"operation_result","request_id":id,
+                    "result":{"operation_id":operation_id,"status":"unavailable"}})
+            };
+            if replies
+                .try_send(request.response(response.to_string()))
+                .is_err()
+            {
+                stop.store(true, Ordering::Release);
+                return Err(NativeFileError::Queue);
+            }
             continue;
         }
         let response = match command {
@@ -473,6 +541,8 @@ pub fn run_native_file_session(
             None,
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             None,
+            #[cfg(target_os = "linux")]
+            None,
             &worker_stop,
             &requests,
             &reply_sender,
@@ -511,7 +581,75 @@ pub fn run_native_managed_session(
     stop: &Arc<AtomicBool>,
     timing: HeartbeatTiming,
 ) -> Result<(), NativeFileError> {
+    run_native_managed_session_inner(
+        endpoint,
+        private_pem,
+        device_id,
+        receipt_directory,
+        managed,
+        stop,
+        ManagedRunOptions {
+            timing,
+            upgrade_key: None,
+        },
+    )
+}
+
+/// Linux candidate path with the Node installer's exact local upgrade socket.
+#[cfg(target_os = "linux")]
+pub fn run_native_managed_session_with_upgrade(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    receipt_directory: &Path,
+    managed: Arc<ManagedSessions>,
+    stop: &Arc<AtomicBool>,
+    key_path: &Path,
+) -> Result<(), NativeFileError> {
+    run_native_managed_session_inner(
+        endpoint,
+        private_pem,
+        device_id,
+        receipt_directory,
+        managed,
+        stop,
+        ManagedRunOptions {
+            timing: HeartbeatTiming::default(),
+            upgrade_key: Some(key_path),
+        },
+    )
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+struct ManagedRunOptions<'a> {
+    timing: HeartbeatTiming,
+    upgrade_key: Option<&'a Path>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn run_native_managed_session_inner(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    receipt_directory: &Path,
+    managed: Arc<ManagedSessions>,
+    stop: &Arc<AtomicBool>,
+    options: ManagedRunOptions<'_>,
+) -> Result<(), NativeFileError> {
+    #[cfg(not(target_os = "linux"))]
+    if options.upgrade_key.is_some() {
+        return Err(NativeFileError::Policy);
+    }
     let writes = NativeWriteExecutor::open(receipt_directory)?;
+    #[cfg(target_os = "linux")]
+    let (_upgrade_server, upgrade_requests) = if let Some(key) = options.upgrade_key {
+        let (sender, requests) = sync_channel(4);
+        let server =
+            UpgradeServer::bind(key, sender).map_err(|_| NativeFileError::UpgradeUnavailable)?;
+        (Some(server), Some(requests))
+    } else {
+        (None, None)
+    };
     let (request_sender, requests) = sync_channel(4);
     let (reply_sender, replies) = sync_channel(4);
     let worker_stop = Arc::clone(stop);
@@ -524,6 +662,8 @@ pub fn run_native_managed_session(
             writes,
             Some(worker_managed),
             Some(cleanup_ready),
+            #[cfg(target_os = "linux")]
+            upgrade_requests,
             &worker_stop,
             &requests,
             &reply_sender,
@@ -541,7 +681,7 @@ pub fn run_native_managed_session(
         &request_sender,
         &replies,
         session::ManagedTransportConfig {
-            timing,
+            timing: options.timing,
             managed: Arc::clone(&managed),
         },
     );
