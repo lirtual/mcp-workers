@@ -209,14 +209,13 @@ jobs:
         # A hung platform-specific test must leave a bounded CI failure with
         # enough progress output to identify the last running test binary.
         run: cargo test --locked --all-targets -- --nocapture
-      - name: Run Windows-supported Rust core and private-state fail-closed checks
+      - name: Run Windows-supported Rust core and owner-private SQLite ACL checks
         if: runner.os == 'Windows'
         timeout-minutes: 8
         working-directory: apps/remote-control-mcp-worker/agent/native-rust
-        # Windows owner-private SQLite ACL equivalence is not implemented yet:
-        # positive receipt/write tests must remain Gate 1 blocked, not weakened.
-        # Compile all targets above, exercise the supported core, and assert
-        # that unchecked receipt ACLs refuse before creating a database.
+        # Exercise the native Windows ACL positive/negative path against real
+        # disposable NTFS DACLs, plus supported core tests. Full Windows WSS,
+        # file tool parity and installed-state migration remain separate Gate 1.
         run: >-
           cargo test --locked --lib
           --test golden_digest --test golden_identity --test heartbeat_session

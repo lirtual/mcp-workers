@@ -146,15 +146,23 @@ fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError> {
+    crate::windows_private::private_path(path, is_dir)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn private_path(_path: &Path, _is_dir: bool) -> Result<(), ReceiptError> {
-    // ACL equivalence is a Gate 1 prerequisite. Never accept unchecked Windows state.
     Err(ReceiptError::UnsafePath)
 }
 
 fn private_directory(directory: &Path) -> Result<(), ReceiptError> {
     if !directory.exists() {
+        #[cfg(windows)]
+        private_path(directory.parent().ok_or(ReceiptError::UnsafePath)?, true)?;
         fs::create_dir(directory)?;
+        #[cfg(windows)]
+        crate::windows_private::seal_new_owner(directory, true)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -175,6 +183,8 @@ fn prepare_db_file(path: &Path) -> Result<(), ReceiptError> {
         }
         match open.open(path) {
             Ok(file) => {
+                #[cfg(windows)]
+                crate::windows_private::seal_new_owner(path, false)?;
                 file.sync_all()?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -201,6 +211,8 @@ fn preserve_legacy(directory: &Path, original: &[u8]) -> Result<(), ReceiptError
         options.mode(0o600);
     }
     let mut file = options.open(&backup)?;
+    #[cfg(windows)]
+    crate::windows_private::seal_new_owner(&backup, false)?;
     file.write_all(original)?;
     file.sync_all()?;
     private_path(&backup, false)
