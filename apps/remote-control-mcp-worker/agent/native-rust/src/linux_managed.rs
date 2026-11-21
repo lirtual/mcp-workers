@@ -14,7 +14,7 @@ use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_SESSIONS: usize = 10;
 const MAX_HISTORY: usize = 10;
@@ -44,6 +44,8 @@ pub enum InputOutcome {
 #[derive(Clone, Debug)]
 pub struct SessionSnapshot {
     pub session_id: String,
+    pub started_at: String,
+    pub last_observed_at: u64,
     pub state: SessionState,
     pub exit_code: Option<i32>,
     pub cleanup: Option<CleanupState>,
@@ -56,6 +58,7 @@ pub struct SessionOutput {
 }
 
 struct Record {
+    last_observed_at: u64,
     state: SessionState,
     exit_code: Option<i32>,
     cleanup: Option<CleanupState>,
@@ -64,6 +67,7 @@ struct Record {
 }
 
 struct Entry {
+    started_at: String,
     record: Mutex<Record>,
     output: Mutex<Option<BoundedProcessOutput>>,
     stdin: Mutex<Option<ChildStdin>>,
@@ -102,10 +106,46 @@ fn new_session_id() -> io::Result<String> {
     ))
 }
 
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Format the same ISO-8601 UTC startup timestamp as Node, using the
+/// existing Linux libc instead of introducing a second date library.
+fn startup_clock() -> io::Result<(String, u64)> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?;
+    let seconds = elapsed.as_secs() as libc::time_t;
+    let mut utc = std::mem::MaybeUninit::<libc::tm>::uninit();
+    if unsafe { libc::gmtime_r(&seconds, utc.as_mut_ptr()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let utc = unsafe { utc.assume_init() };
+    Ok((
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            utc.tm_year + 1900,
+            utc.tm_mon + 1,
+            utc.tm_mday,
+            utc.tm_hour,
+            utc.tm_min,
+            utc.tm_sec,
+            elapsed.subsec_millis()
+        ),
+        elapsed.as_millis() as u64,
+    ))
+}
+
 fn snapshot(id: &str, entry: &Entry) -> SessionSnapshot {
     let state = lock(&entry.record);
     SessionSnapshot {
         session_id: id.to_owned(),
+        started_at: entry.started_at.clone(),
+        last_observed_at: state.last_observed_at,
         state: state.state,
         exit_code: state.exit_code,
         cleanup: state.cleanup,
@@ -146,6 +186,7 @@ fn supervise(mut supervisor: SupervisorSession, entry: Arc<Entry>, deadline: Ins
     let mut state = lock(&entry.record);
     state.deadline_exceeded = expired;
     state.finished_at = Some(Instant::now());
+    state.last_observed_at = epoch_millis();
     match outcome {
         Ok(exit) => {
             state.exit_code = exit.status.code();
@@ -179,6 +220,7 @@ fn mark_uncertain(entry: &Entry) {
     record.state = SessionState::Unknown;
     record.cleanup = Some(CleanupState::Unknown);
     record.finished_at = Some(Instant::now());
+    record.last_observed_at = epoch_millis();
 }
 
 impl LinuxManagedSessions {
@@ -244,8 +286,11 @@ impl LinuxManagedSessions {
             ));
         }
         let id = new_session_id()?;
+        let (started_at, observed_at) = startup_clock()?;
         let entry = Arc::new(Entry {
+            started_at,
             record: Mutex::new(Record {
+                last_observed_at: observed_at,
                 state: SessionState::Running,
                 exit_code: None,
                 cleanup: None,
@@ -289,6 +334,7 @@ impl LinuxManagedSessions {
             record.state = SessionState::Failed;
             record.cleanup = Some(CleanupState::Confirmed); // No native launch.
             record.finished_at = Some(Instant::now());
+            record.last_observed_at = epoch_millis();
             return Err(io::Error::new(
                 ErrorKind::Interrupted,
                 "session revoked before launch",

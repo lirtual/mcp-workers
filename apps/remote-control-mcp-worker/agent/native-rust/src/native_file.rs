@@ -101,6 +101,12 @@ pub fn run_disposable_file_session(
 
 // This is the Gate 1 native file-session candidate. The older disposable
 // Gate 0 probe above remains an isolated regression fixture until migration.
+#[cfg(target_os = "linux")]
+use crate::linux_managed::LinuxManagedSessions;
+#[cfg(target_os = "linux")]
+use crate::linux_supervisor::CleanupState;
+#[cfg(target_os = "linux")]
+use crate::native_process::{self, NativeProcessEngine, ProcessRead};
 use crate::native_read::{self, ReadCommand};
 use crate::native_write::{NativeWriteError, NativeWriteExecutor};
 use serde_json::{json, Value};
@@ -116,6 +122,18 @@ pub(crate) enum NativeFileCommand {
     Status {
         request_id: String,
         operation_id: String,
+    },
+    #[cfg(target_os = "linux")]
+    ProcessRead {
+        request_id: String,
+        read: ProcessRead,
+    },
+    #[cfg(target_os = "linux")]
+    ProcessMutation {
+        request_id: String,
+        operation_id: String,
+        tool: String,
+        arguments: Value,
     },
 }
 
@@ -196,6 +214,52 @@ pub(crate) fn parse_native_file_frame(frame: &str) -> Result<NativeFileCommand, 
     }
 }
 
+/// The extended policy admits process frames only in the explicit Linux
+/// nonproduction managed runtime. The existing file-only policy is unchanged.
+#[cfg(target_os = "linux")]
+pub(crate) fn parse_native_managed_frame(frame: &str) -> Result<NativeFileCommand, ()> {
+    if let Ok(file) = parse_native_file_frame(frame) {
+        return Ok(file);
+    }
+    if frame.len() > 65_536 {
+        return Err(());
+    }
+    let message: Value = serde_json::from_str(frame).map_err(|_| ())?;
+    let object = message.as_object().ok_or(())?;
+    let kind = object.get("kind").and_then(Value::as_str).ok_or(())?;
+    let request_id = object.get("request_id").and_then(Value::as_str).ok_or(())?;
+    if !crate::identity::valid_device_id(request_id) {
+        return Err(());
+    }
+    let tool = object.get("tool").and_then(Value::as_str).ok_or(())?;
+    let arguments = object.get("arguments").ok_or(())?;
+    if kind == "read" && object.len() == 4 {
+        let read = native_process::parse_process_read(tool, arguments).ok_or(())?;
+        return Ok(NativeFileCommand::ProcessRead {
+            request_id: request_id.to_owned(),
+            read,
+        });
+    }
+    if kind == "operation" && object.len() == 5 {
+        let operation_id = object
+            .get("operation_id")
+            .and_then(Value::as_str)
+            .ok_or(())?;
+        if !crate::receipts::valid_id(operation_id)
+            || native_process::parse_process_mutation(tool, arguments).is_none()
+        {
+            return Err(());
+        }
+        return Ok(NativeFileCommand::ProcessMutation {
+            request_id: request_id.to_owned(),
+            operation_id: operation_id.to_owned(),
+            tool: tool.to_owned(),
+            arguments: arguments.clone(),
+        });
+    }
+    Err(())
+}
+
 #[derive(Debug, Error)]
 pub enum NativeFileError {
     #[error(transparent)]
@@ -208,15 +272,27 @@ pub enum NativeFileError {
     Queue,
     #[error("native file executor panicked")]
     Panicked,
+    #[cfg(target_os = "linux")]
+    #[error("native managed-session cleanup remains uncertain")]
+    CleanupUncertain,
 }
 
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
+    #[cfg(target_os = "linux")] managed: Option<Arc<LinuxManagedSessions>>,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
     replies: &SyncSender<ExecutionResponse>,
 ) -> Result<(), NativeFileError> {
+    #[cfg(target_os = "linux")]
+    let mut processes = managed.map(NativeProcessEngine::new);
     while !stop.load(Ordering::Acquire) {
+        #[cfg(target_os = "linux")]
+        if let Some(process) = processes.as_mut() {
+            process
+                .reconcile(writes.receipt_store_mut())
+                .map_err(NativeWriteError::from)?;
+        }
         let request = match requests.recv_timeout(Duration::from_millis(100)) {
             Ok(request) => request,
             Err(RecvTimeoutError::Timeout) => continue,
@@ -225,6 +301,14 @@ fn execute_native_file(
         let Some(frame) = request.frame_if_active() else {
             continue;
         };
+        #[cfg(target_os = "linux")]
+        let command = if processes.is_some() {
+            parse_native_managed_frame(frame)
+        } else {
+            parse_native_file_frame(frame)
+        }
+        .map_err(|_| NativeFileError::Policy)?;
+        #[cfg(not(target_os = "linux"))]
         let command = parse_native_file_frame(frame).map_err(|_| NativeFileError::Policy)?;
         if !request.lease().is_active() {
             continue;
@@ -272,6 +356,42 @@ fn execute_native_file(
                 json!({"kind":"operation_result","request_id":request_id,
                     "result":{"operation_id":operation_id,"status":outcome.state,"receipt":outcome.receipt}}).to_string()
             }
+            #[cfg(target_os = "linux")]
+            NativeFileCommand::ProcessRead { request_id, read } => {
+                native_process::execute_process_read(
+                    &processes.as_ref().ok_or(NativeFileError::Policy)?.sessions,
+                    &request_id,
+                    &read,
+                )
+            }
+            #[cfg(target_os = "linux")]
+            NativeFileCommand::ProcessMutation {
+                request_id,
+                operation_id,
+                tool,
+                arguments,
+            } => {
+                let result = processes.as_mut().ok_or(NativeFileError::Policy)?.execute(
+                    writes.receipt_store_mut(),
+                    &operation_id,
+                    &tool,
+                    &arguments,
+                    || request.lease().is_active(),
+                );
+                let outcome = match result {
+                    Ok(outcome) => outcome,
+                    Err(error) => {
+                        // Admission/update can fail after an effect: stop and
+                        // preserve the guarded receipt; never replay.
+                        stop.store(true, Ordering::Release);
+                        return Err(NativeWriteError::from(error).into());
+                    }
+                };
+                json!({"kind":"operation_result", "request_id":request_id,
+                    "result":{"operation_id":operation_id, "status":outcome.state,
+                        "session_id":outcome.session_id, "receipt":outcome.receipt}})
+                .to_string()
+            }
             NativeFileCommand::Status {
                 request_id,
                 operation_id,
@@ -315,7 +435,14 @@ pub fn run_native_file_session(
     let (reply_sender, replies) = sync_channel(4);
     let worker_stop = Arc::clone(stop);
     let worker = std::thread::spawn(move || {
-        let result = execute_native_file(writes, &worker_stop, &requests, &reply_sender);
+        let result = execute_native_file(
+            writes,
+            #[cfg(target_os = "linux")]
+            None,
+            &worker_stop,
+            &requests,
+            &reply_sender,
+        );
         if result.is_err() {
             worker_stop.store(true, Ordering::Release);
         }
@@ -333,6 +460,60 @@ pub fn run_native_file_session(
     stop.store(true, Ordering::Release);
     let executor = worker.join().map_err(|_| NativeFileError::Panicked)?;
     executor?;
+    session?;
+    Ok(())
+}
+
+/// Non-installable Linux candidate: one SQLite receipt owner serves both file
+/// and process mutations. The C helper and Shell are injected by disposable
+/// tests; no installed identity, production URL or advertised capability.
+#[cfg(target_os = "linux")]
+pub fn run_native_managed_session(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    receipt_directory: &Path,
+    managed: Arc<LinuxManagedSessions>,
+    stop: &Arc<AtomicBool>,
+    timing: HeartbeatTiming,
+) -> Result<(), NativeFileError> {
+    let writes = NativeWriteExecutor::open(receipt_directory)?;
+    let (request_sender, requests) = sync_channel(4);
+    let (reply_sender, replies) = sync_channel(4);
+    let worker_stop = Arc::clone(stop);
+    let worker_managed = Arc::clone(&managed);
+    let worker = std::thread::spawn(move || {
+        let result = execute_native_file(
+            writes,
+            Some(worker_managed),
+            &worker_stop,
+            &requests,
+            &reply_sender,
+        );
+        if result.is_err() {
+            worker_stop.store(true, Ordering::Release);
+        }
+        result
+    });
+    let session = session::maintain_native_managed_transport(
+        endpoint,
+        private_pem,
+        device_id,
+        stop,
+        &request_sender,
+        &replies,
+        session::ManagedTransportConfig {
+            timing,
+            managed: Arc::clone(&managed),
+        },
+    );
+    stop.store(true, Ordering::Release);
+    let cleanup = managed.stop_all(Duration::from_secs(8));
+    let executor = worker.join().map_err(|_| NativeFileError::Panicked)?;
+    executor?;
+    if cleanup != CleanupState::Confirmed {
+        return Err(NativeFileError::CleanupUncertain);
+    }
     session?;
     Ok(())
 }

@@ -1,6 +1,10 @@
 //! Nonproduction signed WSS login against the existing RCA Worker interface.
 //! No installed Agent lifecycle, local operation executor, or automatic Owner Grant is provided.
 use crate::identity::{signed_session_proof, valid_device_id};
+#[cfg(target_os = "linux")]
+use crate::linux_managed::LinuxManagedSessions;
+#[cfg(target_os = "linux")]
+use crate::linux_supervisor::CleanupState;
 use crate::native_read::parse_read_frame;
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
@@ -366,6 +370,33 @@ impl AuthenticatedSocket {
         result
     }
 
+    /// Linux-only process+file candidate. Owner cleanup closes native process
+    /// admission and reports Confirmed only after all C-supervised groups have
+    /// independently reached a confirmed state inside the Worker's ACK budget.
+    #[cfg(target_os = "linux")]
+    pub fn pump_native_managed(
+        &mut self,
+        stop: &Arc<AtomicBool>,
+        incoming: &SyncSender<ExecutionRequest>,
+        outgoing: &Receiver<ExecutionResponse>,
+        managed: &Arc<LinuxManagedSessions>,
+    ) -> Result<(), SessionError> {
+        let lease = ExecutionLease::new(stop);
+        let result = self.pump_scoped(
+            stop,
+            incoming,
+            outgoing,
+            &lease,
+            || match managed.stop_all(Duration::from_millis(1_800)) {
+                CleanupState::Confirmed => CleanupStatus::Confirmed,
+                CleanupState::Unknown => CleanupStatus::Uncertain,
+            },
+            FramePolicy::NativeManaged(Arc::clone(managed)),
+        );
+        lease.revoke();
+        result
+    }
+
     /// The caller may report Confirmed only after aborting and verifying every
     /// owned process. Bound cleanup to the Worker's 2.5s ACK window. Regardless
     /// of callback outcome, ordinary queued work was revoked first.
@@ -424,11 +455,15 @@ impl AuthenticatedSocket {
                     );
                     return Err(SessionError::Policy);
                 }
-                let permitted = match policy {
+                let permitted = match &policy {
                     FramePolicy::Any => true,
                     FramePolicy::ReadOnly => parse_read_frame(&frame).is_ok(),
                     FramePolicy::NativeFiles => {
                         crate::native_file::parse_native_file_frame(&frame).is_ok()
+                    }
+                    #[cfg(target_os = "linux")]
+                    FramePolicy::NativeManaged(_) => {
+                        crate::native_file::parse_native_managed_frame(&frame).is_ok()
                     }
                 };
                 if !permitted {
@@ -531,14 +566,14 @@ fn wait_or_stop(duration: Duration, stop: &AtomicBool) {
 /// This function intentionally does not create an operation executor or reuse
 /// previous execution work. A stop or superseding socket ends gracefully;
 /// owner policy or incompatible protocol ends permanently.
-#[derive(Clone, Copy)]
 enum FramePolicy {
     Any,
     ReadOnly,
     NativeFiles,
+    #[cfg(target_os = "linux")]
+    NativeManaged(Arc<LinuxManagedSessions>),
 }
 
-#[derive(Clone, Copy)]
 struct TransportMode {
     timing: HeartbeatTiming,
     policy: FramePolicy,
@@ -617,6 +652,36 @@ pub fn maintain_native_file_transport(
     )
 }
 
+#[cfg(target_os = "linux")]
+pub struct ManagedTransportConfig {
+    pub timing: HeartbeatTiming,
+    pub managed: Arc<LinuxManagedSessions>,
+}
+
+#[cfg(target_os = "linux")]
+pub fn maintain_native_managed_transport(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    stop: &Arc<AtomicBool>,
+    incoming: &SyncSender<ExecutionRequest>,
+    outgoing: &Receiver<ExecutionResponse>,
+    config: ManagedTransportConfig,
+) -> Result<(), SessionError> {
+    maintain_transport_mode(
+        endpoint,
+        private_pem,
+        device_id,
+        stop,
+        incoming,
+        outgoing,
+        TransportMode {
+            timing: config.timing,
+            policy: FramePolicy::NativeManaged(config.managed),
+        },
+    )
+}
+
 fn maintain_transport_mode(
     endpoint: &str,
     private_pem: &str,
@@ -632,10 +697,14 @@ fn maintain_transport_mode(
             Ok(mut socket) => {
                 socket.set_heartbeat_timing(mode.timing)?;
                 let connected_at = Instant::now();
-                let pump = match mode.policy {
+                let pump = match &mode.policy {
                     FramePolicy::Any => socket.pump(stop, incoming, outgoing),
                     FramePolicy::ReadOnly => socket.pump_native_read(stop, incoming, outgoing),
                     FramePolicy::NativeFiles => socket.pump_native_file(stop, incoming, outgoing),
+                    #[cfg(target_os = "linux")]
+                    FramePolicy::NativeManaged(managed) => {
+                        socket.pump_native_managed(stop, incoming, outgoing, managed)
+                    }
                 };
                 match pump {
                     Ok(()) | Err(SessionError::Superseded) => return Ok(()),
