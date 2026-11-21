@@ -16,6 +16,7 @@ use tungstenite::Message;
 mod common;
 const DEVICE_ID: &str = "12345678-1234-1234-1234-123456789abc";
 const NONCE: &str = "ABCDEFGHIJKLMNOPQRSTUVWX";
+#[cfg(unix)]
 const PROOF: &str =
     "XNSFWbbMsKNoaFInjZPwOeo543Cw3RDICp9di8gFUhlZSksWdzWYp6hnWFoCzAbCm3VAH-mNK1LZCUlbqp_6AQ";
 
