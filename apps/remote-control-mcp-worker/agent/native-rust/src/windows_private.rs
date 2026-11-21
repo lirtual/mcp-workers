@@ -16,7 +16,7 @@ use windows_sys::Win32::Security::Authorization::{
 use windows_sys::Win32::Security::{
     AclSizeInformation, CreateWellKnownSid, EqualSid, GetAce, GetAclInformation,
     GetSecurityDescriptorControl, GetTokenInformation, IsValidSid, TokenUser, WinLocalSystemSid,
-    ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
+    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
     OWNER_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
@@ -206,15 +206,19 @@ fn validated_acl(handle: &OwnedHandle, user: PSID, system: PSID) -> Result<bool,
         if unsafe { GetAce(dacl, i, &mut raw_ace) } == 0 || raw_ace.is_null() {
             return Err(unsafe_path());
         }
-        let ace = unsafe { &*(raw_ace.cast::<ACCESS_ALLOWED_ACE>()) };
-        // Refuse deny, callback, unknown and malformed ACEs: never guess grants.
-        if ace.Header.AceType != 0
-            || (ace.Header.AceSize as usize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>()
-        {
+        // GetAce returns an untyped pointer. Validate the header and SID byte
+        // length before constructing a typed ACE reference or calling EqualSid.
+        let header = unsafe { &*(raw_ace.cast::<ACE_HEADER>()) };
+        let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
+        if header.AceType != 0 || (header.AceSize as usize) < sid_offset + 8 {
             return Err(unsafe_path());
         }
+        let ace = unsafe { &*(raw_ace.cast::<ACCESS_ALLOWED_ACE>()) };
         let sid = (&ace.SidStart as *const u32).cast_mut().cast::<c_void>();
-        if unsafe { IsValidSid(sid) } == 0 {
+        let sub_authorities = unsafe { *sid.cast::<u8>().add(1) } as usize;
+        if sid_offset + 8 + 4 * sub_authorities > header.AceSize as usize
+            || unsafe { IsValidSid(sid) } == 0
+        {
             return Err(unsafe_path());
         }
         if unsafe { EqualSid(sid, user) } != 0 {
