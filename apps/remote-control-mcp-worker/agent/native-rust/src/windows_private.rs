@@ -10,7 +10,9 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Component, Path, Prefix};
 use std::ptr::{null, null_mut};
 use windows_sys::Win32::Foundation::{LocalFree, INVALID_HANDLE_VALUE};
-use windows_sys::Win32::Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT};
+use windows_sys::Win32::Security::Authorization::{
+    GetSecurityInfo, SetSecurityInfo, SE_FILE_OBJECT,
+};
 use windows_sys::Win32::Security::{
     AclSizeInformation, CreateWellKnownSid, EqualSid, GetAce, GetAclInformation,
     GetSecurityDescriptorControl, GetTokenInformation, IsValidSid, TokenUser, WinLocalSystemSid,
@@ -21,17 +23,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL,
+    FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_OWNER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
-#[track_caller]
 fn unsafe_path() -> ReceiptError {
-    #[cfg(debug_assertions)]
-    eprintln!(
-        "Win ACL debug deny at line {}",
-        std::panic::Location::caller().line()
-    );
     ReceiptError::UnsafePath
 }
 
@@ -95,12 +91,15 @@ fn system_sid() -> Result<[usize; 16], ReceiptError> {
     Ok(storage)
 }
 
-fn open_read_control(path: &Path) -> Result<OwnedHandle, ReceiptError> {
+fn open_with_access(path: &Path, access: u32) -> Result<OwnedHandle, ReceiptError> {
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    if wide[..wide.len() - 1].contains(&0) {
+        return Err(unsafe_path());
+    }
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            READ_CONTROL | FILE_READ_ATTRIBUTES,
+            access,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             null(),
             OPEN_EXISTING,
@@ -112,6 +111,40 @@ fn open_read_control(path: &Path) -> Result<OwnedHandle, ReceiptError> {
         return Err(unsafe_path());
     }
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
+}
+
+fn open_read_control(path: &Path) -> Result<OwnedHandle, ReceiptError> {
+    open_with_access(path, READ_CONTROL | FILE_READ_ATTRIBUTES)
+}
+
+/// Only the caller that successfully created this exact new path may seal it.
+/// Existing Agent state must never be silently re-owned or have its DACL reset.
+pub(crate) fn seal_new_owner(path: &Path, is_dir: bool) -> Result<(), ReceiptError> {
+    private_path(path.parent().ok_or(ReceiptError::UnsafePath)?, true)?;
+    let storage = current_user_sid()?;
+    let user = unsafe { (*(storage.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    let handle = open_with_access(path, READ_CONTROL | FILE_READ_ATTRIBUTES | WRITE_OWNER)?;
+    let flags = attributes(&handle)?;
+    if flags & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || (flags & FILE_ATTRIBUTE_DIRECTORY != 0) != is_dir
+    {
+        return Err(unsafe_path());
+    }
+    if unsafe {
+        SetSecurityInfo(
+            handle.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            user,
+            null_mut(),
+            null(),
+            null(),
+        )
+    } != 0
+    {
+        return Err(unsafe_path());
+    }
+    Ok(())
 }
 
 fn attributes(handle: &OwnedHandle) -> Result<u32, ReceiptError> {
@@ -219,14 +252,11 @@ pub(crate) fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError
 
     // Inspect each component by handle, so an ancestor junction cannot redirect
     // the later ACL/SQLite operations outside the expected private tree.
-    for (depth, ancestor) in path.ancestors().enumerate() {
+    for ancestor in path.ancestors() {
         if ancestor.as_os_str().is_empty() {
             continue;
         }
-        let handle = open_read_control(ancestor).inspect_err(|_| {
-            #[cfg(debug_assertions)]
-            eprintln!("Win ACL debug ancestor open depth {depth}");
-        })?;
+        let handle = open_read_control(ancestor)?;
         let flags = attributes(&handle)?;
         if flags & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
             return Err(unsafe_path());

@@ -161,6 +161,8 @@ fn private_directory(directory: &Path) -> Result<(), ReceiptError> {
         #[cfg(windows)]
         private_path(directory.parent().ok_or(ReceiptError::UnsafePath)?, true)?;
         fs::create_dir(directory)?;
+        #[cfg(windows)]
+        crate::windows_private::seal_new_owner(directory, true)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -181,6 +183,8 @@ fn prepare_db_file(path: &Path) -> Result<(), ReceiptError> {
         }
         match open.open(path) {
             Ok(file) => {
+                #[cfg(windows)]
+                crate::windows_private::seal_new_owner(path, false)?;
                 file.sync_all()?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -207,6 +211,8 @@ fn preserve_legacy(directory: &Path, original: &[u8]) -> Result<(), ReceiptError
         options.mode(0o600);
     }
     let mut file = options.open(&backup)?;
+    #[cfg(windows)]
+    crate::windows_private::seal_new_owner(&backup, false)?;
     file.write_all(original)?;
     file.sync_all()?;
     private_path(&backup, false)

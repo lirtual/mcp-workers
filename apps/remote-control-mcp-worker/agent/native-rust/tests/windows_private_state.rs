@@ -46,6 +46,27 @@ foreach ($sid in @($userSid, $systemSid)) {
     );
 }
 
+fn seal_file(path: &Path) {
+    powershell(
+        r#"
+$ErrorActionPreference = 'Stop'
+$userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+$systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+$acl = [Security.AccessControl.FileSecurity]::new()
+$acl.SetOwner($userSid)
+$acl.SetAccessRuleProtection($true, $false)
+foreach ($sid in @($userSid, $systemSid)) {
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+    $sid, [Security.AccessControl.FileSystemRights]::FullControl,
+    [Security.AccessControl.AccessControlType]::Allow)
+  $acl.AddAccessRule($rule)
+}
+[IO.File]::SetAccessControl($env:RCA_TEST_PATH, $acl)
+"#,
+        &[("RCA_TEST_PATH", path)],
+    );
+}
+
 fn broad_grant(path: &Path, directory: bool) {
     let script = if directory {
         r#"
@@ -111,6 +132,7 @@ fn broad_directory_grant_fails_before_sqlite_side_effect() {
     seal_dir(root.path());
     let receipts = root.path().join("receipts");
     std::fs::create_dir(&receipts).unwrap();
+    seal_dir(&receipts);
     broad_grant(&receipts, true);
     assert!(matches!(
         ReceiptStore::open(&receipts),
@@ -125,8 +147,10 @@ fn broad_existing_sqlite_grant_is_rejected_before_parsing() {
     seal_dir(root.path());
     let receipts = root.path().join("receipts");
     std::fs::create_dir(&receipts).unwrap();
+    seal_dir(&receipts);
     let sqlite = receipts.join("operation-receipts.sqlite");
     std::fs::write(&sqlite, b"not-a-database").unwrap();
+    seal_file(&sqlite);
     broad_grant(&sqlite, false);
     assert!(matches!(
         ReceiptStore::open(&receipts),
