@@ -4,6 +4,8 @@ This crate is an unshipped migration candidate for [Spec #914](https://github.co
 
 Verified seams:
 
+- Gate 1 **unshipped GitHub-hosted Session enrollment identity candidate**: Rust creates fresh Ed25519 PKCS#8/SPKI identities scoped to exact physical Attempt fields (`attempt_id`, positive safe run/attempt numbers, reviewed `ubuntu`/`windows` workflow), signs the existing one-time enrollment nonce transcript and rejects cross-Attempt, key mismatch and invalid nonce. Independent Node 24 tests verify both directions. On Linux only, Rust and the existing Node Runner entrypoint can each recover the other's `RUNNER_TEMP/session-rca/identity.json` via private, owner-owned paths and atomic no-overwrite hardlink publication; tests cover concurrent creators, symlink/unsafe mode and multi-link denial. This does **not** fetch or handle GitHub OIDC, register a Worker device, launch a credential-free transport, or cover the Windows identity store/actual GitHub-hosted Runner. It is not an installed Agent path.
+
 - Node 24's `operationDigest` custom JSON ordering, floating-point formatting and SHA-256, using fixed independent golden cases.
 - Node 24's Ed25519 PKCS#8/SPKI session and Owner-intent signing transcripts; disposable public test seed generated in memory.
 - Isolated loopback signed WebSocket challenge, explicit denial/invalid subprotocol rejection, bounded TCP connect and per-I/O TLS/WebSocket handshake waits, ping-frame handling, and one test-only read/write roundtrip through the guarded Rust `Gate0Probe` with persistent receipt and no-blind-replay on reconnect.
