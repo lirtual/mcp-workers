@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use url::Url;
 
-const ORIGIN: &str = "https://rca.lirtual.dpdns.org/";
+pub(crate) const ORIGIN: &str = "https://rca.lirtual.dpdns.org/";
 const BODY_LIMIT: usize = 1024;
 
 #[derive(Debug, Error)]

@@ -2,10 +2,13 @@
 //! Synthetic Runner variables and local scripts only: no OIDC HTTP or Worker grant.
 #[cfg(target_os = "linux")]
 mod linux {
-    use rca_native_agent::session_enrollment::new_session_identity;
+    use rca_native_agent::session_enrollment::{
+        load_or_create_linux_session_identity, new_session_identity,
+    };
     use rca_native_agent::session_registration::RegisteredSessionDevice;
     use rca_native_agent::session_runner::{
-        checked_runner_context, spawn_credential_free_transport, validate_transport_grant,
+        checked_runner_context, checked_transport_child_identity, spawn_credential_free_transport,
+        validate_transport_grant,
     };
     use std::collections::BTreeMap;
     use std::fs;
@@ -84,6 +87,92 @@ mod linux {
         ] {
             assert!(validate_transport_grant(&wrong, NOW).is_err());
         }
+    }
+
+    #[test]
+    fn transport_child_requires_parent_identity_and_valid_grant() {
+        let root = tempfile::tempdir().unwrap();
+        let env = source(root.path().to_str().unwrap());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let ticket = grant(now + 60_000);
+        assert!(checked_transport_child_identity(&env, &ticket).is_err());
+        assert!(!root.path().join("session-rca/identity.json").exists());
+
+        let attempt = checked_runner_context(&env).unwrap().0;
+        let (_, parent) = load_or_create_linux_session_identity(root.path(), &attempt).unwrap();
+        let (file, child) = checked_transport_child_identity(&env, &ticket).unwrap();
+        assert_eq!(file, root.path().join("session-rca/identity.json"));
+        assert_eq!(child.public_key, parent.public_key);
+
+        let mut wrong_attempt = env.clone();
+        wrong_attempt.insert("GITHUB_RUN_ATTEMPT".into(), "2".into());
+        assert!(checked_transport_child_identity(&wrong_attempt, &ticket).is_err());
+        assert!(checked_transport_child_identity(&env, &grant(now)).is_err());
+        assert!(checked_transport_child_identity(&env, &grant(now + 301 * 60_000)).is_err());
+    }
+
+    #[test]
+    fn absolute_grant_expiry_stops_transport_and_cancellation_ends_the_watch() {
+        use rca_native_agent::session_runner::start_session_expiry_watch;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = start_session_expiry_watch(now + 300, &stop).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            stop.load(Ordering::Acquire),
+            "grant expiry must stop transport"
+        );
+        watcher.join().unwrap();
+
+        let canceled = Arc::new(AtomicBool::new(false));
+        let watcher = start_session_expiry_watch(now + 60_000, &canceled).unwrap();
+        canceled.store(true, Ordering::Release);
+        watcher.join().unwrap();
+        assert!(start_session_expiry_watch(now, &canceled).is_err());
+        assert!(start_session_expiry_watch(now + 301 * 60_000, &canceled).is_err());
+    }
+
+    #[test]
+    fn transport_child_rejects_unsafe_supervisor_before_network_or_receipts() {
+        use rca_native_agent::session_runner::run_verified_linux_session_child;
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let root = tempfile::tempdir().unwrap();
+        let env = source(root.path().to_str().unwrap());
+        let attempt = checked_runner_context(&env).unwrap().0;
+        load_or_create_linux_session_identity(root.path(), &attempt).unwrap();
+        let helper = root.path().join("helper.sh");
+        let alias = root.path().join("linked-helper");
+        fs::write(&helper, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&helper, &alias).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let stop = Arc::new(AtomicBool::new(false));
+        assert!(
+            run_verified_linux_session_child(&env, &grant(now + 60_000), &alias, &stop).is_err()
+        );
+        // A directly executable but set-ID supervisor must also be refused.
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o4700)).unwrap();
+        assert!(
+            run_verified_linux_session_child(&env, &grant(now + 60_000), &helper, &stop).is_err()
+        );
+        assert!(!root.path().join("session-rca/receipts").exists());
     }
 
     #[test]
