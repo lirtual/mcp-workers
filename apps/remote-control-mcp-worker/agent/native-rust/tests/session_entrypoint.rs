@@ -106,3 +106,19 @@ fn malformed_inherited_environment_fails_without_panicking_or_logging_its_value(
     assert!(!stderr.contains("panicked"));
     assert!(!root.path().join("session-rca").exists());
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn malformed_command_line_argument_fails_without_panicking() {
+    use std::os::unix::ffi::OsStringExt;
+    let root = tempfile::tempdir().unwrap();
+    let output = runner_command(root.path())
+        .arg(std::ffi::OsString::from_vec(vec![0xff, 0xfe]))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Session RCA candidate unavailable"));
+    assert!(!stderr.contains("panicked"));
+    assert!(!root.path().join("session-rca").exists());
+}

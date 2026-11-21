@@ -112,7 +112,10 @@ mod ubuntu {
         if unsafe { libc::geteuid() } == 0 {
             return Err(());
         }
-        let args: Vec<_> = std::env::args().skip(1).collect();
+        let args: Vec<String> = std::env::args_os()
+            .skip(1)
+            .map(|value| value.into_string().map_err(|_| ()))
+            .collect::<Result<_, _>>()?;
         let source = source()?;
         match args.as_slice() {
             [] => parent(&source),
