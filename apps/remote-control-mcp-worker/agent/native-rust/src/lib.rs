@@ -30,6 +30,7 @@ mod native_search;
 pub mod native_write;
 pub mod receipts;
 pub mod session;
+pub mod session_enrollment;
 #[cfg(windows)]
 pub mod windows_job;
 #[cfg(windows)]
