@@ -215,7 +215,11 @@ if ($Action -eq 'Switch') {
       ($Direction -eq 'Upgrade' -and $manifest.upgrade_profile -cne 'paired-full-v1')) {
     throw 'Unreviewed Windows package version or capability profile'
   }
-  $runtime = if ($manifest.agent_runtime) { [string]$manifest.agent_runtime } else { 'node-standard-windows-v2' }
+  # Published Node bundles predate agent_runtime; under StrictMode, inspect the JSON property collection before reading it.
+  $runtimeProperty = $manifest.PSObject.Properties['agent_runtime']
+  $runtime = if ($null -ne $runtimeProperty -and -not [string]::IsNullOrWhiteSpace([string]$runtimeProperty.Value)) {
+    [string]$runtimeProperty.Value
+  } else { 'node-standard-windows-v2' }
   if ($runtime -ceq 'rust-standard-windows-v1') {
     $nextEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','.build','rca-standard-windows-candidate.exe')
   } elseif ($runtime -ceq 'node-standard-windows-v2') {
