@@ -92,16 +92,10 @@ const driver=path.join(work,"installer.mjs");
 writeFileSync(driver,[
   'import path from "node:path";',
   'import {pathToFileURL} from "node:url";',
-  'const {installUnit,renderV2Service,UNIT}=await import(pathToFileURL(path.join(process.env.RCA914_AGENT_SOURCE,"scripts/install-v2.mjs")));',
   'const home=process.env.HOME;',
-  'const base=path.join(home,".local/share/mcp-workers/remote-control");',
-  'const keyPath=path.join(base,"v2-identity.pem");',
-  'const endpoint="https://127.0.0.1:1/";',
-  'const oldRoot=path.join(base,"programs/v0.1.56-linux-x64-glibc");',
-  'const rustRoot=path.join(base,"programs/v0.1.57-rust-candidate.1-linux-x64-glibc");',
-  'const old=renderV2Service({node:path.join(oldRoot,"bin/node"),home,repoRoot:oldRoot,keyPath,endpoint,entryExt:"js"});',
-  'const rust=renderV2Service({node:path.join(rustRoot,"bin/node"),home,repoRoot:rustRoot,keyPath,endpoint,entryExt:"js",agentRuntime:"rust-standard-linux-v1"});',
-  'await installUnit(path.join(home,".config/systemd/user",UNIT),rust,old);',
+  'const rustRoot=path.join(home,".local/share/mcp-workers/remote-control/programs/v0.1.57-rust-candidate.1-linux-x64-glibc");',
+  'const {runInstaller}=await import(pathToFileURL(path.join(rustRoot,"apps/remote-control-agent/scripts/install-v2.mjs")));',
+  'await runInstaller(["--upgrade","--endpoint","https://127.0.0.1:1/"],{home,stdin:{isTTY:true},stdout:{isTTY:true,write(){}}});',
 ].join("\n")+"\n",{mode:0o600});
 const systemctl=(args)=>{
   const p=spawnSync("/usr/bin/systemctl",["--user",...args],{env:baseEnv,encoding:"utf8",timeout:10000});
@@ -109,18 +103,21 @@ const systemctl=(args)=>{
   return p.stdout.trim();
 };
 let installer;
+let installerOutput="";
 try {
-  installer=spawn(process.execPath,[driver],{env:{...baseEnv,PATH:wrappers+":"+baseEnv.PATH,SPEC914_RESTART_MARKER:marker,SPEC914_RELEASE_RESTART:release},detached:true,stdio:"ignore"});
+  installer=spawn(path.join(rustRoot,"bin/node"),[driver],{env:{...baseEnv,PATH:wrappers+":"+baseEnv.PATH,SPEC914_RESTART_MARKER:marker,SPEC914_RELEASE_RESTART:release},detached:true,stdio:["ignore","pipe","pipe"]});
+  installer.stdout.setEncoding("utf8").on("data",chunk=>installerOutput+=chunk);
+  installer.stderr.setEncoding("utf8").on("data",chunk=>installerOutput+=chunk);
   const deadline=Date.now()+30000;
-  while(Date.now()<deadline&&!existsSync(marker)) await new Promise(r=>setTimeout(r,50));
-  assert.ok(existsSync(marker),"installer reached post-restart interruption point");
+  while(Date.now()<deadline&&!existsSync(marker)&&installer.exitCode===null) await new Promise(r=>setTimeout(r,50));
+  assert.ok(existsSync(marker),"installer reached post-restart interruption point; exit="+installer.exitCode+" output="+installerOutput.slice(-2000));
   systemctl(["is-active",UNIT]);
   const rustPid=Number(systemctl(["show","-p","MainPID","--value",UNIT]));
   assert.equal(readFileSync("/proc/"+rustPid+"/cmdline").toString().split("\0")[0],rustExe,"Rust candidate is the live systemd MainPID");
   assert.ok(existsSync(backupPath),"durable previous Node unit backup exists");
   assert.ok(readFileSync(unitPath,"utf8").includes(rustExe),"candidate unit was activated before interruption");
   process.kill(-installer.pid,"SIGKILL");
-  await new Promise(resolve=>installer.once("exit",resolve));
+  if(installer.exitCode===null)await new Promise(resolve=>installer.once("exit",resolve));
   installer=null;
   assert.ok(!existsSync(release),"blocked systemctl wrapper never resumed");
   assert.equal(await recoverInterruptedUpgrade({home,unitPath}),true,"interrupted transaction recovered");
@@ -141,8 +138,10 @@ try {
   console.log(JSON.stringify({real_systemd:true,node_to_rust_activation:true,installer_sigkill:true,recovered_node:true,identity_preserved:true,receipt_rows_preserved:statesAfter.length,receipt_quick_check:"ok"}));
 } finally {
   if(installer) {
-    try{process.kill(-installer.pid,"SIGKILL");}catch{}
-    await new Promise(resolve=>installer.once("exit",resolve)).catch(()=>{});
+    if(installer.exitCode===null) {
+      try{process.kill(-installer.pid,"SIGKILL");}catch{}
+      if(installer.exitCode===null)await new Promise(resolve=>installer.once("exit",resolve)).catch(()=>{});
+    }
   }
   if(existsSync(backupPath))await recoverInterruptedUpgrade({home,unitPath});
   if(existsSync(unitPath)){

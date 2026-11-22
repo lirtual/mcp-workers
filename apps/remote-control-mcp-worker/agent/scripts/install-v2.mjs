@@ -1457,6 +1457,7 @@ export async function runInstaller(args, {
   const keyPath = keyForInstallMode(home, options.grantType ?? "permanent");
   systemdLiteral(home);
   const host = await preflight(options.action, options.foreground);
+  const manifest = portable ? JSON.parse(readFileSync(manifestPath, "utf8")) : {};
   await recoverInterruptedUpgrade({home, unitPath});
   if (options.action !== "uninstall") trustedEndpoint(options.endpoint);
   // Read-only collision gate BEFORE creating a device key or pending cloud grant.
