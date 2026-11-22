@@ -204,6 +204,11 @@ test("#660 candidate provenance requires exact pinned source and no change of pr
     agent_runtime:"node-v2",candidate_profile:"darwin-permanent-local-v1",
     native_supervisor:"darwin-owned-group-v1",modules:["macos-permanent.ts"]};
   assert.equal(candidateName(meta,"a".repeat(40),"arm64"),"v0.0.0-ci-darwin-arm64");
+  const publishedNode={...meta};
+  delete publishedNode.agent_runtime;
+  assert.equal(candidateName(publishedNode,"a".repeat(40),"arm64"),
+    "v0.0.0-ci-darwin-arm64","published v0.1.56 Node manifests predate agent_runtime");
+  assert.throws(()=>candidateName({...publishedNode,agent_runtime:"unknown"},"a".repeat(40),"arm64"));
   assert.equal(candidateName({...meta,target:"darwin-x64"},"a".repeat(40),"x64"),"v0.0.0-ci-darwin-x64");
   assert.throws(()=>candidateName(meta,"a".repeat(40),"x64"));
   assert.throws(()=>candidateName(meta,"b".repeat(40),"arm64"));

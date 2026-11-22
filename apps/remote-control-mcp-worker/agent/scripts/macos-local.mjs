@@ -120,7 +120,7 @@ export function candidateName(meta,sha,arch=process.arch){
     meta.artifact_schema!==1||meta.device_protocol!==2||meta.receipt_schema!==1||
     meta.candidate_profile!=="darwin-permanent-local-v1"||
     (rust&&meta.runtime_profile!=="standard-darwin-rust-runtime-v1")||
-    (!rust&&meta.agent_runtime!=="node-v2")||
+    (!rust&&(meta.agent_runtime??"node-v2")!=="node-v2")||
     meta.native_supervisor!=="darwin-owned-group-v1"||
     !Array.isArray(meta.modules)||!meta.modules.includes("macos-permanent.ts"))
     throw Error("Unexpected source commit, architecture or manifest.");
