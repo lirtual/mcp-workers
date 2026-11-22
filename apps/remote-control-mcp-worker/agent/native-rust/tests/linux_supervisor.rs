@@ -97,12 +97,16 @@ fn rust_confirmed_cleanup_reaps_nested_shell_descendants() {
     let mut reader = BufReader::new(stdout);
     let mut pids = Vec::new();
     for _ in 0..4 {
-        let mut fd = libc::pollfd {
-            fd: reader.get_ref().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        assert_eq!(unsafe { libc::poll(&mut fd, 1, 3000) }, 1);
+        // BufReader can prefetch several PID lines at once. Poll the fd only
+        // when no complete or partial output remains in its userspace buffer.
+        if reader.buffer().is_empty() {
+            let mut fd = libc::pollfd {
+                fd: reader.get_ref().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            assert_eq!(unsafe { libc::poll(&mut fd, 1, 10_000) }, 1);
+        }
         let mut line = String::new();
         reader.read_line(&mut line).unwrap();
         let pid: i32 = line.trim().parse().expect("nested process PID");
