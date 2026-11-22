@@ -38,39 +38,49 @@ async function directories(home,parts){
   }
   return cursor;
 }
-export function plistText({node,entry,endpoint,generation}){
+export function plistText({node,entry,endpoint,generation,agentRuntime="node-v2"}){
   verifiedEndpoint(endpoint);
-  if(!ID.test(generation))throw Error("Invalid generation.");
+  if(!ID.test(generation)||!["node-v2","rust-standard-darwin-v1"].includes(agentRuntime))
+    throw Error("Invalid generation or macOS runtime.");
   const esc=s=>s.replaceAll("&","&amp;").replaceAll("<","&lt;")
     .replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&apos;");
+  const args=agentRuntime==="rust-standard-darwin-v1"
+    ?[entry,"--service","--endpoint",endpoint,"--generation",generation]
+    :[node,entry,"--service","--endpoint",endpoint,"--generation",generation];
   return '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n'+
     '<key>Label</key><string>'+LABEL+'</string>\n'+
     '<key>ProgramArguments</key><array>'+
-    [node,entry,"--service","--endpoint",endpoint,"--generation",generation]
-      .map(x=>'<string>'+esc(x)+'</string>').join("")+'</array>\n'+
+    args.map(x=>'<string>'+esc(x)+'</string>').join("")+'</array>\n'+
     '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n</dict></plist>\n';
 }
 export function parsePlist(xml,programs,endpoint,arch=process.arch){
-  const tokens=[...xml.matchAll(/<string>([^<>]*)<\/string>/g)].map(m=>m[1]
+  const tokens=[...xml.matchAll(new RegExp("<string>([^<>]*)</string>","g"))].map(m=>m[1]
     .replaceAll("&apos;","'").replaceAll("&quot;",'"').replaceAll("&gt;",">")
     .replaceAll("&lt;","<").replaceAll("&amp;","&"));
-  if(tokens.length!==8||tokens[0]!==LABEL||tokens[3]!=="--service"||
-    tokens[4]!=="--endpoint"||tokens[5]!==endpoint||
-    tokens[6]!=="--generation"||!ID.test(tokens[7])||
-    !xml.includes("<key>RunAtLoad</key><true/>")||
+  const rust=tokens.length===7;
+  const generation=rust?tokens[6]:tokens[7];
+  if((!rust&&tokens.length!==8)||tokens[0]!==LABEL||
+    tokens[rust?2:3]!=="--service"||tokens[rust?3:4]!=="--endpoint"||
+    tokens[rust?4:5]!==endpoint||tokens[rust?5:6]!=="--generation"||
+    !ID.test(generation)||!xml.includes("<key>RunAtLoad</key><true/>")||
     !xml.includes("<key>KeepAlive</key><true/>"))
     throw Error("Foreign or ambiguous LaunchAgent.");
-  const node=tokens[1],entry=tokens[2],root=path.dirname(path.dirname(node));
-  const name=path.basename(root);
-  const suffix="-darwin-"+arch;
+  const executable=tokens[1],root=rust
+    ?path.resolve(executable,"../../../../"):path.dirname(path.dirname(executable));
+  const name=path.basename(root),suffix="-darwin-"+arch;
+  const runtime=rust?"rust-standard-darwin-v1":"node-v2";
+  const validExecutable=rust
+    ? executable===path.join(root,"apps/remote-control-agent/.build/rca-standard-darwin-candidate")
+    : executable===path.join(root,"bin/node")&&
+      tokens[2]===path.join(root,"apps/remote-control-agent/src/macos-permanent.js");
   if(!["x64","arm64"].includes(arch)||path.dirname(root)!==programs||
-    !name.endsWith(suffix)||!VERSION.test(name.slice(0,-suffix.length))||
-    node!==path.join(root,"bin/node")||
-    entry!==path.join(root,"apps/remote-control-agent/src/macos-permanent.js"))
+    !name.endsWith(suffix)||!VERSION.test(name.slice(0,-suffix.length))||!validExecutable)
     throw Error("LaunchAgent points outside owned candidate.");
-  if(xml!==plistText({node,entry,endpoint,generation:tokens[7]}))
-    throw Error("Unexpected LaunchAgent configuration.");
-  return {root,generation:tokens[7]};
+  const expected=plistText({node:path.join(root,"bin/node"),
+    entry:rust?executable:path.join(root,"apps/remote-control-agent/src/macos-permanent.js"),
+    endpoint,generation,agentRuntime:runtime});
+  if(xml!==expected)throw Error("Unexpected LaunchAgent configuration.");
+  return {root,generation,agentRuntime:runtime};
 }
 // Explicit upgrades must move forward. A recorded source_commit is not download authority.
 export function forwardMacVersion(current,next){
@@ -104,11 +114,13 @@ export function admitsMacOwnerUpgrade({installedVersion,installedSourceCommit,ca
   return forwardMacVersion(installedVersion,candidateVersion);
 }
 export function candidateName(meta,sha,arch=process.arch){
+  const rust=meta.agent_runtime==="rust-standard-darwin-v1";
   if(!SHA.test(sha)||meta.source_commit!==sha||!VERSION.test(meta.version)||
     !["arm64","x64"].includes(arch)||meta.target!=="darwin-"+arch||
-    meta.artifact_schema!==1||
-    meta.device_protocol!==2||meta.receipt_schema!==1||
+    meta.artifact_schema!==1||meta.device_protocol!==2||meta.receipt_schema!==1||
     meta.candidate_profile!=="darwin-permanent-local-v1"||
+    (rust&&meta.runtime_profile!=="standard-darwin-rust-runtime-v1")||
+    (!rust&&meta.agent_runtime!=="node-v2")||
     meta.native_supervisor!=="darwin-owned-group-v1"||
     !Array.isArray(meta.modules)||!meta.modules.includes("macos-permanent.ts"))
     throw Error("Unexpected source commit, architecture or manifest.");
@@ -119,12 +131,15 @@ export async function checkCandidate(bundle,sha){
   await checked(bundle,{dir:true});
   const manifest=path.join(bundle,"bundle.json");
   await checked(manifest,{mode:0o600});
-  const name=candidateName(JSON.parse(await readFile(manifest,"utf8")),sha);
+  const meta=JSON.parse(await readFile(manifest,"utf8"));
+  const name=candidateName(meta,sha);
   for(const [relative,mode] of [
     ["bin/node",0o700],["apps/remote-control-agent/.build/darwin-session-supervisor",0o700],
     ["apps/remote-control-agent/src/macos-permanent.js",0o600],
     ["apps/remote-control-agent/src/v2-session-client.js",0o600],
-    ["apps/remote-control-agent/scripts/macos-local.mjs",0o600]
+    ["apps/remote-control-agent/scripts/macos-local.mjs",0o600],
+    ...(meta.agent_runtime==="rust-standard-darwin-v1"
+      ?[["apps/remote-control-agent/.build/rca-standard-darwin-candidate",0o700]]:[])
   ])await checked(path.join(bundle,relative),{mode});
   return name;
 }
@@ -294,6 +309,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       await checked(path.join(current.root,rel),{dir:true});
     for(const rel of ["bin/node","apps/remote-control-agent/src/macos-permanent.js"])
       await checked(path.join(current.root,rel),{mode:rel==="bin/node"?0o700:0o600});
+    if(current.agentRuntime==="rust-standard-darwin-v1")
+      await checked(path.join(current.root,"apps/remote-control-agent/.build/rca-standard-darwin-candidate"),{mode:0o700});
   }
   const stopped=await checked(stopMark,{optional:true,mode:0o600});
   const service="gui/"+process.getuid()+"/"+LABEL,domain="gui/"+process.getuid();
@@ -404,10 +421,14 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     frozen=true;
   }
   const generation=randomUUID();
+  const candidateMeta=JSON.parse(await readFile(path.join(nextRoot,"bundle.json"),"utf8"));
+  const agentRuntime=candidateMeta.agent_runtime??"node-v2";
+  const rustEntry=path.join(nextRoot,"apps/remote-control-agent/.build/rca-standard-darwin-candidate");
   const next=plistText({
     node:path.join(nextRoot,"bin/node"),
-    entry:path.join(nextRoot,"apps/remote-control-agent/src/macos-permanent.js"),
-    endpoint:bound,generation,
+    entry:agentRuntime==="rust-standard-darwin-v1"?rustEntry:
+      path.join(nextRoot,"apps/remote-control-agent/src/macos-permanent.js"),
+    endpoint:bound,generation,agentRuntime,
   });
   let journalCreated=false,oldStopped=false,newLoaded=false,cliWritten=false;
   let failureStage="write-switch-journal";

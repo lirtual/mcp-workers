@@ -4,7 +4,9 @@
 mod linux {
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::linux_managed::LinuxManagedSessions;
-    use rca_native_agent::native_file::{run_native_managed_session_with_upgrade, NativeFileError};
+    use rca_native_agent::native_file::{
+        run_native_managed_session_with_upgrade, NativeFileError, UpgradeRuntimeOptions,
+    };
     use rca_native_agent::session::SessionError;
     use std::ffi::OsStr;
     use std::fs;
@@ -197,7 +199,10 @@ mod linux {
             &receipts,
             managed,
             &stop,
-            &key,
+            UpgradeRuntimeOptions {
+                key_path: &key,
+                on_connected: None,
+            },
         );
         stop.store(true, Ordering::Release);
         monitor.join().map_err(|_| ())?;

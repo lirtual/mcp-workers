@@ -248,6 +248,50 @@ jobs:
           RCA_DARWIN_SUPERVISOR_BIN="$RUNNER_TEMP/rca-darwin-supervisor" \
             cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
             --locked --test darwin_supervisor --test native_process --test native_process_wss --test cli_managed -- --ignored --nocapture
+      - uses: pnpm/action-setup@v4
+        if: runner.os == 'macOS'
+        with:
+          version: 10.17.1
+          run_install: false
+      - name: Install pinned macOS package-builder dependencies
+        if: runner.os == 'macOS'
+        run: pnpm install --filter remote-control-agent --frozen-lockfile --ignore-scripts
+      - name: Build and exercise unpublished macOS Rust candidate package
+        if: runner.os == 'macOS'
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64) target=darwin-arm64 ;;
+            x86_64) target=darwin-x64 ;;
+            *) echo "Unsupported Darwin architecture" >&2; exit 1 ;;
+          esac
+          source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
+          supervisor="$RUNNER_TEMP/rca-darwin-supervisor"
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+            "$source_root/scripts/darwin-session-supervisor.c" -o "$supervisor"
+          chmod 700 "$supervisor"
+          cargo build --locked --release --manifest-path \
+            "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
+          node_bin="$(realpath "$(command -v node)")"
+          rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
+          out="$RUNNER_TEMP/spec914-darwin-candidate"
+          mkdir -m 700 -p "$out"
+          node "$source_root/scripts/build-v2-release.mjs" \
+            --version v0.1.57-rust-candidate.1 --target "$target" \
+            --node-bin "$node_bin" --node-sha256 "$(shasum -a 256 "$node_bin" | cut -d' ' -f1)" \
+            --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
+            --rust-agent-bin "$rust_agent" \
+            --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
+            --out "$out"
+          archive="$out/remote-control-agent-v0.1.57-rust-candidate.1-$target.tar.gz"
+          unpacked="$out/unpacked"
+          mkdir -m 700 "$unpacked"
+          tar -xzf "$archive" -C "$unpacked"
+          RCA_MACOS_BUNDLE_ROOT="$unpacked" node --test \
+            "$source_root/tests/macos-local.test.mjs" \
+            "$source_root/tests/macos-remote-upgrade.test.mjs"
 
   database-integration:
     name: Database integration

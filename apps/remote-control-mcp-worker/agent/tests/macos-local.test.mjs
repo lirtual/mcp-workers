@@ -136,13 +136,14 @@ test("#660 LaunchAgent plist is strictly owned, deterministic and rejects foreig
   const node=path.join(root,"bin/node");
   const entry=path.join(root,"apps/remote-control-agent/src/macos-permanent.js");
   const xml=plistText({node,entry,endpoint:ENDPOINT,generation:ID});
-  assert.deepEqual(parsePlist(xml,programs,ENDPOINT,"arm64"),{root,generation:ID});
+  assert.deepEqual(parsePlist(xml,programs,ENDPOINT,"arm64"),
+    {root,generation:ID,agentRuntime:"node-v2"});
   const intelRoot=path.join(programs,"v0.0.0-ci-darwin-x64");
   const intelXml=plistText({node:path.join(intelRoot,"bin/node"),
     entry:path.join(intelRoot,"apps/remote-control-agent/src/macos-permanent.js"),
     endpoint:ENDPOINT,generation:ID});
   assert.deepEqual(parsePlist(intelXml,programs,ENDPOINT,"x64"),
-    {root:intelRoot,generation:ID});
+    {root:intelRoot,generation:ID,agentRuntime:"node-v2"});
   assert.throws(()=>parsePlist(intelXml,programs,ENDPOINT,"arm64"));
   for(const other of [
     xml.replace("/bin/node","/bin/sh"),
@@ -200,7 +201,7 @@ test("#809 installed v0.1.51 source commit does not authorize the next macOS dow
 test("#660 candidate provenance requires exact pinned source and no change of protocol",()=>{
   const meta={version:"v0.0.0-ci",target:"darwin-arm64",source_commit:"a".repeat(40),
     artifact_schema:1,device_protocol:2,receipt_schema:1,
-    candidate_profile:"darwin-permanent-local-v1",
+    agent_runtime:"node-v2",candidate_profile:"darwin-permanent-local-v1",
     native_supervisor:"darwin-owned-group-v1",modules:["macos-permanent.ts"]};
   assert.equal(candidateName(meta,"a".repeat(40),"arm64"),"v0.0.0-ci-darwin-arm64");
   assert.equal(candidateName({...meta,target:"darwin-x64"},"a".repeat(40),"x64"),"v0.0.0-ci-darwin-x64");
@@ -208,6 +209,24 @@ test("#660 candidate provenance requires exact pinned source and no change of pr
   assert.throws(()=>candidateName(meta,"b".repeat(40),"arm64"));
   assert.throws(()=>candidateName({...meta,target:"linux-x64-glibc"},"a".repeat(40),"arm64"));
   assert.throws(()=>candidateName({...meta,device_protocol:3},"a".repeat(40),"arm64"));
+  const rust={...meta,version:"v0.1.57-rust-candidate.1",
+    agent_runtime:"rust-standard-darwin-v1",
+    runtime_profile:"standard-darwin-rust-runtime-v1"};
+  assert.equal(candidateName(rust,"a".repeat(40),"arm64"),
+    "v0.1.57-rust-candidate.1-darwin-arm64");
+  assert.throws(()=>candidateName({...rust,runtime_profile:"standard-linux-rust-runtime-v1"},
+    "a".repeat(40),"arm64"));
+  const programs="/Users/test/.local/share/mcp-workers/remote-control/macos/programs";
+  const root=path.join(programs,"v0.1.57-rust-candidate.1-darwin-arm64");
+  const rustExecutable=path.join(root,"apps/remote-control-agent/.build/rca-standard-darwin-candidate");
+  const rustXml=plistText({node:path.join(root,"bin/node"),entry:rustExecutable,
+    endpoint:ENDPOINT,generation:ID,agentRuntime:"rust-standard-darwin-v1"});
+  assert.match(rustXml,/rca-standard-darwin-candidate/);
+  assert.doesNotMatch(rustXml,/macos-permanent\\.js/);
+  assert.deepEqual(parsePlist(rustXml,programs,ENDPOINT,"arm64"),
+    {root,generation:ID,agentRuntime:"rust-standard-darwin-v1"});
+  assert.throws(()=>parsePlist(rustXml.replace("rca-standard-darwin-candidate","/bin/sh"),
+    programs,ENDPOINT,"arm64"));
 });
 
 const native=process.platform==="darwin"&&["arm64","x64"].includes(process.arch)&&!!bundle;

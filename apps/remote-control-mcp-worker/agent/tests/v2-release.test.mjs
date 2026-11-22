@@ -18,6 +18,11 @@ function elf(machine) {
   b[4]=2; b[5]=1; b.writeUInt16LE(machine,18);
   return b;
 }
+function macho(cpu) {
+  const b=Buffer.alloc(80); b.writeUInt32LE(0xfeedfacf,0);
+  b.writeUInt32LE(cpu,4); b.writeUInt32LE(2,12);
+  return b;
+}
 function tar(entries) {
   const chunks=[];
   for(const {name,data=Buffer.alloc(0),type="0"} of entries) {
@@ -97,6 +102,19 @@ test("#73 release package build rejects unverified architectures and unpinned ta
     "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64)]);
   assert.equal(candidateArgs.rustAgentBin,"/opt/rca-agent");
   assert.equal(candidateArgs.rustAgentSha256,"d".repeat(64));
+  const darwinArgs=parseArgs(["--version","v0.1.57-rust-candidate.1","--target","darwin-arm64",
+    "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
+    "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64),
+    "--rust-agent-bin","/opt/rca-darwin","--rust-agent-sha256","d".repeat(64)]);
+  assert.equal(darwinArgs.target,"darwin-arm64");
+  const darwinDir=await mkdtemp(path.join(os.tmpdir(),"rc-rust-darwin-gate-"));
+  try{
+    const binary=path.join(darwinDir,"rca-candidate");
+    const bytes=macho(0x0100000c);await writeFile(binary,bytes,{mode:0o700});
+    assert.throws(()=>ensureRustCandidate({target:"darwin-arm64",rustAgentBin:binary,
+      rustAgentSha256:sha(bytes)}),/native matching Darwin Mach-O/);
+
+  }finally{await rm(darwinDir,{recursive:true,force:true});}
   const rustDir=await mkdtemp(path.join(os.tmpdir(),"rc-rust-glibc-gate-"));
   try{
     const binary=path.join(rustDir,"rca-candidate");

@@ -112,7 +112,7 @@ use crate::native_process::{self, NativeProcessEngine, ProcessRead};
 use crate::native_read::{self, ReadCommand};
 use crate::native_search::{self, SearchFrame, SearchSessions};
 use crate::native_write::{NativeWriteError, NativeWriteExecutor};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use crate::upgrade_control::{UpgradeCommand, UpgradeRequest, UpgradeServer};
 #[cfg(windows)]
 use crate::windows_job::JobCleanup as CleanupState;
@@ -285,7 +285,7 @@ pub enum NativeFileError {
     Queue,
     #[error("native file executor panicked")]
     Panicked,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[error("owner-local upgrade control unavailable")]
     UpgradeUnavailable,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -301,14 +301,14 @@ fn execute_native_file(
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] cleanup_ready: Option<
         Receiver<()>,
     >,
-    #[cfg(target_os = "linux")] upgrade_requests: Option<Receiver<UpgradeRequest>>,
+    #[cfg(unix)] upgrade_requests: Option<Receiver<UpgradeRequest>>,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
     replies: &SyncSender<ExecutionResponse>,
 ) -> Result<(), NativeFileError> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let mut processes = managed.map(NativeProcessEngine::new);
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let mut upgrade_frozen = false;
     let mut searches = SearchSessions::default();
     while !stop.load(Ordering::Acquire) {
@@ -320,7 +320,7 @@ fn execute_native_file(
                 .reconcile(writes.receipt_store_mut())
                 .map_err(NativeWriteError::from)?;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         if let Some(control) = upgrade_requests.as_ref() {
             while let Ok(request) = control.try_recv() {
                 let answer = match request.command {
@@ -373,7 +373,7 @@ fn execute_native_file(
         if !request.lease().is_active() {
             continue;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         if upgrade_frozen {
             // Match the existing Node WSS envelopes without effect or receipt
             // admission. A frozen read is a failed read_result; a frozen
@@ -541,7 +541,7 @@ pub fn run_native_file_session(
             None,
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             None,
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             None,
             &worker_stop,
             &requests,
@@ -591,12 +591,13 @@ pub fn run_native_managed_session(
         ManagedRunOptions {
             timing,
             upgrade_key: None,
+            on_connected: None,
         },
     )
 }
 
 /// Linux candidate path with the Node installer's exact local upgrade socket.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub fn run_native_managed_session_with_upgrade(
     endpoint: &str,
     private_pem: &str,
@@ -604,7 +605,7 @@ pub fn run_native_managed_session_with_upgrade(
     receipt_directory: &Path,
     managed: Arc<ManagedSessions>,
     stop: &Arc<AtomicBool>,
-    key_path: &Path,
+    upgrade: UpgradeRuntimeOptions<'_>,
 ) -> Result<(), NativeFileError> {
     run_native_managed_session_inner(
         endpoint,
@@ -615,15 +616,23 @@ pub fn run_native_managed_session_with_upgrade(
         stop,
         ManagedRunOptions {
             timing: HeartbeatTiming::default(),
-            upgrade_key: Some(key_path),
+            upgrade_key: Some(upgrade.key_path),
+            on_connected: upgrade.on_connected,
         },
     )
+}
+
+#[cfg(unix)]
+pub struct UpgradeRuntimeOptions<'a> {
+    pub key_path: &'a Path,
+    pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 struct ManagedRunOptions<'a> {
     timing: HeartbeatTiming,
     upgrade_key: Option<&'a Path>,
+    on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -641,7 +650,7 @@ fn run_native_managed_session_inner(
         return Err(NativeFileError::Policy);
     }
     let writes = NativeWriteExecutor::open(receipt_directory)?;
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     let (_upgrade_server, upgrade_requests) = if let Some(key) = options.upgrade_key {
         let (sender, requests) = sync_channel(4);
         let server =
@@ -662,7 +671,7 @@ fn run_native_managed_session_inner(
             writes,
             Some(worker_managed),
             Some(cleanup_ready),
-            #[cfg(target_os = "linux")]
+            #[cfg(unix)]
             upgrade_requests,
             &worker_stop,
             &requests,
@@ -683,6 +692,7 @@ fn run_native_managed_session_inner(
         session::ManagedTransportConfig {
             timing: options.timing,
             managed: Arc::clone(&managed),
+            on_connected: options.on_connected,
         },
     );
     stop.store(true, Ordering::Release);
