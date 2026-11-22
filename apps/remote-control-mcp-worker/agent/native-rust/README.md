@@ -2,7 +2,7 @@
 
 This crate is an unshipped migration candidate for [Spec #914](https://github.com/lirtual/mcp-workers/issues/914). Gate 0 passed and merged in PR #915; Gate 1 signed WSS transport was merged in [PR #916](https://github.com/lirtual/mcp-workers/pull/916). The native read_file plus file-browsing executors are Gate 1 candidate slices, not overall Gate 1 completion. The TypeScript/Node Agent remains authoritative for Stable releases and all supported platforms. No Stable Release, Worker or GitHub-hosted Session workflow executes Rust.
 
-The existing Linux archive and installer now recognize an explicit Rust candidate profile. The builder requires --rust-agent-bin and --rust-agent-sha256, a Linux glibc target, and a -rust-candidate version; it rejects a Rust ELF whose glibc requirement exceeds the existing Node/Supervisor release limit. The public release verifier additionally requires GitHub to mark that exact tag as a prerelease. The archive layout remains the existing one, with agent_runtime=rust-standard-linux-v1 and the binary beside the existing Supervisor. The installer switches only systemd's Agent executable after the existing Node freeze/receipt checks; the Node bootstrap and manager remain in the candidate package for this migration step. Stable /releases/latest continues to select only the five existing Stable assets. No candidate Release has been created, and package-level systemd activation/recovery with a compatible built Rust binary is still pending; these code checks do not pass Gate 1 by themselves.
+The existing Linux archive and installer now recognize an explicit Rust candidate profile. The builder requires --rust-agent-bin and --rust-agent-sha256, a Linux glibc target, and a -rust-candidate version; it rejects a Rust ELF whose glibc requirement exceeds the existing Node/Supervisor release limit. The public release verifier additionally requires GitHub to mark that exact tag as a prerelease. The archive layout remains the existing one, with agent_runtime=rust-standard-linux-v1 and the binary beside the existing Supervisor. The installer switches only systemd's Agent executable after the existing Node freeze/receipt checks; the Node bootstrap and manager remain in the candidate package for this migration step. Stable /releases/latest continues to select only the five existing Stable assets. No candidate Release has been created. An unpublished Rust package has now been built and validated, and a real Linux user-systemd integration test kills the installer after candidate activation, then proves recovery restarts the prior Node service while preserving identity and SQLite receipts byte-for-byte. The reusable candidate workflow now contains this gate; its GitHub-hosted run is pending. This advances package-level recovery evidence but does not complete Gate 1.
 
 Verified seams:
 
@@ -179,6 +179,8 @@ The Worker maps an Unknown mutation reply to `timeout_unknown`; only
 `get_operation_status` reports the stored `unknown` state.
 
 No production Worker or installed identity is used. This is a process-level
-proof only: it neither invokes the real installer nor demonstrates systemd
-activation, automatic rollback, release authenticity beyond the pinned archive
-digest, or an upgrade-ready Rust package.
+proof only; it does not itself invoke the real installer or prove systemd
+activation/recovery. The separate linux-systemd-upgrade-recovery.integration.mjs
+test exercises those paths with a real user manager and a disposable account.
+The candidate is still unpublished, and five-platform migration plus physical
+acceptance remain pending.

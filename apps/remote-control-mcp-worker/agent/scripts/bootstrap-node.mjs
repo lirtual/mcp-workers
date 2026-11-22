@@ -22,7 +22,7 @@ const FILES=new Set([
   APP+"/scripts/bootstrap-v2.py",APP+"/scripts/linux-upgrade-detached.mjs",
   APP+"/scripts/linux-upgrade-watchdog.mjs",
   APP+"/scripts/verify-v2-release.mjs",
-  APP+"/scripts/rca.sh",APP+"/.build/session-supervisor",
+  APP+"/scripts/rca.sh",APP+"/.build/session-supervisor",APP+"/.build/rca-standard-linux-candidate",
 ]);
 const MAX_ARCHIVE=180*1024*1024, MAX_UNCOMPRESSED=240*1024*1024, MAX_FILES=80;
 const SHA=/^[a-f0-9]{64}$/;
@@ -50,7 +50,7 @@ function checkedName(raw,directory){
   if(directory){
     if(!DIRS.has(name))throw Error("Unexpected directory");
   }else if(!FILES.has(name)&&!new RegExp("^"+APP+"/src/[a-z0-9-]+\\.js$").test(name)){
-    throw Error("Unexpected program file");
+    throw Error("Unexpected program file: "+name);
   }
   return name;
 }
@@ -107,6 +107,17 @@ export function inspectPinnedArchiveBytes(bytes,{expectedSha256,tag,target}){
     manifest.device_protocol!==2||manifest.receipt_schema!==1||
     !["read-only-no-shell-v1","paired-full-v1"].includes(manifest.upgrade_profile))
     throw Error("Unsupported Agent manifest / ABI / protocol");
+  const rustAgent=APP+"/.build/rca-standard-linux-candidate";
+  const isRustCandidate=manifest.agent_runtime==="rust-standard-linux-v1";
+  if(isRustCandidate){
+    if(!manifest.version.includes("-rust-candidate")||
+       manifest.candidate_profile!=="standard-linux-rust-runtime-v1"||
+       !records.has(rustAgent)||records.get(rustAgent).directory)
+      throw Error("Incomplete unpublished Linux Rust candidate");
+  }else if(manifest.agent_runtime!==undefined||
+           manifest.candidate_profile!==undefined||records.has(rustAgent)){
+    throw Error("Unexpected candidate runtime contents");
+  }
   // Continue accepting historic local-only archives, but never extract an
   // advertised owner-one-shot release missing its signed-upgrade runtime.
   if(manifest.upgrade_protocol!==undefined &&
@@ -116,7 +127,9 @@ export function inspectPinnedArchiveBytes(bytes,{expectedSha256,tag,target}){
                     records.get(APP+"/scripts/"+name).directory)))
     throw Error("Incomplete reviewed Linux one-shot Release");
   const elfMachine=target==="linux-x64-glibc"?62:183;
-  for(const entry of ["bin/node",APP+"/.build/session-supervisor"]){
+  const executableEntries=["bin/node",APP+"/.build/session-supervisor"];
+  if(isRustCandidate)executableEntries.push(rustAgent);
+  for(const entry of executableEntries){
     const elf=records.get(entry).data;
     if(elf.length<64||elf.subarray(0,4).toString("hex")!=="7f454c46"||
       elf[4]!==2||elf[5]!==1||elf.readUInt16LE(18)!==elfMachine)
