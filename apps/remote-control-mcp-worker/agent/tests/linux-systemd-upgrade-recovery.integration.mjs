@@ -21,6 +21,7 @@ if(process.getuid()===0||!home||!runtime||!process.env.DBUS_SESSION_BUS_ADDRESS)
   throw Error("Run this test under a disposable non-root user with a systemd user bus.");
 const baseEnv={...process.env,HOME:home,XDG_RUNTIME_DIR:runtime,
   DBUS_SESSION_BUS_ADDRESS:process.env.DBUS_SESSION_BUS_ADDRESS,PATH:"/usr/local/bin:/usr/bin:/bin"};
+const target=process.arch==="arm64"?"linux-arm64-glibc":"linux-x64-glibc";
 const base=path.join(home,".local/share/mcp-workers/remote-control");
 const keyPath=path.join(base,"v2-identity.pem");
 const endpoint="https://127.0.0.1:1/";
@@ -28,8 +29,8 @@ const key=path.join(base,"v2-identity.pem");
 const id=key+".device-id";
 const receipts=path.join(home,".local/state/mcp-workers/remote-control-agent/operation-receipts.sqlite");
 const unitPath=path.join(home,".config/systemd/user",UNIT);
-const oldRoot=path.join(base,"programs/v0.1.56-linux-x64-glibc");
-const rustRoot=path.join(base,"programs/v0.1.57-rust-candidate.1-linux-x64-glibc");
+const oldRoot=path.join(base,"programs/v0.1.56-"+target);
+const rustRoot=path.join(base,"programs/v0.1.57-rust-candidate.1-"+target);
 const rustExe=path.join(rustRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
 const backupPath=unitPath+".upgrade-backup";
 const work=path.join(home,".cache/spec914-recovery");
