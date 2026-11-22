@@ -23,7 +23,13 @@ export function inspectWindowsPreview(root) {
     throw Error("Untrusted native Windows bundle manifest.");
   }
   const expected = new Map(Object.entries(manifest.hashes));
-  if (!expected.has("bin/node.exe") ||
+  const rustRuntime = manifest.agent_runtime === "rust-standard-windows-v1";
+  if ((manifest.agent_runtime !== undefined && manifest.agent_runtime !== "node-standard-windows-v2" && !rustRuntime) ||
+      (rustRuntime && (manifest.runtime_profile !== "standard-windows-rust-runtime-v1" ||
+        !expected.has("apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"))) ||
+      (!rustRuntime && (manifest.runtime_profile !== undefined ||
+        expected.has("apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"))) ||
+      !expected.has("bin/node.exe") ||
       !expected.has("bin/rca-background.exe") ||
       !expected.has("rca.cmd") ||
       !expected.has("apps/remote-control-agent/scripts/verify-windows-preview.mjs") ||
@@ -55,7 +61,8 @@ export function inspectWindowsPreview(root) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) { walk(full, name); continue; }
       if (name === "bundle.json") continue;
-      if (!(/^(?:bin\/(?:node\.exe|rca-background\.exe)|rca\.cmd|apps\/remote-control-agent\/(?:package\.json|src\/[a-z0-9-]+\.js|scripts\/(?:(?:windows-private-store|windows-session-private-store|windows-user-task|windows-stage-install|windows-upgrade-once)\.ps1|verify-windows-preview\.mjs)))$/.test(name)) ||
+      if (!(/^(?:bin\/(?:node\.exe|rca-background\.exe)|rca\.cmd|apps\/remote-control-agent\/(?:package\.json|(?:src\/[a-z0-9-]+\.js|\.build\/rca-standard-windows-candidate\.exe)|scripts\/(?:(?:windows-private-store|windows-session-private-store|windows-user-task|windows-stage-install|windows-upgrade-once)\.ps1|verify-windows-preview\.mjs)))$/.test(name)) ||
+          (name.endsWith(".build/rca-standard-windows-candidate.exe") && !rustRuntime) ||
           seen.has(name) || !expected.has(name) ||
           typeof expected.get(name) !== "string" ||
           !/^[a-f0-9]{64}$/.test(expected.get(name))) {

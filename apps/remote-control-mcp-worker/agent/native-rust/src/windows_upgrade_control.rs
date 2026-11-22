@@ -100,7 +100,7 @@ fn create_owner_pipe(name: &[u16]) -> io::Result<*mut core::ffi::c_void> {
             "owner-only pipe descriptor failed",
         ));
     }
-    let mut attributes = SECURITY_ATTRIBUTES {
+    let attributes = SECURITY_ATTRIBUTES {
         nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: sd,
         bInheritHandle: 0,
@@ -114,7 +114,7 @@ fn create_owner_pipe(name: &[u16]) -> io::Result<*mut core::ffi::c_void> {
             64,
             64,
             0,
-            &mut attributes,
+            &attributes,
         )
     };
     if handle == INVALID_HANDLE_VALUE {
