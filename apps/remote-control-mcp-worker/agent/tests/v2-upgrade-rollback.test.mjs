@@ -18,11 +18,13 @@ async function withFakeUserService(callback, {blockRestart = false} = {}) {
   const restartOnce = path.join(root, "restart-once");
   const restartReached = path.join(root, "restart-reached");
   const releaseRestart = path.join(root, "release-restart");
+  const restartDone = path.join(root, "restart-done");
   const preserved = path.join(home, ".local", "state", "mcp-workers", "remote-control-agent");
   const oldEnv = {
     PATH: process.env.PATH, RC_SYS_LOG: process.env.RC_SYS_LOG, RC_SYS_ACTIVE: process.env.RC_SYS_ACTIVE,
     RC_SYS_RESTART_ONCE: process.env.RC_SYS_RESTART_ONCE, RC_SYS_RESTART_REACHED: process.env.RC_SYS_RESTART_REACHED,
-    RC_SYS_RELEASE_RESTART: process.env.RC_SYS_RELEASE_RESTART, RC_SYS_ACTIVE_ON_RESTART: process.env.RC_SYS_ACTIVE_ON_RESTART,
+    RC_SYS_RELEASE_RESTART: process.env.RC_SYS_RELEASE_RESTART, RC_SYS_RESTART_DONE: process.env.RC_SYS_RESTART_DONE,
+    RC_SYS_ACTIVE_ON_RESTART: process.env.RC_SYS_ACTIVE_ON_RESTART,
   };
   try {
     await mkdir(fake, { recursive: true });
@@ -39,6 +41,7 @@ async function withFakeUserService(callback, {blockRestart = false} = {}) {
       '    if [ -n "$RC_SYS_RESTART_ONCE" ] && [ ! -e "$RC_SYS_RESTART_ONCE" ]; then',
       '      : > "$RC_SYS_RESTART_ONCE"; : > "$RC_SYS_RESTART_REACHED";',
       '      while [ ! -e "$RC_SYS_RELEASE_RESTART" ]; do sleep 0.02; done',
+      '      : > "$RC_SYS_RESTART_DONE";',
       '    fi;;',
       '  *" is-active "*) [ -e "$RC_SYS_ACTIVE" ] && exit 0; : > "$RC_SYS_ACTIVE"; exit 1;;',
       "esac",
@@ -52,11 +55,13 @@ async function withFakeUserService(callback, {blockRestart = false} = {}) {
       process.env.RC_SYS_RESTART_ONCE = restartOnce;
       process.env.RC_SYS_RESTART_REACHED = restartReached;
       process.env.RC_SYS_RELEASE_RESTART = releaseRestart;
+      process.env.RC_SYS_RESTART_DONE = restartDone;
       process.env.RC_SYS_ACTIVE_ON_RESTART = "1";
     } else {
       delete process.env.RC_SYS_RESTART_ONCE;
       delete process.env.RC_SYS_RESTART_REACHED;
       delete process.env.RC_SYS_RELEASE_RESTART;
+      delete process.env.RC_SYS_RESTART_DONE;
       delete process.env.RC_SYS_ACTIVE_ON_RESTART;
     }
     const key = path.join(home, ".local", "share", "mcp-workers", "remote-control", "v2-identity.pem");
@@ -103,7 +108,7 @@ async function withFakeUserService(callback, {blockRestart = false} = {}) {
       keyPath:key,endpoint:"https://rc.example.org/",entryExt:"js"});
     const to = renderV2Service({node:newRoot+"/bin/node",home,repoRoot:newRoot,
       keyPath:key,endpoint:"https://rc.example.org/",entryExt:"js"});
-    await callback({unitPath, from, to, key, receipt, beforeReceiptBytes, logs, activeOk, home, restartReached, restartOnce, releaseRestart});
+    await callback({unitPath, from, to, key, receipt, beforeReceiptBytes, logs, activeOk, home, restartReached, restartOnce, releaseRestart, restartDone});
     assert.equal(await readFile(key, "utf8"), "private-unchanged");
     assert.equal(await readFile(key + ".device-id", "utf8"), "e11d9c70-16fe-4d47-aafc-d01db72750fd");
     assert.deepEqual(await readFile(receipt), beforeReceiptBytes);
@@ -243,6 +248,72 @@ test("#77 interrupted recovery retries only once when old unit already exists", 
     const lines=(await readFile(logs,"utf8")).split("\n");
     assert.equal(lines.filter(line=>line.includes("restart "+UNIT)).length,1);
   });
+});
+
+test("#914 interrupted Linux Rust candidate activation restores Node service and preserves identity/receipts", async()=>{
+  await withFakeUserService(async ({unitPath,from,to,key,receipt,beforeReceiptBytes,home,restartReached,releaseRestart,restartDone,logs})=>{
+    const app=to.match(/^WorkingDirectory=(.*)$/m)?.[1];
+    assert.ok(app);
+    const root=path.resolve(app,"..","..");
+    const manifestPath=path.join(root,"bundle.json");
+    const manifest=JSON.parse(await readFile(manifestPath,"utf8"));
+    manifest.agent_runtime="rust-standard-linux-v1";
+    manifest.candidate_profile="standard-linux-rust-runtime-v1";
+    manifest.upgrade_profile="paired-full-v1";
+    await writeFile(manifestPath,JSON.stringify(manifest),{mode:0o600});
+    const candidate=path.join(root,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
+    await writeFile(candidate,"#!/bin/sh\nexit 0\n",{mode:0o700});
+
+    const endpoint=from.match(/^Environment=REMOTE_CONTROL_AGENT_ENDPOINT=(.*)$/m)?.[1];
+    const identity=from.match(/^Environment=REMOTE_CONTROL_AGENT_KEY_PATH=(.*)$/m)?.[1];
+    assert.ok(endpoint);
+    assert.equal(identity,key);
+    const rustUnit=renderV2Service({node:path.join(root,"bin/node"),home,repoRoot:root,
+      endpoint,keyPath:identity,entryExt:"js",agentRuntime:"rust-standard-linux-v1"});
+    assert.match(rustUnit,/ExecStart=.*rca-standard-linux-candidate/);
+    assert.doesNotMatch(rustUnit,/ExecStart=.*\/bin\/node/);
+    await writeFile(unitPath,from,{mode:0o600});
+
+    const installerUrl=new URL("../scripts/install-v2.mjs",import.meta.url).href;
+    const childSource="import { installUnit } from "+JSON.stringify(installerUrl)+";\n"+
+      "await installUnit("+JSON.stringify(unitPath)+","+JSON.stringify(rustUnit)+","+JSON.stringify(from)+");\n";
+    const child=spawn(process.execPath,["--experimental-strip-types","--input-type=module","-e",childSource],
+      {stdio:"ignore",env:process.env});
+    const exited=new Promise(resolve=>child.once("exit",(code,signal)=>resolve({code,signal})));
+    try {
+      let reached=false;
+      const started=Date.now();
+      while(Date.now()-started<5000) {
+        try { await access(restartReached); reached=true; break; } catch {}
+        if(child.exitCode!==null||child.signalCode!==null) break;
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      assert.equal(reached,true,"installer did not reach the candidate activation");
+      assert.equal(await readFile(unitPath,"utf8"),rustUnit);
+      assert.equal(await access(unitPath+".upgrade-backup").then(()=>true,()=>false),true);
+      assert.equal(child.kill("SIGKILL"),true);
+      await writeFile(releaseRestart,"release",{mode:0o600});
+      let restartFinished=false;
+      const releaseStarted=Date.now();
+      while(Date.now()-releaseStarted<5000) {
+        try { await access(restartDone); restartFinished=true; break; } catch {}
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      assert.equal(restartFinished,true,"fake systemd restart did not exit after release");
+      const exit=await exited;
+      assert.equal(exit.signal,"SIGKILL");
+      assert.equal(await recoverInterruptedUpgrade({home,unitPath}),true);
+      assert.equal(await readFile(unitPath,"utf8"),from);
+      await assert.rejects(access(unitPath+".upgrade-backup"),{code:"ENOENT"});
+      const calls=(await readFile(logs,"utf8")).trim().split("\n");
+      assert.equal(calls.filter(line=>line==="--user restart "+UNIT).length,2);
+      assert.equal(await readFile(key,"utf8"),"private-unchanged");
+      assert.deepEqual(await readFile(receipt),beforeReceiptBytes);
+    } finally {
+      if(child.exitCode===null&&child.signalCode===null) child.kill("SIGKILL");
+      await writeFile(releaseRestart,"release",{mode:0o600}).catch(()=>{});
+    }
+  },{blockRestart:true});
 });
 
 test("#77 local upgrade activation failure restores exact owned v2 unit and keeps identity/SQLite", async()=>{
