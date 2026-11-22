@@ -114,7 +114,7 @@ export function inspectPinnedArchiveBytes(bytes,{expectedSha256,tag,target}){
        manifest.candidate_profile!=="standard-linux-rust-runtime-v1"||
        !records.has(rustAgent)||records.get(rustAgent).directory)
       throw Error("Incomplete unpublished Linux Rust candidate");
-  }else if(manifest.agent_runtime!==undefined||
+  }else if((manifest.agent_runtime!==undefined&&manifest.agent_runtime!=="node-v2")||
            manifest.candidate_profile!==undefined||records.has(rustAgent)){
     throw Error("Unexpected candidate runtime contents");
   }
