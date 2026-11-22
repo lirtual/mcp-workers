@@ -153,6 +153,132 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  linux-systemd-upgrade-recovery:
+    name: Real systemd Linux upgrade interruption and recovery
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.17.1
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install pinned Agent build dependencies
+        run: pnpm install --filter remote-control-agent --frozen-lockfile --ignore-scripts
+      - name: Build isolated native helpers
+        run: node apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs
+      - name: Fetch and verify immutable published Node baseline
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          temp_dir="$(mktemp -d "$RUNNER_TEMP/spec914.XXXXXX")"
+          echo "SPEC914_TEMP=$temp_dir" >> "$GITHUB_ENV"
+          archive="$temp_dir/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
+          gh release download v0.1.56 --repo lirtual/mcp-workers \
+            --pattern "$(basename "$archive")" --dir "$temp_dir"
+          echo "7eb0def23325a63a426c8402f7c2ef68d8e5ae0e6739563d13a669887f386ace  $archive" | sha256sum --check
+          mkdir "$temp_dir/old"
+          tar -xzf "$archive" -C "$temp_dir/old"
+      - name: Build unpublished Rust candidate and package it beside the baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=v0.1.57-rust-candidate.1
+          mkdir -p "$SPEC914_TEMP"/{cargo,rustup,target,build}
+          docker run --rm --network bridge \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            -v "$SPEC914_TEMP/cargo:/cargo" \
+            -v "$SPEC914_TEMP/rustup:/rustup" \
+            -v "$SPEC914_TEMP/target:/target" \
+            -v "$SPEC914_TEMP/build:/out" \
+            rockylinux:9@sha256:03303863808e9cd79f0c58c833db3e5f9cde9f2abe16804a267b05dc54af86e4 \
+            bash -lc '
+              set -eo pipefail
+              dnf -y -q install gcc ca-certificates
+              export HOME=/tmp/rust-home CARGO_HOME=/cargo RUSTUP_HOME=/rustup CARGO_TARGET_DIR=/target
+              mkdir -p "$HOME"
+              curl --fail --silent --show-error --location --retry 3 --max-time 120 \
+                --proto "=https" --tlsv1.2 https://sh.rustup.rs -o /tmp/rustup-init.sh
+              sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain 1.100.0
+              export PATH="$CARGO_HOME/bin:$PATH"
+              cargo build --locked --release \
+                --manifest-path /src/apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
+                --bin rca-standard-linux-candidate
+              install -m 0755 "$CARGO_TARGET_DIR/release/rca-standard-linux-candidate" /out/rca-standard-linux-candidate
+            '
+          old="$SPEC914_TEMP/old"
+          node_bin="$old/bin/node"
+          supervisor="$old/apps/remote-control-agent/.build/session-supervisor"
+          rust_agent="$SPEC914_TEMP/build/rca-standard-linux-candidate"
+          node "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs" \
+            --version "$version" --target linux-x64-glibc \
+            --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
+            --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
+            --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
+            --out "$SPEC914_TEMP/package"
+          archive="$SPEC914_TEMP/package/remote-control-agent-$version-linux-x64-glibc.tar.gz"
+          python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
+            "$archive" "$version" linux-x64-glibc
+          chmod 0644 "$archive" "$SPEC914_TEMP/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
+      - name: Kill installer after candidate activation and verify real systemd recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_user=rca914test
+          test_uid=29091
+          if getent passwd "$test_user" >/dev/null || getent passwd "$test_uid" >/dev/null; then
+            echo "Disposable systemd test account or UID already exists" >&2
+            exit 1
+          fi
+          sudo useradd --create-home --uid "$test_uid" --shell /usr/sbin/nologin "$test_user"
+          cleanup() {
+            sudo -u "$test_user" env HOME="/home/$test_user" XDG_RUNTIME_DIR="/run/user/$test_uid" \
+              DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$test_uid/bus" \
+              /usr/bin/systemctl --user disable --now remote-control-agent.service >/dev/null 2>&1 || true
+            sudo loginctl disable-linger "$test_user" >/dev/null 2>&1 || true
+            sudo systemctl stop "user@$test_uid.service" >/dev/null 2>&1 || true
+            sudo userdel --remove "$test_user" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          sudo loginctl enable-linger "$test_user"
+          sudo systemctl start "user@$test_uid.service"
+          for _ in $(seq 1 50); do
+            sudo test -S "/run/user/$test_uid/bus" && break
+            sleep 0.1
+          done
+          sudo test -S "/run/user/$test_uid/bus"
+          user_env=(env HOME="/home/$test_user" XDG_RUNTIME_DIR="/run/user/$test_uid"
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$test_uid/bus")
+          sudo -u "$test_user" "${user_env[@]}" /usr/bin/systemctl --user \
+            set-environment "XDG_RUNTIME_DIR=/run/user/$test_uid" \
+            "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$test_uid/bus"
+          source_dir="$(mktemp -d /tmp/spec914-agent-source.XXXXXX)"
+          chmod 0755 "$source_dir"
+          sudo cp -a apps/remote-control-mcp-worker/agent/. "$source_dir/"
+          sudo chown -R "$test_user:$test_user" "$source_dir"
+          sudo -u "$test_user" test -r "$source_dir/tests/linux-systemd-upgrade-recovery.integration.mjs"
+          fixture_dir="$(mktemp -d /tmp/spec914-fixtures.XXXXXX)"
+          chmod 0755 "$fixture_dir"
+          old_archive="$fixture_dir/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
+          rust_archive="$fixture_dir/remote-control-agent-v0.1.57-rust-candidate.1-linux-x64-glibc.tar.gz"
+          install -m 0644 "$SPEC914_TEMP/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz" "$old_archive"
+          install -m 0644 "$SPEC914_TEMP/package/remote-control-agent-v0.1.57-rust-candidate.1-linux-x64-glibc.tar.gz" "$rust_archive"
+          sudo -u "$test_user" test -r "$old_archive"
+          sudo -u "$test_user" test -r "$rust_archive"
+          sudo -u "$test_user" "${user_env[@]}" \
+            RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_RUST_ARCHIVE="$rust_archive" \
+            "$(node -p 'process.execPath')" --experimental-strip-types \
+            "$source_dir/tests/linux-systemd-upgrade-recovery.integration.mjs"
   macos-native-candidate:
     name: Unpublished native macOS 15 / ${{ matrix.arch }} candidate
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'

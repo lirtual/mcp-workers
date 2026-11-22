@@ -37,6 +37,24 @@ export function verifyOwnedProgram(version){
     info.receipt_schema!==1||!approvedProfile||
     info.version+"-"+info.target!==path.basename(version))
     throw Error("Untrusted Agent profile or Shell ownership; uninstall blocked");
+  const rustAgent=APP+"/.build/rca-standard-linux-candidate";
+  const isRustCandidate=info.agent_runtime==="rust-standard-linux-v1";
+  let rustAgentPresent=false;
+  try{lstatSync(path.join(version,rustAgent));rustAgentPresent=true;}
+  catch(error){if(error.code!=="ENOENT")throw error;}
+  if(isRustCandidate){
+    const candidate=path.join(version,rustAgent);
+    safeStat(candidate);
+    if(!info.version.includes("-rust-candidate")||
+       info.candidate_profile!=="standard-linux-rust-runtime-v1"||
+       !info.target.startsWith("linux-")||!info.target.endsWith("-glibc")||
+       (lstatSync(candidate).mode&0o777)!==0o700)
+      throw Error("Untrusted Linux Rust candidate; uninstall blocked");
+  }else if((info.agent_runtime!==undefined&&info.agent_runtime!=="node-v2")||
+           info.candidate_profile!==undefined||
+           rustAgentPresent){
+    throw Error("Unexpected Agent runtime contents; uninstall blocked");
+  }
   const allowedDirs=new Set(["bin","apps",APP,APP+"/src",APP+"/scripts",APP+"/.build"]);
   const allowedFiles=new Set(["bundle.json","bin/node",APP+"/package.json",
     APP+"/.build/session-supervisor",APP+"/src/v2-main.js",
@@ -48,6 +66,7 @@ export function verifyOwnedProgram(version){
     APP+"/scripts/linux-upgrade-detached.mjs",
     APP+"/scripts/linux-upgrade-watchdog.mjs",
     APP+"/scripts/verify-v2-release.mjs",APP+"/scripts/rca.sh"]);
+  if(isRustCandidate)allowedFiles.add(rustAgent);
   if(Array.isArray(info.modules)){
     if(info.modules.length>80)throw Error("Unexpected Agent module inventory");
     for(const name of info.modules){

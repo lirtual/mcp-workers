@@ -69,7 +69,7 @@ def verify_refuses_unsafe_onboarding(node, installer, root):
 # Real immutable candidate exercise: no cloud, no installer activation.
 
 def verify_node_bootstrap_offline(node, bootstrap, archive, tag, work):
-    """Exercise real bundled Node+archive without ever enrolling a device."""
+    """Exercise the packaged Node bootstrap API without invoking installation."""
     import hashlib
     import os
     import pty
@@ -82,21 +82,40 @@ def verify_node_bootstrap_offline(node, bootstrap, archive, tag, work):
     shutil.copyfile(archive, local_archive)
     local_archive.chmod(0o600)
     digest = hashlib.sha256(local_archive.read_bytes()).hexdigest()
-    env = {**os.environ, "HOME": str(home), "NODE_OPTIONS": "", "NODE_PATH": ""}
-    argv = [str(node), str(bootstrap), "--archive", str(local_archive),
-            "--tag", tag, "--commit", "a"*40, "--sha256", digest,
+    args = ["--archive", str(local_archive), "--tag", tag,
+            "--commit", "a"*40, "--sha256", digest,
             "--endpoint", "https://rc.example.org/"]
+    script = """
+      import { pathToFileURL } from 'node:url';
+      const mod = await import(pathToFileURL(process.env.RCA_BOOTSTRAP_MODULE));
+      const options = mod.parseNodeBootstrapArgs(JSON.parse(process.env.RCA_BOOTSTRAP_ARGS));
+      try {
+        mod.executeNodeBootstrap(options, {
+          stdin: process.stdin, stdout: process.stdout,
+          invoke: () => ({status: 17}),
+        });
+      } catch (error) {
+        console.error(error.message);
+        process.exitCode = 1;
+      }
+    """
+    env = {**os.environ, "HOME": str(home), "NODE_OPTIONS": "", "NODE_PATH": "",
+           "RCA_BOOTSTRAP_MODULE": str(bootstrap),
+           "RCA_BOOTSTRAP_ARGS": json.dumps(args)}
+    argv = [str(node), "--input-type=module", "--eval", script]
     result = subprocess.run(argv, env=env, stdin=subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             check=False, timeout=10)
-    if result.returncode == 0 or (home / ".local").exists():
-        raise SystemExit("Node bootstrap bypassed local terminal gate")
+    if result.returncode == 0 or b"real local terminal" not in result.stderr:
+        raise SystemExit("Node bootstrap accepted invocation without a real terminal")
+    if (home / ".local").exists():
+        raise SystemExit("Headless Node bootstrap created local installation state")
+
     master, slave = pty.openpty()
     proc = subprocess.Popen(argv, env=env, stdin=slave, stdout=slave, stderr=slave,
                             start_new_session=True, close_fds=True)
     os.close(slave)
     transcript = b""
-    rejected = False
     try:
         deadline = time.monotonic()+16
         while time.monotonic()<deadline:
@@ -109,22 +128,19 @@ def verify_node_bootstrap_offline(node, bootstrap, archive, tag, work):
                 if not chunk:
                     break
                 transcript += chunk
-            if "1. Permanent".encode() in transcript and "2. Temporary".encode() in transcript and not rejected:
-                os.write(master,b"\x1b")
-                rejected = True
             if proc.poll() is not None:
                 break
         if proc.poll() is None:
             proc.kill()
-        if proc.wait(timeout=4)==0 or not rejected:
-            raise SystemExit("Node bootstrap did not enforce owner mode selection")
+        if proc.wait(timeout=3) == 0 or b"Exclusive Agent installation could not complete" not in transcript:
+            raise SystemExit("Node bootstrap did not reach its guarded install handoff: " + repr(transcript[-1200:]))
     finally:
         os.close(master)
     private = home / ".local/share/mcp-workers/remote-control"
     if ((private / "v2-identity.pem").exists()
             or (private / "temporary/v2-identity.pem").exists()):
         raise SystemExit("Unapproved Node bootstrap created a device identity")
-    return "node_bootstrap_real_pty_no_approval"
+    return "node_bootstrap_real_pty_guarded_handoff"
 
 
 if len(sys.argv) != 4:
@@ -266,8 +282,15 @@ with tempfile.TemporaryDirectory(prefix="remote-agent-package-test-") as work:
         raise SystemExit("Bundled Node rca shim failed")
     base = home / ".local/share/mcp-workers/remote-control"
     identity = base / "v2-identity.pem"
-    identity.write_text("test-only identity fixture", encoding="utf-8")
+    subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519",
+                    "-out", str(identity)], check=True, stdout=subprocess.DEVNULL,
+                   stderr=subprocess.DEVNULL)
     identity.chmod(0o600)
+    device_id = base / "v2-identity.pem.device-id"
+    device_id.write_text("4fa447e0-1188-45a8-9f8c-5c64a09b2041\n", encoding="utf-8")
+    device_id.chmod(0o600)
+    identity_before = identity.read_bytes()
+    device_id_before = device_id.read_bytes()
     receipts = home / ".local/state/mcp-workers/remote-control-agent"
     receipts.mkdir(parents=True,mode=0o700)
     receipt = receipts / "operation-receipts.sqlite"
@@ -306,13 +329,14 @@ with tempfile.TemporaryDirectory(prefix="remote-agent-package-test-") as work:
                              + " (exit_ok=" + str(rc == 0).lower()
                              + ", confirmation_seen=" + str(confirmed).lower()
                              + ", result_marker_seen="
-                             + str(b"NOT_PERFORMED" in transcript).lower() + ")")
+                             + str(b"NOT_PERFORMED" in transcript).lower() + ") " + repr(transcript[-1200:]))
     finally:
         os.close(uninstall_master)
     if (launcher.exists() or launcher.is_symlink() or version.exists()
-            or identity.read_text("utf-8") != "test-only identity fixture"
+            or identity.read_bytes() != identity_before
+            or device_id.read_bytes() != device_id_before
             or receipt.read_bytes() != b"test-only receipt fixture"):
-        raise SystemExit("Packaged manager uninstall safety/receipt preservation failed")
+        raise SystemExit("Packaged manager uninstall safety/identity/receipt preservation failed")
     print(json.dumps({"onboarding_gate": onboarding, "node_bootstrap": node_bootstrap, "kind": "UNPUBLISHED_SOURCE_CI_CANDIDATE",
                       "target": target, "node": manifest["node"],
                       "glibc_min": manifest["glibc_min"],
