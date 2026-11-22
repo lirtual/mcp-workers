@@ -84,6 +84,54 @@ fn rust_signal_control_reaps_an_owned_shell_process_group() {
 
 #[test]
 #[ignore = "requires C helper compiled from the existing repository source on isolated Linux"]
+fn rust_confirmed_cleanup_reaps_nested_shell_descendants() {
+    let source = helper();
+    let mut session = SupervisorSession::start(
+        Path::new(&source),
+        Path::new("/bin/sh"),
+        "(sleep 30 & echo $!; wait) & echo $!; (sleep 30 & echo $!; wait) & echo $!; wait",
+    )
+    .expect("Rust launched supervised shell");
+
+    let stdout = session.take_stdout().expect("supervised shell stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut pids = Vec::new();
+    for _ in 0..4 {
+        let mut fd = libc::pollfd {
+            fd: reader.get_ref().as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(unsafe { libc::poll(&mut fd, 1, 3000) }, 1);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let pid: i32 = line.trim().parse().expect("nested process PID");
+        assert!(pid > 1);
+        pids.push(pid);
+    }
+    pids.sort_unstable();
+    pids.dedup();
+    assert_eq!(
+        pids.len(),
+        4,
+        "fixture must contain two shell levels and two workers"
+    );
+
+    let status = session
+        .terminate_and_wait(Duration::from_secs(5))
+        .expect("SIGTERM/SIGKILL control and descendant reaping");
+    assert!(
+        !status.status.success(),
+        "terminated command must not appear successful"
+    );
+    assert_eq!(status.cleanup, CleanupState::Confirmed);
+    for pid in pids {
+        assert_no_live_child(pid);
+    }
+}
+
+#[test]
+#[ignore = "requires C helper compiled from the existing repository source on isolated Linux"]
 fn lost_rust_control_pipe_kills_and_reaps_descendants() {
     let source = helper();
     let mut session = SupervisorSession::start(
