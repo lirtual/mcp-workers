@@ -30,9 +30,13 @@ function Check-Program([string]$nodePath, [string]$entryPath) {
   $relNode = $n.Substring($root.Length + 1)
   $relEntry = $e.Substring($root.Length + 1)
   $version = ($relNode -split '\\')[0]
+  $entryPaths = @(
+    ($version + '\apps\remote-control-agent\src\windows-v2.js'),
+    ($version + '\apps\remote-control-agent\.build\rca-standard-windows-candidate.exe')
+  )
   if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-windows-x64$' -or
       $relNode -notin @(($version + '\bin\node.exe'), ($version + '\bin\rca-background.exe')) -or
-      $relEntry -ne ($version + '\apps\remote-control-agent\src\windows-v2.js')) {
+      $relEntry -notin $entryPaths) {
     throw 'Untrusted Agent version or entrypoint'
   }
   foreach ($file in @($n,$e)) {
@@ -42,6 +46,22 @@ function Check-Program([string]$nodePath, [string]$entryPath) {
       throw 'Linked or missing program entry'
     }
   }
+}
+function Read-TaskLaunch([object]$actionInfo) {
+  $arguments = [string]$actionInfo.Arguments
+  if ($arguments -cmatch '^"([^"]+)" run --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)"$') {
+    $entryPath = $Matches[1]
+    $endpointValue = $Matches[2]
+    $generationValue = $null
+  } elseif ($arguments -cmatch '^"([^"]+)" --service --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)" --generation "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})"$') {
+    $entryPath = $Matches[1]
+    $endpointValue = $Matches[2]
+    $generationValue = $Matches[3]
+  } else {
+    throw 'Untrusted scheduled task arguments'
+  }
+  Check-Program ([string]$actionInfo.Execute) $entryPath
+  return [pscustomobject]@{ Entry = $entryPath; Endpoint = $endpointValue; Generation = $generationValue }
 }
 function Check-Existing {
   if (-not $task) { throw 'Agent task not installed' }
@@ -66,12 +86,7 @@ function Check-Existing {
     throw 'Task identity, permissions or trigger changed'
   }
   $actionInfo = $task.Actions[0]
-  $arguments = [string]$actionInfo.Arguments
-  # Extract the one approved entry path and HTTPS endpoint; compare verbatim.
-  if ($arguments -cnotmatch '^"([^"]+)" run --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)"$') {
-    throw 'Untrusted scheduled task arguments'
-  }
-  Check-Program ([string]$actionInfo.Execute) $Matches[1]
+  $null = Read-TaskLaunch $actionInfo
   if ([string]$task.Triggers[0].CimClass.CimClassName -notlike '*LogonTrigger') {
     throw 'Unexpected task trigger'
   }
@@ -88,11 +103,7 @@ if ($Action -eq 'Status') {
 }
 if ($Action -eq 'Endpoint') {
   Check-Existing
-  $args = [string]$task.Actions[0].Arguments
-  if ($args -cnotmatch '^"[^"]+" run --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)"$') {
-    throw 'Managed endpoint cannot be verified'
-  }
-  $Matches[1]
+  (Read-TaskLaunch $task.Actions[0]).Endpoint
   exit 0
 }
 if ($Action -eq 'Enable') {
@@ -158,11 +169,9 @@ if ($Action -eq 'Switch') {
   }
   $oldAction = $task.Actions[0]
   $oldArguments = [string]$oldAction.Arguments
-  if ($oldArguments -cnotmatch '^"([^"]+)" run --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)"$') {
-    throw 'Cannot preserve previous Worker origin'
-  }
-  $oldEntry = $Matches[1]
-  $originalEndpoint = $Matches[2]
+  $oldLaunch = Read-TaskLaunch $oldAction
+  $oldEntry = $oldLaunch.Entry
+  $originalEndpoint = $oldLaunch.Endpoint
   $oldNode = [IO.Path]::GetFullPath([string]$oldAction.Execute)
   Check-Program $oldNode $oldEntry
   $oldRelative = $oldNode.Substring($root.Length + 1)
@@ -181,8 +190,6 @@ if ($Action -eq 'Switch') {
   $nextActionExe = if (Test-Path -LiteralPath $nextBackground -PathType Leaf) { $nextBackground } else { $nextNode }
   if ($Direction -eq 'Upgrade' -and $nextActionExe -ne $nextBackground) { throw 'Background launcher required for new version' }
   $nextEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','src','windows-v2.js')
-  Check-Program $nextNode $nextEntry
-  Check-Program $nextActionExe $nextEntry
   foreach ($folder in @($root, $candidate)) {
     $item = Get-Item -LiteralPath $folder -Force
     if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -208,13 +215,27 @@ if ($Action -eq 'Switch') {
       ($Direction -eq 'Upgrade' -and $manifest.upgrade_profile -cne 'paired-full-v1')) {
     throw 'Unreviewed Windows package version or capability profile'
   }
+  $runtime = if ($manifest.agent_runtime) { [string]$manifest.agent_runtime } else { 'node-standard-windows-v2' }
+  if ($runtime -ceq 'rust-standard-windows-v1') {
+    $nextEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','.build','rca-standard-windows-candidate.exe')
+  } elseif ($runtime -ceq 'node-standard-windows-v2') {
+    $nextEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','src','windows-v2.js')
+  } else { throw 'Unreviewed Windows runtime profile' }
+  Check-Program $nextActionExe $nextEntry
   $validator = [IO.Path]::Combine($candidate,'apps','remote-control-agent','scripts','verify-windows-preview.mjs')
   & $nextNode $validator $candidate | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Candidate package manifest verification failed' }
-  # New runtime status must pass using the original identity. No remote calls.
-  & $nextNode $nextEntry status | Out-Null
+  # Validate the existing paired identity with the reviewed Node CLI; this
+  # is a local read-only check and does not launch either runtime or call cloud.
+  $statusEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','src','windows-v2.js')
+  & $nextNode $statusEntry status | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Candidate local identity validation failed' }
-  $newArgs = '"' + $nextEntry + '" run --endpoint "' + $originalEndpoint + '"'
+  if ($runtime -ceq 'rust-standard-windows-v1') {
+    $generation = [guid]::NewGuid().ToString('D')
+    $newArgs = '"' + $nextEntry + '" --service --endpoint "' + $originalEndpoint + '" --generation "' + $generation + '"'
+  } else {
+    $newArgs = '"' + $nextEntry + '" run --endpoint "' + $originalEndpoint + '"'
+  }
   $newAction = New-ScheduledTaskAction -Execute $nextActionExe -Argument $newArgs -WorkingDirectory ([IO.Path]::GetDirectoryName($nextEntry))
   $wasRunning = ($task.State -eq 'Running')
   if ($Direction -eq 'Upgrade' -and

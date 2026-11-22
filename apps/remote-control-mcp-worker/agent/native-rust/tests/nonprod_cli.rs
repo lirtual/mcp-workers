@@ -124,6 +124,11 @@ fn sigterm_stops_retrying_nonproduction_process_without_reconnect_loop() {
             Err(error) => panic!("local test listener failed: {error}"),
         }
     };
+    // Darwin can return an accepted socket in nonblocking mode when the
+    // listener was nonblocking. Make the accepted stream's contract explicit
+    // before reading the request instead of treating an early EAGAIN as a test
+    // failure.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(1)))
         .unwrap();

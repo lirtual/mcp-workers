@@ -957,6 +957,12 @@ test("native Windows packaging and installer omit the retired screenshot helper"
   assert.ok(stageFixture.includes(expected), "StageOnly accepts native Session RCA helper");
   assert.ok(builder.includes('"windows-session-private-store.ps1"'));
   assert.ok(verifier.includes('windows-session-private-store'));
+  for (const source of [installer, stageFixture]) {
+    assert.ok(source.includes('.build/rca-standard-windows-candidate'),
+      'Windows candidate installers admit only the reviewed Rust runtime binary');
+  }
+  assert.ok(verifier.includes('rust-standard-windows-v1'));
+  assert.ok(verifier.includes('standard-windows-rust-runtime-v1'));
   for (const source of [installer, stageFixture, builder]) {
     assert.ok(!source.includes("windows-capture"), "GUI-only screenshot helper must be absent");
   }
