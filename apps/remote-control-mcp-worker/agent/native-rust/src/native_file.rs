@@ -103,9 +103,9 @@ pub fn run_disposable_file_session(
 // Gate 0 probe above remains an isolated regression fixture until migration.
 #[cfg(target_os = "macos")]
 use crate::darwin_managed::{CleanupState, DarwinManagedSessions as ManagedSessions};
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::linux_managed::LinuxManagedSessions as ManagedSessions;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 use crate::linux_supervisor::CleanupState;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::native_process::{self, NativeProcessEngine, ProcessRead};
