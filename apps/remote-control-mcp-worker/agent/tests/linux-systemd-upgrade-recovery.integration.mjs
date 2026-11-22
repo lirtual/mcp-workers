@@ -105,7 +105,7 @@ const systemctl=(args)=>{
 let installer;
 let installerOutput="";
 try {
-  installer=spawn(process.execPath,[driver],{env:{...baseEnv,PATH:wrappers+":"+baseEnv.PATH,SPEC914_RESTART_MARKER:marker,SPEC914_RELEASE_RESTART:release},detached:true,stdio:["ignore","pipe","pipe"]});
+  installer=spawn(path.join(rustRoot,"bin/node"),[driver],{env:{...baseEnv,PATH:wrappers+":"+baseEnv.PATH,SPEC914_RESTART_MARKER:marker,SPEC914_RELEASE_RESTART:release},detached:true,stdio:["ignore","pipe","pipe"]});
   installer.stdout.setEncoding("utf8").on("data",chunk=>installerOutput+=chunk);
   installer.stderr.setEncoding("utf8").on("data",chunk=>installerOutput+=chunk);
   const deadline=Date.now()+30000;
