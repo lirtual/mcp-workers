@@ -24,8 +24,8 @@ function setup(t:test.TestContext){
   const reads:{sql:string;args:unknown[]}[]=[],writes:string[]=[];
   const env={
     DB:{
-      prepare(sql:string){let args:unknown[]=[];return {
-        bind(...values:unknown[]){args=values;return this;},
+      prepare(sql:string){let args:any[]=[];return {
+        bind(...values:any[]){args=values;return this;},
         async first(){reads.push({sql,args:[...args]});return db.prepare(sql).get(...args)??null;},
         async all(){reads.push({sql,args:[...args]});return {results:db.prepare(sql).all(...args)};},
         async run(){writes.push(sql);return {meta:{changes:Number(db.prepare(sql).run(...args).changes)}};},
