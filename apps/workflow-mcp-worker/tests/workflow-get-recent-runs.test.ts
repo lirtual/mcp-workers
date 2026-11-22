@@ -105,6 +105,9 @@ test('workflow_get returns only the bounded, deterministic, safe D1 Run snapshot
 
 test('workflow_get validates limits and supports Draft, Paused, and deleted workflows',async t=>{
   const {db,service}=setup(t);
+  const emptyDraft=await service.create(definition('empty draft'));
+  assert.deepEqual((await service.get(emptyDraft.workflow_id,5)).recent_runs,[]);
+
   const draft=await service.create(definition('draft'));
   const historicalVersion=crypto.randomUUID();
   db.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES (?,?,?,?,0)')
