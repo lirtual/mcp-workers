@@ -5,6 +5,10 @@
  *
  * node scripts/build-v2-release.mjs --version v0.1.0 --target linux-x64-glibc
  *   --node-bin /trusted/node-24 --native /trusted/session-supervisor --out /tmp/stage
+ *
+ * An unpublished Linux Rust candidate uses the same archive format:
+ *   --version v0.1.1-rust-candidate.1 --rust-agent-bin /trusted/rca-standard-linux-candidate
+ *   --rust-agent-sha256 <sha256>
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -16,29 +20,37 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
+const ts = require("typescript");
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 /** Nested package: apps/remote-control-mcp-worker/agent. Git identity is the monorepo root. */
 export function darwinGitRoot(packageRoot = root) {
   return path.resolve(packageRoot, "../../..");
 }
-const ts = require("typescript");
 const ALLOWED = new Set(["linux-x64-glibc", "linux-arm64-glibc", "darwin-arm64", "darwin-x64"]);
 const source = path.join(root, "src");
 
 export function parseArgs(argv) {
   const params = {};
   for (let i = 0; i < argv.length; i += 2) {
-    if (!["--version", "--target", "--node-bin", "--native", "--out", "--node-sha256", "--native-sha256"].includes(argv[i]) ||
+    if (!["--version", "--target", "--node-bin", "--native", "--out", "--node-sha256", "--native-sha256",
+      "--rust-agent-bin", "--rust-agent-sha256"].includes(argv[i]) ||
       !argv[i+1] || params[argv[i]]) throw new Error("Invalid packaging parameters.");
-    params[{"--node-bin":"nodeBin","--node-sha256":"nodeSha256","--native-sha256":"nativeSha256"}[argv[i]] ?? argv[i].slice(2)] = argv[i+1];
+    params[{"--node-bin":"nodeBin","--node-sha256":"nodeSha256","--native-sha256":"nativeSha256",
+      "--rust-agent-bin":"rustAgentBin","--rust-agent-sha256":"rustAgentSha256"}[argv[i]] ?? argv[i].slice(2)] = argv[i+1];
   }
-  if (Object.keys(params).length!==7 ||
+  const hasRustCandidate = Boolean(params.rustAgentBin || params.rustAgentSha256);
+  if ((hasRustCandidate && (!params.rustAgentBin || !params.rustAgentSha256 ||
+      !params.version.includes("-rust-candidate") ||
+      !["linux-x64-glibc","linux-arm64-glibc"].includes(params.target))) ||
+      Object.keys(params).length !== (hasRustCandidate ? 9 : 7) ||
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(params.version) ||
       !ALLOWED.has(params.target) ||
       !/^[a-f0-9]{64}$/.test(params.nodeSha256) ||
       !/^[a-f0-9]{64}$/.test(params.nativeSha256) ||
-      ![params.nodeBin, params.native, params.out].every(x => path.isAbsolute(x))) {
-    throw new Error("Specify pinned version, supported target, absolute Node24/native paths and output.");
+      (hasRustCandidate && !/^[a-f0-9]{64}$/.test(params.rustAgentSha256)) ||
+      ![params.nodeBin, params.native, params.out, ...(hasRustCandidate ? [params.rustAgentBin] : [])]
+        .every(x => path.isAbsolute(x))) {
+    throw new Error("Specify a pinned version, supported target, absolute Node24/native paths and output; Rust candidates also need a prerelease tag, Linux target, binary and SHA-256.");
   }
   return params;
 }
@@ -58,6 +70,33 @@ export function machOMachine(bytes) {
   if (cpu === 0x0100000c) return "arm64";
   if (cpu === 0x01000007) return "x64";
   throw new Error("Unsupported Mach-O CPU.");
+}
+
+export function ensureRustCandidate({target, rustAgentBin, rustAgentSha256, maxGlibcMin,
+  invoke = spawnSync}) {
+  if (!["linux-x64-glibc","linux-arm64-glibc"].includes(target) ||
+      !path.isAbsolute(rustAgentBin) || !/^[a-f0-9]{64}$/.test(rustAgentSha256) ||
+      !/^[0-9]+\.[0-9]+$/.test(maxGlibcMin ?? "")) {
+    throw new Error("Rust Agent candidate requires a pinned Linux ELF binary and the existing glibc limit.");
+  }
+  const info = lstatSync(rustAgentBin);
+  const expected = target === "linux-x64-glibc" ? 62 : 183;
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw new Error("Rust Agent candidate must be a regular, nonlinked file.");
+  }
+  if (machine(rustAgentBin) !== expected ||
+      createHash("sha256").update(readFileSync(rustAgentBin)).digest("hex") !== rustAgentSha256) {
+    throw new Error("Rust Agent candidate architecture or SHA-256 mismatch.");
+  }
+  const glibcMin = requiredGlibcVersion(rustAgentBin, invoke);
+  const parts = value => value.split(".").map(Number);
+  const [candidateMajor,candidateMinor] = parts(glibcMin);
+  const [limitMajor,limitMinor] = parts(maxGlibcMin);
+  if (candidateMajor > limitMajor ||
+      (candidateMajor === limitMajor && candidateMinor > limitMinor)) {
+    throw new Error("Rust Agent candidate exceeds the existing release glibc_min; build with a compatible toolchain.");
+  }
+  return {glibcMin};
 }
 
 export function requiredGlibcVersion(binary, invoke = spawnSync) {
@@ -217,6 +256,8 @@ function tarball(dir, file) {
 
 export function build(args) {
   const { arch, nodeVersion, libc, glibcMin } = ensureNativeTarget(args);
+  const rustCandidate = args.rustAgentBin
+    ? ensureRustCandidate({...args,maxGlibcMin:glibcMin}) : null;
   const darwin = args.target === "darwin-arm64" || args.target === "darwin-x64";
   if (existsSync(args.out) && readdirSync(args.out).length) {
     throw new Error("Output must be a new or empty directory.");
@@ -230,7 +271,12 @@ export function build(args) {
   copyFileSync(args.nodeBin, path.join(work, "bin/node"));
   const helperFile=darwin ? "darwin-session-supervisor" : "session-supervisor";
   copyFileSync(args.native, path.join(work, "apps/remote-control-agent/.build",helperFile));
-  for (const relative of ["bin/node","apps/remote-control-agent/.build/"+helperFile]) {
+  if (rustCandidate) {
+    copyFileSync(args.rustAgentBin,
+      path.join(work, "apps/remote-control-agent/.build/rca-standard-linux-candidate"));
+  }
+  for (const relative of ["bin/node","apps/remote-control-agent/.build/"+helperFile,
+      ...(rustCandidate ? ["apps/remote-control-agent/.build/rca-standard-linux-candidate"] : [])]) {
     chmodSync(path.join(work,relative),0o700);
   }
   // Both full-tools operation routing and the owner-local admission freeze
@@ -285,7 +331,10 @@ export function build(args) {
     throw new Error("Cannot prove reviewed Darwin source commit.");
   writeFileSync(path.join(work,"bundle.json"),JSON.stringify({
     name:"remote-control-agent",version:args.version,target:args.target,
-    node:nodeVersion,...(darwin ? {candidate_profile:"darwin-permanent-local-v1",native_supervisor:"darwin-owned-group-v1",source_commit:sourceCommit.stdout.trim()} : {glibc_build:libc,glibc_min:glibcMin}),modules,
+    node:nodeVersion,...(rustCandidate ? {agent_runtime:"rust-standard-linux-v1",
+      candidate_profile:"standard-linux-rust-runtime-v1"} : {agent_runtime:"node-v2"}),
+    ...(darwin ? {candidate_profile:"darwin-permanent-local-v1",native_supervisor:"darwin-owned-group-v1",source_commit:sourceCommit.stdout.trim()} :
+      {glibc_build:libc,glibc_min:glibcMin}),modules,
     artifact_schema:1,device_protocol:2,receipt_schema:1,
     ...(!darwin ? {upgrade_profile:"paired-full-v1"} : {})
   })+"\n",{mode:0o600});

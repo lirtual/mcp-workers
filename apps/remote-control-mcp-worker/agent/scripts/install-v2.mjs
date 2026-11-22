@@ -126,12 +126,22 @@ function systemdLiteral(value) {
   return value;
 }
 
-export function renderV2Service({ node, home, repoRoot, endpoint, keyPath, entryExt = "ts" }) {
-  if (!["ts", "js"].includes(entryExt)) throw new Error("Invalid Agent runtime entry.");
-  const nodePath = systemdLiteral(node);
+export function renderV2Service({ node, home, repoRoot, endpoint, keyPath, entryExt = "ts",
+  agentRuntime = "node-v2" }) {
+  if (!["ts", "js"].includes(entryExt) ||
+      !["node-v2", "rust-standard-linux-v1"].includes(agentRuntime)) {
+    throw new Error("Invalid Agent runtime entry.");
+  }
   const project = systemdLiteral(repoRoot);
   const identity = systemdLiteral(keyPath);
-  if (!path.isAbsolute(nodePath) || !path.isAbsolute(project) ||
+  const executable = systemdLiteral(agentRuntime === "rust-standard-linux-v1"
+    ? path.join(project, "apps/remote-control-agent/.build/rca-standard-linux-candidate")
+    : node);
+  const runtimeArgs = agentRuntime === "rust-standard-linux-v1"
+    ? "" : (entryExt === "ts" ? " --experimental-strip-types" : "");
+  const runtimeEntry = agentRuntime === "rust-standard-linux-v1"
+    ? "" : " " + path.join(project, "apps/remote-control-agent/src/v2-main." + entryExt);
+  if (!path.isAbsolute(executable) || !path.isAbsolute(project) ||
       !path.isAbsolute(identity) || !path.isAbsolute(home)) {
     throw new Error("Absolute installation paths are required.");
   }
@@ -150,8 +160,7 @@ export function renderV2Service({ node, home, repoRoot, endpoint, keyPath, entry
     "ExecStartPre=/usr/bin/test -r " + identity,
     "ExecStartPre=/usr/bin/test -r " + identity + ".device-id",
     "ExecStartPre=/usr/bin/test -x " + project + "/apps/remote-control-agent/.build/session-supervisor",
-    "ExecStart=" + nodePath + (entryExt === "ts" ? " --experimental-strip-types" : "") +
-      " " + project + "/apps/remote-control-agent/src/v2-main." + entryExt,
+    "ExecStart=" + executable + runtimeArgs + runtimeEntry,
     "Restart=on-failure",
     "RestartSec=15s",
     "TimeoutStopSec=15s",
@@ -255,9 +264,7 @@ export async function assertSafePortableUpgrade(unit, home, newManifestPath) {
   }
   const previousRoot = path.resolve(working[0].slice("WorkingDirectory=".length), "..", "..");
   const privatePrograms = path.join(home, ".local", "share", "mcp-workers", "remote-control", "programs");
-  if (!previousRoot.startsWith(privatePrograms + path.sep) ||
-      !starts[0].includes("ExecStart=" + path.join(previousRoot, "bin", "node") + " ") ||
-      !starts[0].endsWith(path.join(previousRoot, "apps", "remote-control-agent", "src", "v2-main.js"))) {
+  if (!previousRoot.startsWith(privatePrograms + path.sep)) {
     throw new Error("Cannot upgrade an unverified or checkout-based Agent.");
   }
   for (const root of [previousRoot, path.resolve(path.dirname(newManifestPath))]) {
@@ -286,13 +293,33 @@ export async function assertSafePortableUpgrade(unit, home, newManifestPath) {
           : profile !== "paired-full-v1")) {
       throw new Error("Unsupported existing Agent upgrade profile.");
     }
-    const entrySource = await readFile(path.join(root,
-      "apps", "remote-control-agent", "src", "v2-main.js"), "utf8");
-    const readOnly = profile === "read-only-no-shell-v1" &&
-      /readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(entrySource);
-    const full = profile === "paired-full-v1" &&
-      /V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(entrySource) &&
-      !/(?:readOnly|writeFile|shell)\s*:/.test(entrySource);
+    const agentRuntime = manifest.agent_runtime ?? "node-v2";
+    let readOnly = false;
+    let full = false;
+    if (agentRuntime === "rust-standard-linux-v1") {
+      const candidate = path.join(root, "apps", "remote-control-agent", ".build",
+        "rca-standard-linux-candidate");
+      let candidateInfo;
+      try { candidateInfo = await lstat(candidate); }
+      catch { throw new Error("Rust Agent candidate is missing; upgrade blocked."); }
+      if (manifest.candidate_profile !== "standard-linux-rust-runtime-v1" ||
+          !/^linux-(?:x64|arm64)-glibc$/.test(manifest.target ?? "") ||
+          manifest.target !== "linux-" + process.arch + "-glibc" ||
+          !candidateInfo.isFile() || candidateInfo.isSymbolicLink() ||
+          candidateInfo.uid !== process.getuid() || (candidateInfo.mode & 0o077) !== 0 ||
+          candidateInfo.nlink !== 1 || (candidateInfo.mode & 0o111) === 0) {
+        throw new Error("Untrusted Rust Agent candidate; upgrade blocked.");
+      }
+      full = profile === "paired-full-v1";
+    } else if (agentRuntime === "node-v2") {
+      const entrySource = await readFile(path.join(root,
+        "apps", "remote-control-agent", "src", "v2-main.js"), "utf8");
+      readOnly = profile === "read-only-no-shell-v1" &&
+        /readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(entrySource);
+      full = profile === "paired-full-v1" &&
+        /V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(entrySource) &&
+        !/(?:readOnly|writeFile|shell)\s*:/.test(entrySource);
+    }
     if (!readOnly && !full) {
       throw new Error("Active/unknown Shell ownership or unverified managed profile; upgrade blocked.");
     }
@@ -642,9 +669,13 @@ function assertCanonicalV2UnitTemplate(unit, home) {
   }
   const root = path.resolve(working[0].slice("WorkingDirectory=".length), "..", "..");
   const programs = path.join(home, ".local", "share", "mcp-workers", "remote-control", "programs");
-  const expectedStart = "ExecStart=" + path.join(root, "bin", "node") + " " +
+  const nodeStart = "ExecStart=" + path.join(root, "bin", "node") + " " +
     path.join(root, "apps", "remote-control-agent", "src", "v2-main.js");
-  if (!root.startsWith(programs + path.sep) || starts[0] !== expectedStart) {
+  const rustStart = "ExecStart=" +
+    path.join(root, "apps", "remote-control-agent", ".build", "rca-standard-linux-candidate");
+  const agentRuntime = starts[0] === nodeStart ? "node-v2" :
+    starts[0] === rustStart ? "rust-standard-linux-v1" : null;
+  if (!root.startsWith(programs + path.sep) || !agentRuntime) {
     throw new Error("Interrupted upgrade backup does not reference a versioned Agent.");
   }
   // Require the exact installer-generated service, not merely a matching
@@ -659,18 +690,19 @@ function assertCanonicalV2UnitTemplate(unit, home) {
   let canonical;
   try {
     canonical = renderV2Service({node:path.join(root, "bin", "node"), home,
-      repoRoot:root, endpoint:endpointValue, keyPath:keyValue, entryExt:"js"});
+      repoRoot:root, endpoint:endpointValue, keyPath:keyValue, entryExt:"js", agentRuntime});
   } catch {
     throw new Error("Interrupted upgrade backup has invalid service settings.");
   }
   if (unit !== canonical) {
     throw new Error("Interrupted upgrade backup differs from the managed service template.");
   }
-  return {root, endpoint:endpointValue, keyPath:keyValue};
+  return {root, endpoint:endpointValue, keyPath:keyValue, agentRuntime};
 }
 
 async function assertRecoverablePreviousUnit(unit, home) {
-  const {root, endpoint:endpointValue, keyPath:keyValue} = assertCanonicalV2UnitTemplate(unit, home);
+  const {root, endpoint:endpointValue, keyPath:keyValue, agentRuntime} =
+    assertCanonicalV2UnitTemplate(unit, home);
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() ||
       rootInfo.uid !== process.getuid() || (rootInfo.mode & 0o077) !== 0) {
@@ -692,16 +724,33 @@ async function assertRecoverablePreviousUnit(unit, home) {
       path.basename(root) !== manifest.version + "-" + manifest.target) {
     throw new Error("Previous Agent version cannot be safely recovered.");
   }
-  const entry = path.join(root, "apps", "remote-control-agent", "src", "v2-main.js");
-  const entryInfo = await lstat(entry);
-  if (!entryInfo.isFile() || entryInfo.isSymbolicLink() ||
-      entryInfo.uid !== process.getuid() || (entryInfo.mode & 0o077) !== 0 ||
-      !(
-        manifest.upgrade_profile==="read-only-no-shell-v1"
-          ? /readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(await readFile(entry, "utf8"))
-          : /V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(await readFile(entry,"utf8"))
-      )) {
-    throw new Error("Previous Agent does not prove a reviewed runtime profile.");
+  if ((manifest.agent_runtime ?? "node-v2") !== agentRuntime) {
+    throw new Error("Previous Agent service/runtime manifest mismatch.");
+  }
+  if (agentRuntime === "rust-standard-linux-v1") {
+    const candidate = path.join(root, "apps", "remote-control-agent", ".build",
+      "rca-standard-linux-candidate");
+    const candidateInfo = await lstat(candidate);
+    if (manifest.candidate_profile !== "standard-linux-rust-runtime-v1" ||
+        manifest.target !== "linux-" + process.arch + "-glibc" ||
+        !candidateInfo.isFile() || candidateInfo.isSymbolicLink() ||
+        candidateInfo.uid !== process.getuid() || (candidateInfo.mode & 0o077) !== 0 ||
+        candidateInfo.nlink !== 1 || (candidateInfo.mode & 0o111) === 0 ||
+        manifest.upgrade_profile !== "paired-full-v1") {
+      throw new Error("Previous Agent does not prove a reviewed runtime profile.");
+    }
+  } else {
+    const entry = path.join(root, "apps", "remote-control-agent", "src", "v2-main.js");
+    const entryInfo = await lstat(entry);
+    if (!entryInfo.isFile() || entryInfo.isSymbolicLink() ||
+        entryInfo.uid !== process.getuid() || (entryInfo.mode & 0o077) !== 0 ||
+        !(
+          manifest.upgrade_profile==="read-only-no-shell-v1"
+            ? /readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(await readFile(entry, "utf8"))
+            : /V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(await readFile(entry,"utf8"))
+        )) {
+      throw new Error("Previous Agent does not prove a reviewed runtime profile.");
+    }
   }
   return {root, endpoint:endpointValue, keyPath:keyValue};
 }
@@ -1527,6 +1576,7 @@ export async function runInstaller(args, {
   const rendered = renderV2Service({
     node: process.execPath, home, repoRoot: path.resolve(packageRoot, "..", ".."),
     endpoint: options.endpoint, keyPath, entryExt: portable ? "js" : "ts",
+    agentRuntime: manifest.agent_runtime ?? "node-v2",
   });
   let consentAttempted = false;
   let ownerStop;

@@ -108,6 +108,33 @@ test("Node manager recognizes the immutable paired-full profile without optional
   }finally{cleanup(f);}
 });
 
+test("#914 Node manager validates and reports a Rust candidate service without changing identity",()=>{
+  const f=fixture();
+  try{
+    const info={...f.info,agent_runtime:"rust-standard-linux-v1",
+      candidate_profile:"standard-linux-rust-runtime-v1",upgrade_profile:"paired-full-v1"};
+    writeFileSync(path.join(f.root,"bundle.json"),JSON.stringify(info),{mode:0o600});
+    const candidateDir=path.join(f.root,"apps/remote-control-agent/.build");
+    mkdirSync(candidateDir,{recursive:true,mode:0o700});chmodSync(candidateDir,0o700);
+    const candidate=path.join(candidateDir,"rca-standard-linux-candidate");
+    writeFileSync(candidate,"SYNTHETIC-RUST-EXECUTABLE",{mode:0o700});
+    const app=path.join(f.root,"apps/remote-control-agent");
+    const endpoint="https://remote-control-v2-preview.aiyaya.workers.dev/";
+    writeFileSync(f.unit,"# Managed by Remote Control Agent installer.\n[Service]\n"+
+      "Environment=REMOTE_CONTROL_AGENT_ENDPOINT="+endpoint+"\n"+
+      "WorkingDirectory="+app+"\nExecStart="+candidate+"\n",{mode:0o600});
+    const options={home:f.home,source:f.manager};
+    const inventory=localManagerInventory(options);
+    assert.equal(inventory.info.agent_runtime,"rust-standard-linux-v1");
+    const status=localManagerStatus(options,()=>({status:0,error:null}));
+    assert.equal(status.local_permanent_service,"active");
+    assert.equal(readFileSync(f.receipts,"utf8"),"SIMULATED_RECEIPT_KEEP");
+    assert.equal(readFileSync(path.join(f.ids,"v2-identity.pem.device-id"),"utf8"),UUID);
+    chmodSync(candidate,0o600);
+    assert.throws(()=>localManagerInventory(options),/Untrusted/);
+  }finally{cleanup(f);}
+});
+
 test("Node manager refuses foreign identities and does not read private keys",()=>{
   const f=fixture();
   try{

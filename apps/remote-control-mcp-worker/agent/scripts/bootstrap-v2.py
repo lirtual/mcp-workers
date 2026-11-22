@@ -43,6 +43,7 @@ ALLOWED_DIRS = frozenset((
 ))
 ALLOWED_FILES = frozenset((
     "bin/node", "bundle.json", APP + "/package.json",
+    APP + "/.build/rca-standard-linux-candidate",
     APP + "/scripts/install-v2.mjs", APP + "/scripts/bootstrap-v2.py",
     APP + "/scripts/manage-v2.py", APP + "/.build/session-supervisor",
     APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
@@ -52,8 +53,9 @@ ALLOWED_FILES = frozenset((
     APP + "/scripts/linux-upgrade-watchdog.mjs",
     APP + "/scripts/verify-v2-release.mjs", APP + "/scripts/rca.sh",
 ))
-ELF_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor"))
-EXEC_FILES = ELF_FILES
+ELF_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor",
+                        APP + "/.build/rca-standard-linux-candidate"))
+EXEC_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor"))
 NODE_REQUIRED = frozenset((
     APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
     APP + "/scripts/lifecycle-v2.mjs", APP + "/scripts/upgrade-v2.mjs",
@@ -123,6 +125,7 @@ def resolve_pinned(tag, commit, target):
     release = json_api("/releases/tags/" + tag)
     if (release.get("immutable") is not True
             or release.get("draft") is not False
+            or ("-rust-candidate" in tag and release.get("prerelease") is not True)
             or release.get("tag_name") != tag
             or not isinstance(release.get("id"), int)):
         raise ValueError("This Release is not published and immutable")
@@ -197,10 +200,21 @@ def inspect_archive(archive, tag, target):
         if not required.issubset(names):
             raise ValueError("Missing reviewed Agent manager/bootstrap files")
         manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
+        agent_runtime = manifest.get("agent_runtime", "node-v2")
+        rust_candidate = agent_runtime == "rust-standard-linux-v1"
         if (manifest.get("artifact_schema") != 1 or manifest.get("name") != "remote-control-agent"
                 or manifest.get("version") != tag or manifest.get("target") != target
-                or not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", "")))):
-            raise ValueError("Bundle version, architecture, or runtime mismatch")
+                or not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", "")))
+                or agent_runtime not in ("node-v2", "rust-standard-linux-v1")
+                or (rust_candidate and (
+                    manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
+                    or not re.search(r"-rust-candidate(?:\.|$)", tag)
+                    or not target.startswith("linux-")
+                    or APP + "/.build/rca-standard-linux-candidate" not in names))
+                or (not rust_candidate and (
+                    manifest.get("candidate_profile") == "standard-linux-rust-runtime-v1"
+                    or APP + "/.build/rca-standard-linux-candidate" in names))):
+            raise ValueError("Bundle version, runtime profile, or architecture mismatch")
         # A remote-capable archive must contain the complete packaged
         # stage/rollback implementation; old local-only Releases still work.
         if "upgrade_protocol" in manifest:
@@ -222,6 +236,8 @@ def inspect_archive(archive, tag, target):
             raise ValueError("Release requires a newer glibc ABI; no execution attempted")
         machine = 62 if target.startswith("linux-x64-") else 183
         for binary in ELF_FILES:
+            if binary not in names:
+                continue
             b = tf.extractfile(tf.getmember(binary)).read(64)
             if (len(b) < 64 or b[:4] != b"\x7fELF" or b[4:6] != b"\x02\x01"
                     or struct.unpack_from("<H", b, 18)[0] != machine):
@@ -287,7 +303,7 @@ def unpack_verified(archive, destination, records, tag, target):
                         os.fsync(stream.fileno())
                 except Exception:
                     raise
-                if name in EXEC_FILES or name in (
+                if name in EXEC_FILES or name == APP + "/.build/rca-standard-linux-candidate" or name in (
                         APP + "/scripts/manage-v2.py", APP + "/scripts/rca.sh"):
                     output.chmod(0o700)
         # Under this private parent and exclusive flock, only the current user
@@ -529,6 +545,22 @@ def validated_owned_version(p):
     if f.is_symlink() or source.is_symlink() or not f.is_file() or not source.is_file():
         raise ValueError("Missing/linked runtime manifest")
     manifest = json.loads(f.read_text("utf8"))
+    agent_runtime = manifest.get("agent_runtime", "node-v2")
+    if agent_runtime == "rust-standard-linux-v1":
+        candidate = p / APP / ".build/rca-standard-linux-candidate"
+        try:
+            candidate_info = candidate.lstat()
+        except OSError:
+            raise ValueError("Untrusted Rust Agent candidate")
+        if (manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
+                or not stat.S_ISREG(candidate_info.st_mode)
+                or candidate_info.st_uid != os.getuid()
+                or candidate_info.st_nlink != 1
+                or candidate_info.st_mode & 0o077
+                or not candidate_info.st_mode & 0o111):
+            raise ValueError("Untrusted Rust Agent candidate")
+    elif agent_runtime != "node-v2":
+        raise ValueError("Unknown installed Agent runtime")
     if (manifest.get("artifact_schema") != 1 or manifest.get("device_protocol") != 2
             or manifest.get("receipt_schema") != 1
             or p.name != manifest.get("version") + "-" + manifest.get("target")
@@ -561,9 +593,18 @@ def owned_unit_root(unit, versions):
     if len(cwd) != 1 or len(start) != 1:
         raise ValueError("Ambiguous v2 user service")
     root = pathlib.Path(cwd[0]).parent.parent
-    if root not in versions or start[0] != (
-            str(root / "bin/node") + " " + str(root / APP / "src/v2-main.js")):
+    if root not in versions:
         raise ValueError("Current v2 service does not belong to standalone installer")
+    try:
+        manifest = json.loads((root / "bundle.json").read_text("utf8"))
+    except (OSError, ValueError):
+        raise ValueError("Current v2 service manifest is unavailable")
+    agent_runtime = manifest.get("agent_runtime", "node-v2")
+    expected = (str(root / APP / ".build/rca-standard-linux-candidate")
+                if agent_runtime == "rust-standard-linux-v1"
+                else str(root / "bin/node") + " " + str(root / APP / "src/v2-main.js"))
+    if start[0] != expected:
+        raise ValueError("Current v2 service runtime does not match its manifest")
     return root
 
 

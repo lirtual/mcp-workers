@@ -35,6 +35,38 @@ async function createReceiptDatabase(home, version = 1, mode = 0o600) {
   await chmod(file, mode);
   return file;
 }
+test("#914 installed Node service accepts only a verified Linux Rust candidate package",async()=>{
+  const home=await mkdtemp(path.join(os.tmpdir(),"rc-rust-cutover-"));
+  const programs=path.join(home,".local/share/mcp-workers/remote-control/programs");
+  const oldRoot=path.join(programs,"v0.1.0-linux-x64-glibc");
+  const candidateVersion="v0.2.0-rust-candidate.1";
+  const newRoot=path.join(programs,candidateVersion+"-linux-x64-glibc");
+  try{
+    await prepareVersion(oldRoot,{schema:fullProfile,entry:fullEntry});
+    const rustProfile={...fullProfile,version:candidateVersion,target:"linux-x64-glibc",
+      agent_runtime:"rust-standard-linux-v1",
+      candidate_profile:"standard-linux-rust-runtime-v1"};
+    await prepareVersion(newRoot,{schema:rustProfile,entry:fullEntry});
+    const candidate=path.join(newRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
+    await mkdir(path.dirname(candidate),{recursive:true,mode:0o700});
+    await writeFile(candidate,Buffer.from("candidate ELF placeholder"),{mode:0o700});
+    const unit=renderV2Service({home,repoRoot:oldRoot,node:oldRoot+"/bin/node",
+      endpoint:"https://rc.example.org/",
+      keyPath:home+"/.local/share/mcp-workers/remote-control/v2-identity.pem",entryExt:"js"});
+    await createReceiptDatabase(home,1);
+    const result=await assertSafePortableUpgrade(unit,home,newRoot+"/bundle.json");
+    assert.equal(result.oldProgram,oldRoot);
+    assert.equal(result.newProgram,newRoot);
+    assert.equal(result.needsFreeze,true);
+    await chmod(candidate,0o600);
+    await assert.rejects(assertSafePortableUpgrade(unit,home,newRoot+"/bundle.json"),/Untrusted Rust Agent candidate/);
+    await chmod(candidate,0o700);
+    await writeFile(newRoot+"/bundle.json",JSON.stringify({...rustProfile,
+      candidate_profile:"unreviewed"}),{mode:0o600});
+    await assert.rejects(assertSafePortableUpgrade(unit,home,newRoot+"/bundle.json"),/Untrusted Rust Agent candidate/);
+  }finally{await rm(home,{recursive:true,force:true});}
+});
+
 test("#77 reviewed full-tools upgrade requires authoritative in-process freeze",async()=>{
   const home=await mkdtemp(path.join(os.tmpdir(),"rc-t08-manual-"));
   const programs=path.join(home,".local/share/mcp-workers/remote-control/programs");

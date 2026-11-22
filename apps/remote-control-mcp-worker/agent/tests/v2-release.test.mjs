@@ -2,12 +2,13 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {readFileSync,realpathSync} from "node:fs";
 import {fileURLToPath} from "node:url";
-import { mkdtemp, readdir, readFile, rm, writeFile, mkdir, symlink, copyFile, access } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile, mkdir, symlink, copyFile, access, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
-import { parseArgs, runtimeSources, ensureNativeTarget, requiredGlibcVersion } from "../scripts/build-v2-release.mjs";
+import { parseArgs, runtimeSources, ensureNativeTarget, ensureRustCandidate,
+  requiredGlibcVersion } from "../scripts/build-v2-release.mjs";
 import { resolvePinnedRelease, downloadPinnedAsset, inspectTarGzip, extractVerifiedAsset, releaseAssetName } from "../scripts/verify-v2-release.mjs";
 
 const tag="v0.1.0",target="linux-x64-glibc",commit="1".repeat(40);
@@ -51,19 +52,19 @@ function fixture(extra=[],opts={}) {
 }
 const api="https://api.github.com/repos/lirtual/remote-control-agent";
 function mockGithub(buffer,{immutable=true,digest="sha256:"+sha(buffer),actualCommit=commit,assetSize=buffer.length,
-  routeRedirect=null,repoEnabled=true}={}) {
-  const assetName=releaseAssetName(tag,target);
+  routeRedirect=null,repoEnabled=true,prerelease=false,releaseTag=tag}={}) {
+  const assetName=releaseAssetName(releaseTag,target);
   const seen=[];
   async function send(url,init) {
     seen.push({url,init});
     const u=new URL(url);
     if(u.href===api+"/immutable-releases") return Response.json({enabled:repoEnabled});
-    if(u.href===api+"/releases/tags/"+tag) return Response.json({
-      id:71,tag_name:tag,draft:false,immutable,assets:[
+    if(u.href===api+"/releases/tags/"+releaseTag) return Response.json({
+      id:71,tag_name:releaseTag,draft:false,prerelease,immutable,assets:[
         {name:assetName,id:903,state:"uploaded",size:assetSize,
           digest,url:api+"/releases/assets/903"}]});
-    if(u.href===api+"/git/ref/tags/"+tag) return Response.json({
-      ref:"refs/tags/"+tag,object:{type:"commit",sha:actualCommit}});
+    if(u.href===api+"/git/ref/tags/"+releaseTag) return Response.json({
+      ref:"refs/tags/"+releaseTag,object:{type:"commit",sha:actualCommit}});
     if(u.href===api+"/releases/assets/903") {
       if(routeRedirect) return new Response(null,{status:302,headers:{location:routeRedirect}});
       return new Response(buffer,{status:200,headers:{"content-type":"application/octet-stream"}});
@@ -74,7 +75,7 @@ function mockGithub(buffer,{immutable=true,digest="sha256:"+sha(buffer),actualCo
   return {send,seen};
 }
 
-test("#73 release package build rejects unverified architectures and unpinned targets",()=>{
+test("#73 release package build rejects unverified architectures and unpinned targets",async()=>{
   assert.deepEqual(parseArgs(["--version",tag,"--target",target,
     "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
     "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64)]),{
@@ -89,6 +90,59 @@ test("#73 release package build rejects unverified architectures and unpinned ta
   assert.ok(runtimeSources().includes("upgrade-control.ts"));
   assert.ok(!runtimeSources().includes("main.ts"));
   assert.ok(!runtimeSources().includes("server.ts"));
+  const candidateTag="v0.1.1-rust-candidate.1";
+  const candidateArgs=parseArgs(["--version",candidateTag,"--target",target,
+    "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
+    "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64),
+    "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64)]);
+  assert.equal(candidateArgs.rustAgentBin,"/opt/rca-agent");
+  assert.equal(candidateArgs.rustAgentSha256,"d".repeat(64));
+  const rustDir=await mkdtemp(path.join(os.tmpdir(),"rc-rust-glibc-gate-"));
+  try{
+    const binary=path.join(rustDir,"rca-candidate");
+    const bytes=elf(62);await writeFile(binary,bytes,{mode:0o700});
+    const digest=sha(bytes);
+    const readelf=version=>()=>({status:0,stdout:"Name: GLIBC_"+version});
+    assert.equal(ensureRustCandidate({target,rustAgentBin:binary,rustAgentSha256:digest,
+      maxGlibcMin:"2.34",invoke:readelf("2.34")}).glibcMin,"2.34");
+    assert.throws(()=>ensureRustCandidate({target,rustAgentBin:binary,rustAgentSha256:digest,
+      maxGlibcMin:"2.34",invoke:readelf("2.39")}),/exceeds the existing release glibc_min/);
+    const link=path.join(rustDir,"linked-candidate");await symlink(binary,link);
+    await assert.rejects(async()=>ensureRustCandidate({target,rustAgentBin:link,
+      rustAgentSha256:digest,maxGlibcMin:"2.34",invoke:readelf("2.34")}),/nonlinked file/);
+  }finally{await rm(rustDir,{recursive:true,force:true});}
+  assert.throws(()=>parseArgs(["--version",tag,"--target",target,
+    "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
+    "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64),
+    "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64)]),/packaging parameters|pinned version/);
+  const candidateBytes=fixture([
+    {name:"apps/remote-control-agent/.build/rca-standard-linux-candidate",data:elf(62)},
+  ],{version:candidateTag,agent_runtime:"rust-standard-linux-v1",
+    candidate_profile:"standard-linux-rust-runtime-v1"});
+  assert.ok(inspectTarGzip(candidateBytes,{tag:candidateTag,target})
+    .has("apps/remote-control-agent/.build/rca-standard-linux-candidate"));
+  const extractionParent=await mkdtemp(path.join(os.tmpdir(),"rc-rust-release-"));
+  try{
+    const destination=path.join(extractionParent,"candidate");
+    const digest=sha(candidateBytes);
+    await extractVerifiedAsset({tag:candidateTag,target,digest},candidateBytes,destination);
+    const {mode}=await stat(
+      path.join(destination,"apps/remote-control-agent/.build/rca-standard-linux-candidate"));
+    assert.equal(mode&0o777,0o700);
+  }finally{await rm(extractionParent,{recursive:true,force:true});}
+  assert.throws(()=>inspectTarGzip(fixture([
+    {name:"apps/remote-control-agent/.build/rca-standard-linux-candidate",data:elf(62)},
+  ],{version:tag,agent_runtime:"rust-standard-linux-v1",
+    candidate_profile:"standard-linux-rust-runtime-v1"}),{tag,target}),/runtime profile/);
+  assert.throws(()=>inspectTarGzip(fixture([
+    {name:"apps/remote-control-agent/.build/rca-standard-linux-candidate",data:elf(62)},
+  ],{agent_runtime:"node-v2"}),{tag,target}),/runtime profile/);
+  const candidateRelease=mockGithub(Buffer.alloc(2048,0x42),{prerelease:true,releaseTag:candidateTag});
+  assert.equal((await resolvePinnedRelease({tag:candidateTag,commit,target,
+    send:candidateRelease.send})).tag,candidateTag);
+  const falselyStable=mockGithub(Buffer.alloc(2048,0x42),{prerelease:false,releaseTag:candidateTag});
+  await assert.rejects(resolvePinnedRelease({tag:candidateTag,commit,target,
+    send:falselyStable.send}),/published and immutable/);
   const mismatchedArch = process.arch === "arm64" ? "linux-x64-glibc" : "linux-arm64-glibc";
   assert.throws(()=>ensureNativeTarget({target:mismatchedArch,nodeBin:"/missing",native:"/missing"}),/architecture/);
 });
