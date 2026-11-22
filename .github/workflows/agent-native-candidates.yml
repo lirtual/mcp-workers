@@ -154,10 +154,23 @@ jobs:
           compression-level: 0
 
   linux-systemd-upgrade-recovery:
-    name: Real systemd Linux upgrade interruption and recovery
+    name: Real systemd Linux upgrade / ${{ matrix.target }}
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64-glibc
+            baseline_sha256: 7eb0def23325a63a426c8402f7c2ef68d8e5ae0e6739563d13a669887f386ace
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64-glibc
+            baseline_sha256: 36882e7cfa9c747ed09334bdb9933683ce60ff53549c3796ba5e1f7d6fda92aa
+    env:
+      SPEC914_TARGET: ${{ matrix.target }}
+      SPEC914_BASELINE_SHA256: ${{ matrix.baseline_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -183,10 +196,10 @@ jobs:
           set -euo pipefail
           temp_dir="$(mktemp -d "$RUNNER_TEMP/spec914.XXXXXX")"
           echo "SPEC914_TEMP=$temp_dir" >> "$GITHUB_ENV"
-          archive="$temp_dir/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
+          archive="$temp_dir/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
           gh release download v0.1.56 --repo lirtual/mcp-workers \
             --pattern "$(basename "$archive")" --dir "$temp_dir"
-          echo "7eb0def23325a63a426c8402f7c2ef68d8e5ae0e6739563d13a669887f386ace  $archive" | sha256sum --check
+          echo "$SPEC914_BASELINE_SHA256  $archive" | sha256sum --check
           mkdir "$temp_dir/old"
           tar -xzf "$archive" -C "$temp_dir/old"
       - name: Build unpublished Rust candidate and package it beside the baseline
@@ -221,15 +234,15 @@ jobs:
           supervisor="$old/apps/remote-control-agent/.build/session-supervisor"
           rust_agent="$SPEC914_TEMP/build/rca-standard-linux-candidate"
           node "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs" \
-            --version "$version" --target linux-x64-glibc \
+            --version "$version" --target "$SPEC914_TARGET" \
             --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
             --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
             --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
             --out "$SPEC914_TEMP/package"
-          archive="$SPEC914_TEMP/package/remote-control-agent-$version-linux-x64-glibc.tar.gz"
+          archive="$SPEC914_TEMP/package/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
           python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
-            "$archive" "$version" linux-x64-glibc
-          chmod 0644 "$archive" "$SPEC914_TEMP/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
+            "$archive" "$version" "$SPEC914_TARGET"
+          chmod 0644 "$archive" "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
       - name: Kill installer after candidate activation and verify real systemd recovery
         shell: bash
         run: |
@@ -269,10 +282,10 @@ jobs:
           sudo -u "$test_user" test -r "$source_dir/tests/linux-systemd-upgrade-recovery.integration.mjs"
           fixture_dir="$(mktemp -d /tmp/spec914-fixtures.XXXXXX)"
           chmod 0755 "$fixture_dir"
-          old_archive="$fixture_dir/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
-          rust_archive="$fixture_dir/remote-control-agent-v0.1.57-rust-candidate.1-linux-x64-glibc.tar.gz"
-          install -m 0644 "$SPEC914_TEMP/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz" "$old_archive"
-          install -m 0644 "$SPEC914_TEMP/package/remote-control-agent-v0.1.57-rust-candidate.1-linux-x64-glibc.tar.gz" "$rust_archive"
+          old_archive="$fixture_dir/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
+          rust_archive="$fixture_dir/remote-control-agent-v0.1.57-rust-candidate.1-$SPEC914_TARGET.tar.gz"
+          install -m 0644 "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz" "$old_archive"
+          install -m 0644 "$SPEC914_TEMP/package/remote-control-agent-v0.1.57-rust-candidate.1-$SPEC914_TARGET.tar.gz" "$rust_archive"
           sudo -u "$test_user" test -r "$old_archive"
           sudo -u "$test_user" test -r "$rust_archive"
           sudo -u "$test_user" "${user_env[@]}" \
