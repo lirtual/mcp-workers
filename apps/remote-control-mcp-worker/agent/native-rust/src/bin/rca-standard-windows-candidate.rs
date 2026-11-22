@@ -115,7 +115,11 @@ mod windows {
             return Err(());
         }
         let private_pem = String::from_utf8(identity).map_err(|_| ())?;
-        signed_session_proof(&private_pem, device_id).map_err(|_| ())?;
+        // Parse and exercise the Ed25519 key locally before opening managed
+        // state. The fixed nonce is validation-only; the WSS handshake signs
+        // the fresh nonce returned by the server.
+        signed_session_proof(&private_pem, device_id, "000000000000000000000000")
+            .map_err(|_| ())?;
         let receipts = root.join("receipts");
         let meta = fs::symlink_metadata(&receipts).map_err(|_| ())?;
         if !meta.is_dir() || meta.file_type().is_symlink() {

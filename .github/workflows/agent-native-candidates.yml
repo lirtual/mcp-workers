@@ -684,6 +684,7 @@ jobs:
           Write-Output "Candidate ZIP SHA256: $hash (unpublished)"
 
       - name: Native Windows second-version rollback candidate (GUI-free archive)
+        timeout-minutes: 20
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -751,6 +752,13 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Synthetic key ACL seal failed' }
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Seal -Directory $root -FileName 'v2-identity.pem.device-id'
             if ($LASTEXITCODE -ne 0) { throw 'Synthetic ID ACL seal failed' }
+            # The Rust entrypoint requires the same owner-private receipts
+            # directory that the Node runtime creates on first start.
+            $receipts = Join-Path $root 'receipts'
+            if (Test-Path -LiteralPath $receipts) { throw 'Refusing to replace pre-existing receipts fixture' }
+            $null = New-Item -ItemType Directory -Path $receipts
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Seal -Directory $root -FileName 'receipts'
+            if ($LASTEXITCODE -ne 0) { throw 'Synthetic receipts ACL seal failed' }
             # An interrupted first Start persists a *protected* activation
             # marker. Validate its real PowerShell ACL path in disposable CI.
             $pending = $key + '.activation-pending'
@@ -1003,6 +1011,7 @@ jobs:
             if ($created) { & $program disable }
             Remove-Item -LiteralPath $device -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $receipts -Recurse -Force -ErrorAction SilentlyContinue
           }
 
       - name: Uninstall inactive native version without deleting identity or logs
