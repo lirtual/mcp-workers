@@ -158,10 +158,19 @@ try {
   assert.deepEqual(readFileSync(key),keyBefore);
   assert.deepEqual(readFileSync(id),idBefore);
   assert.deepEqual(readFileSync(receipts),dbBefore);
+  // Rust intentionally holds SQLite's exclusive single-writer lock while active.
+  // Stop only this disposable test service for the offline integrity read, then
+  // restart it to prove the completed candidate remains recoverable.
+  systemctl(["stop",UNIT]);
   const finalDb=new DatabaseSync(receipts,{readOnly:true});
   assert.equal(finalDb.prepare("PRAGMA quick_check").get().quick_check,"ok");
   assert.deepEqual(finalDb.prepare("SELECT operation_id,state,guarded FROM receipts ORDER BY operation_id").all().map(x=>({...x})),statesBefore);
   finalDb.close();
+  systemctl(["start",UNIT]);
+  systemctl(["is-active",UNIT]);
+  const restartedRustPid=Number(systemctl(["show","-p","MainPID","--value",UNIT]));
+  assert.equal(readFileSync("/proc/"+restartedRustPid+"/cmdline").toString().split("\0")[0],rustExe,
+    "Rust candidate restarts after integrity verification");
   console.log(JSON.stringify({real_systemd:true,node_to_rust_activation:true,installer_sigkill:true,recovered_node:true,successful_installer_exit:true,backup_removed:true,cli_switched:true,rust_service_active:true,identity_preserved:true,receipt_rows_preserved:statesAfter.length,receipt_quick_check:"ok"}));
 } finally {
   if(installer) {
