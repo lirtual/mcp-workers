@@ -196,7 +196,7 @@ jobs:
             rockylinux:9@sha256:03303863808e9cd79f0c58c833db3e5f9cde9f2abe16804a267b05dc54af86e4 \
             bash -lc '
               set -eo pipefail
-              dnf -y -q install gcc ca-certificates curl
+              dnf -y -q install gcc ca-certificates
               export HOME=/tmp/rust-home CARGO_HOME=/cargo RUSTUP_HOME=/rustup CARGO_TARGET_DIR=/target
               mkdir -p "$HOME"
               curl --fail --silent --show-error --location --retry 3 --max-time 120 \
