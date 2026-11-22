@@ -716,7 +716,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust candidate build failed' }
           $rustBin = Join-Path $env:CARGO_TARGET_DIR 'release/rca-standard-windows-candidate.exe'
           if (-not (Test-Path -LiteralPath $rustBin -PathType Leaf)) { throw 'Windows Rust candidate binary missing' }
-          $rustTag = 'v0.0.1-rust-candidate.1'
+          $rustTag = 'v0.1.57-rust-candidate.1'
           $rustOut = Join-Path $env:RUNNER_TEMP 'windows-rust-candidate'
           node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $rustTag --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --out $rustOut
           if ($LASTEXITCODE -ne 0) { throw 'Rust Windows candidate package build failed' }
@@ -945,7 +945,7 @@ jobs:
             # Exercise Node -> Rust -> Node using the real installer and task
             # switch path on this disposable Windows Runner. The synthetic key
             # has no cloud grant; this proves local process lifecycle only.
-            $rustVersion = 'v0.0.1-rust-candidate.1'
+            $rustVersion = 'v0.1.57-rust-candidate.1'
             $rustArchive = Join-Path $env:RUNNER_TEMP 'candidate-rust-version.zip'
             if (-not (Test-Path -LiteralPath $rustArchive -PathType Leaf)) { throw 'Rust Windows candidate ZIP unavailable' }
             $rustDigest = (Get-FileHash -LiteralPath $rustArchive -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -1005,6 +1005,91 @@ jobs:
             }
             if ($remainingRust) { throw 'Rust candidate process survived task rollback' }
 
+            # Repeat Node -> Rust -> Node from the immutable published v0.1.56
+            # Windows release, rather than relying only on the synthetic CI
+            # Node fixture above. The Runner uses a disposable identity with
+            # no cloud grant; this remains a local installer/lifecycle test.
+            $publishedVersion = 'v0.1.56'
+            $publishedArchive = Join-Path $env:RUNNER_TEMP 'remote-control-agent-v0.1.56-windows-x64.zip'
+            $publishedUrl = 'https://github.com/lirtual/mcp-workers/releases/download/v0.1.56/remote-control-agent-v0.1.56-windows-x64.zip'
+            Invoke-WebRequest -Uri $publishedUrl -OutFile $publishedArchive -TimeoutSec 60
+            $publishedDigest = (Get-FileHash -LiteralPath $publishedArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($publishedDigest -ne '524701fb794f27d955d4fd21932cf982e6974311a4ab99a724292a4f2f3b5aba') {
+              throw 'Published v0.1.56 Windows Node archive digest changed'
+            }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/install.ps1' -StageOnly -Version $publishedVersion -OfflineArchive $publishedArchive -ExpectedSha256 $publishedDigest
+            if ($LASTEXITCODE -ne 0) { throw 'Real installer could not stage published v0.1.56 Windows Node package' }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $publishedVersion -Direction Upgrade
+            if ($LASTEXITCODE -ne 0) { throw 'Windows task switch to published v0.1.56 Node package failed' }
+            $publishedDir = Join-Path $basePrograms ($publishedVersion + '-windows-x64')
+            $publishedNode = Join-Path $publishedDir 'bin/node.exe'
+            $originalTask = Get-ScheduledTask -TaskName $taskName
+            $originalAction = [string]$originalTask.Actions[0].Execute
+            $originalArguments = [string]$originalTask.Actions[0].Arguments
+            if ($originalTask.State -ne 'Running' -or
+                -not [string]::Equals($originalAction,(Join-Path $publishedDir 'bin/rca-background.exe'),[StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Published Node package is not the active scheduled task after switch'
+            }
+            $publishedNodeProcess = $null
+            for ($attempt = 0; $attempt -lt 20 -and -not $publishedNodeProcess; $attempt++) {
+              $publishedNodeProcess = Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
+                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$publishedNode,[StringComparison]::OrdinalIgnoreCase) } |
+                Select-Object -First 1
+              if (-not $publishedNodeProcess) { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $publishedNodeProcess) { throw 'Published Node agent process did not remain active' }
+            if ((Invoke-CimMethod -InputObject $publishedNodeProcess -MethodName GetOwnerSid).Sid -ne
+                ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
+              throw 'Published Node process escaped the registered interactive user identity'
+            }
+
+            $rustVersion = 'v0.1.57-rust-candidate.1'
+            $rustArchive = Join-Path $env:RUNNER_TEMP 'candidate-rust-version.zip'
+            $rustDigest = (Get-FileHash -LiteralPath $rustArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/install.ps1' -StageOnly -Version $rustVersion -OfflineArchive $rustArchive -ExpectedSha256 $rustDigest
+            if ($LASTEXITCODE -ne 0) { throw 'Real installer could not stage Rust candidate from published Node baseline' }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $rustVersion -Direction Upgrade
+            if ($LASTEXITCODE -ne 0) { throw 'Published Node-to-Rust scheduled-task switch failed' }
+            $rustDir = Join-Path $basePrograms ($rustVersion + '-windows-x64')
+            $rustEntry = [IO.Path]::GetFullPath([IO.Path]::Combine($rustDir, 'apps', 'remote-control-agent', '.build', 'rca-standard-windows-candidate.exe'))
+            $rustTask = Get-ScheduledTask -TaskName $taskName
+            $rustLauncher = [string]$rustTask.Actions[0].Execute
+            if ($rustTask.State -ne 'Running' -or
+                -not [string]::Equals([IO.Path]::GetFullPath($rustLauncher),[IO.Path]::GetFullPath((Join-Path $rustDir 'bin/rca-background.exe')),[StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Published Node migration did not keep the Rust candidate task active'
+            }
+            $publishedRustProcess = $null
+            for ($attempt = 0; $attempt -lt 20 -and -not $publishedRustProcess; $attempt++) {
+              $publishedRustProcess = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
+                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) } |
+                Select-Object -First 1
+              if (-not $publishedRustProcess) { Start-Sleep -Milliseconds 500 }
+            }
+            if (-not $publishedRustProcess) { throw 'Rust process did not remain active after migration from published Node' }
+            if ((Invoke-CimMethod -InputObject $publishedRustProcess -MethodName GetOwnerSid).Sid -ne
+                ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
+              throw 'Rust process migrated from published Node escaped the registered user identity'
+            }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $publishedVersion -Direction Rollback
+            if ($LASTEXITCODE -ne 0) { throw 'Published Rust-to-Node rollback failed' }
+            $current = Get-ScheduledTask -TaskName $taskName
+            if (-not [string]::Equals([string]$current.Actions[0].Execute,$originalAction,[StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals([string]$current.Actions[0].Arguments,$originalArguments,[StringComparison]::Ordinal)) {
+              throw 'Rollback did not restore published v0.1.56 Node task action and arguments'
+            }
+            for ($attempt = 0; $attempt -lt 20; $attempt++) {
+              $remainingRust = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
+                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) } |
+                Select-Object -First 1
+              if (-not $remainingRust) { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if ($remainingRust) { throw 'Rust process survived rollback to the published Node package' }
+            if ((Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
+                (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey) {
+              throw 'Published Node/Rust migration changed protected identity'
+            }
+
             if ((Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
                 (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey) {
               throw 'Windows upgrade or rollback changed protected identity'
@@ -1038,8 +1123,10 @@ jobs:
           $root = Join-Path $env:LOCALAPPDATA 'mcp-workers\remote-control'
           $sentinel = Join-Path $root 'agent-events.ndjson'
           [IO.File]::WriteAllText($sentinel, '{"utc":"2026-01-01T00:00:00.000Z","event":"stopping"}' + [char]10)
-          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.0.1-rust-candidate.1
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.1.57-rust-candidate.1
           if ($LASTEXITCODE -ne 0) { throw 'Uninstall of inactive Rust candidate version failed' }
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.1.56
+          if ($LASTEXITCODE -ne 0) { throw 'Uninstall of inactive published Windows Node baseline failed' }
           & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.0.1-ci
           if ($LASTEXITCODE -ne 0) { throw 'Uninstall of inactive upgrade version failed' }
           & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/uninstall-windows.ps1 -Version v0.0.0-ci
