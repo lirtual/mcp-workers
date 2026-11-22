@@ -39,7 +39,8 @@ test("published Node LaunchAgent rolls back after a real Rust candidate fails si
   const launchdHome=run(["getenv","HOME"]);
   assert.equal(launchdHome.status,0,"capture launchd's existing HOME for exact cleanup");
   const originalLaunchdHome=launchdHome.stdout.trim();
-  assert.ok(originalLaunchdHome.startsWith("/"));
+  const hadLaunchdHome=originalLaunchdHome.length>0;
+  if(hadLaunchdHome)assert.ok(originalLaunchdHome.startsWith("/"));
   const root=await mkdtemp(path.join(os.tmpdir(),"rca914-launchd-"));
   const home=path.join(root,"home");
   await mkdir(home,{mode:0o700});
@@ -47,7 +48,8 @@ test("published Node LaunchAgent rolls back after a real Rust candidate fails si
     run(["bootout",service]);
     for(let i=0;i<50&&run(["print",service]).status===0;i++)
       await new Promise(resolve=>setTimeout(resolve,100));
-    run(["setenv","HOME",originalLaunchdHome]);
+    run(hadLaunchdHome
+      ?["setenv","HOME",originalLaunchdHome]:["unsetenv","HOME"]);
     await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:50});
   });
   assert.equal(run(["setenv","HOME",home]).status,0);
