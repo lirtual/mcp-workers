@@ -96,7 +96,8 @@ writeFileSync(driver,[
   'import path from "node:path";',
   'import {pathToFileURL} from "node:url";',
   'const home=process.env.HOME;',
-  'const rustRoot=path.join(home,".local/share/mcp-workers/remote-control/programs/v0.1.57-rust-candidate.1-linux-x64-glibc");',
+  'const target=process.arch==="arm64"?"linux-arm64-glibc":"linux-x64-glibc";',
+  'const rustRoot=path.join(home,".local/share/mcp-workers/remote-control/programs/v0.1.57-rust-candidate.1-"+target);',
   'const {runInstaller}=await import(pathToFileURL(path.join(rustRoot,"apps/remote-control-agent/scripts/install-v2.mjs")));',
   'await runInstaller(["--upgrade","--endpoint","https://127.0.0.1:1/"],{home,stdin:{isTTY:true},stdout:{isTTY:true,write(){}}});',
 ].join("\n")+"\n",{mode:0o600});
