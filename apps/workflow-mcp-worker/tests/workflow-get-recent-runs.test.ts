@@ -45,13 +45,13 @@ async function createPublished(service:WorkflowService,name:string){
   return workflow.workflow_id;
 }
 
-function addRun(db:DatabaseSync,workflow_id:string,version_id:string,id:string,created_at:number){
+function addRun(db:DatabaseSync,workflow_id:string,version_id:string,id:string,created_at:number,error_code:string|null=null){
   db.prepare(`INSERT INTO runs
     (id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,
       error_code,created_at,updated_at)
     VALUES (?,?,?,?,?,'{"sensitive":"must not be returned"}','started','succeeded',
       NULL,?,?)`)
-    .run(id,workflow_id,version_id,'instance-'+id,'digest-'+id,created_at,created_at+1);
+    .run(id,workflow_id,version_id,'instance-'+id,'digest-'+id,error_code,created_at,created_at+1);
 }
 
 test('workflow_get without recent_runs_limit preserves the old shape and skips Run history',async t=>{
@@ -81,7 +81,7 @@ test('workflow_get returns only the bounded, deterministic, safe D1 Run snapshot
   const newerTieA='00000000-0000-4000-8000-000000000002';
   const newerTieB='00000000-0000-4000-8000-000000000003';
   addRun(db,workflow_id,version_id,older,10);
-  addRun(db,workflow_id,version_id,newerTieA,20);
+  addRun(db,workflow_id,version_id,newerTieA,20,'timeout');
   addRun(db,workflow_id,version_id,newerTieB,20);
   addRun(db,other_id,other_version_id,'ffffffff-ffff-4fff-8fff-ffffffffffff',30);
   reads.length=0;writes.length=0;
@@ -95,7 +95,7 @@ test('workflow_get returns only the bounded, deterministic, safe D1 Run snapshot
     {run_id:newerTieB,published_version_id:version_id,created_at:20,updated_at:21,
       start_state:'started',recorded_outcome:'succeeded',error_code:null},
     {run_id:newerTieA,published_version_id:version_id,created_at:20,updated_at:21,
-      start_state:'started',recorded_outcome:'succeeded',error_code:null},
+      start_state:'started',recorded_outcome:'succeeded',error_code:'timeout'},
   ]);
   assert.equal(JSON.stringify(response).includes('sensitive'),false);
   assert.equal((await service.get(workflow_id,1)).recent_runs!.length,1);
@@ -106,14 +106,31 @@ test('workflow_get returns only the bounded, deterministic, safe D1 Run snapshot
 test('workflow_get validates limits and supports Draft, Paused, and deleted workflows',async t=>{
   const {db,service}=setup(t);
   const draft=await service.create(definition('draft'));
-  assert.deepEqual((await service.get(draft.workflow_id,5)).recent_runs,[]);
+  const historicalVersion=crypto.randomUUID();
+  db.prepare('INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES (?,?,?,?,0)')
+    .run(historicalVersion,draft.workflow_id,'draft-history',JSON.stringify({version:1,steps:[]}));
+  const draftRun='00000000-0000-4000-8000-000000000004';
+  addRun(db,draft.workflow_id,historicalVersion,draftRun,4);
+  assert.equal((await service.get(draft.workflow_id,5)).recent_runs?.[0].run_id,draftRun);
 
   const paused=await createPublished(service,'paused');
+  const pausedVersion=db.prepare('SELECT active_version_id FROM workflows WHERE id=?')
+    .get(paused)?.active_version_id as string;
+  const pausedRun='00000000-0000-4000-8000-000000000005';
+  addRun(db,paused,pausedVersion,pausedRun,5);
   await service.pause(paused);
-  assert.equal((await service.get(paused,5)).state,'paused');
+  const pausedResponse=await service.get(paused,5);
+  assert.equal(pausedResponse.state,'paused');
+  assert.equal(pausedResponse.recent_runs?.[0].run_id,pausedRun);
 
   const active=await createPublished(service,'active');
-  assert.equal((await service.get(active,5)).state,'active');
+  const activeVersion=db.prepare('SELECT active_version_id FROM workflows WHERE id=?')
+    .get(active)?.active_version_id as string;
+  const activeRun='00000000-0000-4000-8000-000000000006';
+  addRun(db,active,activeVersion,activeRun,6);
+  const activeResponse=await service.get(active,5);
+  assert.equal(activeResponse.state,'active');
+  assert.equal(activeResponse.recent_runs?.[0].run_id,activeRun);
 
   for(const invalid of [0,21,1.5,'5',null]){
     await fails(()=>service.get(draft.workflow_id,invalid as number),'invalid_recent_runs_limit');
