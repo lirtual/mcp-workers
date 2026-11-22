@@ -104,7 +104,8 @@ test("published Node LaunchAgent rolls back after a real Rust candidate fails si
   const restoredProcess=await activePid("macos-permanent.js");
   assert.notEqual(restoredProcess.pid,oldProcess.pid,"rollback must start a fresh Node process");
   assert.equal(await readFile(keyPath,"utf8"),key);
-  assert.equal(await readFile(receipts),receiptBytes);
+  assert.ok((await readFile(receipts)).equals(receiptBytes),
+    "receipt bytes must survive the failed candidate and Node rollback");
   assert.equal(await readFile(path.join(macosRoot(home),"switch.json")).then(()=>true,()=>false),false);
 });
 function macosRoot(home){return path.join(home,".local/share/mcp-workers/remote-control/macos");}
