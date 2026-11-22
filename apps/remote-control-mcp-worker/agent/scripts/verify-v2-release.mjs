@@ -86,6 +86,7 @@ export async function resolvePinnedRelease({tag,commit,target,send=fetch}) {
   // The published Release exposes its own public immutable=true property.
   const release=await fetchJson(API+"/releases/tags/"+encodeURIComponent(tag),send);
   if (release.immutable!==true || release.draft!==false || release.tag_name!==tag ||
+      (tag.includes("-rust-candidate") && release.prerelease!==true) ||
       !Number.isSafeInteger(release.id) || !Array.isArray(release.assets)) {
     throw new Error("Pinned Release is not published and immutable.");
   }
@@ -267,6 +268,7 @@ function safePath(name,directory) {
      "verify-v2-release.mjs","rca.sh"].some(name=>
        n==="apps/remote-control-agent/scripts/"+name) ||
     n==="apps/remote-control-agent/.build/session-supervisor" ||
+    n==="apps/remote-control-agent/.build/rca-standard-linux-candidate" ||
     /^apps\/remote-control-agent\/src\/[a-z0-9-]+\.js$/.test(n))) {
     throw new Error("Unreviewed archive file.");
   }
@@ -319,9 +321,20 @@ export function inspectTarGzip(gzip,{tag,target}) {
   let manifest;
   try { manifest=JSON.parse(entries.get("bundle.json").data.toString("utf8")); }
   catch { throw new Error("Invalid Release manifest."); }
+  const agentRuntime = manifest.agent_runtime ?? "node-v2";
+  const rustCandidate = agentRuntime === "rust-standard-linux-v1";
   if(manifest.version!==tag || manifest.target!==target || !/^v24\.\d+\.\d+$/.test(manifest.node) ||
       manifest.name!=="remote-control-agent" || manifest.artifact_schema!==1 ||
-      !Array.isArray(manifest.modules)) throw new Error("Unexpected Release version or architecture.");
+      !Array.isArray(manifest.modules) ||
+      !["node-v2","rust-standard-linux-v1"].includes(agentRuntime) ||
+      (rustCandidate && (manifest.candidate_profile!=="standard-linux-rust-runtime-v1" ||
+        !/-rust-candidate(?:\.|$)/.test(tag) ||
+        !/^linux-(?:x64|arm64)-glibc$/.test(target) ||
+        !entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate"))) ||
+      (!rustCandidate && (manifest.candidate_profile==="standard-linux-rust-runtime-v1" ||
+        entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate")))) {
+    throw new Error("Unexpected Release version, runtime profile, or architecture.");
+  }
   // Historical local-only Releases remain readable. An archive advertising
   // owner-one-shot must contain the actual Linux stage and recovery runtime.
   if(manifest.upgrade_protocol!==undefined &&
@@ -336,7 +349,8 @@ export function inspectTarGzip(gzip,{tag,target}) {
     throw Error("Retired GUI runtime is forbidden in RCA releases.");
   }
   const expected=target==="linux-x64-glibc" ? 62 : 183;
-  for(const name of ["bin/node","apps/remote-control-agent/.build/session-supervisor"]) {
+  for(const name of ["bin/node","apps/remote-control-agent/.build/session-supervisor",
+      ...(rustCandidate ? ["apps/remote-control-agent/.build/rca-standard-linux-candidate"] : [])]) {
     const b=entries.get(name).data;
     if(b.length<64 || b.toString("hex",0,4)!=="7f454c46" ||
       b[4]!==2 || b[5]!==1 || b.readUInt16LE(18)!==expected)
@@ -366,7 +380,8 @@ export async function extractVerifiedAsset(pinned,bytes,root) {
       await mkdir(path.dirname(dest),{recursive:true,mode:0o700});
       const fd=await open(dest,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try{await fd.writeFile(entry.data);await fd.sync();}finally{await fd.close();}
-      if(name==="bin/node"||name==="apps/remote-control-agent/.build/session-supervisor") await chmod(dest,0o700);
+      if(name==="bin/node"||name==="apps/remote-control-agent/.build/session-supervisor"||
+          name==="apps/remote-control-agent/.build/rca-standard-linux-candidate") await chmod(dest,0o700);
     }
     await rename(stage,root); // Never overwrite an installed program.
   } catch(error) {

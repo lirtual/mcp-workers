@@ -27,6 +27,14 @@ test("#74 packaged systemd uses compiled JS + bundled Node, no TS checkout or co
   assert.throws(()=>renderV2Service({...example,entryExt:"sh"}));
 });
 
+test("#914 Linux Rust candidate service executes only the verified native entrypoint",()=>{
+  const unit=renderV2Service({...example,agentRuntime:"rust-standard-linux-v1"});
+  assert.match(unit,/ExecStart=\/home\/test\/remote-control\/programs\/v0\.1\.0\/apps\/remote-control-agent\/\.build\/rca-standard-linux-candidate/);
+  assert.doesNotMatch(unit,/bin\/node|v2-main/);
+  assert.match(unit,/session-supervisor/);
+  assert.throws(()=>renderV2Service({...example,agentRuntime:"unknown"}),/Invalid Agent runtime/);
+});
+
 test("#74 portable installer requires a real local TTY and explicit permanent selection before pairing",async()=>{
   const src=await readFile(path.join(path.dirname(fileURLToPath(import.meta.url)),
     "..","scripts","install-v2.mjs"),"utf8");

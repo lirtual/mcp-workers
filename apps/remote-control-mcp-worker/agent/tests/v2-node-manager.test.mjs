@@ -13,8 +13,10 @@ function fixture(){
   const home=mkdtempSync(path.join(os.tmpdir(),"rca-node-manager-"));chmodSync(home,0o700);
   function directory(relative){const p=path.join(home,relative);mkdirSync(p,{recursive:true,mode:0o700});chmodSync(p,0o700);return p;}
   const rel=".local/share/mcp-workers/remote-control";
-  const root=directory(rel+"/programs/v0.1.2-linux-x64-glibc");
-  const scripts=directory(rel+"/programs/v0.1.2-linux-x64-glibc/apps/remote-control-agent/scripts");
+  const target="linux-"+process.arch+"-glibc";
+  const versionRoot=rel+"/programs/v0.1.2-"+target;
+  const root=directory(versionRoot);
+  const scripts=directory(versionRoot+"/apps/remote-control-agent/scripts");
   const manager=path.join(scripts,"manage-v2.mjs");
   copyFileSync(source,manager);chmodSync(manager,0o600);
   for(const scriptName of ["lifecycle-v2.mjs","upgrade-v2.mjs",
@@ -22,10 +24,10 @@ function fixture(){
     const sourceFile=fileURLToPath(new URL("../scripts/"+scriptName,import.meta.url));
     copyFileSync(sourceFile,path.join(scripts,scriptName));
   }
-  const info={version:"v0.1.2",target:"linux-x64-glibc",artifact_schema:1,
+  const info={version:"v0.1.2",target,artifact_schema:1,
     device_protocol:2,receipt_schema:1,upgrade_profile:"read-only-no-shell-v1"};
   writeFileSync(path.join(root,"bundle.json"),JSON.stringify(info),{mode:0o600});
-  const src=directory(rel+"/programs/v0.1.2-linux-x64-glibc/apps/remote-control-agent/src");
+  const src=directory(versionRoot+"/apps/remote-control-agent/src");
   writeFileSync(path.join(src,"v2-main.js"),"const caps={readOnly: true, writeFile: false, shell: false,};\n",{mode:0o600});
   const ids=directory(rel);
   writeFileSync(path.join(ids,"v2-identity.pem.device-id"),UUID,{mode:0o600});
@@ -105,6 +107,34 @@ test("Node manager recognizes the immutable paired-full profile without optional
     writeFileSync(path.join(f.root,"apps/remote-control-agent/src/v2-main.js"),
       'export const V2_RUNTIME_PROFILE = "unknown";\n',{mode:0o600});
     assert.throws(()=>localManagerInventory({home:f.home,source:f.manager}),/Untrusted Agent runtime/);
+  }finally{cleanup(f);}
+});
+
+test("#914 Node manager validates and reports a Rust candidate service without changing identity",()=>{
+  const f=fixture();
+  try{
+    const info={...f.info,target:"linux-"+process.arch+"-glibc",
+      agent_runtime:"rust-standard-linux-v1",
+      candidate_profile:"standard-linux-rust-runtime-v1",upgrade_profile:"paired-full-v1"};
+    writeFileSync(path.join(f.root,"bundle.json"),JSON.stringify(info),{mode:0o600});
+    const candidateDir=path.join(f.root,"apps/remote-control-agent/.build");
+    mkdirSync(candidateDir,{recursive:true,mode:0o700});chmodSync(candidateDir,0o700);
+    const candidate=path.join(candidateDir,"rca-standard-linux-candidate");
+    writeFileSync(candidate,"SYNTHETIC-RUST-EXECUTABLE",{mode:0o700});
+    const app=path.join(f.root,"apps/remote-control-agent");
+    const endpoint="https://remote-control-v2-preview.aiyaya.workers.dev/";
+    writeFileSync(f.unit,"# Managed by Remote Control Agent installer.\n[Service]\n"+
+      "Environment=REMOTE_CONTROL_AGENT_ENDPOINT="+endpoint+"\n"+
+      "WorkingDirectory="+app+"\nExecStart="+candidate+"\n",{mode:0o600});
+    const options={home:f.home,source:f.manager};
+    const inventory=localManagerInventory(options);
+    assert.equal(inventory.info.agent_runtime,"rust-standard-linux-v1");
+    const status=localManagerStatus(options,()=>({status:0,error:null}));
+    assert.equal(status.local_permanent_service,"active");
+    assert.equal(readFileSync(f.receipts,"utf8"),"SIMULATED_RECEIPT_KEEP");
+    assert.equal(readFileSync(path.join(f.ids,"v2-identity.pem.device-id"),"utf8"),UUID);
+    chmodSync(candidate,0o600);
+    assert.throws(()=>localManagerInventory(options),/Untrusted/);
   }finally{cleanup(f);}
 });
 

@@ -34,6 +34,46 @@ test("#74 version-pinned bootstrap validates inputs and prevents unsafe redirect
   assert.match(result.stdout,/PYTHON_BOOTSTRAP_FAIL_CLOSED_OK/);
 });
 
+test("#914 Python verifier accepts only the explicit prerelease Rust Linux archive and preserves executable mode",()=>{
+  const body=String.raw`import importlib.util,sys,tarfile,tempfile,pathlib,json,platform,struct,os,io,stat
+spec=importlib.util.spec_from_file_location("b",sys.argv[1]);b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+target="linux-x64-glibc";tag="v0.1.1-rust-candidate.1"
+def make(path,version,agent_runtime="rust-standard-linux-v1"):
+    elf=bytearray(80);elf[:4]=b"\x7fELF";elf[4:6]=b"\x02\x01";struct.pack_into("<H",elf,18,62)
+    libc,glibc=platform.libc_ver()
+    files={"bin/node":bytes(elf),"apps/remote-control-agent/.build/session-supervisor":bytes(elf),
+      "apps/remote-control-agent/.build/rca-standard-linux-candidate":bytes(elf),
+      "bundle.json":json.dumps({"name":"remote-control-agent","artifact_schema":1,
+        "version":version,"target":target,"node":"v24.1.0","modules":[],
+        "glibc_min":glibc,"upgrade_profile":"paired-full-v1",
+        "agent_runtime":agent_runtime,"candidate_profile":"standard-linux-rust-runtime-v1"}).encode(),
+      "apps/remote-control-agent/package.json":b'{"type":"module"}',
+      "apps/remote-control-agent/src/v2-main.js":b'export {}',
+      "apps/remote-control-agent/scripts/install-v2.mjs":b'export {}'}
+    for name in b.NODE_REQUIRED:files[name]=b'export {}'
+    with tarfile.open(path,"w:gz") as archive:
+      for name,data in files.items():
+        item=tarfile.TarInfo(name);item.size=len(data);item.mode=0o700 if name in b.ELF_FILES or name==b.APP+"/.build/rca-standard-linux-candidate" else 0o600
+        archive.addfile(item,io.BytesIO(data))
+with tempfile.TemporaryDirectory() as d:
+    p=pathlib.Path(d)/"candidate.tar.gz";make(p,tag)
+    records=b.inspect_archive(p,tag,target)
+    dest=pathlib.Path(d)/"installed";b.unpack_verified(p,dest,records,tag,target)
+    st=(dest/b.APP/".build/rca-standard-linux-candidate").lstat()
+    assert stat.S_ISREG(st.st_mode) and st.st_mode&0o777==0o700 and st.st_nlink==1
+    stable=pathlib.Path(d)/"stable.tar.gz";make(stable,"v0.1.1")
+    try:b.inspect_archive(stable,"v0.1.1",target);raise AssertionError("stable Rust package accepted")
+    except ValueError:pass
+    node_archive=pathlib.Path(d)/"node-with-unused-rust.tar.gz";make(node_archive,"v0.1.0","node-v2")
+    try:b.inspect_archive(node_archive,"v0.1.0",target);raise AssertionError("unused Rust binary accepted")
+    except ValueError:pass
+print("RUST_CANDIDATE_ARCHIVE_OK")
+`;
+  const r=python(["-c",body,script]);
+  assert.equal(r.status,0,r.stderr);
+  assert.match(r.stdout,/RUST_CANDIDATE_ARCHIVE_OK/);
+});
+
 test("#74 standalone bootstrap fails without real TTY, before network or identity change",async()=>{
   const home=await mkdtemp(path.join(os.tmpdir(),"rc-bootstrap-tty-"));
   try {

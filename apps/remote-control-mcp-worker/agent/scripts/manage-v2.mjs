@@ -38,10 +38,12 @@ export function launchUnattendedLinuxUpgrade({
     throw Error("Detached upgrade requires an approved permanent full-tools Agent");
   const app=path.join(state.root,"apps/remote-control-agent");
   const fields=state.unit.split("\n");
+  const expectedAgent=state.info.agent_runtime==="rust-standard-linux-v1"
+    ? path.join(app,".build/rca-standard-linux-candidate")
+    : path.join(state.root,"bin/node")+" "+path.join(app,"src/v2-main.js");
   if(![UNIT,HISTORICAL_UNIT].includes(state.unitName)||
      !fields.includes("WorkingDirectory="+app)||
-     !fields.includes("ExecStart="+path.join(state.root,"bin/node")+" "+
-        path.join(app,"src/v2-main.js")))
+     !fields.includes("ExecStart="+expectedAgent))
     throw Error("Detached upgrade requires the currently running owned version");
   const stopped=path.join(home,STORE,"v2-identity.pem.owner-stopped");
   if(lstatSafe(stopped))throw Error("Owner-stopped Agent cannot be remotely resumed");
@@ -125,15 +127,24 @@ export function localManagerInventory({home=os.homedir(),source=fileURLToPath(im
   checkedPath(manifestFile,{mode:0o600});
   if(lstatSync(manifestFile).size>16384)throw Error("Oversized runtime manifest");
   const info=JSON.parse(readFileSync(manifestFile,"utf8"));
-  const runtime=path.join(root,"apps/remote-control-agent/src/v2-main.js");
-  checkedPath(runtime,{mode:0o600});
-  const sourceText=readFileSync(runtime,"utf8");
-  const approvedProfile =
-    (info.upgrade_profile==="read-only-no-shell-v1" &&
-      /readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(sourceText)) ||
-    (info.upgrade_profile==="paired-full-v1" &&
-      /V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(sourceText) &&
-      !/(?:readOnly|writeFile|shell)\s*:/.test(sourceText));
+  const agentRuntime=info.agent_runtime??"node-v2";
+  let approvedProfile=false;
+  if(agentRuntime==="rust-standard-linux-v1"){
+    const candidate=path.join(root,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
+    checkedPath(candidate,{mode:0o700});
+    approvedProfile=info.candidate_profile==="standard-linux-rust-runtime-v1"&&
+      info.upgrade_profile==="paired-full-v1"&&info.target==="linux-"+process.arch+"-glibc";
+  }else if(agentRuntime==="node-v2"){
+    const runtime=path.join(root,"apps/remote-control-agent/src/v2-main.js");
+    checkedPath(runtime,{mode:0o600});
+    const sourceText=readFileSync(runtime,"utf8");
+    approvedProfile =
+      (info.upgrade_profile==="read-only-no-shell-v1" &&
+        /readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,/.test(sourceText)) ||
+      (info.upgrade_profile==="paired-full-v1" &&
+        /V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(sourceText) &&
+        !/(?:readOnly|writeFile|shell)\s*:/.test(sourceText));
+  }
   if(info.artifact_schema!==1||info.device_protocol!==2||
       info.receipt_schema!==1||!approvedProfile||
       path.basename(root)!==info.version+"-"+info.target)
@@ -168,8 +179,13 @@ export function localManagerInventory({home=os.homedir(),source=fileURLToPath(im
     const matched=versions.some(version=>{
       const base=path.join(programs,version);
       const app=path.join(base,"apps/remote-control-agent");
-      return fields.WorkingDirectory===app &&
-        fields.ExecStart===path.join(base,"bin/node")+" "+path.join(app,"src/v2-main.js");
+      try{
+        const versionInfo=JSON.parse(readFileSync(path.join(base,"bundle.json"),"utf8"));
+        const command=versionInfo.agent_runtime==="rust-standard-linux-v1"
+          ? path.join(app,".build/rca-standard-linux-candidate")
+          : path.join(base,"bin/node")+" "+path.join(app,"src/v2-main.js");
+        return fields.WorkingDirectory===app&&fields.ExecStart===command;
+      }catch{return false;}
     });
     if(!matched)throw Error("Service does not reference installer-owned Agent");
   }
