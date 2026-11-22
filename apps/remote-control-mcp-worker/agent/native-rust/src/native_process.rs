@@ -321,7 +321,7 @@ impl NativeProcessEngine {
 
     /// Caller must serialize this with request execution and reconcile first.
     /// A running or uncertain owned OS process is never idle for cutover.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub fn is_quiescent_for_upgrade(&self) -> bool {
         self.starts.is_empty()
             && self.sessions.list().iter().all(|session| {

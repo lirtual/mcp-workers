@@ -26,9 +26,10 @@ export function parseWindowsPreviewBuildArgs(argv) {
   const keys = new Map([
     ["--version", "version"], ["--node-bin", "nodeBin"], ["--node-sha256", "nodeSha256"],
     ["--out", "out"], ["--background-bin", "backgroundBin"],
+    ["--rust-agent-bin", "rustAgentBin"], ["--rust-agent-sha256", "rustAgentSha256"],
   ]);
   const out = {};
-  if (argv.length !== 10) throw Error("Windows candidate requires five pinned arguments.");
+  if (![10, 14].includes(argv.length)) throw Error("Windows candidate requires five pinned inputs and an optional Rust candidate pair.");
   for (let i = 0; i < argv.length; i += 2) {
     const key = keys.get(argv[i]);
     if (!key || out[key] !== undefined || !argv[i + 1]) throw Error("Unsafe packaging arguments.");
@@ -37,7 +38,11 @@ export function parseWindowsPreviewBuildArgs(argv) {
   if (!/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(out.version) ||
       !/^[a-f0-9]{64}$/.test(out.nodeSha256) ||
       out.nodeSha256 !== EXPECTED_NODE_SHA256 ||
-      !path.isAbsolute(out.nodeBin) || !path.isAbsolute(out.backgroundBin) || !path.isAbsolute(out.out)) {
+      !path.isAbsolute(out.nodeBin) || !path.isAbsolute(out.backgroundBin) || !path.isAbsolute(out.out) ||
+      ((out.rustAgentBin === undefined) !== (out.rustAgentSha256 === undefined)) ||
+      (out.rustAgentBin !== undefined && (!path.isAbsolute(out.rustAgentBin) ||
+        !/^[a-f0-9]{64}$/.test(out.rustAgentSha256) ||
+        !/-rust-candidate\.[1-9][0-9]*$/.test(out.version)))) {
     throw Error("A reviewed version, paths and official pinned node.exe digest are required.");
   }
   return out;
@@ -78,11 +83,25 @@ export function buildWindowsPreview(args) {
   }
   copyFileSync(args.nodeBin, path.join(stage, "bin/node.exe"));
   copyFileSync(args.backgroundBin, path.join(stage, "bin/rca-background.exe"));
+  let rustAgentHash;
+  if (args.rustAgentBin) {
+    const rustAgent = readFileSync(args.rustAgentBin);
+    const pe = rustAgent.length >= 256 ? rustAgent.readUInt32LE(0x3c) : 0;
+    if (digest(rustAgent) !== args.rustAgentSha256 || rustAgent.toString("ascii",0,2) !== "MZ" ||
+        pe < 64 || pe + 96 > rustAgent.length || rustAgent.readUInt32LE(pe) !== 0x00004550 ||
+        rustAgent.readUInt16LE(pe + 4) !== 0x8664) {
+      throw Error("Rust candidate must be a hash-verified native Windows x64 PE executable.");
+    }
+    mkdirSync(path.join(stage,"apps/remote-control-agent/.build"),{recursive:true,mode:0o700});
+    copyFileSync(args.rustAgentBin,path.join(stage,"apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"));
+    rustAgentHash=digest(rustAgent);
+  }
   const modules = runtimeSources(["windows-v2.ts", "session-rca-windows.ts"]);
   const hashes = {
     "bin/node.exe": EXPECTED_NODE_SHA256,
     "bin/rca-background.exe": digest(launcher),
   };
+  if (rustAgentHash) hashes["apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"] = rustAgentHash;
   for (const file of modules) {
     const src = readFileSync(path.join(root, "src", file), "utf8");
     const compiled = ts.transpileModule(src, {
@@ -124,6 +143,8 @@ export function buildWindowsPreview(args) {
     name: "remote-control-agent", version: args.version, target: "windows-x64",
     node: EXPECTED_NODE_VERSION, device_protocol: 2, artifact_schema: 1,
     upgrade_profile: "paired-full-v1",
+    ...(rustAgentHash ? {agent_runtime:"rust-standard-windows-v1",
+      runtime_profile:"standard-windows-rust-runtime-v1"} : {agent_runtime:"node-standard-windows-v2"}),
     preview: true, modules, hashes,
   }, null, 2) + "\n", { mode: 0o600 });
   return {

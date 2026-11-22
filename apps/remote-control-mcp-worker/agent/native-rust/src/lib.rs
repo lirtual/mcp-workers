@@ -46,6 +46,8 @@ pub mod windows_managed;
 pub mod windows_output;
 #[cfg(windows)]
 mod windows_private;
+#[cfg(windows)]
+pub mod windows_upgrade_control;
 
 /// Reuse the Windows NTFS handle/ACL guard for the unshipped CLI boundary.
 /// This is validation only: no path is created or re-owned by this call.
@@ -55,4 +57,10 @@ pub fn validate_windows_private_path(
     is_dir: bool,
 ) -> Result<(), receipts::ReceiptError> {
     windows_private::private_path(path, is_dir)
+}
+
+/// Reject the Windows LocalSystem account for a user-paired Standard Agent.
+#[cfg(windows)]
+pub fn is_windows_system_identity() -> Result<bool, receipts::ReceiptError> {
+    windows_private::is_system_account()
 }

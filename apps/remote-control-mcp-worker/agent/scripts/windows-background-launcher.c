@@ -9,6 +9,7 @@
 #define PATH_CAP 32768
 static wchar_t executable[PATH_CAP];
 static wchar_t node[PATH_CAP];
+static wchar_t rust_agent[PATH_CAP];
 static wchar_t entry[PATH_CAP];
 static wchar_t resolved[PATH_CAP];
 static wchar_t command[PATH_CAP];
@@ -17,6 +18,16 @@ static int regular_file(const wchar_t *name) {
     DWORD attributes = GetFileAttributesW(name);
     return attributes != INVALID_FILE_ATTRIBUTES &&
         !(attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT));
+}
+static int acceptable_generation(const wchar_t *value) {
+    if (wcslen(value) != 36) return 0;
+    for (size_t i = 0; i < 36; ++i) {
+        if (i == 8 || i == 13 || i == 18 || i == 23) {
+            if (value[i] != L'-') return 0;
+        } else if (!((value[i] >= L'0' && value[i] <= L'9') ||
+                     (value[i] >= L'a' && value[i] <= L'f'))) return 0;
+    }
+    return 1;
 }
 static int acceptable_endpoint(const wchar_t *value) {
     size_t n = wcslen(value);
@@ -38,8 +49,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR unused, int sh
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     HANDLE job = NULL;
     PROCESS_INFORMATION child = {0};
-    if (!argv || argc != 5 || wcscmp(argv[2], L"run") ||
-        wcscmp(argv[3], L"--endpoint") || !acceptable_endpoint(argv[4])) goto done;
+    if (!argv) goto done;
     DWORD count = GetModuleFileNameW(NULL, executable, PATH_CAP);
     if (!count || count >= PATH_CAP) goto done;
     wchar_t *slash = wcsrchr(executable, L'\\');
@@ -50,11 +60,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR unused, int sh
             L"%ls..\\apps\\remote-control-agent\\src\\windows-v2.js", executable) < 0)
         goto done;
     DWORD length = GetFullPathNameW(resolved, PATH_CAP, entry, NULL);
-    if (!length || length >= PATH_CAP ||
-        !regular_file(node) || !regular_file(entry)) goto done;
-    if (CompareStringOrdinal(argv[1], -1, entry, -1, TRUE) != CSTR_EQUAL) goto done;
-    if (swprintf_s(command, PATH_CAP, L"\"%ls\" \"%ls\" run --endpoint \"%ls\"",
-                   node, entry, argv[4]) < 0) goto done;
+    if (!length || length >= PATH_CAP || !regular_file(node) || !regular_file(entry)) goto done;
+
+    const wchar_t *child_exe = node;
+    if (argc == 5 && wcscmp(argv[2], L"run") == 0 &&
+        wcscmp(argv[3], L"--endpoint") == 0 && acceptable_endpoint(argv[4]) &&
+        CompareStringOrdinal(argv[1], -1, entry, -1, TRUE) == CSTR_EQUAL) {
+        if (swprintf_s(command, PATH_CAP, L"\"%ls\" \"%ls\" run --endpoint \"%ls\"",
+                       node, entry, argv[4]) < 0) goto done;
+    } else if (argc == 7 && wcscmp(argv[2], L"--service") == 0 &&
+        wcscmp(argv[3], L"--endpoint") == 0 && acceptable_endpoint(argv[4]) &&
+        wcscmp(argv[5], L"--generation") == 0 && acceptable_generation(argv[6])) {
+        if (swprintf_s(resolved, PATH_CAP,
+            L"%ls..\\apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe", executable) < 0)
+            goto done;
+        length = GetFullPathNameW(resolved, PATH_CAP, rust_agent, NULL);
+        if (!length || length >= PATH_CAP || !regular_file(rust_agent) ||
+            CompareStringOrdinal(argv[1], -1, rust_agent, -1, TRUE) != CSTR_EQUAL) goto done;
+        child_exe = rust_agent;
+        if (swprintf_s(command, PATH_CAP,
+            L"\"%ls\" --service --endpoint \"%ls\" --generation \"%ls\"",
+            rust_agent, argv[4], argv[6]) < 0) goto done;
+    } else goto done;
+
     job = CreateJobObjectW(NULL, NULL);
     if (!job) goto done;
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
@@ -63,7 +91,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR unused, int sh
                                  &limits, sizeof(limits))) goto done;
     STARTUPINFOW startup = {0};
     startup.cb = sizeof(startup);
-    if (!CreateProcessW(node, command, NULL, NULL, FALSE,
+    if (!CreateProcessW(child_exe, command, NULL, NULL, FALSE,
                         CREATE_NO_WINDOW | CREATE_SUSPENDED,
                         NULL, executable, &startup, &child)) goto done;
     if (!AssignProcessToJobObject(job, child.hProcess)) goto done;

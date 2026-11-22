@@ -41,7 +41,7 @@ impl Drop for LocalDescriptor {
     }
 }
 
-fn current_user_sid() -> Result<Vec<usize>, ReceiptError> {
+pub(crate) fn current_user_sid() -> Result<Vec<usize>, ReceiptError> {
     let mut token = null_mut();
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return Err(unsafe_path());
@@ -236,6 +236,13 @@ fn validated_acl(handle: &OwnedHandle, user: PSID, system: PSID) -> Result<bool,
 /// Accept only current-user-owned, user/SYSTEM-only ACLs. Inherited receipts
 /// children are permitted if every parent up to a protected private anchor
 /// obeys the same ACL; a broad or redirected ancestor always fails closed.
+pub(crate) fn is_system_account() -> Result<bool, ReceiptError> {
+    let current = current_user_sid()?;
+    let current_sid = unsafe { (*(current.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    let system = system_sid()?;
+    Ok(unsafe { EqualSid(current_sid, system.as_ptr().cast_mut().cast()) } != 0)
+}
+
 pub(crate) fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError> {
     if !path.is_absolute()
         || !matches!(
