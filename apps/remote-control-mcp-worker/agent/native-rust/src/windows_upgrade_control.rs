@@ -4,8 +4,7 @@
 use crate::windows_private;
 use sha2::{Digest, Sha256};
 use std::io::{self, ErrorKind};
-use std::os::windows::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::Arc;
@@ -18,14 +17,15 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Security::{
     AddAccessAllowedAce, GetLengthSid, InitializeAcl, InitializeSecurityDescriptor,
     SetSecurityDescriptorDacl, ACL, ACL_REVISION, SECURITY_ATTRIBUTES,
-    SECURITY_DESCRIPTOR_REVISION,
 };
-use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX};
+use windows_sys::Win32::Storage::FileSystem::{
+    ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX,
+};
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, SetNamedPipeHandleState, PIPE_NOWAIT,
     PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
 };
-use windows_sys::Win32::System::IO::{ReadFile, WriteFile};
+use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UpgradeCommand {
