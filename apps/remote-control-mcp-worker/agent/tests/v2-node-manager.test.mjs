@@ -13,8 +13,10 @@ function fixture(){
   const home=mkdtempSync(path.join(os.tmpdir(),"rca-node-manager-"));chmodSync(home,0o700);
   function directory(relative){const p=path.join(home,relative);mkdirSync(p,{recursive:true,mode:0o700});chmodSync(p,0o700);return p;}
   const rel=".local/share/mcp-workers/remote-control";
-  const root=directory(rel+"/programs/v0.1.2-linux-x64-glibc");
-  const scripts=directory(rel+"/programs/v0.1.2-linux-x64-glibc/apps/remote-control-agent/scripts");
+  const target="linux-"+process.arch+"-glibc";
+  const versionRoot=rel+"/programs/v0.1.2-"+target;
+  const root=directory(versionRoot);
+  const scripts=directory(versionRoot+"/apps/remote-control-agent/scripts");
   const manager=path.join(scripts,"manage-v2.mjs");
   copyFileSync(source,manager);chmodSync(manager,0o600);
   for(const scriptName of ["lifecycle-v2.mjs","upgrade-v2.mjs",
@@ -22,10 +24,10 @@ function fixture(){
     const sourceFile=fileURLToPath(new URL("../scripts/"+scriptName,import.meta.url));
     copyFileSync(sourceFile,path.join(scripts,scriptName));
   }
-  const info={version:"v0.1.2",target:"linux-x64-glibc",artifact_schema:1,
+  const info={version:"v0.1.2",target,artifact_schema:1,
     device_protocol:2,receipt_schema:1,upgrade_profile:"read-only-no-shell-v1"};
   writeFileSync(path.join(root,"bundle.json"),JSON.stringify(info),{mode:0o600});
-  const src=directory(rel+"/programs/v0.1.2-linux-x64-glibc/apps/remote-control-agent/src");
+  const src=directory(versionRoot+"/apps/remote-control-agent/src");
   writeFileSync(path.join(src,"v2-main.js"),"const caps={readOnly: true, writeFile: false, shell: false,};\n",{mode:0o600});
   const ids=directory(rel);
   writeFileSync(path.join(ids,"v2-identity.pem.device-id"),UUID,{mode:0o600});
