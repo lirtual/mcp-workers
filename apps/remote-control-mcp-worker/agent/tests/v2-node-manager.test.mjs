@@ -111,7 +111,8 @@ test("Node manager recognizes the immutable paired-full profile without optional
 test("#914 Node manager validates and reports a Rust candidate service without changing identity",()=>{
   const f=fixture();
   try{
-    const info={...f.info,agent_runtime:"rust-standard-linux-v1",
+    const info={...f.info,target:"linux-"+process.arch+"-glibc",
+      agent_runtime:"rust-standard-linux-v1",
       candidate_profile:"standard-linux-rust-runtime-v1",upgrade_profile:"paired-full-v1"};
     writeFileSync(path.join(f.root,"bundle.json"),JSON.stringify(info),{mode:0o600});
     const candidateDir=path.join(f.root,"apps/remote-control-agent/.build");

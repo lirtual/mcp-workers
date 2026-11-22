@@ -38,12 +38,13 @@ async function createReceiptDatabase(home, version = 1, mode = 0o600) {
 test("#914 installed Node service accepts only a verified Linux Rust candidate package",async()=>{
   const home=await mkdtemp(path.join(os.tmpdir(),"rc-rust-cutover-"));
   const programs=path.join(home,".local/share/mcp-workers/remote-control/programs");
-  const oldRoot=path.join(programs,"v0.1.0-linux-x64-glibc");
+  const target="linux-"+process.arch+"-glibc";
+  const oldRoot=path.join(programs,"v0.1.0-"+target);
   const candidateVersion="v0.2.0-rust-candidate.1";
-  const newRoot=path.join(programs,candidateVersion+"-linux-x64-glibc");
+  const newRoot=path.join(programs,candidateVersion+"-"+target);
   try{
     await prepareVersion(oldRoot,{schema:fullProfile,entry:fullEntry});
-    const rustProfile={...fullProfile,version:candidateVersion,target:"linux-x64-glibc",
+    const rustProfile={...fullProfile,version:candidateVersion,target,
       agent_runtime:"rust-standard-linux-v1",
       candidate_profile:"standard-linux-rust-runtime-v1"};
     await prepareVersion(newRoot,{schema:rustProfile,entry:fullEntry});
