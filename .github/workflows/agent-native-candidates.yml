@@ -177,15 +177,15 @@ jobs:
         run: node apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs
       - name: Fetch and verify immutable published Node baseline
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           temp_dir="$(mktemp -d "$RUNNER_TEMP/spec914.XXXXXX")"
           echo "SPEC914_TEMP=$temp_dir" >> "$GITHUB_ENV"
           archive="$temp_dir/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
-          curl --fail --silent --show-error --location --retry 3 --max-time 120 \
-            --proto '=https' --tlsv1.2 \
-            "https://github.com/lirtual/mcp-workers/releases/download/v0.1.56/$(basename "$archive")" \
-            -o "$archive"
+          gh release download v0.1.56 --repo lirtual/mcp-workers \
+            --pattern "$(basename "$archive")" --dir "$temp_dir"
           echo "7eb0def23325a63a426c8402f7c2ef68d8e5ae0e6739563d13a669887f386ace  $archive" | sha256sum --check
           mkdir "$temp_dir/old"
           tar -xzf "$archive" -C "$temp_dir/old"
