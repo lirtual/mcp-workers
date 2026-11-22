@@ -954,13 +954,22 @@ jobs:
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $rustVersion -Direction Upgrade
             if ($LASTEXITCODE -ne 0) { throw 'Windows Node-to-Rust scheduled-task switch failed' }
             $rustDir = Join-Path $basePrograms ($rustVersion + '-windows-x64')
-            $rustEntry = Join-Path $rustDir 'apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe'
+            $rustEntry = [IO.Path]::GetFullPath([IO.Path]::Combine(
+              $rustDir, 'apps', 'remote-control-agent', '.build', 'rca-standard-windows-candidate.exe'))
+            $expectedLauncher = [IO.Path]::GetFullPath([IO.Path]::Combine($rustDir, 'bin', 'rca-background.exe'))
             $current = Get-ScheduledTask -TaskName $taskName
-            if ($current.State -ne 'Running' -or
-                -not [string]::Equals([string]$current.Actions[0].Execute,(Join-Path $rustDir 'bin\\rca-background.exe'),[StringComparison]::OrdinalIgnoreCase) -or
-                $current.Actions[0].Arguments -notlike ('*' + $rustEntry + '*')) {
-              throw 'Windows task did not persist and start the Rust candidate action'
+            $actualLauncher = [IO.Path]::GetFullPath([string]$current.Actions[0].Execute)
+            $argumentsContainRust = ([string]$current.Actions[0].Arguments).Contains($rustEntry)
+            Write-Output "RustTaskState=$($current.State)"
+            Write-Output "RustTaskLauncher=$actualLauncher"
+            Write-Output "RustTaskLauncherMatchesExpected=$([string]::Equals($actualLauncher,$expectedLauncher,[StringComparison]::OrdinalIgnoreCase))"
+            Write-Output "RustTaskArgumentsContainCandidate=$argumentsContainRust"
+            Write-Output "RustTaskLastResult=$((Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult)"
+            if ($current.State -ne 'Running') { throw 'Windows task state did not remain Running after the Rust switch' }
+            if (-not [string]::Equals($actualLauncher,$expectedLauncher,[StringComparison]::OrdinalIgnoreCase)) {
+              throw 'Windows task launcher path does not match the Rust candidate background launcher'
             }
+            if (-not $argumentsContainRust) { throw 'Windows task arguments do not select the Rust candidate entry' }
             $rustProcess = $null
             for ($attempt = 0; $attempt -lt 20 -and -not $rustProcess; $attempt++) {
               $rustProcess = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
