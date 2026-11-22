@@ -50,7 +50,7 @@ function addRun(db:DatabaseSync,workflow_id:string,version_id:string,id:string,c
     (id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,
       error_code,created_at,updated_at)
     VALUES (?,?,?,?,?,'{"sensitive":"must not be returned"}','started','succeeded',
-      NULL,?,?)`)
+      ?,?,?)`)
     .run(id,workflow_id,version_id,'instance-'+id,'digest-'+id,error_code,created_at,created_at+1);
 }
 
