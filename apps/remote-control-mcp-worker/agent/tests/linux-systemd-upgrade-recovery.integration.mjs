@@ -92,16 +92,10 @@ const driver=path.join(work,"installer.mjs");
 writeFileSync(driver,[
   'import path from "node:path";',
   'import {pathToFileURL} from "node:url";',
-  'const {installUnit,renderV2Service,UNIT}=await import(pathToFileURL(path.join(process.env.RCA914_AGENT_SOURCE,"scripts/install-v2.mjs")));',
   'const home=process.env.HOME;',
-  'const base=path.join(home,".local/share/mcp-workers/remote-control");',
-  'const keyPath=path.join(base,"v2-identity.pem");',
-  'const endpoint="https://127.0.0.1:1/";',
-  'const oldRoot=path.join(base,"programs/v0.1.56-linux-x64-glibc");',
-  'const rustRoot=path.join(base,"programs/v0.1.57-rust-candidate.1-linux-x64-glibc");',
-  'const old=renderV2Service({node:path.join(oldRoot,"bin/node"),home,repoRoot:oldRoot,keyPath,endpoint,entryExt:"js"});',
-  'const rust=renderV2Service({node:path.join(rustRoot,"bin/node"),home,repoRoot:rustRoot,keyPath,endpoint,entryExt:"js",agentRuntime:"rust-standard-linux-v1"});',
-  'await installUnit(path.join(home,".config/systemd/user",UNIT),rust,old);',
+  'const rustRoot=path.join(home,".local/share/mcp-workers/remote-control/programs/v0.1.57-rust-candidate.1-linux-x64-glibc");',
+  'const {runInstaller}=await import(pathToFileURL(path.join(rustRoot,"apps/remote-control-agent/scripts/install-v2.mjs")));',
+  'await runInstaller(["--upgrade","--endpoint","https://127.0.0.1:1/"],{home,stdin:{isTTY:true},stdout:{isTTY:true,write(){}}});',
 ].join("\n")+"\n",{mode:0o600});
 const systemctl=(args)=>{
   const p=spawnSync("/usr/bin/systemctl",["--user",...args],{env:baseEnv,encoding:"utf8",timeout:10000});
