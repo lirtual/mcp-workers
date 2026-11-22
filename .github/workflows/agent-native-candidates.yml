@@ -985,9 +985,17 @@ jobs:
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $oldVersion -Direction Rollback
             if ($LASTEXITCODE -ne 0) { throw 'Windows Rust-to-Node rollback failed' }
             $current = Get-ScheduledTask -TaskName $taskName
-            if (-not [string]::Equals([string]$current.Actions[0].Execute,(Join-Path $oldDir 'bin\\rca-background.exe'),[StringComparison]::OrdinalIgnoreCase)) {
-              throw 'Windows rollback did not restore the Node task action'
+            $rollbackLauncher = [string]$current.Actions[0].Execute
+            $rollbackArgumentsRestored = [string]::Equals([string]$current.Actions[0].Arguments,
+              [string]$originalTask.Actions[0].Arguments,[StringComparison]::Ordinal)
+            Write-Output "NodeRollbackLauncherRestored=$([string]::Equals($rollbackLauncher,$originalAction,[StringComparison]::OrdinalIgnoreCase))"
+            Write-Output "NodeRollbackArgumentsRestored=$rollbackArgumentsRestored"
+            if (-not [string]::Equals($rollbackLauncher,$originalAction,[StringComparison]::OrdinalIgnoreCase)) {
+              Write-Output "NodeRollbackActualLauncher=$rollbackLauncher"
+              Write-Output "NodeRollbackExpectedLauncher=$originalAction"
+              throw 'Windows rollback did not restore the original Node task launcher'
             }
+            if (-not $rollbackArgumentsRestored) { throw 'Windows rollback did not restore the original Node task arguments' }
             for ($attempt = 0; $attempt -lt 20; $attempt++) {
               $remainingRust = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
                 Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) } |
