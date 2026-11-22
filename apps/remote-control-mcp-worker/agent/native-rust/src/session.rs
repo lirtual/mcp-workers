@@ -583,6 +583,7 @@ enum FramePolicy {
 struct TransportMode {
     timing: HeartbeatTiming,
     policy: FramePolicy,
+    on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 pub fn maintain_authenticated_transport(
@@ -604,6 +605,7 @@ pub fn maintain_authenticated_transport(
         TransportMode {
             timing,
             policy: FramePolicy::Any,
+            on_connected: None,
         },
     )
 }
@@ -629,6 +631,7 @@ pub fn maintain_native_read_transport(
         TransportMode {
             timing,
             policy: FramePolicy::ReadOnly,
+            on_connected: None,
         },
     )
 }
@@ -654,6 +657,7 @@ pub fn maintain_native_file_transport(
         TransportMode {
             timing,
             policy: FramePolicy::NativeFiles,
+            on_connected: None,
         },
     )
 }
@@ -662,6 +666,7 @@ pub fn maintain_native_file_transport(
 pub struct ManagedTransportConfig {
     pub timing: HeartbeatTiming,
     pub managed: Arc<ManagedSessions>,
+    pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -684,6 +689,7 @@ pub fn maintain_native_managed_transport(
         TransportMode {
             timing: config.timing,
             policy: FramePolicy::NativeManaged(config.managed),
+            on_connected: config.on_connected,
         },
     )
 }
@@ -702,6 +708,9 @@ fn maintain_transport_mode(
         let elapsed = match connect_authenticated(endpoint, private_pem, device_id) {
             Ok(mut socket) => {
                 socket.set_heartbeat_timing(mode.timing)?;
+                if let Some(on_connected) = mode.on_connected.as_ref() {
+                    on_connected();
+                }
                 let connected_at = Instant::now();
                 let pump = match &mode.policy {
                     FramePolicy::Any => socket.pump(stop, incoming, outgoing),

@@ -99,11 +99,12 @@ async function trustedExisting(home,endpoint,bundle,sourceSha,invoke=run){
   const conn=path.join(base,"macos-connection.json");
   await checked(conn,{mode:0o600});
   const c=JSON.parse(await readFile(conn,"utf8"));
+  const connectedAt=typeof c.at==="number"?c.at:Date.parse(c.at);
   // The authenticated connection marker is written on connection, not on
   // every heartbeat; validate the live launchd PID instead of a short TTL.
   if(c.generation!==old.generation||c.state!=="connected"||
-     c.pid!==Number(pidMatch[1])||!Number.isFinite(Date.parse(c.at))||
-     Date.parse(c.at)>Date.now()+10000)
+     c.pid!==Number(pidMatch[1])||!Number.isFinite(connectedAt)||
+     connectedAt>Date.now()+10000)
     throw Error("LaunchAgent and signed WSS connection record inconsistent.");
   const version=await checkCandidate(bundle,sourceSha);
   if(!forwardMacVersion(path.basename(old.root),version))
