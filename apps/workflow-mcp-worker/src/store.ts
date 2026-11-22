@@ -140,6 +140,12 @@ type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;activ
 type VersionRow={id:string;plan:string;digest:string};
 type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
+type RecentRunSnapshot={run_id:string;published_version_id:string;created_at:number;
+  updated_at:number;start_state:string;recorded_outcome:string;error_code:string|null};
+type WorkflowGetResponse=ReturnType<typeof workflowView>&{
+  published_run_interface:ReturnType<typeof publishedRunInterface>|null;
+  recent_runs?:RecentRunSnapshot[];
+};
 // A bounded dynamic MCP child requires the same explicit Publish grant as an
 // ordinary Step; the compiler has already pinned its exact tool schema.
 function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
@@ -190,17 +196,35 @@ export class WorkflowService {
         recorded_state:x.state,recorded_at:x.updated_at,
         attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
   }
-  async get(workflow_id:string){
+  async get(workflow_id:string,recent_runs_limit?:number):Promise<WorkflowGetResponse>{
     assertId(workflow_id);
+    if(recent_runs_limit!==undefined&&
+      (!Number.isSafeInteger(recent_runs_limit)||recent_runs_limit<1||recent_runs_limit>20))
+      throw new StateError('invalid_recent_runs_limit');
     const row=await this.row(workflow_id);
-    if(!row.active_version_id)return {...workflowView(row),published_run_interface:null};
-    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
-      .bind(row.active_version_id,workflow_id).first<{plan:string}>();
-    if(!version)throw new StateError('published_version_missing');
-    let plan:Plan;
-    try{plan=JSON.parse(version.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
-    return {...workflowView(row),
-      published_run_interface:publishedRunInterface(plan,row.active_version_id)};
+    let response:WorkflowGetResponse;
+    if(!row.active_version_id)response={...workflowView(row),published_run_interface:null};
+    else{
+      const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+        .bind(row.active_version_id,workflow_id).first<{plan:string}>();
+      if(!version)throw new StateError('published_version_missing');
+      let plan:Plan;
+      try{plan=JSON.parse(version.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
+      response={...workflowView(row),
+        published_run_interface:publishedRunInterface(plan,row.active_version_id)};
+    }
+    if(recent_runs_limit===undefined)return response;
+    const recentRuns=await this.db.prepare(`SELECT id,version_id,created_at,updated_at,
+      start_state,outcome,error_code FROM runs
+      WHERE workflow_id=? ORDER BY created_at DESC,id DESC LIMIT ?`)
+      .bind(workflow_id,recent_runs_limit)
+      .all<{id:string;version_id:string;created_at:number;updated_at:number;
+        start_state:string;outcome:string;error_code:string|null}>();
+    return {...response,recent_runs:recentRuns.results.map(run=>({
+      run_id:run.id,published_version_id:run.version_id,created_at:run.created_at,
+      updated_at:run.updated_at,start_state:run.start_state,
+      recorded_outcome:run.outcome,error_code:run.error_code,
+    }))};
   }
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=? AND deleted_at IS NULL').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
