@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {spawn, spawnSync} from "node:child_process";
 import {createHash,generateKeyPairSync,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
-import {chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync} from "node:fs";
+import {chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync} from "node:fs";
 import path from "node:path";
 import {pathToFileURL} from "node:url";
 import {ReceiptStore} from "../src/operations.ts";
@@ -82,7 +82,9 @@ writeFileSync(wrapper,[
   '  /usr/bin/systemctl "$@" || exit $?',
   '  : > "$SPEC914_RESTART_MARKER"',
   '  chmod 600 "$SPEC914_RESTART_MARKER"',
-  '  while [[ ! -e "$SPEC914_RELEASE_RESTART" ]]; do /usr/bin/sleep 0.05; done',
+  '  if [[ "$SPEC914_BLOCK_RESTART" != "0" ]]; then',
+  '    while [[ ! -e "$SPEC914_RELEASE_RESTART" ]]; do /usr/bin/sleep 0.05; done',
+  '  fi',
   '  exit 0',
   'fi',
   'exec /usr/bin/systemctl "$@"',
@@ -105,7 +107,7 @@ const systemctl=(args)=>{
 let installer;
 let installerOutput="";
 try {
-  installer=spawn(path.join(rustRoot,"bin/node"),[driver],{env:{...baseEnv,PATH:wrappers+":"+baseEnv.PATH,SPEC914_RESTART_MARKER:marker,SPEC914_RELEASE_RESTART:release},detached:true,stdio:["ignore","pipe","pipe"]});
+  installer=spawn(path.join(rustRoot,"bin/node"),[driver],{env:{...baseEnv,PATH:wrappers+":"+baseEnv.PATH,SPEC914_RESTART_MARKER:marker,SPEC914_RELEASE_RESTART:release,SPEC914_BLOCK_RESTART:"1"},detached:true,stdio:["ignore","pipe","pipe"]});
   installer.stdout.setEncoding("utf8").on("data",chunk=>installerOutput+=chunk);
   installer.stderr.setEncoding("utf8").on("data",chunk=>installerOutput+=chunk);
   const deadline=Date.now()+30000;
@@ -135,7 +137,41 @@ try {
   assert.equal(dbAfter.prepare("PRAGMA quick_check").get().quick_check,"ok");
   dbAfter.close();
   assert.deepEqual(statesAfter,statesBefore);
-  console.log(JSON.stringify({real_systemd:true,node_to_rust_activation:true,installer_sigkill:true,recovered_node:true,identity_preserved:true,receipt_rows_preserved:statesAfter.length,receipt_quick_check:"ok"}));
+
+  let successfulUpgradeOutput="";
+  installer=spawn(path.join(rustRoot,"bin/node"),[driver],{env:{...baseEnv,PATH:wrappers+":"+baseEnv.PATH,SPEC914_RESTART_MARKER:marker,SPEC914_RELEASE_RESTART:release,SPEC914_BLOCK_RESTART:"0"},detached:true,stdio:["ignore","pipe","pipe"]});
+  installer.stdout.setEncoding("utf8").on("data",chunk=>successfulUpgradeOutput+=chunk);
+  installer.stderr.setEncoding("utf8").on("data",chunk=>successfulUpgradeOutput+=chunk);
+  const completionDeadline=Date.now()+30000;
+  while(Date.now()<completionDeadline&&installer.exitCode===null) await new Promise(r=>setTimeout(r,50));
+  assert.equal(installer.exitCode,0,"official Rust upgrade completes; output="+successfulUpgradeOutput.slice(-2000));
+  installer=null;
+  systemctl(["is-active",UNIT]);
+  const finalRustPid=Number(systemctl(["show","-p","MainPID","--value",UNIT]));
+  assert.equal(readFileSync("/proc/"+finalRustPid+"/cmdline").toString().split("\0")[0],rustExe,
+    "Rust candidate remains the live systemd MainPID after successful installation");
+  const completedUnit=readFileSync(unitPath,"utf8");
+  assert.ok(completedUnit.includes(rustExe),"successful installer retains the Rust candidate service");
+  assert.ok(!existsSync(backupPath),"successful upgrade removes the prior Node unit backup");
+  assert.equal(readlinkSync(path.join(home,".local/bin/rca")),
+    path.join(rustRoot,"apps/remote-control-agent/scripts/rca.sh"),"manager CLI points to the installed candidate");
+  assert.deepEqual(readFileSync(key),keyBefore);
+  assert.deepEqual(readFileSync(id),idBefore);
+  assert.deepEqual(readFileSync(receipts),dbBefore);
+  // Rust intentionally holds SQLite's exclusive single-writer lock while active.
+  // Stop only this disposable test service for the offline integrity read, then
+  // restart it to prove the completed candidate remains recoverable.
+  systemctl(["stop",UNIT]);
+  const finalDb=new DatabaseSync(receipts,{readOnly:true});
+  assert.equal(finalDb.prepare("PRAGMA quick_check").get().quick_check,"ok");
+  assert.deepEqual(finalDb.prepare("SELECT operation_id,state,guarded FROM receipts ORDER BY operation_id").all().map(x=>({...x})),statesBefore);
+  finalDb.close();
+  systemctl(["start",UNIT]);
+  systemctl(["is-active",UNIT]);
+  const restartedRustPid=Number(systemctl(["show","-p","MainPID","--value",UNIT]));
+  assert.equal(readFileSync("/proc/"+restartedRustPid+"/cmdline").toString().split("\0")[0],rustExe,
+    "Rust candidate restarts after integrity verification");
+  console.log(JSON.stringify({real_systemd:true,node_to_rust_activation:true,installer_sigkill:true,recovered_node:true,successful_installer_exit:true,backup_removed:true,cli_switched:true,rust_service_active:true,identity_preserved:true,receipt_rows_preserved:statesAfter.length,receipt_quick_check:"ok"}));
 } finally {
   if(installer) {
     if(installer.exitCode===null) {
