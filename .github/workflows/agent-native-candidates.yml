@@ -263,8 +263,12 @@ jobs:
             set-environment "XDG_RUNTIME_DIR=/run/user/$test_uid" \
             "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$test_uid/bus"
           source_dir="$RUNNER_TEMP/spec914-agent-source"
-          sudo cp -a apps/remote-control-mcp-worker/agent "$source_dir"
+          test "$source_dir" = "$RUNNER_TEMP/spec914-agent-source"
+          sudo rm -rf -- "$source_dir"
+          sudo install -d -m 0755 "$source_dir"
+          sudo cp -a apps/remote-control-mcp-worker/agent/. "$source_dir/"
           sudo chown -R "$test_user:$test_user" "$source_dir"
+          test -f "$source_dir/tests/linux-systemd-upgrade-recovery.integration.mjs"
           fixture_dir="$(mktemp -d "$RUNNER_TEMP/spec914-fixtures.XXXXXX")"
           chmod 0755 "$fixture_dir"
           old_archive="$fixture_dir/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
