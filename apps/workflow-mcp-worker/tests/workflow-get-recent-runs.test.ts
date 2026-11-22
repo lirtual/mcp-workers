@@ -58,7 +58,7 @@ test('workflow_get without recent_runs_limit preserves the old shape and skips R
   const {db,reads,writes,service}=setup(t);
   const workflow_id=await createPublished(service,'no history read');
   const version_id=db.prepare('SELECT active_version_id FROM workflows WHERE id=?')
-    .get(workflow_id).active_version_id as string;
+    .get(workflow_id)?.active_version_id as string;
   addRun(db,workflow_id,version_id,'00000000-0000-4000-8000-000000000001',1);
   reads.length=0;writes.length=0;
 
@@ -74,9 +74,9 @@ test('workflow_get returns only the bounded, deterministic, safe D1 Run snapshot
   const workflow_id=await createPublished(service,'history target');
   const other_id=await createPublished(service,'other workflow');
   const version_id=db.prepare('SELECT active_version_id FROM workflows WHERE id=?')
-    .get(workflow_id).active_version_id as string;
+    .get(workflow_id)?.active_version_id as string;
   const other_version_id=db.prepare('SELECT active_version_id FROM workflows WHERE id=?')
-    .get(other_id).active_version_id as string;
+    .get(other_id)?.active_version_id as string;
   const older='00000000-0000-4000-8000-000000000001';
   const newerTieA='00000000-0000-4000-8000-000000000002';
   const newerTieB='00000000-0000-4000-8000-000000000003';
