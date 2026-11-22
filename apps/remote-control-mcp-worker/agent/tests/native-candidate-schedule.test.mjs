@@ -20,6 +20,8 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   assert.doesNotMatch(ci, /\bgh release create\b/);
   assert.doesNotMatch(release, /\bgh release create\b|agent-native-candidates|release-pins/);
   assert.doesNotMatch(candidates, /^  push:/m);
+  assert.match(candidates, /rust_agent="\$SPEC914_TEMP\/build\/rca-standard-linux-candidate"/);
+  assert.match(candidates, /--out "\$SPEC914_TEMP\/package"/);
   assert.doesNotMatch(candidates, /\bgh release (?:create|edit|upload|delete)\b|wrangler deploy|uses: \.\/\.github\/workflows\/release\.yml|release-pins/);
   assert.match(candidates, /^  workflow_dispatch:$/m);
   assert.match(candidates, /Manual native candidates are built from main only/);

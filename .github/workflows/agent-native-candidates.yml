@@ -225,8 +225,8 @@ jobs:
             --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
             --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
             --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
-            --out "$SPEC914_TEMP/build"
-          archive="$SPEC914_TEMP/build/remote-control-agent-$version-linux-x64-glibc.tar.gz"
+            --out "$SPEC914_TEMP/package"
+          archive="$SPEC914_TEMP/package/remote-control-agent-$version-linux-x64-glibc.tar.gz"
           python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
             "$archive" "$version" linux-x64-glibc
           chmod 0644 "$archive" "$SPEC914_TEMP/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
@@ -266,7 +266,7 @@ jobs:
           sudo cp -a apps/remote-control-mcp-worker/agent "$source_dir"
           sudo chown -R "$test_user:$test_user" "$source_dir"
           old_archive="$SPEC914_TEMP/remote-control-agent-v0.1.56-linux-x64-glibc.tar.gz"
-          rust_archive="$SPEC914_TEMP/build/remote-control-agent-v0.1.57-rust-candidate.1-linux-x64-glibc.tar.gz"
+          rust_archive="$SPEC914_TEMP/package/remote-control-agent-v0.1.57-rust-candidate.1-linux-x64-glibc.tar.gz"
           chmod 0644 "$old_archive" "$rust_archive"
           sudo -u "$test_user" "${user_env[@]}" \
             RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_RUST_ARCHIVE="$rust_archive" \
