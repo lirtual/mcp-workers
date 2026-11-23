@@ -233,3 +233,50 @@ test("portable CLI hint prints PATH only when missing in the current terminal",(
   printPortableCliHint(out,launcher,home,"/usr/bin:"+home+"/.local/bin:/bin");
   assert.equal(out.value,"CLI: "+launcher+"\n");
 });
+
+test("#914 Linux Rust local status uses the bounded Python manager, not bundled Node",async t=>{
+  if(process.platform!=="linux") { t.skip("Linux-only local manager"); return; }
+  const f=await fixture();
+  try{
+    const src=path.join(packageRoot,"scripts");
+    const rustDir=path.join(f.program,"apps/remote-control-agent/.build");
+    const sourceDir=path.join(f.program,"apps/remote-control-agent/src");
+    await mkdir(rustDir,{recursive:true,mode:0o700});
+    await mkdir(sourceDir,{recursive:true,mode:0o700});
+    await writeFile(path.join(rustDir,"rca-standard-linux-candidate"),"fixture", {mode:0o700});
+    await chmod(path.join(rustDir,"rca-standard-linux-candidate"),0o700);
+    await writeFile(path.join(sourceDir,"v2-main.js"),
+      'export const V2_RUNTIME_PROFILE = "paired-full-v1";\\n',{mode:0o600});
+    await writeFile(path.join(f.program,"bundle.json"),JSON.stringify({
+      name:"remote-control-agent",version:"v0.1.1",target:"linux-x64-glibc",
+      artifact_schema:1,device_protocol:2,receipt_schema:1,
+      upgrade_profile:"paired-full-v1",agent_runtime:"rust-standard-linux-v1",
+      candidate_profile:"standard-linux-rust-runtime-v1"
+    })+"\\n",{mode:0o600});
+    for(const name of ["manage-v2.py","bootstrap-v2.py","rca.sh"])
+      await writeFile(path.join(f.script,name),await readFile(path.join(src,name)),
+        {mode:name==="rca.sh" ? 0o700 : 0o600});
+    const env={...process.env,HOME:f.home};
+    const command=path.join(f.script,"rca.sh");
+    const run=args=>spawnSync("/bin/sh",[command,...args],
+      {encoding:"utf8",env,timeout:10000});
+    const result=run(["status"]);
+    assert.equal(result.status,0,result.stderr);
+    assert.match(result.stdout,/"cli_version": "v0.1.1"/);
+    assert.match(result.stdout,/"local_permanent_service": "not_installed"/);
+    const version=run(["--version"]);
+    assert.equal(version.status,0,version.stderr);
+    assert.equal(version.stdout.trim(),"v0.1.1");
+    await assert.rejects(lstat(path.join(f.program,"bin/node")),{code:"ENOENT"});
+    await assert.rejects(lstat(path.join(f.script,"__pycache__")),{code:"ENOENT"});
+
+    // A stray Rust executable must not persuade the Python manager to accept
+    // a Node manifest as a Rust-owned full-tools installation.
+    await writeFile(path.join(f.program,"bundle.json"),JSON.stringify({
+      version:"v0.1.1",target:"linux-x64-glibc",artifact_schema:1,
+      device_protocol:2,receipt_schema:1,agent_runtime:"node-v2",
+      upgrade_profile:"paired-full-v1"
+    })+"\\n",{mode:0o600});
+    assert.notEqual(run(["status"]).status,0);
+  } finally { await rm(f.home,{recursive:true,force:true}); }
+});
