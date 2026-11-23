@@ -12,6 +12,7 @@ APP = Path("apps/remote-control-agent")
 UNIT = "remote-control-agent.service"
 VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+ASSET_SHA = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def local_runtime():
@@ -26,9 +27,8 @@ def local_runtime():
     if not manifest.is_file() or manifest.is_symlink():
         raise ValueError("Versioned Agent bundle is missing.")
     info = json.loads(manifest.read_text("utf8"))
-    # The existing Python CLI can inspect a Rust-owned Standard service without
-    # starting Node. Pairing and upgrades still use their reviewed transitional
-    # installer; this is not yet a Node-free release.
+    # Native-only manager operations never launch Node. Pairing stays blocked,
+    # while upgrade uses the pinned Python bootstrap's guarded WSS cutover.
     rust = (info.get("agent_runtime") == "rust-standard-linux-v1"
             and info.get("candidate_profile") == "standard-linux-rust-runtime-v1"
             and info.get("upgrade_profile") == "paired-full-v1")
@@ -120,30 +120,38 @@ def bootstrap_action(bootstrap, arguments):
         sys.argv = old
 
 
-def upgrade(bootstrap, arguments):
-    if len(arguments) != 2 or not VERSION.fullmatch(arguments[0]) or not SHA.fullmatch(arguments[1]):
-        raise ValueError("Usage: rca upgrade <published-tag> <reviewed-40-char-commit>")
+def upgrade(bootstrap, arguments, native_only=False):
+    required = 3 if native_only else 2
+    if (len(arguments) != required or not VERSION.fullmatch(arguments[0])
+            or not SHA.fullmatch(arguments[1])
+            or (native_only and not ASSET_SHA.fullmatch(arguments[2]))):
+        raise ValueError("Usage: rca upgrade <published-tag> <reviewed-40-char-commit>" +
+                         (" <reviewed-64-char-asset-sha256>" if native_only else ""))
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Upgrade requires local interactive confirmation.")
     endpoint = installed_endpoint(bootstrap)
     if not endpoint:
         raise ValueError("No installer-owned permanent service available to upgrade.")
     print("Only immutable verified GitHub Releases are accepted. Identity and receipts are preserved.")
+    if native_only:
+        # Bootstrap owns one final owner-TTY confirmation and the signed WSS
+        # transaction; the installed Rust never executes Node.
+        return bootstrap_action(bootstrap, ["--tag", arguments[0], "--commit", arguments[1],
+                                            "--endpoint", endpoint, "--native-upgrade",
+                                            "--asset-sha256", arguments[2]])
     if input("Type UPGRADE to confirm: ").strip() != "UPGRADE":
         raise ValueError("Upgrade not confirmed.")
-    # Bootstrap execs bundled Node. Do not open a second manager inside this menu.
     os.environ["RC_AGENT_NO_POST_START"] = "1"
     return bootstrap_action(bootstrap, ["--tag", arguments[0], "--commit", arguments[1],
                                          "--endpoint", endpoint, "--upgrade"])
 
 
 def dispatch(command, args, root, info, bootstrap):
-    # Pair and upgrade remain blocked until the native-only transition gate
-    # is proven. Uninstall reuses the existing owner-TTY + process-guarded
-    # Python implementation only for the exact reviewed native-only archive.
+    # Pairing and mixed-bundle upgrades remain blocked. Native-only upgrade
+    # and uninstall use the existing owner-TTY Python bootstrap protections.
     if (info.get("agent_runtime") == "rust-standard-linux-v1"
-            and (command in ("pair", "upgrade") or
-                 (command == "uninstall" and
+            and (command == "pair" or
+                 (command in ("upgrade", "uninstall") and
                   info.get("artifact_profile") != "rust-native-only-v1"))):
         raise ValueError("Rust Python lifecycle operation is not yet reviewed.")
     if command in ("--help", "-h", "help"):
@@ -167,7 +175,8 @@ def dispatch(command, args, root, info, bootstrap):
     if command == "pair":
         return pair(root, bootstrap, args)
     if command == "upgrade":
-        return upgrade(bootstrap, args)
+        return upgrade(bootstrap, args,
+                       info.get("artifact_profile") == "rust-native-only-v1")
     if command == "uninstall":
         if args:
             raise ValueError("uninstall takes no arguments")
@@ -178,7 +187,7 @@ def dispatch(command, args, root, info, bootstrap):
 def main():
     root, info, bootstrap = local_runtime()
     if info.get("agent_runtime") == "rust-standard-linux-v1" and len(sys.argv) == 1:
-        raise ValueError("Rust Python manager requires an explicit read-only command.")
+        raise ValueError("Rust Python manager requires an explicit command.")
     if len(sys.argv) > 1:
         return dispatch(sys.argv[1], sys.argv[2:], root, info, bootstrap)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
