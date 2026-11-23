@@ -10,8 +10,8 @@ mod windows {
     use rca_native_agent::session_transport_env::session_transport_environment;
     use rca_native_agent::windows_managed::WindowsManagedSessions;
     use rca_native_agent::windows_session_runner::{
-        checked_runner_context, checked_transport_child_identity, spawn_credential_free_transport,
-        validate_transport_grant,
+        checked_runner_context, checked_transport_child_identity, record_candidate_stage,
+        spawn_credential_free_transport, validate_transport_grant,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,6 +52,7 @@ mod windows {
         rca_native_agent::session_recovery::verify_registered_session_device(&identity, &grant)
             .map_err(|_| ())?;
         let executable = std::env::current_exe().map_err(|_| ())?;
+        let _ = record_candidate_stage(source, "pending", true);
         let _child = spawn_credential_free_transport(&executable, &grant, &identity, source)
             .map_err(|_| ())?;
         println!("Session RCA Windows Candidate transport spawned after signed Worker recovery.");
@@ -81,6 +82,7 @@ mod windows {
         if source != &session_transport_environment(source) {
             return Err(());
         }
+        let _ = record_candidate_stage(source, "entered", false);
         let expires_at = expires_at.parse::<u64>().map_err(|_| ())?;
         let grant = RegisteredSessionDevice {
             device_id: device_id.to_owned(),
@@ -89,8 +91,10 @@ mod windows {
         validate_transport_grant(&grant, now_ms()?).map_err(|_| ())?;
         let (identity_path, identity) =
             checked_transport_child_identity(source, &grant).map_err(|_| ())?;
+        let _ = record_candidate_stage(source, "identity_ready", false);
         rca_native_agent::session_recovery::verify_registered_session_device(&identity, &grant)
             .map_err(|_| ())?;
+        let _ = record_candidate_stage(source, "signed_recovered", false);
         let attempt = checked_runner_context(source).map_err(|_| ())?.0;
         if identity.attempt != attempt {
             return Err(());
@@ -99,11 +103,13 @@ mod windows {
         let receipts = runner_temp.join("session-rca").join("receipts");
         std::fs::create_dir(&receipts).map_err(|_| ())?;
         rca_native_agent::validate_windows_private_path(&receipts, true).map_err(|_| ())?;
+        let _ = record_candidate_stage(source, "receipts_ready", false);
 
         let managed =
             Arc::new(WindowsManagedSessions::new(Duration::from_secs(60 * 60)).map_err(|_| ())?);
         let stop = Arc::new(AtomicBool::new(false));
         let watch = expiry_watch(grant.expires_at, Arc::clone(&stop));
+        let _ = record_candidate_stage(source, "wss_start", false);
         let result = run_native_managed_session(
             "https://rca.lirtual.dpdns.org/",
             &identity.private_key_pem,
@@ -113,6 +119,9 @@ mod windows {
             &stop,
             rca_native_agent::session::HeartbeatTiming::default(),
         );
+        if result.is_err() {
+            let _ = record_candidate_stage(source, "wss_error", false);
+        }
         stop.store(true, Ordering::Release);
         if watch.join().is_err()
             || managed.stop_all(Duration::from_secs(8))
