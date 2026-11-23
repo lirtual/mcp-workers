@@ -461,7 +461,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                     manifest.get("receipt_schema") != 1 or
                     (not native_only and
                      manifest.get("upgrade_protocol") != "owner-one-shot-v1")):
-                raise ValueError("Linux release lacks reviewed staging protocol readiness")
+                raise ValueError("Linux release lacks reviewed protocol readiness for staging")
             if version.exists() or version.is_symlink():
                 verify_existing_program(archive_path, version, records)
             else:
