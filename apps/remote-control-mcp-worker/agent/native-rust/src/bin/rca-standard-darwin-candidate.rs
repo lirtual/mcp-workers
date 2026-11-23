@@ -122,28 +122,6 @@ mod darwin {
         fs::rename(&temporary, &marker).map_err(|_| ())
     }
 
-    #[cfg(test)]
-    mod connection_marker_tests {
-        use super::*;
-
-        #[test]
-        fn rust_connection_marker_is_owner_private_json_with_a_newline() {
-            let dir = tempfile::tempdir().unwrap();
-            record_connected(dir.path(), "candidate-generation").unwrap();
-            let marker = dir.path().join("macos-connection.json");
-            let raw = fs::read_to_string(&marker).unwrap();
-            assert!(raw.ends_with('\n'));
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(value["state"], "connected");
-            assert_eq!(value["generation"], "candidate-generation");
-            assert!(value["at"].as_u64().is_some());
-            assert_eq!(
-                fs::symlink_metadata(marker).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
-        }
-    }
-
     fn checked_supervisor() -> Result<Arc<DarwinManagedSessions>, ()> {
         // Candidate bundle layout only. The installed Node release is untouched.
         let helper = std::env::current_exe()
@@ -289,6 +267,27 @@ mod darwin {
         match result {
             Ok(()) | Err(NativeFileError::Session(SessionError::Policy)) => Ok(()),
             Err(_) => Err(()),
+        }
+    }
+    #[cfg(test)]
+    mod connection_marker_tests {
+        use super::*;
+
+        #[test]
+        fn rust_connection_marker_is_owner_private_json_with_a_newline() {
+            let dir = tempfile::tempdir().unwrap();
+            record_connected(dir.path(), "candidate-generation").unwrap();
+            let marker = dir.path().join("macos-connection.json");
+            let raw = fs::read_to_string(&marker).unwrap();
+            assert!(raw.ends_with('\n'));
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(value["state"], "connected");
+            assert_eq!(value["generation"], "candidate-generation");
+            assert!(value["at"].as_u64().is_some());
+            assert_eq!(
+                fs::symlink_metadata(marker).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 }
