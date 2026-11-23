@@ -152,9 +152,23 @@ pub(crate) fn seal_new_owner(path: &Path, is_dir: bool) -> Result<(), ReceiptErr
 /// Protect an exact newly-created directory with the existing user/SYSTEM DACL.
 /// The caller must have just won `create_dir`; existing state is only validated.
 pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError> {
-    let user_storage = current_user_sid()?;
+    let user_storage = match current_user_sid() {
+        Ok(storage) => storage,
+        Err(error) => {
+            #[cfg(test)]
+            eprintln!("candidate ACL setup: current user SID lookup failed");
+            return Err(error);
+        }
+    };
     let user = unsafe { (*(user_storage.as_ptr().cast::<TOKEN_USER>())).User.Sid };
-    let system_storage = system_sid()?;
+    let system_storage = match system_sid() {
+        Ok(storage) => storage,
+        Err(error) => {
+            #[cfg(test)]
+            eprintln!("candidate ACL setup: SYSTEM SID lookup failed");
+            return Err(error);
+        }
+    };
     let system = system_storage.as_ptr().cast_mut().cast::<c_void>();
     let handle = match open_with_access(
         path,
