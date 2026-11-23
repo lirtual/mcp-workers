@@ -80,16 +80,17 @@ def fixture():
     return ctx, home, old, new, unit, launcher, key, receipts
 
 
-def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure=False):
-    state = {"active": "old", "commands": [], "consents": []}
+def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure=False,
+                  restart_after_proof=False):
+    state = {"active": "old", "commands": [], "consents": [], "pid_generation": 0}
 
     def main_pid():
-        return 100 if state["active"] == "old" else 200
+        return 100 if state["active"] == "old" else 200 + state["pid_generation"]
 
     def executable(pid):
         if pid == 100:
             return old / "bin/node"
-        if pid == 200:
+        if pid in (200, 201):
             return new / APP / ".build/rca-standard-linux-candidate"
         raise ValueError("Unexpected process identity")
 
@@ -120,6 +121,10 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
                 "target_version": target, "status": "authenticated_wss"
             }).encode())
             assert bootstrap.native_wait_proof(path, operation, device_id, target, 1)
+            if restart_after_proof:
+                # The signed first Rust process exits before the installer commits.
+                # A restarted process must authenticate independently.
+                state["pid_generation"] = 1
         return proof_good
 
     return state, {"native_main_pid": main_pid,
@@ -182,6 +187,24 @@ def verify_isolated():
         assert old.exists() and new.exists()
         assert not Path(str(unit) + ".upgrade-backup").exists()
         assert not Path(str(key) + ".native-upgrade-intent").exists()
+    finally:
+        ctx.cleanup()
+
+    # A valid proof from an earlier Rust PID must not approve its replacement.
+    # The original Node process must be recovered instead.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        state, mocks, verify = fake_services(home, old, new, restart_after_proof=True)
+        with patch.multiple(bootstrap, **mocks):
+            try:
+                bootstrap.native_cutover(home, new, ENDPOINT, verify)
+                raise AssertionError("Stale Rust process WSS proof accepted after restart")
+            except ValueError as error:
+                assert "rolled back" in str(error)
+        assert state["active"] == "old"
+        assert launcher.readlink() == old / APP / "scripts/rca.sh"
+        assert unit.read_text() == bootstrap.native_render_unit(old, ENDPOINT, key)
+        assert b"disposable-receipt-history" in receipts.read_bytes()
     finally:
         ctx.cleanup()
 

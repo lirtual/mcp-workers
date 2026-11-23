@@ -806,10 +806,16 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                 raise ValueError("systemd did not activate the native Rust executable")
             if not verify(proof, operation, device_id, new_root.name):
                 raise ValueError("New Rust Agent signed WSS was not confirmed")
-            if (unit_file.read_text("utf8") != next_unit
+            # A proof from a Rust process that exited/restarted during the
+            # handshake does not authenticate its replacement. Keep the
+            # systemd instance that produced the signed WSS evidence.
+            if (native_main_pid() != new_pid
+                    or native_process_executable(new_pid) != (
+                        new_root / APP / ".build/rca-standard-linux-candidate")
+                    or unit_file.read_text("utf8") != next_unit
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before
                     or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
-                raise ValueError("Identity or systemd unit changed after Rust WSS")
+                raise ValueError("Rust process, identity or systemd unit changed after WSS")
             native_launcher(home, old_root, new_root)
             for item in (intent, proof, backup):
                 item.unlink()
