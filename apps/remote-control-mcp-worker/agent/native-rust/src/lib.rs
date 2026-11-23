@@ -47,6 +47,8 @@ pub mod windows_output;
 #[cfg(windows)]
 mod windows_private;
 #[cfg(windows)]
+pub mod windows_session_runner;
+#[cfg(windows)]
 pub mod windows_upgrade_control;
 
 /// Reuse the Windows NTFS handle/ACL guard for the unshipped CLI boundary.

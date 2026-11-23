@@ -87,3 +87,52 @@ pub fn apply_transport_environment(command: &mut Command, source: &BTreeMap<Stri
     command.env_clear();
     command.envs(session_transport_environment(source));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_transport_allowlist_drops_oidc_and_cli_credentials() {
+        let source = BTreeMap::from([
+            ("GITHUB_ACTIONS".into(), "true".into()),
+            ("RUNNER_ENVIRONMENT".into(), "github-hosted".into()),
+            ("GITHUB_WORKFLOW".into(), "windows".into()),
+            (
+                "GITHUB_REPOSITORY".into(),
+                "autoactions/github-actions".into(),
+            ),
+            (
+                "ATTEMPT_ID".into(),
+                "123e4567-e89b-42d3-a456-426614174001".into(),
+            ),
+            ("RUNNER_TEMP".into(), "C:\\runner\\temp".into()),
+            ("RUNNER_TRACKING_ID".into(), "job-1".into()),
+            (
+                "ACTIONS_ID_TOKEN_REQUEST_URL".into(),
+                "https://oidc.invalid".into(),
+            ),
+            ("ACTIONS_ID_TOKEN_REQUEST_TOKEN".into(), "one-time".into()),
+            ("WORKFLOW_ACTION_OIDC_AUDIENCE".into(), "audience".into()),
+            ("GH_TOKEN".into(), "gh-secret".into()),
+            ("SESSION_RCA_AGENT".into(), "rust-candidate".into()),
+        ]);
+        let clean = session_transport_environment(&source);
+        assert_eq!(
+            clean.get("RUNNER_TRACKING_ID").map(String::as_str),
+            Some("job-1")
+        );
+        for key in [
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "WORKFLOW_ACTION_OIDC_AUDIENCE",
+            "GH_TOKEN",
+            "SESSION_RCA_AGENT",
+        ] {
+            assert!(
+                !clean.contains_key(key),
+                "{key} crossed the transport boundary"
+            );
+        }
+    }
+}
