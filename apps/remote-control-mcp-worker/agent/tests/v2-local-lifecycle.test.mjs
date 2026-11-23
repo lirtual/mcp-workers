@@ -335,6 +335,12 @@ with tempfile.TemporaryDirectory(prefix="rca-native-uninstall-") as dirname:
     assert unit.read_text().endswith("ExecStopPost=/usr/bin/touch /tmp/foreign\n")
     assert not actions and program.exists()
     unit.write_text(unit_body)
+    dropin=unit.parent/(b.UNIT+".d")
+    dropin.mkdir(mode=0o700)
+    try:attempt();raise AssertionError("foreign systemd drop-in executed")
+    except ValueError:pass
+    assert dropin.is_dir() and not actions and program.exists()
+    dropin.rmdir()
     result=attempt()
     assert actions==[["--user","disable","--now",b.UNIT],
                      ["--user","daemon-reload"]]
