@@ -225,6 +225,13 @@ try {
     const nextInfo=JSON.parse(readFileSync(nextManifest,"utf8"));
     nextInfo.version="v0.1.58-rust-candidate.2";
     writeFileSync(nextManifest,JSON.stringify(nextInfo),{mode:0o600});
+    // fs.cpSync does not guarantee owner-private modes for freshly created
+    // directories. A real installer would apply these at verified unpack.
+    // Fix only this synthetic test fixture; keep the product fail-closed.
+    const privateCopy=spawnSync("/usr/bin/chmod",["-R","go-rwx",nextRoot],{
+      env,encoding:"utf8",timeout:10000
+    });
+    assert.equal(privateCopy.status,0,privateCopy.stderr);
     const nativeUnitCode=[
       "import importlib.util,pathlib,sys",
       "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
