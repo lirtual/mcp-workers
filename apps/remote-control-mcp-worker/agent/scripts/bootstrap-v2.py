@@ -218,7 +218,7 @@ def inspect_archive(archive, tag, target):
                     or manifest.get("modules") != []
                     or "upgrade_protocol" in manifest))
                 or (not native_only and (
-                    not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", ""))
+                    not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", "")))
                     or "artifact_profile" in manifest))
                 or agent_runtime not in ("node-v2", "rust-standard-linux-v1")
                 or (rust_candidate and (
