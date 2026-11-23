@@ -269,6 +269,15 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     assert.equal(version.stdout.trim(),"v0.1.1");
     await assert.rejects(lstat(path.join(f.program,"bin/node")),{code:"ENOENT"});
     await assert.rejects(lstat(path.join(f.script,"__pycache__")),{code:"ENOENT"});
+    // Direct Python invocations must never gain an alternate lifecycle entry.
+    const python=args=>spawnSync("/usr/bin/python3",
+      ["-I","-B",path.join(f.script,"manage-v2.py"),...args],
+      {encoding:"utf8",env,timeout:10000});
+    for(const args of [[],["pair"],["upgrade"],["uninstall"]])
+      assert.notEqual(python(args).status,0,"Rust Python manager must reject "+args.join(" "));
+    await assert.rejects(
+      lstat(path.join(f.home,".local/share/mcp-workers/remote-control/v2-identity.pem")),
+      {code:"ENOENT"});
 
     // A stray Rust executable must not persuade the Python manager to accept
     // a Node manifest as a Rust-owned full-tools installation.
