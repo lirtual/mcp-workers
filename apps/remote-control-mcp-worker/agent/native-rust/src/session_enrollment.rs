@@ -37,9 +37,6 @@ pub enum EnrollmentError {
     Cryptography,
     #[error("untrusted Session identity state")]
     UntrustedStore,
-    #[cfg(all(test, windows))]
-    #[error("Windows test failure stage: {0}")]
-    WindowsTestStage(&'static str),
     #[error("Session identity filesystem unavailable")]
     Io(#[from] std::io::Error),
 }
@@ -306,18 +303,6 @@ mod windows_store {
     use std::io::{Read, Write};
     use std::path::{Path, PathBuf};
 
-    fn untrusted_at(stage: &'static str) -> EnrollmentError {
-        #[cfg(test)]
-        {
-            EnrollmentError::WindowsTestStage(stage)
-        }
-        #[cfg(not(test))]
-        {
-            let _ = stage;
-            EnrollmentError::UntrustedStore
-        }
-    }
-
     fn safe_directory(path: &Path) -> Result<(), EnrollmentError> {
         let meta = fs::symlink_metadata(path).map_err(|_| EnrollmentError::UntrustedStore)?;
         if !meta.is_dir() || meta.file_type().is_symlink() {
@@ -371,21 +356,19 @@ mod windows_store {
         attempt: &SessionPhysicalAttempt,
     ) -> Result<(PathBuf, SessionDeviceIdentity), EnrollmentError> {
         if !valid_attempt(attempt) {
-            #[cfg(test)]
-            eprintln!("candidate identity store: attempt rejected");
             return Err(EnrollmentError::InvalidAttempt);
         }
         if safe_runner_root(runner_temp).is_err() {
-            return Err(untrusted_at("runner temp root"));
+            return Err(EnrollmentError::UntrustedStore);
         }
         let directory = runner_temp.join("session-rca");
         match fs::create_dir(&directory) {
             Ok(()) => crate::seal_new_windows_private_directory(&directory)
-                .map_err(|_| untrusted_at("seal private directory"))?,
+                .map_err(|_| EnrollmentError::UntrustedStore)?,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err(untrusted_at("create private directory")),
+            Err(_) => return Err(EnrollmentError::UntrustedStore),
         }
-        safe_directory(&directory).map_err(|_| untrusted_at("verify private directory"))?;
+        safe_directory(&directory).map_err(|_| EnrollmentError::UntrustedStore)?;
         let file = directory.join("identity.json");
         match read_verified(&file, attempt) {
             Ok(identity) => return Ok((file, identity)),
@@ -393,27 +376,22 @@ mod windows_store {
             }
             Err(EnrollmentError::UntrustedStore) => match fs::symlink_metadata(&file) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                _ => return Err(untrusted_at("validate existing identity")),
+                _ => return Err(EnrollmentError::UntrustedStore),
             },
             Err(error) => return Err(error),
         }
         let identity = new_session_identity(attempt)?;
-        let bytes =
-            serde_json::to_vec(&identity).map_err(|_| untrusted_at("serialize identity"))?;
+        let bytes = serde_json::to_vec(&identity).map_err(|_| EnrollmentError::UntrustedStore)?;
         let mut handle = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&file)?;
-        crate::seal_new_windows_private_file(&file)
-            .map_err(|_| untrusted_at("seal identity file"))?;
+        crate::seal_new_windows_private_file(&file).map_err(|_| EnrollmentError::UntrustedStore)?;
         handle.write_all(&bytes)?;
         handle.sync_all()?;
         drop(handle);
-        safe_directory(&directory).map_err(|_| untrusted_at("verify final directory"))?;
-        let identity = read_verified(&file, attempt).map_err(|error| match error {
-            EnrollmentError::UntrustedStore => untrusted_at("read final identity"),
-            other => other,
-        })?;
+        safe_directory(&directory).map_err(|_| EnrollmentError::UntrustedStore)?;
+        let identity = read_verified(&file, attempt)?;
         Ok((file.clone(), identity))
     }
 
