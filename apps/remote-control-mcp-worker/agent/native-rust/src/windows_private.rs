@@ -14,16 +14,18 @@ use windows_sys::Win32::Security::Authorization::{
     GetSecurityInfo, SetSecurityInfo, SE_FILE_OBJECT,
 };
 use windows_sys::Win32::Security::{
-    AclSizeInformation, CreateWellKnownSid, EqualSid, GetAce, GetAclInformation,
-    GetSecurityDescriptorControl, GetTokenInformation, IsValidSid, TokenUser, WinLocalSystemSid,
-    ACCESS_ALLOWED_ACE, ACE_HEADER, ACL, ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION,
-    OWNER_SECURITY_INFORMATION, PSID, SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
+    AclSizeInformation, AddAccessAllowedAceEx, CreateWellKnownSid, EqualSid, GetAce,
+    GetAclInformation, GetLengthSid, GetSecurityDescriptorControl, GetTokenInformation,
+    InitializeAcl, IsValidSid, TokenUser, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACE_HEADER, ACL,
+    ACL_REVISION, ACL_SIZE_INFORMATION, CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION,
+    OBJECT_INHERIT_ACE, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSID,
+    SE_DACL_PROTECTED, TOKEN_QUERY, TOKEN_USER,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ALL_ACCESS,
     FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_OWNER,
+    FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_DAC, WRITE_OWNER,
 };
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -145,6 +147,74 @@ pub(crate) fn seal_new_owner(path: &Path, is_dir: bool) -> Result<(), ReceiptErr
         return Err(unsafe_path());
     }
     Ok(())
+}
+
+/// Protect an exact newly-created directory with the existing user/SYSTEM DACL.
+/// The caller must have just won `create_dir`; existing state is only validated.
+pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError> {
+    let user_storage = current_user_sid()?;
+    let user = unsafe { (*(user_storage.as_ptr().cast::<TOKEN_USER>())).User.Sid };
+    let system_storage = system_sid()?;
+    let system = system_storage.as_ptr().cast_mut().cast::<c_void>();
+    let handle = open_with_access(
+        path,
+        READ_CONTROL | FILE_READ_ATTRIBUTES | WRITE_DAC | WRITE_OWNER,
+    )?;
+    let flags = attributes(&handle)?;
+    if flags & FILE_ATTRIBUTE_REPARSE_POINT != 0 || flags & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        return Err(unsafe_path());
+    }
+    let user_sid_len = unsafe { GetLengthSid(user) } as usize;
+    let system_sid_len = unsafe { GetLengthSid(system.cast()) } as usize;
+    if user_sid_len < 8 || user_sid_len > 68 || system_sid_len < 8 || system_sid_len > 68 {
+        return Err(unsafe_path());
+    }
+    let acl_len = std::mem::size_of::<ACL>() + 8 + user_sid_len + 8 + system_sid_len;
+    if acl_len > u16::MAX as usize {
+        return Err(unsafe_path());
+    }
+    let words = acl_len.div_ceil(std::mem::size_of::<usize>());
+    let mut acl_storage = vec![0usize; words];
+    let dacl = acl_storage.as_mut_ptr().cast::<ACL>();
+    if unsafe { InitializeAcl(dacl, acl_len as u32, ACL_REVISION) } == 0
+        || unsafe {
+            AddAccessAllowedAceEx(
+                dacl,
+                ACL_REVISION,
+                CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
+                FILE_ALL_ACCESS,
+                user,
+            )
+        } == 0
+        || unsafe {
+            AddAccessAllowedAceEx(
+                dacl,
+                ACL_REVISION,
+                CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
+                FILE_ALL_ACCESS,
+                system,
+            )
+        } == 0
+    {
+        return Err(unsafe_path());
+    }
+    if unsafe {
+        SetSecurityInfo(
+            handle.as_raw_handle(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
+            user,
+            null_mut(),
+            dacl,
+            null(),
+        )
+    } != 0
+    {
+        return Err(unsafe_path());
+    }
+    private_path(path, true)
 }
 
 fn attributes(handle: &OwnedHandle) -> Result<u32, ReceiptError> {

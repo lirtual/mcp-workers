@@ -316,7 +316,7 @@ mod windows_store {
         if !root.is_absolute() {
             return Err(EnrollmentError::UntrustedStore);
         }
-        safe_directory(root)
+        Ok(())
     }
 
     fn read_verified(
@@ -361,7 +361,8 @@ mod windows_store {
         safe_runner_root(runner_temp)?;
         let directory = runner_temp.join("session-rca");
         match fs::create_dir(&directory) {
-            Ok(()) => {}
+            Ok(()) => crate::seal_new_windows_private_directory(&directory)
+                .map_err(|_| EnrollmentError::UntrustedStore)?,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(_) => return Err(EnrollmentError::UntrustedStore),
         }

@@ -61,6 +61,14 @@ pub fn validate_windows_private_path(
     windows_private::private_path(path, is_dir)
 }
 
+/// Seal the just-created Session-private directory and verify its final ACL.
+#[cfg(windows)]
+pub(crate) fn seal_new_windows_private_directory(
+    path: &std::path::Path,
+) -> Result<(), receipts::ReceiptError> {
+    windows_private::seal_new_private_directory(path)
+}
+
 /// Reject the Windows LocalSystem account for a user-paired Standard Agent.
 #[cfg(windows)]
 pub fn is_windows_system_identity() -> Result<bool, receipts::ReceiptError> {
