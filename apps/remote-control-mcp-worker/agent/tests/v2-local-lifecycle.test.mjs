@@ -244,3 +244,93 @@ print("PTY_KEY_PURGE_EITHER_CONFIRMED_OR_SAFELY_BLOCKED")
  assert.equal(r.status,0,r.stderr);
  assert.match(r.stdout,/PTY_KEY_PURGE_EITHER_CONFIRMED_OR_SAFELY_BLOCKED/);
 });
+
+test("#914 reviewed native-only uninstall refuses unsafe state and preserves identity/SQLite",()=>{
+  if(process.platform!=="linux")return;
+  const code=String.raw`import importlib.util,sys,tempfile,pathlib,os,json,shutil
+from pathlib import Path
+script=Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location("b",script)
+b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+with tempfile.TemporaryDirectory(prefix="rca-native-uninstall-") as dirname:
+    os.umask(0o077)
+    home=Path(dirname)/"home";home.mkdir(mode=0o700)
+    store=home/b.STORE
+    programs=store/"programs"
+    version="v0.1.57-rust-candidate.1-linux-x64-glibc"
+    program=programs/version
+    app=program/b.APP
+    for directory in [programs,app/".build",app/"scripts"]:
+        directory.mkdir(parents=True,mode=0o700,exist_ok=True)
+    for name,content in {
+      "bundle.json":json.dumps({
+        "name":"remote-control-agent","version":"v0.1.57-rust-candidate.1",
+        "target":"linux-x64-glibc","artifact_schema":1,"device_protocol":2,
+        "receipt_schema":1,"agent_runtime":"rust-standard-linux-v1",
+        "candidate_profile":"standard-linux-rust-runtime-v1",
+        "artifact_profile":"rust-native-only-v1","upgrade_profile":"paired-full-v1",
+        "modules":[],"glibc_min":"2.34"}),
+      str(b.APP/".build/session-supervisor"):"supervisor",
+      str(b.APP/".build/rca-standard-linux-candidate"):"rust",
+      str(b.APP/"scripts/bootstrap-v2.py"):"bootstrap",
+      str(b.APP/"scripts/manage-v2.py"):"manager",
+      str(b.APP/"scripts/rca.sh"):"launcher"
+    }.items():
+        file=program/name
+        file.write_text(content)
+        file.chmod(0o700 if name.endswith((
+            "session-supervisor","rca-standard-linux-candidate","manage-v2.py","rca.sh"))
+            else 0o600)
+    keys=store/"v2-identity.pem"
+    keys.write_bytes(b"owner-key-preserved");keys.chmod(0o600)
+    key_id=store/"v2-identity.pem.device-id"
+    key_id.write_text("e11d9c70-16fe-4d47-aafc-d01db72750fd")
+    key_id.chmod(0o600)
+    receipt=home/".local/state/mcp-workers/remote-control-agent/operation-receipts.sqlite"
+    receipt.parent.mkdir(parents=True,mode=0o700)
+    receipt.write_bytes(b"unknown-receipts-preserved")
+    bin_dir=home/".local/bin";bin_dir.mkdir(parents=True,mode=0o700)
+    launcher=bin_dir/"rca"
+    launcher.symlink_to(app/"scripts/rca.sh")
+    unit=home/".config/systemd/user/remote-control-agent.service"
+    unit.parent.mkdir(parents=True,mode=0o700)
+    unit.write_text(b.MARKER+"\n[Service]\nWorkingDirectory="+str(app)+
+       "\nExecStart="+str(app/".build/rca-standard-linux-candidate")+"\n")
+    def attempt(confirm=True,check=None):
+        return b.local_uninstall(home,confirm,
+          systemctl=lambda args:actions.append(args),
+          process_check=check or (lambda versions: True))
+    actions=[]
+    assert b.validated_owned_version(program)
+    for confirm,scan in [(False,lambda versions:True),(True,lambda versions:False)]:
+        try:attempt(confirm,scan);raise AssertionError("uninstall ignored guard")
+        except ValueError:pass
+        assert program.is_dir() and unit.exists() and not actions
+    extra=app/".build/unreviewed"
+    extra.write_text("foreign");extra.chmod(0o600)
+    try:attempt();raise AssertionError("unlisted file removed")
+    except ValueError:pass
+    assert extra.exists() and not actions
+    extra.unlink()
+    launcher.unlink();launcher.symlink_to("/tmp/foreign-rca.sh")
+    try:attempt();raise AssertionError("foreign launcher removed")
+    except ValueError:pass
+    assert launcher.is_symlink() and not actions
+    launcher.unlink();launcher.symlink_to(app/"scripts/rca.sh")
+    result=attempt()
+    assert actions==[["--user","disable","--now",b.UNIT],
+                     ["--user","daemon-reload"]]
+    assert result["removed_versions"]==[version]
+    assert result["cloud_revocation"]=="NOT_PERFORMED"
+    assert result["preserved_keys_and_sqlite"]
+    assert not program.exists() and not unit.exists() and not launcher.exists()
+    assert keys.read_bytes()==b"owner-key-preserved"
+    assert key_id.read_text()=="e11d9c70-16fe-4d47-aafc-d01db72750fd"
+    assert receipt.read_bytes()==b"unknown-receipts-preserved"
+print("NATIVE_ONLY_GUARDED_UNINSTALL_PASS")
+`;
+  const r=spawnSync("python3",["-B","-c",code,script],
+    {encoding:"utf8",timeout:15000});
+  assert.equal(r.status,0,r.stderr);
+  assert.match(r.stdout,/NATIVE_ONLY_GUARDED_UNINSTALL_PASS/);
+});
