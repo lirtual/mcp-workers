@@ -102,7 +102,9 @@ mod windows {
         let runner_temp = std::path::PathBuf::from(source.get("RUNNER_TEMP").ok_or(())?);
         let receipts = runner_temp.join("session-rca").join("receipts");
         std::fs::create_dir(&receipts).map_err(|_| ())?;
-        rca_native_agent::validate_windows_private_path(&receipts, true).map_err(|_| ())?;
+        // Hosted Windows may assign an inherited group Owner to new children.
+        // Seal only this newly-created directory; never rewrite existing state.
+        rca_native_agent::seal_new_windows_private_directory(&receipts).map_err(|_| ())?;
         let _ = record_candidate_stage(source, "receipts_ready", false);
 
         let managed =
