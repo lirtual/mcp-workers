@@ -218,7 +218,7 @@ mod tests {
         // Exercise the real hosted Runner's temporary-drive ACL when available.
         let runner_root = std::env::var_os("RUNNER_TEMP");
         let temp = match runner_root {
-            Some(path) => tempfile::tempdir_in(path).unwrap(),
+            Some(path) => tempfile::tempdir_in(std::path::PathBuf::from(path)).unwrap(),
             None => tempfile::tempdir().unwrap(),
         };
         let mut env = valid_env();
