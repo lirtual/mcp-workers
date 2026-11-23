@@ -129,7 +129,14 @@ mod windows {
         {
             return Err(());
         }
-        let cleanup = std::fs::remove_dir_all(identity_path.parent().ok_or(())?);
+        // Retain only the fixed, nonsecret failure phase until the disposable
+        // Runner is destroyed. Never retain the private key or SQLite receipts.
+        let cleanup = if result.is_err() {
+            std::fs::remove_dir_all(&receipts)
+                .and_then(|_| std::fs::remove_file(&identity_path))
+        } else {
+            std::fs::remove_dir_all(identity_path.parent().ok_or(())?)
+        };
         if cleanup.is_err() {
             return Err(());
         }
