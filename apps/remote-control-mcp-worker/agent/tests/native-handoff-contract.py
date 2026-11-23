@@ -281,6 +281,59 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
+    # The published v0.1.56 Node recovery script cannot recognize the
+    # new native systemd unit. The verified native Python bootstrap restores
+    # the original unit and CLI with the same identity and receipt history.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        old_unit = unit.read_text("utf8")
+        unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+        state, mocks, verify = fake_services(home, old, new)
+        state["active"] = "new"
+        bootstrap.native_create_file(Path(str(unit) + ".upgrade-backup"),
+                                     old_unit.encode())
+        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+            json.dumps({"operation_id": "a" * 32, "device_id": ID,
+                        "target_version": new.name}).encode())
+        original_key, original_receipts = key.read_bytes(), receipts.read_bytes()
+        with patch.multiple(bootstrap, **mocks):
+            result = bootstrap.native_recover(home)
+        assert result["status"] == "previous_service_restored"
+        assert result["signed_wss"] == "unconfirmed"
+        assert state["active"] == "old"
+        assert unit.read_text("utf8") == old_unit
+        assert launcher.readlink() == old / APP / "scripts/rca.sh"
+        assert key.read_bytes() == original_key
+        assert receipts.read_bytes() == original_receipts
+        assert not Path(str(unit) + ".upgrade-backup").exists()
+        assert not Path(str(key) + ".native-upgrade-intent").exists()
+        assert old.exists() and new.exists()
+    finally:
+        ctx.cleanup()
+
+    # A forged recovery binding cannot affect either service or ledger.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        old_unit = unit.read_text("utf8")
+        unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+        state, mocks, verify = fake_services(home, old, new)
+        state["active"] = "new"
+        backup = Path(str(unit) + ".upgrade-backup")
+        bootstrap.native_create_file(backup, old_unit.encode())
+        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+            json.dumps({"operation_id": "b" * 32, "device_id": ID,
+                        "target_version": old.name}).encode())
+        with patch.multiple(bootstrap, **mocks):
+            try:
+                bootstrap.native_recover(home)
+                raise AssertionError("Wrong native recovery version accepted")
+            except ValueError as error:
+                assert "intent" in str(error)
+        assert unit.read_text("utf8") != old_unit
+        assert backup.exists() and not state["commands"]
+    finally:
+        ctx.cleanup()
+
     # Abrupt process termination leaves durable original unit + matching
     # target intent for manual reconciliation; never claim Pass.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()

@@ -850,6 +850,119 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                 except Exception:
                     pass
 
+def native_recover(home):
+    """Attended recovery of one interrupted, owner-frozen Node-free switch."""
+    home = pathlib.Path(home)
+    local_inventory(home)
+    key = home / STORE / "v2-identity.pem"
+    unit = home / ".config/systemd/user" / UNIT
+    backup = pathlib.Path(str(unit) + ".upgrade-backup")
+    intent = pathlib.Path(str(key) + ".native-upgrade-intent")
+    proof = pathlib.Path(str(key) + ".native-upgrade-proof")
+    lock_path = home / STORE / "v2-installer.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted owner installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        _, versions, unit, current, ids = local_inventory(home)
+        if (not current or not backup.is_file() or not intent.is_file()
+                or (unit.parent / (UNIT + ".d")).exists()
+                or (unit.parent / (UNIT + ".d")).is_symlink()
+                or pathlib.Path(str(key) + ".owner-stopped").exists()
+                or pathlib.Path(str(key) + ".owner-stopped").is_symlink()):
+            raise ValueError("No safe interrupted native upgrade to recover")
+        previous = native_owned_file(backup, 8192).decode("utf8")
+        old = owned_unit_root(previous, versions)
+        new = owned_unit_root(current, versions)
+        if old is None or new is None:
+            raise ValueError("Unknown service version during recovery")
+        validated_owned_version(old)
+        validated_owned_version(new)
+        new_info = json.loads((new / "bundle.json").read_text("utf8"))
+        if old != new and new_info.get("artifact_profile") != "rust-native-only-v1":
+            raise ValueError("Current service is not Node-free Rust")
+        endpoints = [line.split("=", 2)[2] for line in previous.splitlines()
+                     if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
+        if len(endpoints) != 1:
+            raise ValueError("Ambiguous recovery endpoint")
+        endpoint = endpoints[0]
+        if (previous != native_render_unit(old, endpoint, key)
+                or current != native_render_unit(new, endpoint, key)):
+            raise ValueError("Modified service template blocks recovery")
+        key_digest = hashlib.sha256(native_owned_file(key, 8192)).hexdigest()
+        device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+        record = json.loads(native_owned_file(intent, 512))
+        if (set(record) != {"operation_id", "device_id", "target_version"}
+                or not isinstance(record["operation_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", record["operation_id"])
+                or record["device_id"] != device_id or ids.get("permanent") != device_id
+                or record["target_version"] not in {v.name for v in versions}
+                or (old != new and record["target_version"] != new.name)):
+            raise ValueError("Recovery intent or device identity mismatch")
+        if os.path.lexists(proof):
+            signed = json.loads(native_owned_file(proof, 512))
+            if (set(signed) != set(record) | {"status"}
+                    or any(signed.get(field) != value for field, value in record.items())
+                    or signed["status"] != "authenticated_wss"):
+                raise ValueError("Recovery proof does not match this attempt")
+        native_receipts_compatible(home)
+        launcher = home / ".local/bin/rca"
+        if (not launcher.is_symlink()
+                or os.readlink(launcher) not in
+                {str(root / APP / "scripts/rca.sh") for root in (old, new)}):
+            raise ValueError("Unreviewed recovery launcher")
+        pid = native_main_pid()
+        current_exe = (new / APP / ".build/rca-standard-linux-candidate"
+                       if new_info.get("artifact_profile") == "rust-native-only-v1"
+                       else new / "bin/node")
+        if native_process_executable(pid) != current_exe:
+            raise ValueError("Recovery process does not match its systemd unit")
+        answer = native_consent(key, "freeze")
+        if answer != "ready" and native_consent(key, "verify-frozen") != "ready":
+            raise ValueError("Operations still active; recovery refused")
+        try:
+            if (native_main_pid() != pid or unit.read_text("utf8") != current
+                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
+                raise ValueError("Recovery state changed while frozen")
+            if current != previous:
+                native_atomic_file(unit, previous.encode())
+                native_systemctl("daemon-reload")
+                native_systemctl("restart", UNIT)
+            else:
+                native_consent(key, "release")
+            old_info = json.loads((old / "bundle.json").read_text("utf8"))
+            old_exe = (old / APP / ".build/rca-standard-linux-candidate"
+                       if old_info.get("artifact_profile") == "rust-native-only-v1"
+                       else old / "bin/node")
+            if (native_process_executable(native_main_pid()) != old_exe
+                    or unit.read_text("utf8") != previous
+                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
+                raise ValueError("Previous Agent was not restored")
+            native_restore_launcher(home, old, new)
+            native_receipts_compatible(home)
+            for item in (proof, intent, backup):
+                if os.path.lexists(item):
+                    item.unlink()
+                    native_sync_parent(item)
+            return {"status": "previous_service_restored", "version": old.name,
+                    "identity_preserved": True, "signed_wss": "unconfirmed"}
+        except Exception:
+            raise ValueError("Native recovery uncertain; original backup retained") from None
+        finally:
+            # If recovery failed before the old process restarted, unblock
+            # the still-running frozen Agent; release is harmless after restart.
+            try:
+                native_consent(key, "release")
+            except Exception:
+                pass
+
+
 UNIT = "remote-control-agent.service"
 MARKER = "# Managed by Remote Control Agent installer."
 STORE = pathlib.Path(".local/share/mcp-workers/remote-control")
@@ -1275,6 +1388,8 @@ def main():
     actions.add_argument("--native-upgrade", action="store_true",
                          help="owner-local Node/native to Node-free Rust signed WSS cutover")
     actions.add_argument("--uninstall", action="store_true")
+    actions.add_argument("--recover-native", action="store_true",
+                         help="owner-confirmed recovery of one interrupted native upgrade")
     actions.add_argument("--purge-local-identity", action="store_true",
                          help="separate explicit v2 key/ID purge after uninstall; shared SQLite retained")
     parser.add_argument("--name")
@@ -1284,6 +1399,13 @@ def main():
     try:
         if args.status:
             print(json.dumps(local_status(os.path.expanduser("~")), indent=2))
+        elif args.recover_native:
+            if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise ValueError("Native recovery requires an owner interactive terminal")
+            print("Recover the previous local Agent service; signed cloud WSS remains unconfirmed.")
+            if input("Type RECOVER-NATIVE to confirm: ").strip() != "RECOVER-NATIVE":
+                raise ValueError("Native recovery not confirmed")
+            print(json.dumps(native_recover(pathlib.Path.home()), indent=2))
         elif args.uninstall:
             if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
                 raise ValueError("Local uninstall requires a non-root interactive terminal")

@@ -81,6 +81,12 @@ print("RUST_CANDIDATE_ARCHIVE_OK")
   assert.match(r.stdout,/RUST_CANDIDATE_ARCHIVE_OK/);
 });
 
+test("#914 native recovery requires a real owner TTY",()=>{
+  const r=python([script,"--recover-native"],{input:""});
+  assert.equal(r.status,1);
+  assert.match(r.stderr,/recovery requires an owner interactive terminal/);
+});
+
 test("#74 standalone bootstrap fails without real TTY, before network or identity change",async()=>{
   const home=await mkdtemp(path.join(os.tmpdir(),"rc-bootstrap-tty-"));
   try {

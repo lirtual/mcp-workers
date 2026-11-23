@@ -183,6 +183,30 @@ try {
     const refusal=spawnSync("/usr/bin/python3",["-I","-B","-c",blocked,
       path.join(source,"scripts/bootstrap-v2.py"),home],{env,encoding:"utf8",timeout:8000});
     assert.equal(refusal.status,0,refusal.stderr);
+    // The published Node v0.1.56 recovery script cannot validate a native
+    // unit. The reviewed Python bootstrap, already in the native package,
+    // performs attended rollback using the original immutable unit backup.
+    const recoverCode=[
+      "import importlib.util,json,pathlib,sys",
+      "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
+      "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
+      "print(json.dumps(b.native_recover(pathlib.Path(sys.argv[2]))))",
+    ].join("\n");
+    const recovery=spawnSync("/usr/bin/python3",["-I","-B","-c",recoverCode,
+      path.join(source,"scripts/bootstrap-v2.py"),home],{
+      env,encoding:"utf8",timeout:30000});
+    assert.equal(recovery.status,0,recovery.stdout+"\n"+recovery.stderr);
+    const outcome=JSON.parse(recovery.stdout);
+    assert.equal(outcome.status,"previous_service_restored");
+    assert.equal(outcome.signed_wss,"unconfirmed");
+    assert.equal(liveExecutable(),nodeExe,"original Node must be restored");
+    assert.equal(readFileSync(unitFile,"utf8"),oldUnit);
+    assert.equal(readlinkSync(cli),path.join(oldRoot,
+      "apps/remote-control-agent/scripts/rca.sh"));
+    assert.ok(!existsSync(backupFile));
+    assert.ok(!existsSync(key+".native-upgrade-intent"));
+    assert.equal(readFileSync(key,"utf8"),privateKey);
+    assert.equal(readFileSync(deviceId,"utf8"),id+"\n");
     systemctl("stop",UNIT);
     const intact=new DatabaseSync(receipts,{readOnly:true});
     assert.equal(intact.prepare("PRAGMA quick_check").get().quick_check,"ok");
@@ -202,7 +226,8 @@ try {
     rollback_node_active_verified:true,identity_preserved:true,
     unknown_receipt_preserved:true,
     native_upgrader_sigkill_recovery_evidence_preserved:true,
-    pending_upgrade_uninstall_refused:true
+    pending_upgrade_uninstall_refused:true,
+    verified_native_recovery_restored_published_node:true
   }));
 } finally {
   if(installed){
