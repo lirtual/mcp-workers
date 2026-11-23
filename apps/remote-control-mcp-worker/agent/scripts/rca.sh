@@ -19,7 +19,7 @@ if test -x "$root/apps/remote-control-agent/.build/rca-standard-linux-candidate"
   case "${1:-}" in
     status|logs|version|--version)
       test -r "$root/apps/remote-control-agent/scripts/manage-v2.py" || exit 1
-      exec python3 -B "$root/apps/remote-control-agent/scripts/manage-v2.py" "$@"
+      exec /usr/bin/python3 -I -B "$root/apps/remote-control-agent/scripts/manage-v2.py" "$@"
       ;;
   esac
 fi
