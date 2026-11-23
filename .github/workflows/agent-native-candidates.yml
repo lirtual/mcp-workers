@@ -254,7 +254,7 @@ jobs:
             apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$pure" "$version" "$SPEC914_TARGET"
           node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-v2-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
             "$pure" "$version" "$SPEC914_TARGET"
-          if tar -tzf "$pure" | grep -E '(^|/)(bin/node|src/|.*\\.mjs|.*\\.js)'; then
+          if tar -tzf "$pure" | grep -E '(^bin/node$|/src/|[.]mjs$|[.]js$)'; then
             echo 'Node/JavaScript slipped into native-only archive' >&2
             exit 1
           fi
