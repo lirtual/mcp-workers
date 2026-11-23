@@ -8,6 +8,8 @@ use crate::session_enrollment::{
 use crate::session_registration::{valid_session_transport_grant, RegisteredSessionDevice};
 use crate::session_transport_env::session_transport_environment;
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -139,6 +141,54 @@ pub fn spawn_credential_free_transport(
         .map_err(|_| WindowsSessionRunnerError::Spawn)
 }
 
+/// Candidate-only, private, bounded phase evidence. It is never an authority
+/// for WSS/Grant readiness and contains no token, path, or exception details.
+pub fn record_candidate_stage(
+    source: &BTreeMap<String, String>,
+    stage: &str,
+    create: bool,
+) -> Result<(), WindowsSessionRunnerError> {
+    if !matches!(
+        stage,
+        "pending"
+            | "entered"
+            | "identity_ready"
+            | "signed_recovered"
+            | "receipts_ready"
+            | "wss_start"
+            | "wss_error"
+    ) {
+        return Err(WindowsSessionRunnerError::InvalidRunner);
+    }
+    let (_, runner_temp) = checked_runner_context(source)?;
+    let directory = runner_temp.join("session-rca");
+    crate::validate_windows_private_path(&directory, true)
+        .map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)?;
+    let stage_path = directory.join("transport-stage");
+    let mut file = if create {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&stage_path)
+            .map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)?;
+        crate::seal_new_windows_private_file(&stage_path)
+            .map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)?;
+        file
+    } else {
+        crate::validate_windows_private_path(&stage_path, false)
+            .map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)?;
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&stage_path)
+            .map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)?
+    };
+    file.write_all(stage.as_bytes())
+        .and_then(|_| file.write_all(b"\n"))
+        .and_then(|_| file.sync_all())
+        .map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +211,26 @@ mod tests {
             ("GITHUB_RUN_ATTEMPT".into(), "1".into()),
             ("RUNNER_TEMP".into(), "C:\\runner\\temp".into()),
         ])
+    }
+
+    #[test]
+    fn private_candidate_stage_is_bounded_and_attempt_scoped() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = valid_env();
+        env.insert("RUNNER_TEMP".into(), temp.path().display().to_string());
+        let (attempt, _) = checked_runner_context(&env).unwrap();
+        crate::session_enrollment::load_or_create_windows_session_identity(
+            temp.path(),
+            &attempt,
+        )
+        .unwrap();
+        record_candidate_stage(&env, "pending", true).unwrap();
+        record_candidate_stage(&env, "identity_ready", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("session-rca/transport-stage")).unwrap(),
+            "identity_ready\n"
+        );
+        assert!(record_candidate_stage(&env, "untrusted", false).is_err());
     }
 
     #[test]
