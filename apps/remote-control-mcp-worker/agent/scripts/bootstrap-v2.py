@@ -569,7 +569,9 @@ def validated_owned_version(p):
     agent_runtime = manifest.get("agent_runtime", "node-v2")
     native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
     if native_only:
-        if agent_runtime != "rust-standard-linux-v1" or source.exists() or source.is_symlink():
+        if (agent_runtime != "rust-standard-linux-v1" or source.exists() or source.is_symlink()
+                or manifest.get("modules") != [] or manifest.get("node") is not None
+                or manifest.get("upgrade_protocol") is not None):
             raise ValueError("Untrusted native-only Rust program")
     elif source.is_symlink() or not source.is_file():
         raise ValueError("Missing/linked runtime source")
@@ -602,6 +604,7 @@ def validated_owned_version(p):
                  not re.search(r"(?:readOnly|writeFile|shell)\s*:",
                                source.read_text("utf8"))))):
         raise ValueError("Unverified or Shell-enabled Agent; cannot uninstall")
+    observed = set()
     for parent, dirs, files in os.walk(p, followlinks=False):
         for name in dirs + files:
             file = pathlib.Path(parent) / name
@@ -609,6 +612,15 @@ def validated_owned_version(p):
             if st.st_uid != os.getuid() or st.st_mode & 0o077 or not (
                     stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
                 raise ValueError("Untrusted file in v2 program")
+            if stat.S_ISREG(st.st_mode):
+                observed.add(file.relative_to(p).as_posix())
+    if native_only:
+        expected = {"bundle.json", str(APP / ".build/session-supervisor"),
+                    str(APP / ".build/rca-standard-linux-candidate"),
+                    str(APP / "scripts/bootstrap-v2.py"),
+                    str(APP / "scripts/manage-v2.py"), str(APP / "scripts/rca.sh")}
+        if observed != expected:
+            raise ValueError("Native-only program contains missing or unexpected files")
     return True
 
 
@@ -692,6 +704,10 @@ def owned_manager_launcher(home, versions):
     if launcher.is_symlink():
         info = launcher.lstat()
         expected = [str(v / APP / "scripts/manage-v2.py") for v in versions]
+        for version in versions:
+            manifest = json.loads((version / "bundle.json").read_text("utf8"))
+            if manifest.get("artifact_profile") == "rust-native-only-v1":
+                expected.append(str(version / APP / "scripts/rca.sh"))
         if info.st_uid != os.getuid() or os.readlink(launcher) not in expected:
             raise ValueError("Foreign Agent manager launcher: refuse uninstall")
         return launcher
@@ -704,10 +720,11 @@ def local_uninstall(home, confirm, systemctl=None, process_check=no_running_prog
     if os.getuid() == 0 or not confirm:
         raise ValueError("Owner-only explicit local uninstall required")
     programs, versions, unit_file, unit, ids = local_inventory(home)
-    launcher = owned_manager_launcher(home, versions)
-    owned = owned_unit_root(unit, versions)
+    # Reject unknown program contents BEFORE recognizing or removing the CLI.
     for version in versions:
         validated_owned_version(version)
+    launcher = owned_manager_launcher(home, versions)
+    owned = owned_unit_root(unit, versions)
     # For an owned permanent user service, its explicit stop is required first;
     # refuse cleanup if any Agent remains after stopping it.
     if owned is None and not process_check(versions):
