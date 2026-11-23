@@ -188,23 +188,38 @@ def inspect_archive(archive, tag, target):
                 if member.size < 0 or cumulative > MAX_UNPACK:
                     raise ValueError("Oversized uncompressed archive")
             records.append((name, member))
-        if not EXEC_FILES.issubset(names) or "bundle.json" not in names \
-                or APP + "/src/v2-main.js" not in names \
-                or APP + "/scripts/install-v2.mjs" not in names:
+        if "bundle.json" not in names:
             raise ValueError("Incomplete Agent Release archive")
-        # CI candidate tags need not use final semver. Choose the reviewed
-        # file profile by presence, never by a mutable/latest version string.
-        # A partial mixed archive must satisfy the full selected profile.
-        node_profile = bool(names & NODE_REQUIRED)
-        required = NODE_REQUIRED if node_profile else LEGACY_REQUIRED
-        if not required.issubset(names):
-            raise ValueError("Missing reviewed Agent manager/bootstrap files")
         manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
         agent_runtime = manifest.get("agent_runtime", "node-v2")
         rust_candidate = agent_runtime == "rust-standard-linux-v1"
+        native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
+        native_files = {"bundle.json", APP + "/.build/session-supervisor",
+                        APP + "/.build/rca-standard-linux-candidate",
+                        APP + "/scripts/bootstrap-v2.py", APP + "/scripts/manage-v2.py",
+                        APP + "/scripts/rca.sh"}
+        if native_only:
+            files = {name for name, member in records if member.isfile()}
+            if files != native_files:
+                raise ValueError("Native-only archive must contain only reviewed Rust files")
+        else:
+            if not EXEC_FILES.issubset(names) or APP + "/src/v2-main.js" not in names \
+                    or APP + "/scripts/install-v2.mjs" not in names:
+                raise ValueError("Incomplete Agent Release archive")
+            # Historical reviewed Node and mixed Rust-Node migration layouts.
+            node_profile = bool(names & NODE_REQUIRED)
+            required = NODE_REQUIRED if node_profile else LEGACY_REQUIRED
+            if not required.issubset(names):
+                raise ValueError("Missing reviewed Agent manager/bootstrap files")
         if (manifest.get("artifact_schema") != 1 or manifest.get("name") != "remote-control-agent"
                 or manifest.get("version") != tag or manifest.get("target") != target
-                or not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", "")))
+                or (native_only and (not rust_candidate
+                    or manifest.get("node") is not None
+                    or manifest.get("modules") != []
+                    or "upgrade_protocol" in manifest))
+                or (not native_only and (
+                    not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", ""))
+                    or "artifact_profile" in manifest))
                 or agent_runtime not in ("node-v2", "rust-standard-linux-v1")
                 or (rust_candidate and (
                     manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
@@ -434,14 +449,19 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 os.fsync(f.fileno())
             print("==> SHA-256 verified; inspecting archive and system ABI", flush=True)
             records = inspect_archive(archive_path, tag, target)
-            if stage_only:
-                with tarfile.open(archive_path, "r:gz") as tf:
-                    manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
-                if manifest.get("upgrade_profile") != "paired-full-v1" or \
-                        manifest.get("upgrade_protocol") != "owner-one-shot-v1" or \
-                        manifest.get("device_protocol") != 2 or \
-                        manifest.get("receipt_schema") != 1:
-                    raise ValueError("Linux one-shot release lacks reviewed protocol readiness")
+            with tarfile.open(archive_path, "r:gz") as tf:
+                manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
+            native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
+            if native_only and not stage_only:
+                # Lifecycle/rollback has not yet been proven for a Node-free
+                # service: verify and stage bytes only, never switch the unit.
+                raise ValueError("Native-only Rust archive is staging-only until lifecycle gate")
+            if stage_only and (manifest.get("upgrade_profile") != "paired-full-v1" or
+                    manifest.get("device_protocol") != 2 or
+                    manifest.get("receipt_schema") != 1 or
+                    (not native_only and
+                     manifest.get("upgrade_protocol") != "owner-one-shot-v1")):
+                raise ValueError("Linux release lacks reviewed staging protocol readiness")
             if version.exists() or version.is_symlink():
                 verify_existing_program(archive_path, version, records)
             else:
@@ -543,10 +563,16 @@ def local_status(home):
 def validated_owned_version(p):
     f = p / "bundle.json"
     source = p / APP / "src/v2-main.js"
-    if f.is_symlink() or source.is_symlink() or not f.is_file() or not source.is_file():
+    if f.is_symlink() or not f.is_file():
         raise ValueError("Missing/linked runtime manifest")
     manifest = json.loads(f.read_text("utf8"))
     agent_runtime = manifest.get("agent_runtime", "node-v2")
+    native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
+    if native_only:
+        if agent_runtime != "rust-standard-linux-v1" or source.exists() or source.is_symlink():
+            raise ValueError("Untrusted native-only Rust program")
+    elif source.is_symlink() or not source.is_file():
+        raise ValueError("Missing/linked runtime source")
     if agent_runtime == "rust-standard-linux-v1":
         candidate = p / APP / ".build/rca-standard-linux-candidate"
         try:
@@ -566,10 +592,11 @@ def validated_owned_version(p):
             or manifest.get("receipt_schema") != 1
             or p.name != manifest.get("version") + "-" + manifest.get("target")
             or not (
+                (native_only and manifest.get("upgrade_profile") == "paired-full-v1") or
                 (manifest.get("upgrade_profile") == "read-only-no-shell-v1" and
                  re.search(r"readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,",
                            source.read_text("utf8"))) or
-                (manifest.get("upgrade_profile") == "paired-full-v1" and
+                (not native_only and manifest.get("upgrade_profile") == "paired-full-v1" and
                  re.search(r'V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"',
                            source.read_text("utf8")) and
                  not re.search(r"(?:readOnly|writeFile|shell)\s*:",
