@@ -219,11 +219,8 @@ mod tests {
         let mut env = valid_env();
         env.insert("RUNNER_TEMP".into(), temp.path().display().to_string());
         let (attempt, _) = checked_runner_context(&env).unwrap();
-        crate::session_enrollment::load_or_create_windows_session_identity(
-            temp.path(),
-            &attempt,
-        )
-        .unwrap();
+        crate::session_enrollment::load_or_create_windows_session_identity(temp.path(), &attempt)
+            .unwrap();
         record_candidate_stage(&env, "pending", true).unwrap();
         record_candidate_stage(&env, "identity_ready", false).unwrap();
         assert_eq!(
