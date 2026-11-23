@@ -356,15 +356,25 @@ mod windows_store {
         attempt: &SessionPhysicalAttempt,
     ) -> Result<(PathBuf, SessionDeviceIdentity), EnrollmentError> {
         if !valid_attempt(attempt) {
+            #[cfg(test)]
+            eprintln!("candidate identity store: attempt rejected");
             return Err(EnrollmentError::InvalidAttempt);
         }
-        safe_runner_root(runner_temp)?;
+        if safe_runner_root(runner_temp).is_err() {
+            #[cfg(test)]
+            eprintln!("candidate identity store: temp root rejected");
+            return Err(EnrollmentError::UntrustedStore);
+        }
         let directory = runner_temp.join("session-rca");
         match fs::create_dir(&directory) {
             Ok(()) => crate::seal_new_windows_private_directory(&directory)
                 .map_err(|_| EnrollmentError::UntrustedStore)?,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(_) => return Err(EnrollmentError::UntrustedStore),
+            Err(error) => {
+                #[cfg(test)]
+                eprintln!("candidate identity store: directory create failed kind={:?}", error.kind());
+                return Err(EnrollmentError::UntrustedStore);
+            }
         }
         safe_directory(&directory)?;
         let file = directory.join("identity.json");
