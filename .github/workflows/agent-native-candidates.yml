@@ -766,6 +766,14 @@ jobs:
           $nativeStage = Join-Path $nativeOut ('remote-control-agent-' + $nativeTag + '-windows-x64')
           $nativeVerifier = 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1'
           & $nativeVerifier -Root $nativeStage -Version $nativeTag
+          # The packaged native CLI must remain offline and read-only even
+          # before a device is paired; there is no bundled Node executable.
+          $nativeStatus = & (Join-Path $nativeStage 'rca.cmd') status | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $nativeStatus.platform -cne 'win32' -or
+              $nativeStatus.identity_present -ne $false -or $null -ne $nativeStatus.device_id -or
+              $nativeStatus.remote_connection -cne 'unconfirmed') {
+            throw 'Unpaired native status did not preserve the offline CLI contract'
+          }
           $nativeArchive = Join-Path $env:RUNNER_TEMP 'candidate-native-only.zip'
           Compress-Archive -Path (Join-Path $nativeStage '*') -DestinationPath $nativeArchive -CompressionLevel Optimal
           $nativeReopened = Join-Path $env:RUNNER_TEMP 'windows-native-only-reopened'
@@ -1108,6 +1116,18 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Existing installer could not stage Node-free Windows archive' }
             & 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1' -Root $nativeDir -Version $nativeVersion
             if (Test-Path -LiteralPath (Join-Path $nativeDir 'bin/node.exe')) { throw 'Unexpected Node runtime in native-only installed directory' }
+            $nativeStatus = & (Join-Path $nativeDir 'rca.cmd') status | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $nativeStatus.platform -cne 'win32' -or
+                $nativeStatus.identity_present -ne $true -or
+                $nativeStatus.device_id -cne (Get-Content -LiteralPath $device -Raw).Trim() -or
+                $nativeStatus.remote_connection -cne 'unconfirmed' -or
+                $nativeStatus.shell -ne $true -or $nativeStatus.write_file -ne $true) {
+              throw 'Native status failed the existing paired identity contract'
+            }
+            $nativeExe = Join-Path $nativeDir 'apps/remote-control-agent/.build/rca-standard-windows-candidate.exe'
+            $unsupported = Start-Process -FilePath $nativeExe -ArgumentList @('--cli','upgrade') -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'native-cli-refusal.txt')
+            if ($unsupported.ExitCode -eq 0) { throw 'Staged native CLI allowed an unsupported mutation' }
+            Write-Output 'WINDOWS_NATIVE_ONLY_STATUS_PASS'
             $unchanged = Get-ScheduledTask -TaskName $taskName
             if ($unchanged.State -ne 'Running' -or
                 [string]$unchanged.Actions[0].Execute -cne $originalAction -or
@@ -1155,6 +1175,29 @@ jobs:
                 ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
               throw 'Rust process migrated from published Node escaped the registered user identity'
             }
+            # Actual running Rust Task on the existing non-Worker endpoint.
+            # No fake positive proof: Running without signed WSS must fail.
+            $current = Get-ScheduledTask -TaskName $taskName
+            if ([string]$current.Actions[0].Arguments -cnotmatch '--generation "([0-9a-f-]{36})"$') {
+              throw 'Missing native Task generation'
+            }
+            $actualGeneration = $Matches[1]
+            $verifyArgs = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',
+              'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1',
+              '-Action','VerifyActivation','-Version',$rustVersion,'-Generation')
+            foreach ($generation in @($actualGeneration,[guid]::NewGuid().ToString('D'))) {
+              $errorPath = Join-Path $env:RUNNER_TEMP ('native-activation-refusal-' + $generation + '.txt')
+              $verify = Start-Process -FilePath powershell.exe -ArgumentList ($verifyArgs + @($generation)) -Wait -PassThru -NoNewWindow -RedirectStandardError $errorPath
+              if ($verify.ExitCode -eq 0) { throw 'Native Task accepted absent or wrong-generation WSS evidence' }
+              $reason = Get-Content -LiteralPath $errorPath -Raw
+              if ($generation -ceq $actualGeneration -and $reason -notmatch 'Signed WSS activation not confirmed') {
+                throw ('Unexpected activation refusal: ' + $reason.Substring(0,[Math]::Min(900,$reason.Length)))
+              }
+              if ($generation -cne $actualGeneration -and $reason -notmatch 'Expected native Task is not running') {
+                throw 'Wrong-generation proof was not refused at the Task identity boundary'
+              }
+            }
+            Write-Output 'WINDOWS_RUNNING_WITHOUT_SIGNED_WSS_REJECTED'
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $publishedVersion -Direction Rollback
             if ($LASTEXITCODE -ne 0) { throw 'Published Rust-to-Node rollback failed' }
             $current = Get-ScheduledTask -TaskName $taskName

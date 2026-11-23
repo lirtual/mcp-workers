@@ -211,7 +211,7 @@ function Expand-SafeArchive([string]$file, [string]$folder) {
   $zip = [IO.Compression.ZipFile]::OpenRead($file)
   try {
     $entries = @($zip.Entries)
-    if ($entries.Count -lt 7 -or $entries.Count -gt 70) { throw 'Unexpected ZIP member count' }
+    if ($entries.Count -lt 8 -or $entries.Count -gt 70) { throw 'Unexpected ZIP member count' }
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     [long]$total = 0
     foreach ($entry in $entries) {
