@@ -264,7 +264,7 @@ function safePath(name,directory) {
     n==="apps/remote-control-agent/scripts/install-v2.mjs" ||
     ["bootstrap-node.mjs","manage-v2.mjs","lifecycle-v2.mjs",
      "upgrade-v2.mjs","upgrade-existing-service.mjs",
-     "bootstrap-v2.py","linux-upgrade-detached.mjs","linux-upgrade-watchdog.mjs",
+     "bootstrap-v2.py","manage-v2.py","linux-upgrade-detached.mjs","linux-upgrade-watchdog.mjs",
      "verify-v2-release.mjs","rca.sh"].some(name=>
        n==="apps/remote-control-agent/scripts/"+name) ||
     n==="apps/remote-control-agent/.build/session-supervisor" ||
@@ -330,9 +330,11 @@ export function inspectTarGzip(gzip,{tag,target}) {
       (rustCandidate && (manifest.candidate_profile!=="standard-linux-rust-runtime-v1" ||
         !/-rust-candidate(?:\.|$)/.test(tag) ||
         !/^linux-(?:x64|arm64)-glibc$/.test(target) ||
-        !entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate"))) ||
+        (!entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate") ||
+        !entries.has("apps/remote-control-agent/scripts/manage-v2.py")))) ||
       (!rustCandidate && (manifest.candidate_profile==="standard-linux-rust-runtime-v1" ||
-        entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate")))) {
+        entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate") ||
+        entries.has("apps/remote-control-agent/scripts/manage-v2.py")))) {
     throw new Error("Unexpected Release version, runtime profile, or architecture.");
   }
   // Historical local-only Releases remain readable. An archive advertising

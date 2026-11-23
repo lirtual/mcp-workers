@@ -210,7 +210,8 @@ def inspect_archive(archive, tag, target):
                     manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
                     or not re.search(r"-rust-candidate(?:\.|$)", tag)
                     or not target.startswith("linux-")
-                    or APP + "/.build/rca-standard-linux-candidate" not in names))
+                    or APP + "/.build/rca-standard-linux-candidate" not in names
+                    or APP + "/scripts/manage-v2.py" not in names))
                 or (not rust_candidate and (
                     manifest.get("candidate_profile") == "standard-linux-rust-runtime-v1"
                     or APP + "/.build/rca-standard-linux-candidate" in names))):

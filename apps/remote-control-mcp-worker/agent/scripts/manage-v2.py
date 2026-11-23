@@ -26,8 +26,16 @@ def local_runtime():
     if not manifest.is_file() or manifest.is_symlink():
         raise ValueError("Versioned Agent bundle is missing.")
     info = json.loads(manifest.read_text("utf8"))
+    # The existing Python CLI can inspect a Rust-owned Standard service without
+    # starting Node. Pairing and upgrades still use their reviewed transitional
+    # installer; this is not yet a Node-free release.
+    rust = (info.get("agent_runtime") == "rust-standard-linux-v1"
+            and info.get("candidate_profile") == "standard-linux-rust-runtime-v1"
+            and info.get("upgrade_profile") == "paired-full-v1")
+    legacy = (info.get("agent_runtime", "node-v2") == "node-v2"
+              and info.get("upgrade_profile") == "read-only-no-shell-v1")
     if (info.get("artifact_schema") != 1 or info.get("device_protocol") != 2
-            or info.get("upgrade_profile") != "read-only-no-shell-v1"
+            or not (rust or legacy)
             or root.name != info.get("version", "") + "-" + info.get("target", "")):
         raise ValueError("Unreviewed installed Agent bundle.")
     source = script.with_name("bootstrap-v2.py")
@@ -39,6 +47,11 @@ def local_runtime():
     spec.loader.exec_module(bootstrap)
     # This rejects foreign, symlinked and unowned local installation paths.
     bootstrap.local_inventory(str(home))
+    if rust:
+        # The legacy Python manager never accepted full-tools packages.
+        # Reuse the installed Rust executable and source-ownership checks
+        # before allowing any local manager operation.
+        bootstrap.validated_owned_version(root)
     return root, info, bootstrap
 
 
@@ -125,6 +138,12 @@ def upgrade(bootstrap, arguments):
 
 
 def dispatch(command, args, root, info, bootstrap):
+    # The Python Rust candidate path is inspection-only until the actual
+    # installer and rollback are proven. Direct invocation must not bypass
+    # the existing Node lifecycle CLI selected by rca.sh.
+    if (info.get("agent_runtime") == "rust-standard-linux-v1"
+            and command in ("pair", "upgrade", "uninstall")):
+        raise ValueError("Rust Python manager is read-only; use the reviewed Agent lifecycle CLI.")
     if command in ("--help", "-h", "help"):
         print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
@@ -156,6 +175,8 @@ def dispatch(command, args, root, info, bootstrap):
 
 def main():
     root, info, bootstrap = local_runtime()
+    if info.get("agent_runtime") == "rust-standard-linux-v1" and len(sys.argv) == 1:
+        raise ValueError("Rust Python manager requires an explicit read-only command.")
     if len(sys.argv) > 1:
         return dispatch(sys.argv[1], sys.argv[2:], root, info, bootstrap)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
