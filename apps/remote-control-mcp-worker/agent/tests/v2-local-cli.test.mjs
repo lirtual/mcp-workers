@@ -246,13 +246,13 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     await writeFile(path.join(rustDir,"rca-standard-linux-candidate"),"fixture", {mode:0o700});
     await chmod(path.join(rustDir,"rca-standard-linux-candidate"),0o700);
     await writeFile(path.join(sourceDir,"v2-main.js"),
-      'export const V2_RUNTIME_PROFILE = "paired-full-v1";\\n',{mode:0o600});
+      'export const V2_RUNTIME_PROFILE = "paired-full-v1";\n',{mode:0o600});
     await writeFile(path.join(f.program,"bundle.json"),JSON.stringify({
       name:"remote-control-agent",version:"v0.1.1",target:"linux-x64-glibc",
       artifact_schema:1,device_protocol:2,receipt_schema:1,
       upgrade_profile:"paired-full-v1",agent_runtime:"rust-standard-linux-v1",
       candidate_profile:"standard-linux-rust-runtime-v1"
-    })+"\\n",{mode:0o600});
+    })+"\n",{mode:0o600});
     for(const name of ["manage-v2.py","bootstrap-v2.py","rca.sh"])
       await writeFile(path.join(f.script,name),await readFile(path.join(src,name)),
         {mode:name==="rca.sh" ? 0o700 : 0o600});
@@ -276,7 +276,7 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
       version:"v0.1.1",target:"linux-x64-glibc",artifact_schema:1,
       device_protocol:2,receipt_schema:1,agent_runtime:"node-v2",
       upgrade_profile:"paired-full-v1"
-    })+"\\n",{mode:0o600});
+    })+"\n",{mode:0o600});
     assert.notEqual(run(["status"]).status,0);
   } finally { await rm(f.home,{recursive:true,force:true}); }
 });
