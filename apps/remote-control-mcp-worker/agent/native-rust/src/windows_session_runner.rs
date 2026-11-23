@@ -199,4 +199,60 @@ mod tests {
             ));
         }
     }
+    #[test]
+    fn credential_free_process_environment_survives_windows_spawn() {
+        const MARKER: &str = "RCA_WINDOWS_CHILD_ENV_TEST";
+        if std::env::var(MARKER).as_deref() == Ok("1") {
+            let mut actual: BTreeMap<String, String> = std::env::vars_os()
+                .map(|(key, value)| {
+                    Ok((
+                        key.into_string().map_err(|_| ())?,
+                        value.into_string().map_err(|_| ())?,
+                    ))
+                })
+                .collect::<Result<_, ()>>()
+                .expect("child environment contains only UTF-8 keys and values");
+            actual.remove(MARKER);
+            assert_eq!(
+                actual,
+                session_transport_environment(&actual),
+                "Windows CreateProcess changed the strict transport allowlist"
+            );
+            return;
+        }
+
+        let mut source = valid_env();
+        for key in [
+            "PATH",
+            "SystemRoot",
+            "WINDIR",
+            "TEMP",
+            "TMP",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "COMSPEC",
+        ] {
+            if let Ok(value) = std::env::var(key) {
+                source.insert(key.to_owned(), value);
+            }
+        }
+        let child_env = session_transport_environment(&source);
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "windows_session_runner::tests::credential_free_process_environment_survives_windows_spawn",
+                "--nocapture",
+            ])
+            .env_clear()
+            .envs(child_env)
+            .env(MARKER, "1")
+            .output()
+            .expect("launch credential-free synthetic child");
+        assert!(
+            output.status.success(),
+            "Windows transport environment did not survive process launch"
+        );
+    }
+
 }
