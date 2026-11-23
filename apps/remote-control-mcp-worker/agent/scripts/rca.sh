@@ -1,6 +1,7 @@
 #!/bin/sh
 # Portable rca entry, executed from the installer-owned versioned release.
-# Uses the verified bundled Node 24, never the host's node or Python.
+# Node Releases use their bundled Node; Rust candidates use system Python
+# only for read-only inspection while lifecycle remains on bundled Node.
 set -eu
 resolved=$(readlink -f -- "$0") || exit 1
 root=$(dirname -- "$(dirname -- "$(dirname -- "$(dirname -- "$resolved")")")")
