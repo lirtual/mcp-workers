@@ -215,7 +215,12 @@ mod tests {
 
     #[test]
     fn private_candidate_stage_is_bounded_and_attempt_scoped() {
-        let temp = tempfile::tempdir().unwrap();
+        // Exercise the real hosted Runner's temporary-drive ACL when available.
+        let runner_root = std::env::var_os("RUNNER_TEMP");
+        let temp = match runner_root {
+            Some(path) => tempfile::tempdir_in(path).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        };
         let mut env = valid_env();
         env.insert("RUNNER_TEMP".into(), temp.path().display().to_string());
         let (attempt, _) = checked_runner_context(&env).unwrap();
@@ -226,6 +231,17 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(temp.path().join("session-rca/transport-stage")).unwrap(),
             "identity_ready\n"
+        );
+
+        // Physical Candidate #45132982658 stopped at signed_recovered. Check
+        // the exact next OS-level create + inherited-ACL path on Windows CI.
+        let receipts = temp.path().join("session-rca/receipts");
+        std::fs::create_dir(&receipts).unwrap();
+        crate::validate_windows_private_path(&receipts, true).unwrap();
+        record_candidate_stage(&env, "receipts_ready", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("session-rca/transport-stage")).unwrap(),
+            "receipts_ready\n"
         );
         assert!(record_candidate_stage(&env, "untrusted", false).is_err());
     }
