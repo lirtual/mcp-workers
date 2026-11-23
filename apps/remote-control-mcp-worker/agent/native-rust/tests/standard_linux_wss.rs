@@ -157,11 +157,35 @@ mod linux {
             &root.path().join("v2-identity.pem.device-id"),
             &format!("{ID}\n"),
         );
-        let bin = root.path().join("rca-standard-linux-candidate");
+        // The post-WSS proof is valid only for the exact installed Node-free
+        // bundle, not an arbitrary candidate executed from a temporary path.
+        let version = "v0.1.57-linux-x64-glibc";
+        let installed = root.path().join(version);
+        let build = installed.join("apps/remote-control-agent/.build");
+        fs::create_dir_all(&build).unwrap();
+        let bin = build.join("rca-standard-linux-candidate");
         fs::copy(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"), &bin).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        private_file(
+            &installed.join("bundle.json"),
+            &json!({
+                "name":"remote-control-agent","version":"v0.1.57",
+                "target":"linux-x64-glibc",
+                "artifact_profile":"rust-native-only-v1",
+                "agent_runtime":"rust-standard-linux-v1"
+            })
+            .to_string(),
+        );
+        let operation_id = "0123456789abcdef0123456789abcdef";
+        private_file(
+            &root.path().join("v2-identity.pem.native-upgrade-intent"),
+            &json!({"operation_id":operation_id,"device_id":ID,
+                "target_version":version})
+            .to_string(),
+        );
         // No Shell operation is sent; the disposable sibling is validated but
         // never executed. A physical C helper remains its own Gate 1 test.
-        let helper = root.path().join("session-supervisor");
+        let helper = build.join("session-supervisor");
         fs::copy(&bin, &helper).unwrap();
         fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).unwrap();
         let target = root.path().join("written.txt");
@@ -263,6 +287,17 @@ mod linux {
                 .unwrap(),
         );
         server.join().unwrap();
+        let proof: Value = serde_json::from_slice(
+            &fs::read(root.path().join("v2-identity.pem.native-upgrade-proof")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            proof,
+            json!({
+                "operation_id": operation_id,"device_id":ID,
+                "target_version":version,"status":"authenticated_wss"
+            })
+        );
         let deadline = Instant::now() + Duration::from_secs(10);
         let exit = loop {
             if let Some(exit) = child.0.try_wait().unwrap() {

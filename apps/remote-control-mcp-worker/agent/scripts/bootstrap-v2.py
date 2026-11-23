@@ -14,6 +14,7 @@ import os
 import pathlib
 import platform
 import re
+import secrets
 import subprocess
 import shutil
 import ssl
@@ -26,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-OWNER = "lirtual/remote-control-agent"
+OWNER = "lirtual/mcp-workers"
 API = "https://api.github.com/repos/" + OWNER
 APP = "apps/remote-control-agent"
 MAX_ARCHIVE = 180 * 1024 * 1024
@@ -223,7 +224,7 @@ def inspect_archive(archive, tag, target):
                 or agent_runtime not in ("node-v2", "rust-standard-linux-v1")
                 or (rust_candidate and (
                     manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
-                    or not re.search(r"-rust-candidate(?:\.|$)", tag)
+                    or (not native_only and not re.search(r"-rust-candidate(?:\.|$)", tag))
                     or not target.startswith("linux-")
                     or APP + "/.build/rca-standard-linux-candidate" not in names
                     or APP + "/scripts/manage-v2.py" not in names))
@@ -410,13 +411,15 @@ def preflight(tag, commit, endpoint, stage_only=False):
 
 
 def install(tag, commit, endpoint, name=None, upgrade=False,
-            stage_only=False, asset_sha256=None):
-    if stage_only:
-        if name is not None or upgrade or not isinstance(asset_sha256, str) or \
-                not re.fullmatch(r"[0-9a-f]{64}", asset_sha256):
-            raise ValueError("Stage-only requires exactly one reviewed SHA-256 and no install action")
+            stage_only=False, asset_sha256=None, native_upgrade=False):
+    if stage_only or native_upgrade:
+        if (name is not None or upgrade or
+                not isinstance(asset_sha256, str) or
+                not re.fullmatch(r"[0-9a-f]{64}", asset_sha256)):
+            scope = "Stage-only" if stage_only else "Native upgrade"
+            raise ValueError(scope + " requires a reviewed SHA-256 and no Node install action")
     elif asset_sha256 is not None:
-        raise ValueError("An asset SHA-256 is only accepted for stage-only verification")
+        raise ValueError("An asset SHA-256 is only accepted for stage-only or native upgrade")
     target = preflight(tag, commit, endpoint, stage_only=stage_only)
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
     location = program_home(os.path.expanduser("~"))
@@ -433,7 +436,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         pinned = resolve_pinned(tag, commit, target)
         # Release API metadata is insufficient by itself: independent owner
         # review of the exact architecture's asset SHA-256 is mandatory.
-        if stage_only and pinned["digest"] != asset_sha256:
+        if (stage_only or native_upgrade) and pinned["digest"] != asset_sha256:
             raise ValueError("Reviewed SHA-256 differs from immutable GitHub Release metadata")
         archive_path = None
         try:
@@ -452,10 +455,10 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             with tarfile.open(archive_path, "r:gz") as tf:
                 manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
             native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
-            if native_only and not stage_only:
-                # Lifecycle/rollback has not yet been proven for a Node-free
-                # service: verify and stage bytes only, never switch the unit.
-                raise ValueError("Native-only Rust archive is staging-only until lifecycle gate")
+            if native_only and not (stage_only or native_upgrade):
+                raise ValueError("Native-only Rust requires explicit trusted handoff")
+            if native_upgrade and not native_only:
+                raise ValueError("Native handoff requires a Node-free Rust archive")
             if stage_only and (manifest.get("upgrade_profile") != "paired-full-v1" or
                     manifest.get("device_protocol") != 2 or
                     manifest.get("receipt_schema") != 1 or
@@ -473,6 +476,13 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         if stage_only:
             # No install-v2, systemctl, identity mutation, approval or pairing.
             return
+        if native_upgrade:
+            print("Signed WSS must be proven after switch; identity and SQLite remain unchanged.")
+            if input("Type NATIVE-UPGRADE for this owner-local service switch: ").strip() != "NATIVE-UPGRADE":
+                raise ValueError("Native service switch not confirmed")
+            result = native_cutover(pathlib.Path.home(), version, endpoint)
+            print(json.dumps(result, indent=2))
+            return
         binary = version / "bin/node"
         command = [str(binary), str(version / APP / "scripts/install-v2.mjs"),
                    "--endpoint", endpoint]
@@ -485,6 +495,473 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
               flush=True)
         # Only the cryptographically checked, safe-unpacked program runs.
         os.execv(str(binary), command)
+
+
+
+# One owner-approved Linux service transaction, reused for later Node-free
+# upgrades. There is no second Agent runtime, receipt ledger, or daemon.
+def native_render_unit(root, endpoint, key):
+    if not all(re.fullmatch(r"/[A-Za-z0-9_./-]+", str(p))
+               for p in (root, key)):
+        raise ValueError("Unsupported systemd path character")
+    if not re.fullmatch(r"https://[a-zA-Z0-9.-]+(?::[0-9]{1,5})?/", endpoint):
+        raise ValueError("Untrusted canonical service endpoint")
+    manifest = json.loads((root / "bundle.json").read_text("utf8"))
+    native = manifest.get("artifact_profile") == "rust-native-only-v1"
+    if native:
+        program = root / APP / ".build/rca-standard-linux-candidate"
+    elif manifest.get("agent_runtime", "node-v2") == "node-v2":
+        program = str(root / "bin/node") + " " + str(root / APP / "src/v2-main.js")
+    else:
+        raise ValueError("Only an installed Node or native-only Agent can transition")
+    return "\n".join((
+        MARKER, "[Unit]",
+        "Description=Remote Control Agent (signed outbound WSS)",
+        "StartLimitIntervalSec=0", "", "[Service]", "Type=simple",
+        "WorkingDirectory=" + str(root / APP),
+        "Environment=REMOTE_CONTROL_AGENT_ENDPOINT=" + endpoint,
+        "Environment=REMOTE_CONTROL_AGENT_KEY_PATH=" + str(key),
+        "UMask=0077",
+        "ExecStartPre=/usr/bin/test -r " + str(key),
+        "ExecStartPre=/usr/bin/test -r " + str(key) + ".device-id",
+        "ExecStartPre=/usr/bin/test -x " + str(root / APP / ".build/session-supervisor"),
+        "ExecStart=" + str(program), "Restart=on-failure", "RestartSec=15s",
+        "TimeoutStopSec=15s", "", "[Install]", "WantedBy=default.target", ""
+    ))
+
+
+def native_owned_file(path, max_bytes=4096):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o777 != 0o600
+                or not 0 < info.st_size <= max_bytes):
+            raise ValueError("Unsafe owner-local upgrade evidence")
+        content = stream.read(max_bytes + 1)
+        if len(content) != info.st_size:
+            raise ValueError("Owner-local upgrade evidence changed during read")
+        return content
+
+
+def native_sync_parent(path):
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def native_create_file(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        native_sync_parent(path)
+
+
+def native_atomic_file(path, data):
+    fd, temporary = tempfile.mkstemp(prefix=".rca-upgrade-", dir=path.parent)
+    try:
+        os.chmod(temporary, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        native_sync_parent(path)
+    finally:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+
+
+def native_systemctl(*args):
+    completed = subprocess.run(["systemctl", "--user", *args],
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               timeout=20, check=False)
+    if completed.returncode:
+        raise ValueError("Agent systemd action failed; inspect the preserved upgrade backup")
+    return completed.stdout.decode("ascii", errors="strict")
+
+
+def native_main_pid():
+    output = native_systemctl("show", UNIT, "-p", "ActiveState",
+                              "-p", "SubState", "-p", "MainPID")
+    rows = dict(line.split("=", 1) for line in output.strip().splitlines()
+                if "=" in line)
+    if (set(rows) != {"ActiveState", "SubState", "MainPID"}
+            or rows["ActiveState"] != "active" or rows["SubState"] != "running"
+            or not rows["MainPID"].isdigit() or int(rows["MainPID"]) < 1):
+        raise ValueError("Active owner Agent process cannot be established")
+    return int(rows["MainPID"])
+
+
+def native_process_executable(pid):
+    return pathlib.Path("/proc/%d/exe" % pid).resolve(strict=True)
+
+
+def native_consent(key, action):
+    import socket
+    endpoint = key.with_name("upgrade.sock")
+    info = endpoint.lstat()
+    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise ValueError("Untrusted Agent freeze socket")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(3)
+        client.connect(str(endpoint))
+        client.sendall((action + "\n").encode("ascii"))
+        answer = bytearray()
+        while len(answer) <= 32 and b"\n" not in answer:
+            part = client.recv(33 - len(answer))
+            if not part:
+                break
+            answer.extend(part)
+        if bytes(answer) not in (b"ready\n", b"busy\n", b"released\n"):
+            raise ValueError("Invalid Agent freeze response")
+        return answer.decode("ascii").strip()
+
+
+def native_launcher(home, old_root, new_root=None):
+    launcher = home / ".local/bin/rca"
+    previous = old_root / APP / "scripts/rca.sh"
+    # Only the exact reviewed launcher can participate in this transaction.
+    allowed = (str(previous),)
+    if not launcher.is_symlink() or os.readlink(launcher) not in allowed:
+        raise ValueError("Foreign or missing installed Agent launcher")
+    if new_root is None:
+        return
+    next_target = new_root / APP / "scripts/rca.sh"
+    if not next_target.is_file() or next_target.is_symlink():
+        raise ValueError("Native CLI was not verified")
+    stage = launcher.with_name("rca.native-upgrade-" + secrets.token_hex(8))
+    os.symlink(str(next_target), stage)
+    try:
+        os.replace(stage, launcher)
+        native_sync_parent(launcher)
+    finally:
+        if stage.is_symlink():
+            stage.unlink()
+
+
+def native_restore_launcher(home, old_root, new_root):
+    launcher = home / ".local/bin/rca"
+    original = str(old_root / APP / "scripts/rca.sh")
+    next_target = str(new_root / APP / "scripts/rca.sh")
+    if not launcher.is_symlink():
+        raise ValueError("Installed launcher disappeared during rollback")
+    current = os.readlink(launcher)
+    if current == original:
+        return
+    if current != next_target:
+        raise ValueError("Installed launcher changed during rollback")
+    stage = launcher.with_name("rca.native-rollback-" + secrets.token_hex(8))
+    os.symlink(original, stage)
+    try:
+        os.replace(stage, launcher)
+        native_sync_parent(launcher)
+    finally:
+        if stage.is_symlink():
+            stage.unlink()
+
+
+def native_wait_proof(path, operation, device_id, version, seconds=90):
+    import time
+    expires = time.monotonic() + seconds
+    while time.monotonic() < expires:
+        if path.exists() or path.is_symlink():
+            try:
+                proof = json.loads(native_owned_file(path, 512))
+            except json.JSONDecodeError:
+                # A create-new proof is visible before the Rust writer syncs;
+                # it is not accepted until the complete JSON is present.
+                time.sleep(0.25)
+                continue
+            if (set(proof) != {"operation_id", "device_id", "target_version", "status"}
+                    or proof["operation_id"] != operation
+                    or proof["device_id"] != device_id
+                    or proof["target_version"] != version
+                    or proof["status"] != "authenticated_wss"):
+                raise ValueError("Signed Rust WSS proof does not match this attempt")
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def native_receipts_compatible(home):
+    # Match the existing Node installer read-only header contract. Do not
+    # acquire a second SQLite writer while the old Agent remains online.
+    directory = home / ".local/state/mcp-workers/remote-control-agent"
+    if not directory.exists():
+        if directory.is_symlink():
+            raise ValueError("Redirected receipt directory")
+        return
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & 0o077):
+        raise ValueError("Untrusted existing SQLite receipt directory")
+    file = directory / "operation-receipts.sqlite"
+    if not file.exists():
+        if (file.is_symlink()
+                or any(os.path.lexists(directory / item) for item in
+                       ("operation-receipts.json", "operation-receipts.pre-sqlite.json"))):
+            raise ValueError("Missing SQLite with historical receipt data")
+        return
+    fd = os.open(file, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        metadata = os.fstat(fd)
+        if (not stat.S_ISREG(metadata.st_mode) or
+                metadata.st_uid != os.getuid() or
+                metadata.st_nlink != 1 or metadata.st_mode & 0o077):
+            raise ValueError("Untrusted SQLite receipt file")
+        header = os.read(fd, 100)
+        if (len(header) != 100 or header[:16] != b"SQLite format 3\x00"
+                or int.from_bytes(header[60:64], "big") not in (0, 1)):
+            raise ValueError("Incompatible SQLite receipt schema")
+    finally:
+        os.close(fd)
+
+
+def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
+    """Accept only a pinned staged Rust bundle; preserve old identity and SQLite."""
+    home = pathlib.Path(home)
+    _, versions, unit_file, current, ids = local_inventory(home)
+    if not current or "permanent" not in ids:
+        raise ValueError("No existing paired managed Linux Agent")
+    old_root = owned_unit_root(current, versions)
+    if old_root == new_root:
+        raise ValueError("Target Agent is already running")
+    validated_owned_version(old_root)
+    validated_owned_version(new_root)
+    manifest = json.loads((new_root / "bundle.json").read_text("utf8"))
+    if (manifest.get("artifact_profile") != "rust-native-only-v1"
+            or manifest.get("agent_runtime") != "rust-standard-linux-v1"):
+        raise ValueError("Upgrade target must be the reviewed Node-free Rust archive")
+    key = home / STORE / "v2-identity.pem"
+    key_before = hashlib.sha256(native_owned_file(key, 8192)).hexdigest()
+    device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+    if ids["permanent"] != device_id:
+        raise ValueError("Existing device identity has changed")
+    native_receipts_compatible(home)
+    if current != native_render_unit(old_root, endpoint, key):
+        raise ValueError("Unknown or modified installed systemd unit")
+    next_unit = native_render_unit(new_root, endpoint, key)
+    if (unit_file.parent / (UNIT + ".d")).exists() or (unit_file.parent / (UNIT + ".d")).is_symlink():
+        raise ValueError("Unexpected systemd drop-ins")
+    if (unit_file.parent / "remote-control-v2-agent.service").exists():
+        raise ValueError("Conflicting historical Agent service")
+    if pathlib.Path(str(key) + ".owner-stopped").exists():
+        raise ValueError("Owner Stop cannot silently become online")
+    native_launcher(home, old_root)
+    backup = pathlib.Path(str(unit_file) + ".upgrade-backup")
+    intent = pathlib.Path(str(key) + ".native-upgrade-intent")
+    proof = pathlib.Path(str(key) + ".native-upgrade-proof")
+    if any(os.path.lexists(item) for item in (backup, intent, proof)):
+        raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
+    # The Node installer owns this existing lock. Never race its pairing/repair.
+    lock_path = home / STORE / "v2-installer.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o777 != 0o600):
+            raise ValueError("Untrusted v2 installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        pid = native_main_pid()
+        # The service entrypoint must be the version whose socket we freeze.
+        expected_binary = old_root / ("apps/remote-control-agent/.build/rca-standard-linux-candidate"
+                                     if "rust-native-only-v1" ==
+                                     json.loads((old_root / "bundle.json").read_text("utf8")).get("artifact_profile")
+                                     else "bin/node")
+        if native_process_executable(pid) != expected_binary:
+            raise ValueError("Service process differs from frozen Agent")
+        if native_consent(key, "freeze") != "ready":
+            raise ValueError("Agent has running or unknown operations; upgrade refused")
+        switched = False
+        operation = secrets.token_hex(16)
+        try:
+            if (native_consent(key, "verify-frozen") != "ready"
+                    or native_main_pid() != pid
+                    or unit_file.read_text("utf8") != current
+                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before):
+                raise ValueError("Agent changed during freeze")
+            native_create_file(intent, json.dumps({
+                "operation_id": operation, "device_id": device_id,
+                "target_version": new_root.name
+            }, separators=(",", ":")).encode())
+            native_create_file(backup, current.encode())
+            native_atomic_file(unit_file, next_unit.encode())
+            switched = True
+            native_systemctl("daemon-reload")
+            native_systemctl("restart", UNIT)
+            new_pid = native_main_pid()
+            if native_process_executable(new_pid) != (
+                    new_root / APP / ".build/rca-standard-linux-candidate"):
+                raise ValueError("systemd did not activate the native Rust executable")
+            if not verify(proof, operation, device_id, new_root.name):
+                raise ValueError("New Rust Agent signed WSS was not confirmed")
+            # A proof from a Rust process that exited/restarted during the
+            # handshake does not authenticate its replacement. Keep the
+            # systemd instance that produced the signed WSS evidence.
+            if (native_main_pid() != new_pid
+                    or native_process_executable(new_pid) != (
+                        new_root / APP / ".build/rca-standard-linux-candidate")
+                    or unit_file.read_text("utf8") != next_unit
+                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before
+                    or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
+                raise ValueError("Rust process, identity or systemd unit changed after WSS")
+            native_launcher(home, old_root, new_root)
+            for item in (intent, proof, backup):
+                item.unlink()
+                native_sync_parent(item)
+            return {"status": "active", "version": new_root.name,
+                    "signed_wss": True, "identity_preserved": True}
+        except Exception as error:
+            if switched or backup.exists():
+                try:
+                    native_atomic_file(unit_file, current.encode())
+                    native_systemctl("daemon-reload")
+                    native_systemctl("restart", UNIT)
+                    restored_pid = native_main_pid()
+                    if (native_process_executable(restored_pid) != expected_binary
+                            or unit_file.read_text("utf8") != current
+                            or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before):
+                        raise ValueError("Rollback process, identity or unit mismatch")
+                    native_restore_launcher(home, old_root, new_root)
+                except Exception:
+                    # The durable old unit remains available for attended recovery.
+                    raise ValueError("Native upgrade failed; rollback uncertain; backup retained") from None
+            # No service switch or a verified old unit: evidence can be retired.
+            for item in (proof, backup, intent):
+                if os.path.lexists(item):
+                    item.unlink()
+                    native_sync_parent(item)
+            raise ValueError("Native upgrade refused or safely rolled back") from error
+        finally:
+            if not switched:
+                try:
+                    native_consent(key, "release")
+                except Exception:
+                    pass
+
+def native_recover(home):
+    """Attended recovery of one interrupted, owner-frozen Node-free switch."""
+    home = pathlib.Path(home)
+    local_inventory(home)
+    key = home / STORE / "v2-identity.pem"
+    unit = home / ".config/systemd/user" / UNIT
+    backup = pathlib.Path(str(unit) + ".upgrade-backup")
+    intent = pathlib.Path(str(key) + ".native-upgrade-intent")
+    proof = pathlib.Path(str(key) + ".native-upgrade-proof")
+    lock_path = home / STORE / "v2-installer.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted owner installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        _, versions, unit, current, ids = local_inventory(home)
+        if (not current or not backup.is_file() or not intent.is_file()
+                or (unit.parent / (UNIT + ".d")).exists()
+                or (unit.parent / (UNIT + ".d")).is_symlink()
+                or pathlib.Path(str(key) + ".owner-stopped").exists()
+                or pathlib.Path(str(key) + ".owner-stopped").is_symlink()):
+            raise ValueError("No safe interrupted native upgrade to recover")
+        previous = native_owned_file(backup, 8192).decode("utf8")
+        old = owned_unit_root(previous, versions)
+        new = owned_unit_root(current, versions)
+        if old is None or new is None:
+            raise ValueError("Unknown service version during recovery")
+        validated_owned_version(old)
+        validated_owned_version(new)
+        new_info = json.loads((new / "bundle.json").read_text("utf8"))
+        if old != new and new_info.get("artifact_profile") != "rust-native-only-v1":
+            raise ValueError("Current service is not Node-free Rust")
+        endpoints = [line.split("=", 2)[2] for line in previous.splitlines()
+                     if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
+        if len(endpoints) != 1:
+            raise ValueError("Ambiguous recovery endpoint")
+        endpoint = endpoints[0]
+        if (previous != native_render_unit(old, endpoint, key)
+                or current != native_render_unit(new, endpoint, key)):
+            raise ValueError("Modified service template blocks recovery")
+        key_digest = hashlib.sha256(native_owned_file(key, 8192)).hexdigest()
+        device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+        record = json.loads(native_owned_file(intent, 512))
+        if (set(record) != {"operation_id", "device_id", "target_version"}
+                or not isinstance(record["operation_id"], str)
+                or not re.fullmatch(r"[0-9a-f]{32}", record["operation_id"])
+                or record["device_id"] != device_id or ids.get("permanent") != device_id
+                or record["target_version"] not in {v.name for v in versions}
+                or (old != new and record["target_version"] != new.name)):
+            raise ValueError("Recovery intent or device identity mismatch")
+        if os.path.lexists(proof):
+            signed = json.loads(native_owned_file(proof, 512))
+            if (set(signed) != set(record) | {"status"}
+                    or any(signed.get(field) != value for field, value in record.items())
+                    or signed["status"] != "authenticated_wss"):
+                raise ValueError("Recovery proof does not match this attempt")
+        native_receipts_compatible(home)
+        launcher = home / ".local/bin/rca"
+        if (not launcher.is_symlink()
+                or os.readlink(launcher) not in
+                {str(root / APP / "scripts/rca.sh") for root in (old, new)}):
+            raise ValueError("Unreviewed recovery launcher")
+        pid = native_main_pid()
+        current_exe = (new / APP / ".build/rca-standard-linux-candidate"
+                       if new_info.get("artifact_profile") == "rust-native-only-v1"
+                       else new / "bin/node")
+        if native_process_executable(pid) != current_exe:
+            raise ValueError("Recovery process does not match its systemd unit")
+        answer = native_consent(key, "freeze")
+        if answer != "ready" and native_consent(key, "verify-frozen") != "ready":
+            raise ValueError("Operations still active; recovery refused")
+        try:
+            if (native_main_pid() != pid or unit.read_text("utf8") != current
+                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
+                raise ValueError("Recovery state changed while frozen")
+            if current != previous:
+                native_atomic_file(unit, previous.encode())
+                native_systemctl("daemon-reload")
+                native_systemctl("restart", UNIT)
+            else:
+                native_consent(key, "release")
+            old_info = json.loads((old / "bundle.json").read_text("utf8"))
+            old_exe = (old / APP / ".build/rca-standard-linux-candidate"
+                       if old_info.get("artifact_profile") == "rust-native-only-v1"
+                       else old / "bin/node")
+            if (native_process_executable(native_main_pid()) != old_exe
+                    or unit.read_text("utf8") != previous
+                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
+                raise ValueError("Previous Agent was not restored")
+            native_restore_launcher(home, old, new)
+            native_receipts_compatible(home)
+            for item in (proof, intent, backup):
+                if os.path.lexists(item):
+                    item.unlink()
+                    native_sync_parent(item)
+            return {"status": "previous_service_restored", "version": old.name,
+                    "identity_preserved": True, "signed_wss": "unconfirmed"}
+        except Exception:
+            raise ValueError("Native recovery uncertain; original backup retained") from None
+        finally:
+            # Never release a Rust process if the on-disk systemd unit was
+            # switched but restart failed. Keep it frozen for attended repair.
+            try:
+                if unit.read_text("utf8") == current:
+                    native_consent(key, "release")
+            except Exception:
+                pass
 
 
 UNIT = "remote-control-agent.service"
@@ -755,7 +1232,38 @@ def owned_manager_launcher(home, versions):
 def local_uninstall(home, confirm, systemctl=None, process_check=no_running_programs):
     if os.getuid() == 0 or not confirm:
         raise ValueError("Owner-only explicit local uninstall required")
+    # Native upgrades already hold this installer lock. Checking only durable
+    # intent would race with an upgrade about to create that intent.
+    local_inventory(home)
+    base = pathlib.Path(home) / STORE
+    if not base.exists():
+        return _local_uninstall_locked(home, systemctl, process_check)
+    private_dir(base)
+    fd = os.open(base / "v2-installer.lock",
+                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted v2 installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        return _local_uninstall_locked(home, systemctl, process_check)
+
+
+def _local_uninstall_locked(home, systemctl, process_check):
     programs, versions, unit_file, unit, ids = local_inventory(home)
+    # A cutover interrupted after freezing the Node process can still need
+    # both program versions for recovery. Never erase either one while its
+    # durable intent, signed proof or original service backup is present.
+    key = pathlib.Path(home) / STORE / "v2-identity.pem"
+    pending_upgrade = (pathlib.Path(str(unit_file) + ".upgrade-backup"),
+                       pathlib.Path(str(key) + ".native-upgrade-intent"),
+                       pathlib.Path(str(key) + ".native-upgrade-proof"))
+    if any(os.path.lexists(item) for item in pending_upgrade):
+        raise ValueError("Unreconciled native upgrade; uninstall would destroy recovery")
     # Reject unknown program contents BEFORE recognizing or removing the CLI.
     for version in versions:
         validated_owned_version(version)
@@ -878,16 +1386,27 @@ def main():
     actions.add_argument("--status", action="store_true")
     actions.add_argument("--stage-only", action="store_true",
                          help="verify and stage a separately pinned immutable Linux upgrade; never switch")
+    actions.add_argument("--native-upgrade", action="store_true",
+                         help="owner-local Node/native to Node-free Rust signed WSS cutover")
     actions.add_argument("--uninstall", action="store_true")
+    actions.add_argument("--recover-native", action="store_true",
+                         help="owner-confirmed recovery of one interrupted native upgrade")
     actions.add_argument("--purge-local-identity", action="store_true",
                          help="separate explicit v2 key/ID purge after uninstall; shared SQLite retained")
     parser.add_argument("--name")
     parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
-    parser.add_argument("--asset-sha256", help="independently reviewed architecture SHA-256 for --stage-only")
+    parser.add_argument("--asset-sha256", help="independently reviewed SHA-256 for native staging or switch")
     args = parser.parse_args()
     try:
         if args.status:
             print(json.dumps(local_status(os.path.expanduser("~")), indent=2))
+        elif args.recover_native:
+            if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise ValueError("Native recovery requires an owner interactive terminal")
+            print("Recover the previous local Agent service; signed cloud WSS remains unconfirmed.")
+            if input("Type RECOVER-NATIVE to confirm: ").strip() != "RECOVER-NATIVE":
+                raise ValueError("Native recovery not confirmed")
+            print(json.dumps(native_recover(pathlib.Path.home()), indent=2))
         elif args.uninstall:
             if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
                 raise ValueError("Local uninstall requires a non-root interactive terminal")
@@ -935,7 +1454,7 @@ def main():
             if not args.tag or not args.commit or not args.endpoint:
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
-                    args.stage_only, args.asset_sha256)
+                    args.stage_only, args.asset_sha256, args.native_upgrade)
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)

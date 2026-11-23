@@ -10,8 +10,8 @@ mod linux {
     use rca_native_agent::session::SessionError;
     use std::ffi::OsStr;
     use std::fs;
-    use std::io::ErrorKind;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::io::{ErrorKind, Write};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -71,6 +71,90 @@ mod linux {
             return Err(());
         }
         Ok(true)
+    }
+
+    // The only success proof for a local Node -> native service cutover.
+    // Called by the shared transport *after* a signed Worker WSS handshake,
+    // never by systemd readiness or by a local upgrade command.
+    fn write_upgrade_proof(key: &Path, device_id: &str, executable: &Path) -> Result<(), ()> {
+        let intent_path = sidecar(key, ".native-upgrade-intent");
+        let info = match fs::symlink_metadata(&intent_path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(()),
+            Ok(info) => info,
+        };
+        if info.nlink() != 1 || info.permissions().mode() & 0o777 != 0o600 {
+            return Err(());
+        }
+        private_regular(&intent_path, 512)?;
+        let data: serde_json::Value =
+            serde_json::from_slice(&fs::read(&intent_path).map_err(|_| ())?).map_err(|_| ())?;
+        let fields = data.as_object().ok_or(())?;
+        if fields.len() != 3 {
+            return Err(());
+        }
+        let operation = fields
+            .get("operation_id")
+            .and_then(|x| x.as_str())
+            .ok_or(())?;
+        let expected_id = fields.get("device_id").and_then(|x| x.as_str()).ok_or(())?;
+        let target = fields
+            .get("target_version")
+            .and_then(|x| x.as_str())
+            .ok_or(())?;
+        if operation.len() != 32
+            || !operation
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || expected_id != device_id
+        {
+            return Err(());
+        }
+        let root = executable
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .ok_or(())?;
+        if root.file_name().and_then(OsStr::to_str) != Some(target) {
+            return Err(());
+        }
+        let manifest_path = root.join("bundle.json");
+        private_regular(&manifest_path, 4096)?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(manifest_path).map_err(|_| ())?).map_err(|_| ())?;
+        if manifest["artifact_profile"] != "rust-native-only-v1"
+            || manifest["agent_runtime"] != "rust-standard-linux-v1"
+            || format!(
+                "{}-{}",
+                manifest["version"].as_str().ok_or(())?,
+                manifest["target"].as_str().ok_or(())?
+            ) != target
+        {
+            return Err(());
+        }
+        let proof = sidecar(key, ".native-upgrade-proof");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&proof)
+            .map_err(|_| ())?;
+        serde_json::to_writer(
+            &mut file,
+            &serde_json::json!({
+                "operation_id": operation, "device_id": device_id,
+                "target_version": target, "status": "authenticated_wss",
+            }),
+        )
+        .map_err(|_| ())?;
+        file.write_all(b"\n").map_err(|_| ())?;
+        file.sync_all().map_err(|_| ())?;
+        fs::File::open(key.parent().ok_or(())?)
+            .map_err(|_| ())?
+            .sync_all()
+            .map_err(|_| ())?;
+        Ok(())
     }
 
     fn checked_supervisor() -> Result<Arc<LinuxManagedSessions>, ()> {
@@ -192,6 +276,9 @@ mod linux {
         });
         // Exactly the existing Node default receipt location; never create a
         // parallel receipt ledger when switching the runtime.
+        let proof_key = key.clone();
+        let proof_id = device_id.to_owned();
+        let proof_exe = std::env::current_exe().map_err(|_| ())?;
         let result = run_native_managed_session_with_upgrade(
             &endpoint,
             &private_pem,
@@ -201,7 +288,10 @@ mod linux {
             &stop,
             UpgradeRuntimeOptions {
                 key_path: &key,
-                on_connected: None,
+                on_connected: Some(Arc::new(move || {
+                    // Missing/invalid intent never becomes a success receipt.
+                    let _ = write_upgrade_proof(&proof_key, &proof_id, &proof_exe);
+                })),
             },
         );
         stop.store(true, Ordering::Release);

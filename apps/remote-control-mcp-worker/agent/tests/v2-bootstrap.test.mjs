@@ -12,6 +12,9 @@ const script = path.join(root, "scripts/bootstrap-v2.py");
 const PY = String.raw`import importlib.util, json, pathlib, sys, tempfile, shutil, tarfile, io
 spec=importlib.util.spec_from_file_location("bootstrap",sys.argv[1])
 m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+# The published Agent assets are in the monorepo, not the retired split repo.
+assert m.OWNER=="lirtual/mcp-workers",m.OWNER
+assert m.API=="https://api.github.com/repos/lirtual/mcp-workers",m.API
 tag="v0.1.0"; target="linux-x64-glibc"; commit="a"*40
 assert m.safe_member("bin/node",False)=="bin/node"
 for unsafe in ["../../.ssh/id_rsa","/tmp/evil","bin/../evil","apps/remote-control-agent/tests/evil.js"]:
@@ -19,7 +22,7 @@ for unsafe in ["../../.ssh/id_rsa","/tmp/evil","bin/../evil","apps/remote-contro
     except ValueError: pass
 for url in ["http://github.com/file","https://evil.example/file","https://github.com.evil.test/file"]:
     assert not m.https_origin(url),url
-assert m.https_origin("https://github.com/lirtual/remote-control-agent/releases/download/v0.1.0/agent.tgz")
+assert m.https_origin("https://github.com/lirtual/mcp-workers/releases/download/v0.1.0/agent.tgz")
 try: m.resolve_pinned("latest",commit,target); raise AssertionError("latest accepted")
 except ValueError: pass
 print("PYTHON_BOOTSTRAP_FAIL_CLOSED_OK")
@@ -78,6 +81,12 @@ print("RUST_CANDIDATE_ARCHIVE_OK")
   assert.match(r.stdout,/RUST_CANDIDATE_ARCHIVE_OK/);
 });
 
+test("#914 native recovery requires a real owner TTY",()=>{
+  const r=python([script,"--recover-native"],{input:""});
+  assert.equal(r.status,1);
+  assert.match(r.stderr,/recovery requires an owner interactive terminal/);
+});
+
 test("#74 standalone bootstrap fails without real TTY, before network or identity change",async()=>{
   const home=await mkdtemp(path.join(os.tmpdir(),"rc-bootstrap-tty-"));
   try {
@@ -97,7 +106,7 @@ tag="v0.1.0";c="a"*40;t="linux-x64-glibc"
 name="remote-control-agent-"+tag+"-"+t+".tar.gz"
 asset={"name":name,"state":"uploaded","id":42,"size":50000,"digest":"sha256:"+"b"*64,
        "url":m.API+"/releases/assets/42",
-       "browser_download_url":"https://github.com/lirtual/remote-control-agent/releases/download/"+tag+"/"+name}
+       "browser_download_url":"https://github.com/lirtual/mcp-workers/releases/download/"+tag+"/"+name}
 calls=[]
 def response(url):
     calls.append(url)
