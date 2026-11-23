@@ -253,6 +253,4 @@ mod tests {
             output.status.success(),
             "Windows transport environment did not survive process launch"
         );
-    }
-
-}
+    }}
