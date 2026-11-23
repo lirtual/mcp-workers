@@ -141,6 +141,20 @@ pub fn spawn_credential_free_transport(
         .map_err(|_| WindowsSessionRunnerError::Spawn)
 }
 
+/// Initialize this Attempt's receipt directory without re-owning existing state.
+/// Windows may assign an inherited group Owner; seal the *new* directory before
+/// any SQLite open or WSS command admission.
+pub fn create_candidate_receipt_directory(
+    source: &BTreeMap<String, String>,
+) -> Result<PathBuf, WindowsSessionRunnerError> {
+    let (_, runner_temp) = checked_runner_context(source)?;
+    let receipts = runner_temp.join("session-rca").join("receipts");
+    std::fs::create_dir(&receipts).map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)?;
+    crate::seal_new_windows_private_directory(&receipts)
+        .map_err(|_| WindowsSessionRunnerError::UntrustedIdentity)?;
+    Ok(receipts)
+}
+
 /// Candidate-only, private, bounded phase evidence. It is never an authority
 /// for WSS/Grant readiness and contains no token, path, or exception details.
 pub fn record_candidate_stage(
@@ -215,7 +229,12 @@ mod tests {
 
     #[test]
     fn private_candidate_stage_is_bounded_and_attempt_scoped() {
-        let temp = tempfile::tempdir().unwrap();
+        // Exercise the real hosted Runner's temporary-drive ACL when available.
+        let runner_root = std::env::var_os("RUNNER_TEMP");
+        let temp = match runner_root {
+            Some(path) => tempfile::tempdir_in(std::path::PathBuf::from(path)).unwrap(),
+            None => tempfile::tempdir().unwrap(),
+        };
         let mut env = valid_env();
         env.insert("RUNNER_TEMP".into(), temp.path().display().to_string());
         let (attempt, _) = checked_runner_context(&env).unwrap();
@@ -226,6 +245,17 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(temp.path().join("session-rca/transport-stage")).unwrap(),
             "identity_ready\n"
+        );
+
+        // Physical Candidate #45132982658 stopped at signed_recovered. Check
+        // the exact next OS-level create + inherited-ACL path on Windows CI.
+        let receipts = create_candidate_receipt_directory(&env).unwrap();
+        crate::validate_windows_private_path(&receipts, true).unwrap();
+        assert!(create_candidate_receipt_directory(&env).is_err());
+        record_candidate_stage(&env, "receipts_ready", false).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("session-rca/transport-stage")).unwrap(),
+            "receipts_ready\n"
         );
         assert!(record_candidate_stage(&env, "untrusted", false).is_err());
     }
