@@ -27,7 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-OWNER = "lirtual/remote-control-agent"
+OWNER = "lirtual/mcp-workers"
 API = "https://api.github.com/repos/" + OWNER
 APP = "apps/remote-control-agent"
 MAX_ARCHIVE = 180 * 1024 * 1024
