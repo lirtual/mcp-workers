@@ -228,6 +228,31 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
+    # An interrupted cutover owns both old and new programs until its
+    # durable backup is reconciled; even a confirmed local uninstall must
+    # not destroy the rollback binary in this state.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+        launcher.unlink()
+        launcher.symlink_to(new / APP / "scripts/rca.sh")
+        backup = Path(str(unit) + ".upgrade-backup")
+        intent = Path(str(key) + ".native-upgrade-intent")
+        owned_file(backup, bootstrap.native_render_unit(old, ENDPOINT, key))
+        owned_file(intent, '{"operation_id":"recovery-pending"}')
+        calls = []
+        try:
+            bootstrap.local_uninstall(home, True,
+                systemctl=lambda args: calls.append(args),
+                process_check=lambda versions: True)
+            raise AssertionError("Uninstall destroyed an interrupted native cutover")
+        except ValueError as error:
+            assert "Unreconciled native upgrade" in str(error)
+        assert not calls and old.exists() and new.exists()
+        assert backup.exists() and intent.exists()
+    finally:
+        ctx.cleanup()
+
     # Abrupt process termination leaves durable original unit + matching
     # target intent for manual reconciliation; never claim Pass.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()

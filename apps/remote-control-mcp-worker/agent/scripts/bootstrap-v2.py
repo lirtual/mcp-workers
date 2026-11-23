@@ -1119,6 +1119,15 @@ def local_uninstall(home, confirm, systemctl=None, process_check=no_running_prog
     if os.getuid() == 0 or not confirm:
         raise ValueError("Owner-only explicit local uninstall required")
     programs, versions, unit_file, unit, ids = local_inventory(home)
+    # A cutover interrupted after freezing the Node process can still need
+    # both program versions for recovery. Never erase either one while its
+    # durable intent, signed proof or original service backup is present.
+    key = pathlib.Path(home) / STORE / "v2-identity.pem"
+    pending_upgrade = (pathlib.Path(str(unit_file) + ".upgrade-backup"),
+                       pathlib.Path(str(key) + ".native-upgrade-intent"),
+                       pathlib.Path(str(key) + ".native-upgrade-proof"))
+    if any(os.path.lexists(item) for item in pending_upgrade):
+        raise ValueError("Unreconciled native upgrade; uninstall would destroy recovery")
     # Reject unknown program contents BEFORE recognizing or removing the CLI.
     for version in versions:
         validated_owned_version(version)
