@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {generateKeyPairSync,randomUUID} from "node:crypto";
 import {mkdir,mkdtemp,readFile,rm,writeFile} from "node:fs/promises";
 import {spawnSync} from "node:child_process";
+import {DatabaseSync} from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -64,8 +65,28 @@ test("published Node LaunchAgent rolls back after a real Rust candidate fails si
   await writeFile(keyPath,key,{mode:0o600});
   await writeFile(keyPath+".device-id",randomUUID()+"\n",{mode:0o600});
   const receipts=path.join(state,"operation-receipts.sqlite");
-  const receiptBytes=Buffer.from("synthetic receipt sentinel\n");
-  await writeFile(receipts,receiptBytes,{mode:0o600});
+  // Real v1 SQLite history is required for the Rust candidate to reach WSS.
+  // A plain text sentinel makes it exit before the intended rollback test.
+  await writeFile(receipts,"",{mode:0o600});
+  const receiptId=randomUUID();
+  const db=new DatabaseSync(receipts);
+  try{
+    db.exec(`CREATE TABLE receipts (
+      operation_id TEXT PRIMARY KEY NOT NULL,
+      tool_name TEXT NOT NULL,
+      argument_digest TEXT NOT NULL,
+      state TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      safe_result_summary TEXT,
+      session_id TEXT,
+      guarded INTEGER NOT NULL CHECK(guarded IN (0,1))
+    ); PRAGMA user_version=1;`);
+    const at="2026-11-22T00:00:00.000Z";
+    db.prepare("INSERT INTO receipts VALUES (?,?,?,?,?,?,?,NULL,1)")
+      .run(receiptId,"write_file","a".repeat(64),"unknown",at,at,
+        "Historical unknown must not replay.");
+  }finally{db.close();}
   const endpoint="https://127.0.0.1/"; // Deliberately no Worker or network grant.
   let oldGeneration;
   const oldOnline=async(_identity,generation)=>{
@@ -104,8 +125,20 @@ test("published Node LaunchAgent rolls back after a real Rust candidate fails si
   const restoredProcess=await activePid("macos-permanent.js");
   assert.notEqual(restoredProcess.pid,oldProcess.pid,"rollback must start a fresh Node process");
   assert.equal(await readFile(keyPath,"utf8"),key);
-  assert.ok((await readFile(receipts)).equals(receiptBytes),
-    "receipt bytes must survive the failed candidate and Node rollback");
+  const receiptSnapshot=path.join(root,"receipt-snapshot.sqlite");
+  await writeFile(receiptSnapshot,await readFile(receipts),{mode:0o600});
+  const verified=new DatabaseSync(receiptSnapshot);
+  try{
+    assert.equal(verified.prepare("PRAGMA user_version").get().user_version,1);
+    const receipt=verified.prepare(
+      "SELECT operation_id, tool_name, argument_digest, state, guarded FROM receipts"
+    ).get();
+    assert.equal(receipt.operation_id,receiptId);
+    assert.equal(receipt.tool_name,"write_file");
+    assert.equal(receipt.argument_digest,"a".repeat(64));
+    assert.equal(receipt.state,"unknown");
+    assert.equal(receipt.guarded,1,"historical unknown must remain guarded and not replayed");
+  }finally{verified.close();}
   assert.equal(await readFile(path.join(macosRoot(home),"switch.json")).then(()=>true,()=>false),false);
 });
 function macosRoot(home){return path.join(home,".local/share/mcp-workers/remote-control/macos");}
