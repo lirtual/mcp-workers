@@ -26,8 +26,16 @@ def local_runtime():
     if not manifest.is_file() or manifest.is_symlink():
         raise ValueError("Versioned Agent bundle is missing.")
     info = json.loads(manifest.read_text("utf8"))
+    # The existing Python CLI can inspect a Rust-owned Standard service without
+    # starting Node. Pairing and upgrades still use their reviewed transitional
+    # installer; this is not yet a Node-free release.
+    rust = (info.get("agent_runtime") == "rust-standard-linux-v1"
+            and info.get("candidate_profile") == "standard-linux-rust-runtime-v1"
+            and info.get("upgrade_profile") == "paired-full-v1")
+    legacy = (info.get("agent_runtime", "node-v2") == "node-v2"
+              and info.get("upgrade_profile") == "read-only-no-shell-v1")
     if (info.get("artifact_schema") != 1 or info.get("device_protocol") != 2
-            or info.get("upgrade_profile") != "read-only-no-shell-v1"
+            or not (rust or legacy)
             or root.name != info.get("version", "") + "-" + info.get("target", "")):
         raise ValueError("Unreviewed installed Agent bundle.")
     source = script.with_name("bootstrap-v2.py")
@@ -39,6 +47,11 @@ def local_runtime():
     spec.loader.exec_module(bootstrap)
     # This rejects foreign, symlinked and unowned local installation paths.
     bootstrap.local_inventory(str(home))
+    if rust:
+        # The legacy Python manager never accepted full-tools packages.
+        # Reuse the installed Rust executable and source-ownership checks
+        # before allowing any local manager operation.
+        bootstrap.validated_owned_version(root)
     return root, info, bootstrap
 
 
