@@ -678,6 +678,9 @@ def owned_unit_root(unit, versions):
         ])
         if unit != expected_unit:
             raise ValueError("Modified or foreign Rust service directives; refuse uninstall")
+        dropins = home / ".config/systemd/user" / (UNIT + ".d")
+        if dropins.exists() or dropins.is_symlink():
+            raise ValueError("Rust service drop-ins must be reviewed before uninstall")
     return root
 
 
