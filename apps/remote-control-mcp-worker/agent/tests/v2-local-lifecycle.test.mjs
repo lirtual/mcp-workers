@@ -270,11 +270,11 @@ with tempfile.TemporaryDirectory(prefix="rca-native-uninstall-") as dirname:
         "candidate_profile":"standard-linux-rust-runtime-v1",
         "artifact_profile":"rust-native-only-v1","upgrade_profile":"paired-full-v1",
         "modules":[],"glibc_min":"2.34"}),
-      str(b.APP/".build/session-supervisor"):"supervisor",
-      str(b.APP/".build/rca-standard-linux-candidate"):"rust",
-      str(b.APP/"scripts/bootstrap-v2.py"):"bootstrap",
-      str(b.APP/"scripts/manage-v2.py"):"manager",
-      str(b.APP/"scripts/rca.sh"):"launcher"
+      str(Path(b.APP)/".build/session-supervisor"):"supervisor",
+      str(Path(b.APP)/".build/rca-standard-linux-candidate"):"rust",
+      str(Path(b.APP)/"scripts/bootstrap-v2.py"):"bootstrap",
+      str(Path(b.APP)/"scripts/manage-v2.py"):"manager",
+      str(Path(b.APP)/"scripts/rca.sh"):"launcher"
     }.items():
         file=program/name
         file.write_text(content)
