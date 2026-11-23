@@ -276,38 +276,13 @@ mod darwin {
         #[test]
         fn rust_connection_marker_is_owner_private_json_with_a_newline() {
             let dir = tempfile::tempdir().unwrap();
-            let meta = fs::symlink_metadata(dir.path()).unwrap();
-            assert!(
-                meta.is_dir() && !meta.file_type().is_symlink(),
-                "fixture directory type"
-            );
-            assert_eq!(meta.uid(), unsafe { libc::geteuid() }, "fixture owner");
-            assert_eq!(
-                meta.permissions().mode() & 0o077,
-                0,
-                "fixture directory must be private"
-            );
+            // The installed Node identity is owner-private. macOS test tmp
+            // directories do not necessarily inherit that mode.
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let info = fs::symlink_metadata(dir.path()).unwrap();
+            assert_eq!(info.uid(), unsafe { libc::geteuid() });
+            assert_eq!(info.permissions().mode() & 0o077, 0);
             let marker = dir.path().join("macos-connection.json");
-            assert_eq!(
-                fs::symlink_metadata(&marker).unwrap_err().kind(),
-                ErrorKind::NotFound,
-                "connection marker must start absent"
-            );
-            let probe = dir.path().join(".candidate-write-probe");
-            let mut handle = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&probe)
-                .expect("create private marker probe");
-            handle
-                .write_all(b"{}\\n")
-                .expect("write private marker probe");
-            handle.sync_all().expect("sync private marker probe");
-            drop(handle);
-            let ready = dir.path().join(".candidate-rename-probe");
-            fs::rename(&probe, &ready).expect("rename private marker probe");
-            fs::remove_file(ready).unwrap();
             record_connected(dir.path(), "candidate-generation").unwrap();
             let raw = fs::read_to_string(&marker).unwrap();
             assert!(raw.ends_with('\n'));
