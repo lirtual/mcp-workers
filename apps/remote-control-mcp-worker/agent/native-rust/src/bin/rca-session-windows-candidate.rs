@@ -10,8 +10,9 @@ mod windows {
     use rca_native_agent::session_transport_env::session_transport_environment;
     use rca_native_agent::windows_managed::WindowsManagedSessions;
     use rca_native_agent::windows_session_runner::{
-        checked_runner_context, checked_transport_child_identity, create_candidate_receipt_directory,
-        record_candidate_stage, spawn_credential_free_transport, validate_transport_grant,
+        checked_runner_context, checked_transport_child_identity,
+        create_candidate_receipt_directory, record_candidate_stage,
+        spawn_credential_free_transport, validate_transport_grant,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
