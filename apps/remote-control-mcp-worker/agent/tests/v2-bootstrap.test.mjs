@@ -38,7 +38,7 @@ test("#914 Python verifier accepts only the explicit prerelease Rust Linux archi
   const body=String.raw`import importlib.util,sys,tarfile,tempfile,pathlib,json,platform,struct,os,io,stat
 spec=importlib.util.spec_from_file_location("b",sys.argv[1]);b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
 target="linux-x64-glibc";tag="v0.1.1-rust-candidate.1"
-def make(path,version,agent_runtime="rust-standard-linux-v1"):
+def make(path,version,agent_runtime="rust-standard-linux-v1",include_manager=True):
     elf=bytearray(80);elf[:4]=b"\x7fELF";elf[4:6]=b"\x02\x01";struct.pack_into("<H",elf,18,62)
     libc,glibc=platform.libc_ver()
     files={"bin/node":bytes(elf),"apps/remote-control-agent/.build/session-supervisor":bytes(elf),
@@ -51,6 +51,7 @@ def make(path,version,agent_runtime="rust-standard-linux-v1"):
       "apps/remote-control-agent/src/v2-main.js":b'export {}',
       "apps/remote-control-agent/scripts/install-v2.mjs":b'export {}'}
     for name in b.NODE_REQUIRED:files[name]=b'export {}'
+    if include_manager:files[b.APP+"/scripts/manage-v2.py"]=b'print("inspection-only")'
     with tarfile.open(path,"w:gz") as archive:
       for name,data in files.items():
         item=tarfile.TarInfo(name);item.size=len(data);item.mode=0o700 if name in b.ELF_FILES or name==b.APP+"/.build/rca-standard-linux-candidate" else 0o600
@@ -58,6 +59,9 @@ def make(path,version,agent_runtime="rust-standard-linux-v1"):
 with tempfile.TemporaryDirectory() as d:
     p=pathlib.Path(d)/"candidate.tar.gz";make(p,tag)
     records=b.inspect_archive(p,tag,target)
+    missing=pathlib.Path(d)/"missing-manager.tar.gz";make(missing,tag,include_manager=False)
+    try:b.inspect_archive(missing,tag,target);raise AssertionError("Rust manager omission accepted")
+    except ValueError:pass
     dest=pathlib.Path(d)/"installed";b.unpack_verified(p,dest,records,tag,target)
     st=(dest/b.APP/".build/rca-standard-linux-candidate").lstat()
     assert stat.S_ISREG(st.st_mode) and st.st_mode&0o777==0o700 and st.st_nlink==1
