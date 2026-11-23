@@ -317,7 +317,14 @@ with tempfile.TemporaryDirectory(prefix="rca-native-uninstall-") as dirname:
     for confirm,scan in [(False,lambda versions:True),(True,lambda versions:False)]:
         try:attempt(confirm,scan);raise AssertionError("uninstall ignored guard")
         except ValueError:pass
-        assert program.is_dir() and unit.exists() and not actions
+        assert program.is_dir() and unit.exists()
+        if confirm:
+            # Stopping the owned service precedes the no-live-process guard.
+            # Refusal after stop must preserve the program and the service unit.
+            assert actions==[["--user","disable","--now",b.UNIT]]
+            actions.clear()
+        else:
+            assert not actions
     extra=app/".build/unreviewed"
     extra.write_text("foreign");extra.chmod(0o600)
     try:attempt();raise AssertionError("unlisted file removed")
