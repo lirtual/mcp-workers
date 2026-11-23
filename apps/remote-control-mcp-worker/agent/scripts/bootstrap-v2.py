@@ -658,7 +658,7 @@ def owned_unit_root(unit, versions):
                 or parsed.password or parsed.query or parsed.fragment
                 or parsed.path != "/" or "\n" in endpoint):
             raise ValueError("Untrusted Rust service endpoint")
-        home = pathlib.Path(root).parents[4]
+        home = pathlib.Path(root).parents[5]
         key = home / STORE / "v2-identity.pem"
         app = root / APP
         expected_unit = "\n".join([
