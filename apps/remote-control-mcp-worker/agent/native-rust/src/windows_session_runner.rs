@@ -213,9 +213,8 @@ mod tests {
                 .collect::<Result<_, ()>>()
                 .expect("child environment contains only UTF-8 keys and values");
             actual.remove(MARKER);
-            assert_eq!(
-                actual,
-                session_transport_environment(&actual),
+            assert!(
+                actual == session_transport_environment(&actual),
                 "Windows CreateProcess changed the strict transport allowlist"
             );
             return;
