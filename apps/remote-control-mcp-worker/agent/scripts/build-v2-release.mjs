@@ -42,9 +42,9 @@ export function parseArgs(argv) {
   const hasRustCandidate = Boolean(params.rustAgentBin || params.rustAgentSha256);
   const nativeOnly = params.artifactProfile === "rust-native-only-v1";
   if ((params.artifactProfile !== undefined && !nativeOnly) ||
-      (nativeOnly && (!hasRustCandidate || !params.target.startsWith("linux-"))) ||
+      (nativeOnly && (!hasRustCandidate || !params.target?.startsWith("linux-"))) ||
       (hasRustCandidate && (!params.rustAgentBin || !params.rustAgentSha256 ||
-      !params.version.includes("-rust-candidate") ||
+      !params.version?.includes("-rust-candidate") ||
       !["linux-x64-glibc","linux-arm64-glibc","darwin-arm64","darwin-x64"].includes(params.target))) ||
       Object.keys(params).length !== (hasRustCandidate ? (nativeOnly ? 10 : 9) : 7) ||
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(params.version) ||
