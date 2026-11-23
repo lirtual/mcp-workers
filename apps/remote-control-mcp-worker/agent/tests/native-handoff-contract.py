@@ -228,6 +228,34 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
+    # An owner-local native upgrade holds the existing installer lock. A
+    # concurrent uninstall must fail before stopping or deleting any service,
+    # even when its durable intent has not yet been created.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        # Simulate a completed first native upgrade: the native Python
+        # manager owns this CLI, while a next-version upgrade holds the lock.
+        unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+        launcher.unlink()
+        launcher.symlink_to(new / APP / "scripts/rca.sh")
+        import fcntl
+        lock_file = key.parent / "v2-installer.lock"
+        with lock_file.open("w+b") as lock:
+            lock_file.chmod(0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            calls = []
+            try:
+                bootstrap.local_uninstall(home, True,
+                    systemctl=lambda args: calls.append(args),
+                    process_check=lambda versions: True)
+                raise AssertionError("Uninstall bypassed active native upgrade lock")
+            except ValueError as error:
+                assert "installer" in str(error).lower()
+            assert not calls and old.exists() and new.exists()
+            assert unit.exists() and launcher.is_symlink()
+    finally:
+        ctx.cleanup()
+
     # An interrupted cutover owns both old and new programs until its
     # durable backup is reconciled; even a confirmed local uninstall must
     # not destroy the rollback binary in this state.

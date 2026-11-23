@@ -1118,6 +1118,28 @@ def owned_manager_launcher(home, versions):
 def local_uninstall(home, confirm, systemctl=None, process_check=no_running_programs):
     if os.getuid() == 0 or not confirm:
         raise ValueError("Owner-only explicit local uninstall required")
+    # Native upgrades already hold this installer lock. Checking only durable
+    # intent would race with an upgrade about to create that intent.
+    local_inventory(home)
+    base = pathlib.Path(home) / STORE
+    if not base.exists():
+        return _local_uninstall_locked(home, systemctl, process_check)
+    private_dir(base)
+    fd = os.open(base / "v2-installer.lock",
+                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted v2 installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        return _local_uninstall_locked(home, systemctl, process_check)
+
+
+def _local_uninstall_locked(home, systemctl, process_check):
     programs, versions, unit_file, unit, ids = local_inventory(home)
     # A cutover interrupted after freezing the Node process can still need
     # both program versions for recovery. Never erase either one while its
