@@ -237,6 +237,7 @@ mod tests {
         // the exact next OS-level create + inherited-ACL path on Windows CI.
         let receipts = temp.path().join("session-rca/receipts");
         std::fs::create_dir(&receipts).unwrap();
+        crate::seal_new_windows_private_directory(&receipts).unwrap();
         crate::validate_windows_private_path(&receipts, true).unwrap();
         record_candidate_stage(&env, "receipts_ready", false).unwrap();
         assert_eq!(
