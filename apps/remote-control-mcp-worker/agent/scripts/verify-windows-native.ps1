@@ -15,6 +15,7 @@ if (-not $rootItem.PSIsContainer -or
 }
 $app = 'apps/remote-control-agent'
 $files = @(
+  'rca.cmd',
   'bin/rca-background.exe',
   "$app/.build/rca-standard-windows-candidate.exe",
   "$app/scripts/windows-private-store.ps1",

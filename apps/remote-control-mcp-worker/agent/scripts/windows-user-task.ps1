@@ -2,9 +2,10 @@
 # Does not create an elevated service, use a password or touch cloud grants.
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('Enable','Start','Stop','Disable','Status','Switch','Endpoint')][string]$Action,
+  [Parameter(Mandatory=$true)][ValidateSet('Enable','Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation')][string]$Action,
   [string]$Endpoint, [string]$Entry, [string]$Node,
   [string]$Version, [ValidateSet('Upgrade','Rollback')][string]$Direction,
+  [string]$Generation,
   [switch]$CIInjectFailure
 )
 Set-StrictMode -Version Latest
@@ -90,6 +91,63 @@ function Check-Existing {
   if ([string]$task.Triggers[0].CimClass.CimClassName -notlike '*LogonTrigger') {
     throw 'Unexpected task trigger'
   }
+}
+if ($Action -ne 'VerifyActivation' -and $Generation) { throw 'Unexpected generation argument' }
+if ($Action -eq 'VerifyActivation') {
+  # A fresh signed activation receipt must belong to this exact running
+  # user Task and its child executable. Running alone is never sufficient.
+  Check-Existing
+  if ($Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$' -or
+      $Generation -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+      $Endpoint -or $Node -or $Entry -or $Direction -or $CIInjectFailure) {
+    throw 'Invalid expected activation identity'
+  }
+  $versionDir = [IO.Path]::Combine($root,$Version + '-windows-x64')
+  $launcher = [IO.Path]::Combine($versionDir,'bin','rca-background.exe')
+  $rustEntry = [IO.Path]::Combine($versionDir,'apps','remote-control-agent','.build','rca-standard-windows-candidate.exe')
+  $launch = Read-TaskLaunch $task.Actions[0]
+  if ($task.State -ne 'Running' -or $launch.Generation -cne $Generation -or
+      -not [string]::Equals([string]$task.Actions[0].Execute,$launcher,[StringComparison]::OrdinalIgnoreCase) -or
+      -not [string]::Equals([string]$launch.Entry,$rustEntry,[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Expected native Task is not running'
+  }
+  try {
+    $raw = & $rustEntry --verify-activation-proof $Generation
+    if ($LASTEXITCODE -ne 0) { throw 'Native activation receipt unavailable' }
+    $proof = $raw | ConvertFrom-Json
+  } catch { throw 'Signed WSS activation not confirmed' }
+  if ($proof.generation -cne $Generation -or $proof.state -cne 'connected' -or
+      $proof.pid -le 0 -or $proof.pid -gt [uint32]::MaxValue) {
+    throw 'Signed WSS activation not confirmed'
+  }
+  $agentProcess = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [uint32]$proof.pid)
+  if (-not $agentProcess -or
+      -not [string]::Equals([string]$agentProcess.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) -or
+      (Invoke-CimMethod -InputObject $agentProcess -MethodName GetOwnerSid).Sid -cne $sid) {
+    throw 'Signed WSS activation process not confirmed'
+  }
+  $parent = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [uint32]$agentProcess.ParentProcessId)
+  if (-not $parent -or
+      -not [string]::Equals([string]$parent.ExecutablePath,$launcher,[StringComparison]::OrdinalIgnoreCase) -or
+      (Invoke-CimMethod -InputObject $parent -MethodName GetOwnerSid).Sid -cne $sid) {
+    throw 'Signed WSS activation launcher not confirmed'
+  }
+  $startedAt = ([DateTimeOffset]([datetime]$agentProcess.CreationDate)).ToUnixTimeMilliseconds()
+  $now = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  if ($proof.at -lt $startedAt -or $proof.at -gt $now -or $now - $proof.at -gt 90000) {
+    throw 'Signed WSS activation evidence is stale'
+  }
+  $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+  Check-Existing
+  $currentLaunch = Read-TaskLaunch $task.Actions[0]
+  if ($task.State -ne 'Running' -or $currentLaunch.Generation -cne $Generation -or
+      $currentLaunch.Endpoint -cne $launch.Endpoint -or
+      -not [string]::Equals([string]$task.Actions[0].Execute,$launcher,[StringComparison]::OrdinalIgnoreCase) -or
+      -not [string]::Equals([string]$currentLaunch.Entry,$rustEntry,[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Expected native Task changed during activation observation'
+  }
+  'authenticated-activation-observed'
+  exit 0
 }
 if ($Action -eq 'Status') {
   if (-not $task) {

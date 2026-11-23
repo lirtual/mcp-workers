@@ -41,6 +41,60 @@ mod windows {
         fs::read(path).map_err(|_| ())
     }
 
+    fn optional_private(path: &Path, max: u64) -> Result<Option<Vec<u8>>, ()> {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(_) => Err(()),
+            Ok(_) => read_private(path, max).map(Some),
+        }
+    }
+
+    // The service and management CLI use the same identity parser. Status
+    // neither creates state nor requests authorization or a network connection.
+    fn local_identity(key: &Path) -> Result<(Option<String>, Option<String>), ()> {
+        let pem = optional_private(key, 8192)?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| ())?;
+        let id_path = PathBuf::from(format!("{}.device-id", key.display()));
+        let id = optional_private(&id_path, 256)?
+            .map(String::from_utf8)
+            .transpose()
+            .map_err(|_| ())?
+            .map(|value| value.trim().to_owned());
+        match (&pem, &id) {
+            (Some(pem), Some(id)) => {
+                signed_session_proof(pem, id, "000000000000000000000000").map_err(|_| ())?;
+            }
+            (None, Some(_)) => return Err(()),
+            _ => {}
+        }
+        Ok((pem, id))
+    }
+
+    fn local_status() -> Result<(), ()> {
+        let root = store_root()?;
+        match fs::symlink_metadata(&root) {
+            Ok(_) => validate_windows_private_path(&root, true).map_err(|_| ())?,
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(_) => return Err(()),
+        }
+        let (pem, id) = local_identity(&root.join("v2-identity.pem"))?;
+        println!(
+            "{}",
+            serde_json::json!({
+                "platform": "win32",
+                "mode": "native-user-agent",
+                "identity_present": pem.is_some(),
+                "device_id": id,
+                "remote_connection": "unconfirmed",
+                "shell": true,
+                "write_file": true
+            })
+        );
+        Ok(())
+    }
+
     fn stopped(key: &Path) -> Result<bool, ()> {
         let marker = PathBuf::from(format!("{}.owner-stopped", key.display()));
         match fs::symlink_metadata(&marker) {
@@ -54,10 +108,45 @@ mod windows {
         }
     }
 
-    fn record_connected(root: &Path, generation: &str) -> Result<(), ()> {
+    // Evidence of a handshake, not present network liveness. The task
+    // controller additionally verifies the actual process and generation.
+    fn activation_proof(generation: &str) -> Result<(), ()> {
+        if !valid_device_id(generation) {
+            return Err(());
+        }
+        let root = store_root()?;
+        validate_windows_private_path(&root, true).map_err(|_| ())?;
+        let (_, id) = local_identity(&root.join("v2-identity.pem"))?;
+        let id = id.ok_or(())?;
+        let path = root.join(format!(".windows-connected-{generation}.json"));
+        let proof: serde_json::Value =
+            serde_json::from_slice(&read_private(&path, 4096)?).map_err(|_| ())?;
+        if proof["generation"].as_str() != Some(generation)
+            || proof["device_id"].as_str() != Some(id.as_str())
+            || proof["state"].as_str() != Some("connected")
+            || !matches!(proof["pid"].as_u64(), Some(pid) if pid > 0 && pid <= u64::from(u32::MAX))
+            || !matches!(proof["at"].as_u64(), Some(at) if at > 0)
+        {
+            return Err(());
+        }
+        println!(
+            "{}",
+            serde_json::json!({
+                "generation": generation,
+                "device_id": id,
+                "state": "connected",
+                "pid": proof["pid"],
+                "at": proof["at"],
+            })
+        );
+        Ok(())
+    }
+
+    fn record_connected(root: &Path, generation: &str, device_id: &str) -> Result<(), ()> {
         let path = root.join(format!(".windows-connected-{generation}.json"));
         let record = serde_json::json!({
             "generation": generation,
+            "device_id": device_id,
             "pid": std::process::id(),
             "state": "connected",
             "at": std::time::SystemTime::now()
@@ -78,12 +167,23 @@ mod windows {
 
     pub fn run() -> Result<(), ()> {
         if !cfg!(target_arch = "x86_64")
-            || std::env::args_os().len() != 6
             || rca_native_agent::is_windows_system_identity().map_err(|_| ())?
         {
             return Err(());
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.first().map(String::as_str) == Some("--cli") {
+            return if args.as_slice() == ["--cli", "status"] {
+                local_status()
+            } else {
+                Err(())
+            };
+        }
+        if let [command, generation] = args.as_slice() {
+            if command == "--verify-activation-proof" {
+                return activation_proof(generation);
+            }
+        }
         let [mode, endpoint_flag, endpoint, generation_flag, generation] = args.as_slice() else {
             return Err(());
         };
@@ -104,22 +204,15 @@ mod windows {
         if !key.starts_with(&root) {
             return Err(());
         }
-        let identity = read_private(&key, 8_192)?;
+        // Owner STOP preserves the existing behavior even if the ID is missing.
         if stopped(&key)? {
+            read_private(&key, 8192)?;
             return Ok(());
         }
-        let id_path = PathBuf::from(format!("{}.device-id", key.display()));
-        let id = String::from_utf8(read_private(&id_path, 256)?).map_err(|_| ())?;
-        let device_id = id.trim();
-        if !valid_device_id(device_id) {
-            return Err(());
-        }
-        let private_pem = String::from_utf8(identity).map_err(|_| ())?;
-        // Parse and exercise the Ed25519 key locally before opening managed
-        // state. The fixed nonce is validation-only; the WSS handshake signs
-        // the fresh nonce returned by the server.
-        signed_session_proof(&private_pem, device_id, "000000000000000000000000")
-            .map_err(|_| ())?;
+        let (pem, id) = local_identity(&key)?;
+        let id = id.ok_or(())?;
+        let private_pem = pem.ok_or(())?;
+        let device_id = id.as_str();
         let receipts = root.join("receipts");
         let meta = fs::symlink_metadata(&receipts).map_err(|_| ())?;
         if !meta.is_dir() || meta.file_type().is_symlink() {
@@ -131,8 +224,9 @@ mod windows {
         let stop = Arc::new(AtomicBool::new(false));
         let marker_root = root.clone();
         let marker_generation = generation.clone();
+        let marker_id = id.clone();
         let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            let _ = record_connected(&marker_root, &marker_generation);
+            let _ = record_connected(&marker_root, &marker_generation, &marker_id);
         });
         let outcome = run_native_managed_session_with_upgrade(
             endpoint,
