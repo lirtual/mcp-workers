@@ -333,7 +333,8 @@ export function inspectTarGzip(gzip,{tag,target}) {
         (!entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate") ||
         !entries.has("apps/remote-control-agent/scripts/manage-v2.py")))) ||
       (!rustCandidate && (manifest.candidate_profile==="standard-linux-rust-runtime-v1" ||
-        entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate")))) {
+        entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate") ||
+        entries.has("apps/remote-control-agent/scripts/manage-v2.py")))) {
     throw new Error("Unexpected Release version, runtime profile, or architecture.");
   }
   // Historical local-only Releases remain readable. An archive advertising
