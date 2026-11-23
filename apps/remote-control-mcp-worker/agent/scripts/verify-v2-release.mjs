@@ -312,18 +312,33 @@ export function inspectTarGzip(gzip,{tag,target}) {
     if(entries.size>80) throw new Error("Too many archive entries.");
   }
   if(!end || tar.subarray(cursor).some(b=>b!==0)) throw new Error("Invalid tar trailer.");
-  for(const required of ["bin/node","bundle.json","apps/remote-control-agent/package.json",
-    "apps/remote-control-agent/src/v2-main.js",
-    "apps/remote-control-agent/scripts/install-v2.mjs",
-    "apps/remote-control-agent/.build/session-supervisor"]) {
-    if(!entries.has(required)||entries.get(required).directory) throw new Error("Incomplete release artifact.");
-  }
+  if(!entries.has("bundle.json")||entries.get("bundle.json").directory)
+    throw new Error("Missing Agent manifest.");
   let manifest;
   try { manifest=JSON.parse(entries.get("bundle.json").data.toString("utf8")); }
   catch { throw new Error("Invalid Release manifest."); }
   const agentRuntime = manifest.agent_runtime ?? "node-v2";
   const rustCandidate = agentRuntime === "rust-standard-linux-v1";
-  if(manifest.version!==tag || manifest.target!==target || !/^v24\.\d+\.\d+$/.test(manifest.node) ||
+  const nativeOnly = manifest.artifact_profile === "rust-native-only-v1";
+  const app="apps/remote-control-agent";
+  const nativeFiles=new Set(["bundle.json",app+"/.build/session-supervisor",
+    app+"/.build/rca-standard-linux-candidate",app+"/scripts/bootstrap-v2.py",
+    app+"/scripts/manage-v2.py",app+"/scripts/rca.sh"]);
+  const required=nativeOnly ? nativeFiles : new Set(["bin/node","bundle.json",
+    app+"/package.json",app+"/src/v2-main.js",app+"/scripts/install-v2.mjs",
+    app+"/.build/session-supervisor"]);
+  if([...required].some(file=>!entries.has(file)||entries.get(file).directory))
+    throw new Error("Incomplete release artifact.");
+  // No Node bytecode/JS or hidden files in a native-only executable bundle.
+  if(nativeOnly && [...entries].some(([name,entry])=>!entry.directory&&!nativeFiles.has(name)))
+    throw new Error("Native-only archive contains an unreviewed runtime file.");
+  if(manifest.version!==tag || manifest.target!==target ||
+      (nativeOnly ? (manifest.node!==undefined ||
+        !Array.isArray(manifest.modules) || manifest.modules.length!==0 ||
+        !/^\d+\.\d+$/.test(manifest.glibc_min||"") ||
+        !rustCandidate || manifest.upgrade_protocol!==undefined) :
+        (!/^v24\.\d+\.\d+$/.test(manifest.node) ||
+          manifest.artifact_profile!==undefined)) ||
       manifest.name!=="remote-control-agent" || manifest.artifact_schema!==1 ||
       !Array.isArray(manifest.modules) ||
       !["node-v2","rust-standard-linux-v1"].includes(agentRuntime) ||
@@ -351,7 +366,8 @@ export function inspectTarGzip(gzip,{tag,target}) {
     throw Error("Retired GUI runtime is forbidden in RCA releases.");
   }
   const expected=target==="linux-x64-glibc" ? 62 : 183;
-  for(const name of ["bin/node","apps/remote-control-agent/.build/session-supervisor",
+  for(const name of [...(nativeOnly ? [] : ["bin/node"]),
+      "apps/remote-control-agent/.build/session-supervisor",
       ...(rustCandidate ? ["apps/remote-control-agent/.build/rca-standard-linux-candidate"] : [])]) {
     const b=entries.get(name).data;
     if(b.length<64 || b.toString("hex",0,4)!=="7f454c46" ||
@@ -382,8 +398,13 @@ export async function extractVerifiedAsset(pinned,bytes,root) {
       await mkdir(path.dirname(dest),{recursive:true,mode:0o700});
       const fd=await open(dest,constants.O_WRONLY|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
       try{await fd.writeFile(entry.data);await fd.sync();}finally{await fd.close();}
+      const nativeOnly=entries.has("bundle.json") &&
+        JSON.parse(entries.get("bundle.json").data.toString("utf8")).artifact_profile==="rust-native-only-v1";
       if(name==="bin/node"||name==="apps/remote-control-agent/.build/session-supervisor"||
-          name==="apps/remote-control-agent/.build/rca-standard-linux-candidate") await chmod(dest,0o700);
+          name==="apps/remote-control-agent/.build/rca-standard-linux-candidate"||
+          (nativeOnly && ["apps/remote-control-agent/scripts/rca.sh",
+            "apps/remote-control-agent/scripts/manage-v2.py"].includes(name)))
+        await chmod(dest,0o700);
     }
     await rename(stage,root); // Never overwrite an installed program.
   } catch(error) {

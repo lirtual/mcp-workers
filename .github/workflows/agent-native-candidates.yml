@@ -242,6 +242,23 @@ jobs:
           archive="$SPEC914_TEMP/package/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
           python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
             "$archive" "$version" "$SPEC914_TARGET"
+          # Stage-only, unpublished native Rust package with no Node or JS.
+          node "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs" \
+            --version "$version" --target "$SPEC914_TARGET" \
+            --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
+            --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
+            --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
+            --artifact-profile rust-native-only-v1 --out "$SPEC914_TEMP/native-only"
+          pure="$SPEC914_TEMP/native-only/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
+          python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("b",sys.argv[1]); b=importlib.util.module_from_spec(s); s.loader.exec_module(b); b.inspect_archive(sys.argv[2],sys.argv[3],sys.argv[4])' \
+            apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$pure" "$version" "$SPEC914_TARGET"
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-v2-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
+            "$pure" "$version" "$SPEC914_TARGET"
+          if tar -tzf "$pure" | grep -E '(^bin/node$|/src/|[.]mjs$|[.]js$)'; then
+            echo 'Node/JavaScript slipped into native-only archive' >&2
+            exit 1
+          fi
+          test "$(stat -c %s "$pure")" -lt "$(stat -c %s "$archive")"
           chmod 0644 "$archive" "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
       - name: Kill installer after candidate activation and verify real systemd recovery
         shell: bash

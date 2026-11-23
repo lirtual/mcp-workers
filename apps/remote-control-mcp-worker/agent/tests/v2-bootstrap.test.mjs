@@ -213,3 +213,70 @@ print("GLIBC_ABI_FAILS_BEFORE_UNPACK_OR_EXECUTE")
   assert.equal(r.status,0,r.stderr);
   assert.match(r.stdout,/GLIBC_ABI_FAILS_BEFORE_UNPACK_OR_EXECUTE/);
 });
+
+test("#914 native-only Rust archive stages, runs read-only CLI without Node and never pairs",()=>{
+  if(process.platform!=="linux") return;
+  const body=String.raw`import importlib.util,sys,pathlib,tempfile,tarfile,io,os,platform,struct,json,subprocess,stat
+bootstrap=pathlib.Path(sys.argv[1])
+spec=importlib.util.spec_from_file_location("b",bootstrap)
+b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+tag="v0.1.57-rust-candidate.1";target="linux-x64-glibc"
+manifest={"name":"remote-control-agent","artifact_schema":1,"version":tag,
+          "target":target,"agent_runtime":"rust-standard-linux-v1",
+          "artifact_profile":"rust-native-only-v1",
+          "candidate_profile":"standard-linux-rust-runtime-v1",
+          "glibc_min":"2.28","upgrade_profile":"paired-full-v1",
+          "device_protocol":2,"receipt_schema":1,"modules":[]}
+elf=bytearray(80);elf[:4]=b"\x7fELF";elf[4:6]=b"\x02\x01"
+struct.pack_into("<H",elf,18,62)
+src=bootstrap.parent
+files={"bundle.json":json.dumps(manifest).encode(),
+       b.APP+"/.build/session-supervisor":bytes(elf),
+       b.APP+"/.build/rca-standard-linux-candidate":bytes(elf),
+       b.APP+"/scripts/bootstrap-v2.py":bootstrap.read_bytes(),
+       b.APP+"/scripts/manage-v2.py":(src/"manage-v2.py").read_bytes(),
+       b.APP+"/scripts/rca.sh":(src/"rca.sh").read_bytes()}
+def archive(where,entries):
+    with tarfile.open(where,"w:gz") as tar:
+        for name,body in entries.items():
+            member=tarfile.TarInfo(name);member.mode=0o700 if (
+                name.endswith(("rca.sh","manage-v2.py","session-supervisor",
+                               "rca-standard-linux-candidate"))) else 0o600
+            member.size=len(body)
+            tar.addfile(member,io.BytesIO(body))
+with tempfile.TemporaryDirectory(prefix="rca-native-only-") as t:
+    os.umask(0o077)
+    home=pathlib.Path(t)/"home";home.mkdir(mode=0o700)
+    programs=home/".local/share/mcp-workers/remote-control/programs"
+    programs.mkdir(parents=True,mode=0o700)
+    packed=pathlib.Path(t)/"native.tar.gz";archive(packed,files)
+    records=b.inspect_archive(packed,tag,target)
+    dest=programs/(tag+"-"+target)
+    b.unpack_verified(packed,dest,records,tag,target)
+    assert b.validated_owned_version(dest)
+    assert not (dest/"bin/node").exists()
+    assert not (dest/b.APP/"src").exists()
+    for command in ["status","--version"]:
+        result=subprocess.run(["/bin/sh",str(dest/b.APP/"scripts/rca.sh"),command],
+            env={**os.environ,"HOME":str(home)},capture_output=True,text=True,timeout=8)
+        assert result.returncode==0,(command,result.stderr)
+        assert tag in result.stdout
+    for command in ["pair","upgrade","uninstall"]:
+        result=subprocess.run(["/usr/bin/python3","-I","-B",
+             str(dest/b.APP/"scripts/manage-v2.py"),command],
+            env={**os.environ,"HOME":str(home)},capture_output=True,text=True,timeout=8)
+        assert result.returncode!=0,command
+    assert not (home/".local/share/mcp-workers/remote-control/v2-identity.pem").exists()
+    assert not (dest/b.APP/"scripts/__pycache__").exists()
+    invalid=pathlib.Path(t)/"invalid.tar.gz"
+    archive(invalid,{**files,"bin/node":bytes(elf)})
+    try:b.inspect_archive(invalid,tag,target);raise AssertionError("bundled Node accepted")
+    except ValueError:pass
+    archive(invalid,{key:value for key,value in files.items() if not key.endswith("manage-v2.py")})
+    try:b.inspect_archive(invalid,tag,target);raise AssertionError("missing Python manager accepted")
+    except ValueError:pass
+print("NATIVE_ONLY_STAGING_AND_STATUS_PASS")`;
+  const result=python(["-c",body,script]);
+  assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/NATIVE_ONLY_STAGING_AND_STATUS_PASS/);
+});

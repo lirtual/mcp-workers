@@ -33,16 +33,20 @@ export function parseArgs(argv) {
   const params = {};
   for (let i = 0; i < argv.length; i += 2) {
     if (!["--version", "--target", "--node-bin", "--native", "--out", "--node-sha256", "--native-sha256",
-      "--rust-agent-bin", "--rust-agent-sha256"].includes(argv[i]) ||
+      "--rust-agent-bin", "--rust-agent-sha256", "--artifact-profile"].includes(argv[i]) ||
       !argv[i+1] || params[argv[i]]) throw new Error("Invalid packaging parameters.");
     params[{"--node-bin":"nodeBin","--node-sha256":"nodeSha256","--native-sha256":"nativeSha256",
-      "--rust-agent-bin":"rustAgentBin","--rust-agent-sha256":"rustAgentSha256"}[argv[i]] ?? argv[i].slice(2)] = argv[i+1];
+      "--rust-agent-bin":"rustAgentBin","--rust-agent-sha256":"rustAgentSha256",
+      "--artifact-profile":"artifactProfile"}[argv[i]] ?? argv[i].slice(2)] = argv[i+1];
   }
   const hasRustCandidate = Boolean(params.rustAgentBin || params.rustAgentSha256);
-  if ((hasRustCandidate && (!params.rustAgentBin || !params.rustAgentSha256 ||
-      !params.version.includes("-rust-candidate") ||
+  const nativeOnly = params.artifactProfile === "rust-native-only-v1";
+  if ((params.artifactProfile !== undefined && !nativeOnly) ||
+      (nativeOnly && (!hasRustCandidate || !params.target?.startsWith("linux-"))) ||
+      (hasRustCandidate && (!params.rustAgentBin || !params.rustAgentSha256 ||
+      !params.version?.includes("-rust-candidate") ||
       !["linux-x64-glibc","linux-arm64-glibc","darwin-arm64","darwin-x64"].includes(params.target))) ||
-      Object.keys(params).length !== (hasRustCandidate ? 9 : 7) ||
+      Object.keys(params).length !== (hasRustCandidate ? (nativeOnly ? 10 : 9) : 7) ||
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(params.version) ||
       !ALLOWED.has(params.target) ||
       !/^[a-f0-9]{64}$/.test(params.nodeSha256) ||
@@ -253,10 +257,10 @@ function tarballDarwin(dir, file) {
   writeFileSync(file,gzipSync(Buffer.concat(chunks),{level:9,mtime:0}),{flag:"wx",mode:0o600});
 }
 
-function tarball(dir, file) {
+function tarball(dir, file, nativeOnly = false) {
   const args = ["--format=ustar", "--sort=name", "--owner=0", "--group=0",
     "--numeric-owner", "--mtime=@0", "--mode=u+rwX,go-rwx", "-cf", "-",
-    "bin", "apps", "bundle.json"];
+    ...(nativeOnly ? [] : ["bin"]), "apps", "bundle.json"];
   const tar = spawnSync("tar", args, { cwd:dir, maxBuffer:220*1024*1024 });
   if (tar.status !== 0 || tar.error) throw new Error("Deterministic tar creation failed.");
   const gzip = spawnSync("gzip", ["-n", "-9"], { input:tar.stdout, maxBuffer:220*1024*1024 });
@@ -269,16 +273,26 @@ export function build(args) {
   const rustCandidate = args.rustAgentBin
     ? ensureRustCandidate({...args,maxGlibcMin:glibcMin}) : null;
   const darwin = args.target === "darwin-arm64" || args.target === "darwin-x64";
+  const nativeOnly = args.artifactProfile === "rust-native-only-v1";
+  if (nativeOnly && (!rustCandidate || darwin)) throw Error("Native-only staging requires reviewed Linux Rust.");
+  // No runtime Node symbols may determine the ABI floor of a Node-free archive.
+  const effectiveGlibcMin = nativeOnly
+    ? [requiredGlibcVersion(args.native),rustCandidate.glibcMin].sort((a,b)=>{
+      const [am,an]=a.split(".").map(Number),[bm,bn]=b.split(".").map(Number);
+      return am-bm || an-bn;
+    }).at(-1) : glibcMin;
   if (existsSync(args.out) && readdirSync(args.out).length) {
     throw new Error("Output must be a new or empty directory.");
   }
   mkdirSync(args.out, {recursive:true, mode:0o700});
   const work = path.join(args.out, "bundle");
-  mkdirSync(path.join(work, "bin"), {recursive:true,mode:0o700});
-  mkdirSync(path.join(work, "apps/remote-control-agent/src"), {recursive:true,mode:0o700});
+  if (!nativeOnly) {
+    mkdirSync(path.join(work, "bin"), {recursive:true,mode:0o700});
+    mkdirSync(path.join(work, "apps/remote-control-agent/src"), {recursive:true,mode:0o700});
+  }
   mkdirSync(path.join(work, "apps/remote-control-agent/scripts"), {recursive:true,mode:0o700});
   mkdirSync(path.join(work, "apps/remote-control-agent/.build"), {recursive:true,mode:0o700});
-  copyFileSync(args.nodeBin, path.join(work, "bin/node"));
+  if (!nativeOnly) copyFileSync(args.nodeBin, path.join(work, "bin/node"));
   const helperFile=darwin ? "darwin-session-supervisor" : "session-supervisor";
   copyFileSync(args.native, path.join(work, "apps/remote-control-agent/.build",helperFile));
   if (rustCandidate) {
@@ -286,7 +300,8 @@ export function build(args) {
     copyFileSync(args.rustAgentBin,
       path.join(work, "apps/remote-control-agent/.build",candidateName));
   }
-  for (const relative of ["bin/node","apps/remote-control-agent/.build/"+helperFile,
+  for (const relative of [...(nativeOnly ? [] : ["bin/node"]),
+      "apps/remote-control-agent/.build/"+helperFile,
       ...(rustCandidate ? ["apps/remote-control-agent/.build/"+
         (darwin ? "rca-standard-darwin-candidate" : "rca-standard-linux-candidate")] : [])]) {
     chmodSync(path.join(work,relative),0o700);
@@ -295,16 +310,16 @@ export function build(args) {
   // must be present in a future reviewed Release. No unsafe promotion.
   const entrySource=readFileSync(path.join(source,"v2-main.ts"),"utf8");
   const lifecycleSource=readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8");
-  if(!/V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(entrySource) ||
+  if(!nativeOnly && (!/V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(entrySource) ||
      /(?:readOnly|writeFile|shell)\s*:/.test(entrySource) ||
      !/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
      !/receiptDirectory:\s*options\.receiptDirectory/.test(lifecycleSource) ||
      !/startUpgradeControl\(execution(?:!)?, keyPath\)/.test(lifecycleSource) ||
      !/executeV2FileOperation\(execution,/.test(lifecycleSource) ||
-     !/executeV2SessionRead\(execution,/.test(lifecycleSource)) {
+     !/executeV2SessionRead\(execution,/.test(lifecycleSource))) {
     throw new Error("Reviewed paired full-tools release profile is not proven.");
   }
-  const modules=runtimeSources(darwin
+  const modules=nativeOnly ? [] : runtimeSources(darwin
     ? ["macos-temporary.ts","macos-permanent.ts"] : undefined);
   for(const file of modules){
     const src=readFileSync(path.join(source,file),"utf8");
@@ -325,10 +340,13 @@ export function build(args) {
     chmodSync(remoteDest,0o600);
   }
   if (!darwin) {
-  const installer=readFileSync(path.join(root,"scripts/install-v2.mjs"),"utf8");
-  writeFileSync(path.join(work,"apps/remote-control-agent/scripts/install-v2.mjs"),
-    rewriteExtensions(installer),{mode:0o600});
-  for (const name of ["bootstrap-node.mjs","manage-v2.mjs",
+  if (!nativeOnly) {
+    const installer=readFileSync(path.join(root,"scripts/install-v2.mjs"),"utf8");
+    writeFileSync(path.join(work,"apps/remote-control-agent/scripts/install-v2.mjs"),
+      rewriteExtensions(installer),{mode:0o600});
+  }
+  for (const name of nativeOnly ? ["bootstrap-v2.py","manage-v2.py","rca.sh"] : [
+      "bootstrap-node.mjs","manage-v2.mjs",
       "lifecycle-v2.mjs","upgrade-v2.mjs","upgrade-existing-service.mjs",
       "bootstrap-v2.py","verify-v2-release.mjs","rca.sh",
       ...(rustCandidate && !darwin ? ["manage-v2.py"] : [])]) {
@@ -338,7 +356,8 @@ export function build(args) {
     chmodSync(dest,["rca.sh","manage-v2.py"].includes(name) ? 0o700 : 0o600);
   }
   }
-  writeFileSync(path.join(work,"apps/remote-control-agent/package.json"),JSON.stringify({type:"module"})+"\n",{mode:0o600});
+  if (!nativeOnly) writeFileSync(path.join(work,"apps/remote-control-agent/package.json"),
+    JSON.stringify({type:"module"})+"\n",{mode:0o600});
   const sourceCommit=darwin ? spawnSync("git",["rev-parse","HEAD"],{
     cwd:darwinGitRoot(root),encoding:"utf8",timeout:5000,
   }) : null;
@@ -347,21 +366,25 @@ export function build(args) {
     throw new Error("Cannot prove reviewed Darwin source commit.");
   writeFileSync(path.join(work,"bundle.json"),JSON.stringify({
     name:"remote-control-agent",version:args.version,target:args.target,
-    node:nodeVersion,...(rustCandidate ? (darwin ? {
+    ...(nativeOnly ? {artifact_profile:"rust-native-only-v1"} : {node:nodeVersion}),
+    ...(rustCandidate ? (darwin ? {
       agent_runtime:"rust-standard-darwin-v1",
       runtime_profile:"standard-darwin-rust-runtime-v1",
     } : {agent_runtime:"rust-standard-linux-v1",
       candidate_profile:"standard-linux-rust-runtime-v1"}) : {agent_runtime:"node-v2"}),
     ...(darwin ? {candidate_profile:"darwin-permanent-local-v1",native_supervisor:"darwin-owned-group-v1",source_commit:sourceCommit.stdout.trim()} :
-      {glibc_build:libc,glibc_min:glibcMin}),modules,
+      {glibc_build:libc,glibc_min:effectiveGlibcMin}),modules,
     artifact_schema:1,device_protocol:2,receipt_schema:1,
     ...(!darwin ? {upgrade_profile:"paired-full-v1"} : {})
   })+"\n",{mode:0o600});
   const name="remote-control-agent-"+args.version+"-"+args.target+".tar.gz";
-  (darwin ? tarballDarwin : tarball)(work,path.join(args.out,name));
+  if (darwin) tarballDarwin(work,path.join(args.out,name));
+  else tarball(work,path.join(args.out,name),nativeOnly);
   const artifact=readFileSync(path.join(args.out,name));
   return {file:path.join(args.out,name),sha256:createHash("sha256").update(artifact).digest("hex"),
-    bytes:artifact.length,arch,nodeVersion,libc,glibcMin,modules};
+    bytes:artifact.length,arch,
+    ...(nativeOnly ? {artifact_profile:"rust-native-only-v1"} : {nodeVersion}),
+    libc,glibcMin:effectiveGlibcMin,modules};
 }
 if (process.argv[1] && path.resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   try { console.log(JSON.stringify(build(parseArgs(process.argv.slice(2))))); }
