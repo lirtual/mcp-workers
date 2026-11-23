@@ -5,12 +5,26 @@ import {spawnSync} from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {acceptsOwnerConfirmation,admitsMacOwnerUpgrade,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,ownedWrite,ownerCliText,parsePlist,plistText,stopLaunchdForSwitch,verifiedEndpoint} from
+import {acceptsOwnerConfirmation,admitsMacOwnerUpgrade,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,observeOnline,ownedWrite,ownerCliText,parsePlist,plistText,stopLaunchdForSwitch,verifiedEndpoint} from
   "../scripts/macos-local.mjs";
 import {parsePermanentMacArgs} from "../src/macos-permanent.ts";
 const ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const ENDPOINT="https://rca.example.test/";
 const bundle=process.env.RCA_MACOS_BUNDLE_ROOT;
+
+test("#914 macOS activation reads Rust epoch and Node ISO connection markers",async t=>{
+  const identity=await mkdtemp(path.join(os.tmpdir(),"rca914-connection-"));
+  t.after(()=>rm(identity,{recursive:true,force:true}));
+  const generation=randomUUID();
+  const at=Date.now();
+  const marker=path.join(identity,"macos-connection.json");
+  for(const observed of [at,new Date(at).toISOString()]){
+    await writeFile(marker,JSON.stringify({
+      generation,version:"rust-candidate",pid:123,state:"connected",at:observed
+    })+"\n",{mode:0o600});
+    assert.equal(await observeOnline(identity,generation,()=>at),true);
+  }
+});
 
 test("#661 macOS owner installer dispatch must not silently skip a symlinked/aliased entry path",async t=>{
   const root=await mkdtemp(path.join(os.tmpdir(),"rca-mac-entry-alias-"));

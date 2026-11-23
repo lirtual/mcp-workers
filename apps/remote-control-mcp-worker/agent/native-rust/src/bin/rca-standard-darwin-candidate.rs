@@ -113,7 +113,7 @@ mod darwin {
             .open(&temporary)
             .map_err(|_| ())?;
         if file.write_all(record.to_string().as_bytes()).is_err()
-            || file.write_all(b"\\n").is_err()
+            || file.write_all(b"\n").is_err()
             || file.sync_all().is_err()
         {
             let _ = fs::remove_file(&temporary);
@@ -267,6 +267,33 @@ mod darwin {
         match result {
             Ok(()) | Err(NativeFileError::Session(SessionError::Policy)) => Ok(()),
             Err(_) => Err(()),
+        }
+    }
+    #[cfg(test)]
+    mod connection_marker_tests {
+        use super::*;
+
+        #[test]
+        fn rust_connection_marker_is_owner_private_json_with_a_newline() {
+            let dir = tempfile::tempdir().unwrap();
+            // The installed Node identity is owner-private. macOS test tmp
+            // directories do not necessarily inherit that mode.
+            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let info = fs::symlink_metadata(dir.path()).unwrap();
+            assert_eq!(info.uid(), unsafe { libc::geteuid() });
+            assert_eq!(info.permissions().mode() & 0o077, 0);
+            let marker = dir.path().join("macos-connection.json");
+            record_connected(dir.path(), "candidate-generation").unwrap();
+            let raw = fs::read_to_string(&marker).unwrap();
+            assert!(raw.ends_with('\n'));
+            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert_eq!(value["state"], "connected");
+            assert_eq!(value["generation"], "candidate-generation");
+            assert!(value["at"].as_u64().is_some());
+            assert_eq!(
+                fs::symlink_metadata(marker).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
         }
     }
 }
