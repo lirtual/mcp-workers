@@ -431,7 +431,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     endpoint:bound,generation,agentRuntime,
   });
   let journalCreated=false,oldStopped=false,newLoaded=false,cliWritten=false;
-  let failureStage="write-switch-journal";
+  let failureStage="write-switch-journal",rollbackStage="begin";
   try{
     await ownedWrite(journal,JSON.stringify({
       version,previous:old,generation,stopped,phase:"switch_pending"})+"\n");
@@ -469,30 +469,47 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     if(!journalCreated)throw error;
     try{
       if(cliWritten){
+        rollbackStage=previousCli!==null?"restore-local-cli":"remove-local-cli";
         if(previousCli!==null)await ownedWrite(cli,previousCli,true,0o700,false);
         else await rm(cli);
       }
       if(newLoaded){
+        rollbackStage="stop-new-service";
         await stopLaunchdForSwitch(service,invoke,pauseLaunchd);
       }else if(oldStopped){
         // A failed bootstrap can still leave a registration asynchronously
         // arriving. Never overwrite the plist and bootstrap old over it.
+        rollbackStage="inspect-new-service";
         const state=launchctlServiceState(service,invoke);
         if(state==="unknown")throw Error("Uncertain new-service registration.");
+        rollbackStage="stop-new-service";
         await stopLaunchdForSwitch(service,invoke,pauseLaunchd,state==="present");
       }
-      if(old)await ownedWrite(plist,old,true,0o600,false);
-      else if(await checked(plist,{optional:true,mode:0o600}))await rm(plist);
+      if(old){
+        rollbackStage="restore-previous-launchagent";
+        await ownedWrite(plist,old,true,0o600,false);
+      }else{
+        rollbackStage="check-new-launchagent";
+        if(await checked(plist,{optional:true,mode:0o600})){
+          rollbackStage="remove-new-launchagent";
+          await rm(plist);
+        }
+      }
       if(oldStopped){
-        if(!launch(["bootstrap",domain,plist],invoke)||
-           !await online(identity,current.generation))
+        rollbackStage="bootstrap-previous-launchagent";
+        if(!launch(["bootstrap",domain,plist],invoke))
+          throw Error("Old LaunchAgent bootstrap not confirmed.");
+        rollbackStage="verify-previous-signed-wss";
+        if(!await online(identity,current.generation))
           throw Error("Old signed service not restored.");
       }else if(frozen){
+        rollbackStage="release-frozen-agent";
         await freezeAgent(key,"release");
       }
+      rollbackStage="remove-switch-journal";
       await rm(journal);
     }catch{
-      throw Error("UNKNOWN rollback: journal, key and receipts retained for manual inspection.");
+      throw Error(`UNKNOWN rollback at ${rollbackStage} after ${failureStage}: journal, key and receipts retained for manual inspection.`);
     }
     // Do not expose arbitrary OS exception text that may include sensitive paths.
     const reason=error instanceof Error&&error.message==="Unsafe owner, type or mode."

@@ -487,7 +487,7 @@ test("#660 native unreconciled new deregistration preserves switch journal",{
   await assert.rejects(localMacAction("upgrade",{
     ...first,bundle:candidate,freezeAgent:async()=> "ready",
     online:async()=>false,
-  }),/UNKNOWN rollback/);
+  }),/UNKNOWN rollback at stop-new-service after signed-wss-activation/);
   assert.equal(bootstraps,2,"must not bootstrap old over uncertain new registration");
   assert.equal(registered,true);
   const journal=JSON.parse(await readFile(path.join(f.identity,"macos/switch.json"),"utf8"));

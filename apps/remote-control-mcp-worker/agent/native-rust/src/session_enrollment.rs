@@ -295,3 +295,182 @@ pub fn load_existing_linux_session_identity(
 ) -> Result<(std::path::PathBuf, SessionDeviceIdentity), EnrollmentError> {
     linux_store::load_existing(runner_temp, attempt)
 }
+
+#[cfg(windows)]
+mod windows_store {
+    use super::*;
+    use std::fs::{self, File, OpenOptions};
+    use std::io::{Read, Write};
+    use std::path::{Path, PathBuf};
+
+    fn safe_directory(path: &Path) -> Result<(), EnrollmentError> {
+        let meta = fs::symlink_metadata(path).map_err(|_| EnrollmentError::UntrustedStore)?;
+        if !meta.is_dir() || meta.file_type().is_symlink() {
+            return Err(EnrollmentError::UntrustedStore);
+        }
+        crate::validate_windows_private_path(path, true)
+            .map_err(|_| EnrollmentError::UntrustedStore)
+    }
+
+    fn safe_runner_root(root: &Path) -> Result<(), EnrollmentError> {
+        if !root.is_absolute() {
+            return Err(EnrollmentError::UntrustedStore);
+        }
+        Ok(())
+    }
+
+    fn read_verified(
+        file: &Path,
+        attempt: &SessionPhysicalAttempt,
+    ) -> Result<SessionDeviceIdentity, EnrollmentError> {
+        let meta = fs::symlink_metadata(file).map_err(|_| EnrollmentError::UntrustedStore)?;
+        if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 4096 {
+            return Err(EnrollmentError::UntrustedStore);
+        }
+        crate::validate_windows_private_path(file, false)
+            .map_err(|_| EnrollmentError::UntrustedStore)?;
+        let handle = File::open(file)?;
+        let opened = handle.metadata()?;
+        if !opened.is_file() || opened.len() > 4096 || opened.len() != meta.len() {
+            return Err(EnrollmentError::UntrustedStore);
+        }
+        let mut bytes = Vec::new();
+        handle.take(4097).read_to_end(&mut bytes)?;
+        if bytes.is_empty() || bytes.len() > 4096 {
+            return Err(EnrollmentError::UntrustedStore);
+        }
+        crate::validate_windows_private_path(file, false)
+            .map_err(|_| EnrollmentError::UntrustedStore)?;
+        let after = fs::symlink_metadata(file).map_err(|_| EnrollmentError::UntrustedStore)?;
+        if !after.is_file() || after.file_type().is_symlink() || after.len() != bytes.len() as u64 {
+            return Err(EnrollmentError::UntrustedStore);
+        }
+        let identity: SessionDeviceIdentity =
+            serde_json::from_slice(&bytes).map_err(|_| EnrollmentError::UntrustedStore)?;
+        validate_session_identity(&identity, attempt)?;
+        Ok(identity)
+    }
+
+    pub(super) fn load_or_create(
+        runner_temp: &Path,
+        attempt: &SessionPhysicalAttempt,
+    ) -> Result<(PathBuf, SessionDeviceIdentity), EnrollmentError> {
+        if !valid_attempt(attempt) {
+            return Err(EnrollmentError::InvalidAttempt);
+        }
+        if safe_runner_root(runner_temp).is_err() {
+            return Err(EnrollmentError::UntrustedStore);
+        }
+        let directory = runner_temp.join("session-rca");
+        match fs::create_dir(&directory) {
+            Ok(()) => crate::seal_new_windows_private_directory(&directory)
+                .map_err(|_| EnrollmentError::UntrustedStore)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(EnrollmentError::UntrustedStore),
+        }
+        safe_directory(&directory).map_err(|_| EnrollmentError::UntrustedStore)?;
+        let file = directory.join("identity.json");
+        match read_verified(&file, attempt) {
+            Ok(identity) => return Ok((file, identity)),
+            Err(EnrollmentError::Io(ref error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            }
+            Err(EnrollmentError::UntrustedStore) => match fs::symlink_metadata(&file) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err(EnrollmentError::UntrustedStore),
+            },
+            Err(error) => return Err(error),
+        }
+        let identity = new_session_identity(attempt)?;
+        let bytes = serde_json::to_vec(&identity).map_err(|_| EnrollmentError::UntrustedStore)?;
+        let mut handle = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&file)?;
+        crate::seal_new_windows_private_file(&file).map_err(|_| EnrollmentError::UntrustedStore)?;
+        handle.write_all(&bytes)?;
+        handle.sync_all()?;
+        drop(handle);
+        safe_directory(&directory).map_err(|_| EnrollmentError::UntrustedStore)?;
+        let identity = read_verified(&file, attempt)?;
+        Ok((file.clone(), identity))
+    }
+
+    pub(super) fn load_existing(
+        runner_temp: &Path,
+        attempt: &SessionPhysicalAttempt,
+    ) -> Result<(PathBuf, SessionDeviceIdentity), EnrollmentError> {
+        if !valid_attempt(attempt) {
+            return Err(EnrollmentError::InvalidAttempt);
+        }
+        safe_runner_root(runner_temp)?;
+        let directory = runner_temp.join("session-rca");
+        safe_directory(&directory)?;
+        let file = directory.join("identity.json");
+        Ok((file.clone(), read_verified(&file, attempt)?))
+    }
+}
+
+#[cfg(windows)]
+pub fn load_or_create_windows_session_identity(
+    runner_temp: &std::path::Path,
+    attempt: &SessionPhysicalAttempt,
+) -> Result<(std::path::PathBuf, SessionDeviceIdentity), EnrollmentError> {
+    windows_store::load_or_create(runner_temp, attempt)
+}
+
+#[cfg(windows)]
+pub fn load_existing_windows_session_identity(
+    runner_temp: &std::path::Path,
+    attempt: &SessionPhysicalAttempt,
+) -> Result<(std::path::PathBuf, SessionDeviceIdentity), EnrollmentError> {
+    windows_store::load_existing(runner_temp, attempt)
+}
+
+#[cfg(all(test, windows))]
+mod windows_store_tests {
+    use super::*;
+    use std::fs;
+
+    fn attempt() -> SessionPhysicalAttempt {
+        SessionPhysicalAttempt {
+            attempt_id: "123e4567-e89b-42d3-a456-426614174001".into(),
+            github_run_id: 123,
+            github_run_attempt: 1,
+            workflow_name: "windows".into(),
+        }
+    }
+
+    #[test]
+    fn windows_session_identity_is_private_and_attempt_bound() {
+        let runner_temp = tempfile::tempdir().unwrap();
+        let attempt = attempt();
+        let (path, first) =
+            load_or_create_windows_session_identity(runner_temp.path(), &attempt).unwrap();
+        let (loaded_path, second) =
+            load_existing_windows_session_identity(runner_temp.path(), &attempt).unwrap();
+        assert_eq!(path, loaded_path);
+        assert_eq!(first.attempt, attempt);
+        assert_eq!(second.attempt, attempt);
+        assert_eq!(first.public_key, second.public_key);
+
+        let mut other = attempt.clone();
+        other.github_run_attempt += 1;
+        assert!(matches!(
+            load_existing_windows_session_identity(runner_temp.path(), &other),
+            Err(EnrollmentError::UntrustedStore | EnrollmentError::InvalidIdentity)
+        ));
+    }
+
+    #[test]
+    fn windows_session_identity_tampering_fails_closed() {
+        let runner_temp = tempfile::tempdir().unwrap();
+        let attempt = attempt();
+        let (path, _) =
+            load_or_create_windows_session_identity(runner_temp.path(), &attempt).unwrap();
+        fs::write(&path, b"{}").unwrap();
+        assert!(matches!(
+            load_existing_windows_session_identity(runner_temp.path(), &attempt),
+            Err(EnrollmentError::UntrustedStore | EnrollmentError::InvalidIdentity)
+        ));
+    }
+}

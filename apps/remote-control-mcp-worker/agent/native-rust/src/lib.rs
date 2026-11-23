@@ -47,6 +47,8 @@ pub mod windows_output;
 #[cfg(windows)]
 mod windows_private;
 #[cfg(windows)]
+pub mod windows_session_runner;
+#[cfg(windows)]
 pub mod windows_upgrade_control;
 
 /// Reuse the Windows NTFS handle/ACL guard for the unshipped CLI boundary.
@@ -57,6 +59,23 @@ pub fn validate_windows_private_path(
     is_dir: bool,
 ) -> Result<(), receipts::ReceiptError> {
     windows_private::private_path(path, is_dir)
+}
+
+/// Seal the just-created Session-private directory and verify its final ACL.
+#[cfg(windows)]
+pub(crate) fn seal_new_windows_private_directory(
+    path: &std::path::Path,
+) -> Result<(), receipts::ReceiptError> {
+    windows_private::seal_new_private_directory(path)
+}
+
+/// Set and verify ownership for a newly-created file under a private directory.
+#[cfg(windows)]
+pub(crate) fn seal_new_windows_private_file(
+    path: &std::path::Path,
+) -> Result<(), receipts::ReceiptError> {
+    windows_private::seal_new_owner(path, false)?;
+    windows_private::private_path(path, false)
 }
 
 /// Reject the Windows LocalSystem account for a user-paired Standard Agent.
