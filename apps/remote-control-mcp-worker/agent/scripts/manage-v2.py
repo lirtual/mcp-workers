@@ -138,6 +138,12 @@ def upgrade(bootstrap, arguments):
 
 
 def dispatch(command, args, root, info, bootstrap):
+    # The Python Rust candidate path is inspection-only until the actual
+    # installer and rollback are proven. Direct invocation must not bypass
+    # the existing Node lifecycle CLI selected by rca.sh.
+    if (info.get("agent_runtime") == "rust-standard-linux-v1"
+            and command in ("pair", "upgrade", "uninstall")):
+        raise ValueError("Rust Python manager is read-only; use the reviewed Agent lifecycle CLI.")
     if command in ("--help", "-h", "help"):
         print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
@@ -169,6 +175,8 @@ def dispatch(command, args, root, info, bootstrap):
 
 def main():
     root, info, bootstrap = local_runtime()
+    if info.get("agent_runtime") == "rust-standard-linux-v1" and len(sys.argv) == 1:
+        raise ValueError("Rust Python manager requires an explicit read-only command.")
     if len(sys.argv) > 1:
         return dispatch(sys.argv[1], sys.argv[2:], root, info, bootstrap)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
