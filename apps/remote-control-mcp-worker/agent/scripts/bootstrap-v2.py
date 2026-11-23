@@ -615,10 +615,10 @@ def validated_owned_version(p):
             if stat.S_ISREG(st.st_mode):
                 observed.add(file.relative_to(p).as_posix())
     if native_only:
-        expected = {"bundle.json", str(APP / ".build/session-supervisor"),
-                    str(APP / ".build/rca-standard-linux-candidate"),
-                    str(APP / "scripts/bootstrap-v2.py"),
-                    str(APP / "scripts/manage-v2.py"), str(APP / "scripts/rca.sh")}
+        expected = {"bundle.json", str(pathlib.Path(APP) / ".build/session-supervisor"),
+                    str(pathlib.Path(APP) / ".build/rca-standard-linux-candidate"),
+                    str(pathlib.Path(APP) / "scripts/bootstrap-v2.py"),
+                    str(pathlib.Path(APP) / "scripts/manage-v2.py"), str(pathlib.Path(APP) / "scripts/rca.sh")}
         if observed != expected:
             raise ValueError("Native-only program contains missing or unexpected files")
     return True
