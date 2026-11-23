@@ -211,7 +211,7 @@ function Expand-SafeArchive([string]$file, [string]$folder) {
   $zip = [IO.Compression.ZipFile]::OpenRead($file)
   try {
     $entries = @($zip.Entries)
-    if ($entries.Count -lt 8 -or $entries.Count -gt 70) { throw 'Unexpected ZIP member count' }
+    if ($entries.Count -lt 7 -or $entries.Count -gt 70) { throw 'Unexpected ZIP member count' }
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     [long]$total = 0
     foreach ($entry in $entries) {
@@ -222,7 +222,7 @@ function Expand-SafeArchive([string]$file, [string]$folder) {
         throw 'ZIP traversal, alias or duplicate'
       }
       $allowedDir = $name -cmatch '^(?:bin|apps|apps/remote-control-agent|apps/remote-control-agent/src|apps/remote-control-agent/scripts|apps/remote-control-agent/\.build)/$'
-      $allowedFile = $name -cmatch '^(?:bin/(?:node\.exe|rca-background\.exe)|rca\.cmd|bundle\.json|apps/remote-control-agent/(?:package\.json|(?:src/[a-z0-9-]+\.js|\.build/rca-standard-windows-candidate\.exe)|scripts/(?:(?:windows-private-store|windows-session-private-store|windows-user-task|windows-stage-install|windows-upgrade-once)\.ps1|verify-windows-preview\.mjs)))$'
+      $allowedFile = $name -cmatch '^(?:bin/(?:node\.exe|rca-background\.exe)|rca\.cmd|bundle\.json|apps/remote-control-agent/(?:package\.json|(?:src/[a-z0-9-]+\.js|\.build/rca-standard-windows-candidate\.exe)|scripts/(?:(?:windows-private-store|windows-session-private-store|windows-user-task|windows-stage-install|windows-upgrade-once|verify-windows-native)\.ps1|verify-windows-preview\.mjs)))$'
       if (($name.EndsWith('/') -and -not $allowedDir) -or
           (-not $name.EndsWith('/') -and -not $allowedFile)) {
         if ($env:GITHUB_ACTIONS -eq 'true') {
@@ -473,6 +473,13 @@ try {
   }
   if (Test-Path -LiteralPath $target) {
     Assert-PrivateFolder $target
+    # The staged native-only profile is not yet an install/upgrade entry.
+    # Never execute or overwrite an already present native-only candidate.
+    $installedManifest = Get-Content -LiteralPath (Join-Path $target 'bundle.json') -Raw | ConvertFrom-Json
+    $installedProfile = $installedManifest.PSObject.Properties['artifact_profile']
+    if ($null -ne $installedProfile -and $installedProfile.Value -ceq 'rust-native-only-v1') {
+      throw 'Native-only candidate already staged; remove the inactive candidate explicitly before restaging'
+    }
     $nodeExisting = [IO.Path]::Combine($target,'bin','node.exe')
     $verifyExisting = [IO.Path]::Combine($target,'apps','remote-control-agent','scripts','verify-windows-preview.mjs')
     & $nodeExisting $verifyExisting $target | Out-Null
@@ -529,13 +536,23 @@ try {
   $stage = [IO.Path]::Combine($programs, ('.stage-' + [guid]::NewGuid().ToString('N')))
   Ensure-PrivateFolder $stage
   Expand-SafeArchive $temp $stage
-  $node = [IO.Path]::Combine($stage, 'bin', 'node.exe')
-  $verifier = [IO.Path]::Combine($stage, 'apps', 'remote-control-agent',
-                                'scripts', 'verify-windows-preview.mjs')
-  & $node $verifier $stage | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Bundle file manifest failed verification' }
   $manifest = Get-Content -LiteralPath ([IO.Path]::Combine($stage, 'bundle.json')) -Raw | ConvertFrom-Json
   if ($manifest.version -cne $Version) { throw 'Manifest version mismatch' }
+  $profile = $manifest.PSObject.Properties['artifact_profile']
+  if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
+    if (-not $StageOnly) {
+      throw 'Native-only Windows candidate supports verified staging only; activation is not reviewed'
+    }
+    # The outer reviewed ZIP SHA256 was checked before extraction.
+    $verifier = Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1'
+    & $verifier -Root $stage -Version $Version | Out-Null
+  } else {
+    $node = [IO.Path]::Combine($stage, 'bin', 'node.exe')
+    $verifier = [IO.Path]::Combine($stage, 'apps', 'remote-control-agent',
+                                  'scripts', 'verify-windows-preview.mjs')
+    & $node $verifier $stage | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Bundle file manifest failed verification' }
+  }
   [IO.Directory]::Move($stage, $target)
   $promoted = $true
   Write-Output "Installed: $Version"

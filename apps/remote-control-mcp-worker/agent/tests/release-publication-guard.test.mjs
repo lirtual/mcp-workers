@@ -182,6 +182,13 @@ test('push, an incomplete set, a duplicate, an unreviewed run, drift, damage, an
     /unreviewed native candidate/);
 });
 
+test('a stage-only Windows native candidate cannot enter a stable Release', () => {
+  const input = reviewed();
+  const windows = input.candidates.find(({target}) => target === 'windows-x64');
+  windows.bundle.artifact_profile = 'rust-native-only-v1';
+  assert.throws(() => reviewAgentPublication(input), /damaged native candidate/);
+});
+
 test('readback stops unless the release is a complete immutable stable Latest', () => {
   assert.throws(() => acceptAgentReleaseReadback({ ...published(), releaseTag: 'v0.1.53-rc.1' }),
     /Release is not an immutable stable Latest/);
