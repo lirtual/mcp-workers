@@ -329,7 +329,7 @@ mod windows_store {
         }
         crate::validate_windows_private_path(file, false)
             .map_err(|_| EnrollmentError::UntrustedStore)?;
-        let mut handle = File::open(file)?;
+        let handle = File::open(file)?;
         let opened = handle.metadata()?;
         if !opened.is_file() || opened.len() > 4096 || opened.len() != meta.len() {
             return Err(EnrollmentError::UntrustedStore);

@@ -120,7 +120,7 @@ pub fn spawn_credential_free_transport(
     validate_transport_grant(grant, current_time_ms()?)?;
     let environment = session_transport_environment(source);
     if environment.get("ATTEMPT_ID") != Some(&attempt.attempt_id)
-        || environment.get("RUNNER_TRACKING_ID").is_none()
+        || !environment.contains_key("RUNNER_TRACKING_ID")
     {
         return Err(WindowsSessionRunnerError::InvalidRunner);
     }
