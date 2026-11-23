@@ -330,11 +330,12 @@ export function build(args) {
     rewriteExtensions(installer),{mode:0o600});
   for (const name of ["bootstrap-node.mjs","manage-v2.mjs",
       "lifecycle-v2.mjs","upgrade-v2.mjs","upgrade-existing-service.mjs",
-      "bootstrap-v2.py","verify-v2-release.mjs","rca.sh"]) {
+      "bootstrap-v2.py","verify-v2-release.mjs","rca.sh",
+      ...(rustCandidate && !darwin ? ["manage-v2.py"] : [])]) {
     const sourceFile=path.join(root,"scripts",name);
     const dest=path.join(work,"apps/remote-control-agent/scripts",name);
     copyFileSync(sourceFile,dest);
-    chmodSync(dest,name==="rca.sh" ? 0o700 : 0o600);
+    chmodSync(dest,["rca.sh","manage-v2.py"].includes(name) ? 0o700 : 0o600);
   }
   }
   writeFileSync(path.join(work,"apps/remote-control-agent/package.json"),JSON.stringify({type:"module"})+"\n",{mode:0o600});
