@@ -663,7 +663,8 @@ def owned_manager_launcher(home, versions):
     launcher = directory / "rca"
     if launcher.is_symlink():
         info = launcher.lstat()
-        expected = [str(v / APP / "scripts/manage-v2.py") for v in versions]
+        expected = [str(v / APP / "scripts" / name)
+                    for v in versions for name in ("manage-v2.py", "rca.sh")]
         if info.st_uid != os.getuid() or os.readlink(launcher) not in expected:
             raise ValueError("Foreign Agent manager launcher: refuse uninstall")
         return launcher
