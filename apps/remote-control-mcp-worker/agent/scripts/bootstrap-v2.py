@@ -955,10 +955,11 @@ def native_recover(home):
         except Exception:
             raise ValueError("Native recovery uncertain; original backup retained") from None
         finally:
-            # If recovery failed before the old process restarted, unblock
-            # the still-running frozen Agent; release is harmless after restart.
+            # Never release a Rust process if the on-disk systemd unit was
+            # switched but restart failed. Keep it frozen for attended repair.
             try:
-                native_consent(key, "release")
+                if unit.read_text("utf8") == current:
+                    native_consent(key, "release")
             except Exception:
                 pass
 

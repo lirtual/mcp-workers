@@ -334,6 +334,32 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
+    # A failed service restart after installing the old unit must retain
+    # the recovery backup and keep the still-running Rust process frozen.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        old_unit = unit.read_text("utf8")
+        unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+        backup = Path(str(unit) + ".upgrade-backup")
+        bootstrap.native_create_file(backup, old_unit.encode())
+        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+            json.dumps({"operation_id": "c" * 32, "device_id": ID,
+                        "target_version": new.name}).encode())
+        state, mocks, verify = fake_services(home, old, new, rollback_failure=True)
+        state["active"] = "new"
+        with patch.multiple(bootstrap, **mocks):
+            try:
+                bootstrap.native_recover(home)
+                raise AssertionError("Failed recovery restart reported success")
+            except ValueError as error:
+                assert "uncertain" in str(error)
+        assert state["active"] == "new"
+        assert "freeze" in state["consents"]
+        assert "release" not in state["consents"]
+        assert backup.exists()
+    finally:
+        ctx.cleanup()
+
     # Abrupt process termination leaves durable original unit + matching
     # target intent for manual reconciliation; never claim Pass.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
