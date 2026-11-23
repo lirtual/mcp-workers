@@ -1,7 +1,7 @@
 #!/bin/sh
 # Portable rca entry, executed from the installer-owned versioned release.
-# Node Releases use their bundled Node; Rust candidates use system Python
-# only for read-only inspection while lifecycle remains on bundled Node.
+# Node Releases use bundled Node. Linux Rust uses an isolated system Python
+# CLI for status and separately guarded native-only local uninstall.
 set -eu
 resolved=$(readlink -f -- "$0") || exit 1
 root=$(dirname -- "$(dirname -- "$(dirname -- "$(dirname -- "$resolved")")")")
@@ -13,14 +13,19 @@ case "$root" in
     exit 1
     ;;
 esac
-# Rust candidates use the reviewed Python CLI only for read-only local
-# inspection. Keep paired lifecycle mutations on the existing Node path until
-# their separate Node-free safety/rollback checks are proven.
+# Pair/upgrade are not enabled for a Node-free archive. Native-only uninstall
+# retains the existing owner-terminal, process and identity protections.
 if test -x "$root/apps/remote-control-agent/.build/rca-standard-linux-candidate"; then
   case "${1:-}" in
     status|logs|version|--version)
       test -r "$root/apps/remote-control-agent/scripts/manage-v2.py" || exit 1
       exec /usr/bin/python3 -I -B "$root/apps/remote-control-agent/scripts/manage-v2.py" "$@"
+      ;;
+    uninstall)
+      if ! test -e "$root/bin/node"; then
+        test -r "$root/apps/remote-control-agent/scripts/manage-v2.py" || exit 1
+        exec /usr/bin/python3 -I -B "$root/apps/remote-control-agent/scripts/manage-v2.py" "$@"
+      fi
       ;;
   esac
 fi

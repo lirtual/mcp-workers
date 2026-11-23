@@ -138,12 +138,14 @@ def upgrade(bootstrap, arguments):
 
 
 def dispatch(command, args, root, info, bootstrap):
-    # The Python Rust candidate path is inspection-only until the actual
-    # installer and rollback are proven. Direct invocation must not bypass
-    # the existing Node lifecycle CLI selected by rca.sh.
+    # Pair and upgrade remain blocked until the native-only transition gate
+    # is proven. Uninstall reuses the existing owner-TTY + process-guarded
+    # Python implementation only for the exact reviewed native-only archive.
     if (info.get("agent_runtime") == "rust-standard-linux-v1"
-            and command in ("pair", "upgrade", "uninstall")):
-        raise ValueError("Rust Python manager is read-only; use the reviewed Agent lifecycle CLI.")
+            and (command in ("pair", "upgrade") or
+                 (command == "uninstall" and
+                  info.get("artifact_profile") != "rust-native-only-v1"))):
+        raise ValueError("Rust Python lifecycle operation is not yet reviewed.")
     if command in ("--help", "-h", "help"):
         print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
