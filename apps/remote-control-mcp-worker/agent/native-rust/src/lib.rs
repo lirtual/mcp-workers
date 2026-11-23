@@ -69,6 +69,15 @@ pub(crate) fn seal_new_windows_private_directory(
     windows_private::seal_new_private_directory(path)
 }
 
+/// Set and verify ownership for a newly-created file under a private directory.
+#[cfg(windows)]
+pub(crate) fn seal_new_windows_private_file(
+    path: &std::path::Path,
+) -> Result<(), receipts::ReceiptError> {
+    windows_private::seal_new_owner(path, false)?;
+    windows_private::private_path(path, false)
+}
+
 /// Reject the Windows LocalSystem account for a user-paired Standard Agent.
 #[cfg(windows)]
 pub fn is_windows_system_identity() -> Result<bool, receipts::ReceiptError> {

@@ -404,8 +404,8 @@ mod windows_store {
             .write(true)
             .create_new(true)
             .open(&file)?;
-        crate::validate_windows_private_path(&file, false)
-            .map_err(|_| untrusted_at("verify identity file"))?;
+        crate::seal_new_windows_private_file(&file)
+            .map_err(|_| untrusted_at("seal identity file"))?;
         handle.write_all(&bytes)?;
         handle.sync_all()?;
         drop(handle);
