@@ -645,6 +645,39 @@ def owned_unit_root(unit, versions):
                 else str(root / "bin/node") + " " + str(root / APP / "src/v2-main.js"))
     if start[0] != expected:
         raise ValueError("Current v2 service runtime does not match its manifest")
+    if manifest.get("artifact_profile") == "rust-native-only-v1":
+        # The Rust service must match the reviewed Node installer systemd
+        # template byte-for-byte. No unknown ExecStopPost, drop-ins, etc.
+        endpoint_lines = [line for line in lines
+                          if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
+        if len(endpoint_lines) != 1:
+            raise ValueError("Ambiguous Rust service endpoint")
+        endpoint = endpoint_lines[0].partition("=")[2]
+        parsed = urllib.parse.urlsplit(endpoint)
+        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+                or parsed.password or parsed.query or parsed.fragment
+                or parsed.path != "/" or "\n" in endpoint):
+            raise ValueError("Untrusted Rust service endpoint")
+        home = pathlib.Path(root).parents[4]
+        key = home / STORE / "v2-identity.pem"
+        app = root / APP
+        expected_unit = "\n".join([
+            MARKER, "[Unit]",
+            "Description=Remote Control Agent (signed outbound WSS)",
+            "StartLimitIntervalSec=0", "", "[Service]", "Type=simple",
+            "WorkingDirectory=" + str(app),
+            "Environment=REMOTE_CONTROL_AGENT_ENDPOINT=" + endpoint,
+            "Environment=REMOTE_CONTROL_AGENT_KEY_PATH=" + str(key),
+            "UMask=0077",
+            "ExecStartPre=/usr/bin/test -r " + str(key),
+            "ExecStartPre=/usr/bin/test -r " + str(key) + ".device-id",
+            "ExecStartPre=/usr/bin/test -x " + str(app / ".build/session-supervisor"),
+            "ExecStart=" + expected,
+            "Restart=on-failure", "RestartSec=15s", "TimeoutStopSec=15s",
+            "", "[Install]", "WantedBy=default.target", ""
+        ])
+        if unit != expected_unit:
+            raise ValueError("Modified or foreign Rust service directives; refuse uninstall")
     return root
 
 
