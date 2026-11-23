@@ -19,7 +19,7 @@ const FILES=new Set([
   APP+"/scripts/install-v2.mjs",APP+"/scripts/bootstrap-node.mjs",
   APP+"/scripts/manage-v2.mjs",APP+"/scripts/lifecycle-v2.mjs",
   APP+"/scripts/upgrade-v2.mjs",APP+"/scripts/upgrade-existing-service.mjs",
-  APP+"/scripts/bootstrap-v2.py",APP+"/scripts/linux-upgrade-detached.mjs",
+  APP+"/scripts/bootstrap-v2.py",APP+"/scripts/manage-v2.py",APP+"/scripts/linux-upgrade-detached.mjs",
   APP+"/scripts/linux-upgrade-watchdog.mjs",
   APP+"/scripts/verify-v2-release.mjs",
   APP+"/scripts/rca.sh",APP+"/.build/session-supervisor",APP+"/.build/rca-standard-linux-candidate",
@@ -108,14 +108,17 @@ export function inspectPinnedArchiveBytes(bytes,{expectedSha256,tag,target}){
     !["read-only-no-shell-v1","paired-full-v1"].includes(manifest.upgrade_profile))
     throw Error("Unsupported Agent manifest / ABI / protocol");
   const rustAgent=APP+"/.build/rca-standard-linux-candidate";
+  const rustManager=APP+"/scripts/manage-v2.py";
   const isRustCandidate=manifest.agent_runtime==="rust-standard-linux-v1";
   if(isRustCandidate){
     if(!manifest.version.includes("-rust-candidate")||
        manifest.candidate_profile!=="standard-linux-rust-runtime-v1"||
-       !records.has(rustAgent)||records.get(rustAgent).directory)
+       !records.has(rustAgent)||records.get(rustAgent).directory||
+       !records.has(rustManager)||records.get(rustManager).directory)
       throw Error("Incomplete unpublished Linux Rust candidate");
   }else if((manifest.agent_runtime!==undefined&&manifest.agent_runtime!=="node-v2")||
-           manifest.candidate_profile!==undefined||records.has(rustAgent)){
+           manifest.candidate_profile!==undefined||records.has(rustAgent)||
+           records.has(rustManager)){
     throw Error("Unexpected candidate runtime contents");
   }
   // Continue accepting historic local-only archives, but never extract an
