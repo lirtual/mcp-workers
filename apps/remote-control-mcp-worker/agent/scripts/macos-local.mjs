@@ -227,7 +227,9 @@ export async function observeOnline(identity,generation,now=Date.now){
   for(let i=0;i<50;i++){
     if(await checked(file,{optional:true,mode:0o600})){
       const r=JSON.parse(await readFile(file,"utf8"));
-      if(r.generation===generation&&r.state==="connected"&&Date.parse(r.at)>=start-3000)return true;
+      const connectedAt=typeof r.at==="number"&&Number.isSafeInteger(r.at)
+        ?r.at:typeof r.at==="string"?Date.parse(r.at):NaN;
+      if(r.generation===generation&&r.state==="connected"&&connectedAt>=start-3000)return true;
       if(r.generation===generation&&r.state==="rejected")return false;
     }
     await new Promise(resolve=>setTimeout(resolve,200));
