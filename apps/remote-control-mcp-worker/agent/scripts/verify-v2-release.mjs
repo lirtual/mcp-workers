@@ -264,7 +264,7 @@ function safePath(name,directory) {
     n==="apps/remote-control-agent/scripts/install-v2.mjs" ||
     ["bootstrap-node.mjs","manage-v2.mjs","lifecycle-v2.mjs",
      "upgrade-v2.mjs","upgrade-existing-service.mjs",
-     "bootstrap-v2.py","linux-upgrade-detached.mjs","linux-upgrade-watchdog.mjs",
+     "bootstrap-v2.py","manage-v2.py","linux-upgrade-detached.mjs","linux-upgrade-watchdog.mjs",
      "verify-v2-release.mjs","rca.sh"].some(name=>
        n==="apps/remote-control-agent/scripts/"+name) ||
     n==="apps/remote-control-agent/.build/session-supervisor" ||
