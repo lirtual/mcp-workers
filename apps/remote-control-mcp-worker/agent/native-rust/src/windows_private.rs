@@ -156,10 +156,17 @@ pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError
     let user = unsafe { (*(user_storage.as_ptr().cast::<TOKEN_USER>())).User.Sid };
     let system_storage = system_sid()?;
     let system = system_storage.as_ptr().cast_mut().cast::<c_void>();
-    let handle = open_with_access(
+    let handle = match open_with_access(
         path,
         READ_CONTROL | FILE_READ_ATTRIBUTES | WRITE_DAC | WRITE_OWNER,
-    )?;
+    ) {
+        Ok(handle) => handle,
+        Err(error) => {
+            #[cfg(test)]
+            eprintln!("candidate ACL setup: open failed");
+            return Err(error);
+        }
+    };
     let flags = attributes(&handle)?;
     if flags & FILE_ATTRIBUTE_REPARSE_POINT != 0 || flags & FILE_ATTRIBUTE_DIRECTORY == 0 {
         return Err(unsafe_path());
@@ -198,7 +205,7 @@ pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError
     {
         return Err(unsafe_path());
     }
-    if unsafe {
+    let set_status = unsafe {
         SetSecurityInfo(
             handle.as_raw_handle(),
             SE_FILE_OBJECT,
@@ -210,11 +217,20 @@ pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError
             dacl,
             null(),
         )
-    } != 0
-    {
+    };
+    if set_status != 0 {
+        #[cfg(test)]
+        eprintln!("candidate ACL setup: SetSecurityInfo status={set_status}");
         return Err(unsafe_path());
     }
-    private_path(path, true)
+    match private_path(path, true) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            #[cfg(test)]
+            eprintln!("candidate ACL setup: verification failed");
+            Err(error)
+        }
+    }
 }
 
 fn attributes(handle: &OwnedHandle) -> Result<u32, ReceiptError> {
