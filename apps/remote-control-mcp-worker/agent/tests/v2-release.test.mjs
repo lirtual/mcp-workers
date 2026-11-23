@@ -265,3 +265,69 @@ test("GUI runtime manifest is rejected by the release verifier", () => {
   assert.throws(() => inspectTarGzip(fixture([], {browser_runtime: {name: "playwright-core"}}), {tag,target}),
     /Retired GUI runtime/);
 });
+
+test("#914 native-only Rust archive excludes bundled Node and every JS runtime file",async()=>{
+  const candidateTag="v0.1.57-rust-candidate.1";
+  const nativeManifest={name:"remote-control-agent",artifact_schema:1,
+    version:candidateTag,target,agent_runtime:"rust-standard-linux-v1",
+    artifact_profile:"rust-native-only-v1",candidate_profile:"standard-linux-rust-runtime-v1",
+    glibc_min:"2.34",device_protocol:2,receipt_schema:1,
+    upgrade_profile:"paired-full-v1",modules:[]};
+  const nativeFiles=[
+    {name:"bundle.json",data:Buffer.from(JSON.stringify(nativeManifest))},
+    {name:"apps/remote-control-agent/.build/session-supervisor",data:elf(62)},
+    {name:"apps/remote-control-agent/.build/rca-standard-linux-candidate",data:elf(62)},
+    {name:"apps/remote-control-agent/scripts/bootstrap-v2.py",data:Buffer.from("reviewed bootstrap")},
+    {name:"apps/remote-control-agent/scripts/manage-v2.py",data:Buffer.from("reviewed manager")},
+    {name:"apps/remote-control-agent/scripts/rca.sh",data:Buffer.from("#!/bin/sh\n")},
+  ];
+  const bytes=tar(nativeFiles);
+  const entries=inspectTarGzip(bytes,{tag:candidateTag,target});
+  assert.equal(entries.size,nativeFiles.length);
+  assert.equal([...entries.keys()].some(name=>name.startsWith("bin/") ||
+    name.includes("/src/") || name.endsWith(".mjs")),false);
+  const root=await mkdtemp(path.join(os.tmpdir(),"rc-rust-native-only-"));
+  try{
+    const dest=path.join(root,"version");
+    await extractVerifiedAsset({tag:candidateTag,target,digest:sha(bytes)},bytes,dest);
+    const executable=[
+      "apps/remote-control-agent/.build/session-supervisor",
+      "apps/remote-control-agent/.build/rca-standard-linux-candidate",
+      "apps/remote-control-agent/scripts/rca.sh",
+      "apps/remote-control-agent/scripts/manage-v2.py"
+    ];
+    for(const name of executable)
+      assert.equal((await stat(path.join(dest,name))).mode&0o777,0o700,name);
+    await assert.rejects(access(path.join(dest,"bin/node")),{code:"ENOENT"});
+    await assert.rejects(access(path.join(dest,"apps/remote-control-agent/src/v2-main.js")),{code:"ENOENT"});
+  } finally {await rm(root,{recursive:true,force:true});}
+  const invalids=[
+    {files:nativeFiles.filter(f=>!f.name.endsWith("manage-v2.py")),why:"missing manager"},
+    {files:nativeFiles.filter(f=>!f.name.endsWith("rca.sh")),why:"missing launcher"},
+    {files:[...nativeFiles,{name:"bin/node",data:elf(62)}],why:"Node payload"},
+    {files:[...nativeFiles,{name:"apps/remote-control-agent/src/v2-main.js",
+      data:Buffer.from("export {}")}],why:"JS payload"},
+    {files:nativeFiles.map(f=>f.name.includes("rca-standard-linux-candidate") ?
+      {...f,data:elf(183)}:f),why:"wrong ELF architecture"},
+    {files:nativeFiles.map(f=>f.name==="bundle.json" ?
+      {...f,data:Buffer.from(JSON.stringify({...nativeManifest,node:"v24.21.0"}))}:f),
+      why:"hidden Node dependency"},
+  ];
+  for(const item of invalids)
+    assert.throws(()=>inspectTarGzip(tar(item.files),{tag:candidateTag,target}),undefined,item.why);
+  assert.throws(()=>inspectTarGzip(bytes,{tag:"v0.1.57",target}),/version|profile/i);
+});
+
+test("#914 native-only packaging is explicit and cannot target Node or Darwin",()=>{
+  const args=["--version","v0.1.57-rust-candidate.1","--target",target,
+    "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/release",
+    "--node-sha256","a".repeat(64),"--native-sha256","b".repeat(64),
+    "--rust-agent-bin","/opt/rca-native","--rust-agent-sha256","c".repeat(64),
+    "--artifact-profile","rust-native-only-v1"];
+  const selected=parseArgs(args);
+  assert.equal(selected.artifactProfile,"rust-native-only-v1");
+  assert.throws(()=>parseArgs(args.map(x=>x===target?"darwin-arm64":x)));
+  assert.throws(()=>parseArgs(args.slice(0,-2).concat("--artifact-profile","anything")));
+  assert.throws(()=>parseArgs(args.filter((_,i)=>i<args.length-4 ||
+    i>=args.length-2)),"missing Rust signature must not pass");
+});
