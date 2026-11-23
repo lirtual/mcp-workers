@@ -166,7 +166,7 @@ pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError
     }
     let user_sid_len = unsafe { GetLengthSid(user) } as usize;
     let system_sid_len = unsafe { GetLengthSid(system.cast()) } as usize;
-    if user_sid_len < 8 || user_sid_len > 68 || system_sid_len < 8 || system_sid_len > 68 {
+    if !(8..=68).contains(&user_sid_len) || !(8..=68).contains(&system_sid_len) {
         return Err(unsafe_path());
     }
     let acl_len = std::mem::size_of::<ACL>() + 8 + user_sid_len + 8 + system_sid_len;
