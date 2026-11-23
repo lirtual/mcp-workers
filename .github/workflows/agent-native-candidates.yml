@@ -1109,6 +1109,23 @@ jobs:
             $created = $false
             $status = & $program task-status | ConvertFrom-Json
             if ($LASTEXITCODE -ne 0 -or $status.installed -ne $false) { throw 'Task remained after removal' }
+            # Task Scheduler may report disabled before its launched process
+            # has released the packaged executable. An in-use file must never
+            # be uninstalled; verify actual process exit with a bounded readback.
+            $publishedPrefix = [IO.Path]::GetFullPath($publishedDir).TrimEnd('\') + '\'
+            $remainingPublished = @()
+            for ($attempt = 0; $attempt -lt 40; $attempt++) {
+              $remainingPublished = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe' OR Name = 'rca-background.exe'" -ErrorAction Stop |
+                Where-Object {
+                  $executable = [string]$_.ExecutablePath
+                  $executable.StartsWith($publishedPrefix,[StringComparison]::OrdinalIgnoreCase)
+                })
+              if ($remainingPublished.Count -eq 0) { break }
+              Start-Sleep -Milliseconds 250
+            }
+            if ($remainingPublished.Count -ne 0) {
+              throw 'Task disable left published Node runtime processes active; refuse uninstall'
+            }
           } finally {
             if ($created) { & $program disable }
             Remove-Item -LiteralPath $device -Force -ErrorAction SilentlyContinue
