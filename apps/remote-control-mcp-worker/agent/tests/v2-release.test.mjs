@@ -161,6 +161,10 @@ test("#73 release package build rejects unverified architectures and unpinned ta
   assert.throws(()=>inspectTarGzip(fixture([
     {name:"apps/remote-control-agent/.build/rca-standard-linux-candidate",data:elf(62)},
   ],{agent_runtime:"node-v2"}),{tag,target}),/runtime profile/);
+  assert.throws(()=>inspectTarGzip(fixture([
+    {name:"apps/remote-control-agent/scripts/manage-v2.py",data:Buffer.from("inspection-only")},
+  ],{agent_runtime:"node-v2"}),{tag,target}),/runtime profile/,
+  "Stable Node package must not silently gain the Rust-only Python manager");
   const candidateRelease=mockGithub(Buffer.alloc(2048,0x42),{prerelease:true,releaseTag:candidateTag});
   assert.equal((await resolvePinnedRelease({tag:candidateTag,commit,target,
     send:candidateRelease.send})).tag,candidateTag);
