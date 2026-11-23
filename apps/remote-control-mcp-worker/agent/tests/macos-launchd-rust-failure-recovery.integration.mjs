@@ -120,9 +120,9 @@ test("published Node LaunchAgent rolls back after a real Rust candidate fails si
         // and the binary's exit(1), not just a successful plist bootstrap.
         const recorded=run(["print",service]);
         candidateObserved=recorded.status===0&&
-          /^\\s*program = .*rca-standard-darwin-candidate\\s*$/m.test(recorded.stdout)&&
-          /^\\s*runs = [1-9]\\d*\\s*$/m.test(recorded.stdout)&&
-          /^\\s*last exit code = 1\\s*$/m.test(recorded.stdout);
+          /^\s*program = .*rca-standard-darwin-candidate\s*$/m.test(recorded.stdout)&&
+          /^\s*runs = [1-9]\d*\s*$/m.test(recorded.stdout)&&
+          /^\s*last exit code = 1\s*$/m.test(recorded.stdout);
       }
       return false;
     },
