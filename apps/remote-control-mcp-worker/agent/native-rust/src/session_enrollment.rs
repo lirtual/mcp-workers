@@ -370,9 +370,12 @@ mod windows_store {
             Ok(()) => crate::seal_new_windows_private_directory(&directory)
                 .map_err(|_| EnrollmentError::UntrustedStore)?,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
+            Err(_error) => {
                 #[cfg(test)]
-                eprintln!("candidate identity store: directory create failed kind={:?}", error.kind());
+                eprintln!(
+                    "candidate identity store: directory create failed kind={:?}",
+                    _error.kind()
+                );
                 return Err(EnrollmentError::UntrustedStore);
             }
         }
