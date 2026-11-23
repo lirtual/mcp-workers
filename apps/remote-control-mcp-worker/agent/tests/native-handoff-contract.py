@@ -80,6 +80,15 @@ def fixture():
     return ctx, home, old, new, unit, launcher, key, receipts
 
 
+def native_pair_fixture():
+    ctx, home, node, old, unit, launcher, key, receipts = fixture()
+    new = make_version(home, "v0.1.58", True)
+    unit.write_text(bootstrap.native_render_unit(old, ENDPOINT, key))
+    launcher.unlink()
+    launcher.symlink_to(old / APP / "scripts/rca.sh")
+    return ctx, home, old, new, unit, launcher, key, receipts
+
+
 def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure=False,
                   restart_after_proof=False):
     state = {"active": "old", "commands": [], "consents": [], "pid_generation": 0}
@@ -87,11 +96,17 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
     def main_pid():
         return 100 if state["active"] == "old" else 200 + state["pid_generation"]
 
+    def expected_executable(root):
+        info = json.loads((root / "bundle.json").read_text())
+        return (root / APP / ".build/rca-standard-linux-candidate"
+                if info.get("artifact_profile") == "rust-native-only-v1"
+                else root / "bin/node")
+
     def executable(pid):
         if pid == 100:
-            return old / "bin/node"
+            return expected_executable(old)
         if pid in (200, 201):
-            return new / APP / ".build/rca-standard-linux-candidate"
+            return expected_executable(new)
         raise ValueError("Unexpected process identity")
 
     def control(*args):
@@ -185,6 +200,79 @@ def verify_isolated():
         assert b"disposable-receipt-history" in receipts.read_bytes()
         assert key.read_text() == "disposable-not-a-live-private-key"
         assert old.exists() and new.exists()
+        assert not Path(str(unit) + ".upgrade-backup").exists()
+        assert not Path(str(key) + ".native-upgrade-intent").exists()
+    finally:
+        ctx.cleanup()
+
+    # Native-to-native: reuse the SAME signed WSS commit and owner-local
+    # rollback transaction. A verified prior Rust service is no longer Node.
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        old_unit = unit.read_text()
+        original_key, original_receipts = key.read_bytes(), receipts.read_bytes()
+        state, mocks, verify = fake_services(home, old, new)
+        with patch.multiple(bootstrap, **mocks):
+            result = bootstrap.native_cutover(home, new, ENDPOINT, verify)
+        assert result["status"] == "active" and result["signed_wss"] is True
+        assert result["identity_preserved"] is True
+        assert state["active"] == "new"
+        assert launcher.readlink() == new / APP / "scripts/rca.sh"
+        assert unit.read_text() == bootstrap.native_render_unit(new, ENDPOINT, key)
+        assert unit.read_text() != old_unit
+        assert key.read_bytes() == original_key
+        assert receipts.read_bytes() == original_receipts
+        assert old.exists() and new.exists()
+        assert not Path(str(unit) + ".upgrade-backup").exists()
+        assert not Path(str(key) + ".native-upgrade-intent").exists()
+        assert not Path(str(key) + ".native-upgrade-proof").exists()
+    finally:
+        ctx.cleanup()
+
+    # Missing WSS proof MUST restore the previously active Rust executable,
+    # not the historical Node version still present among managed programs.
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        original_unit, original_receipts = unit.read_text(), receipts.read_bytes()
+        state, mocks, verify = fake_services(home, old, new, proof_good=False)
+        with patch.multiple(bootstrap, **mocks):
+            try:
+                bootstrap.native_cutover(home, new, ENDPOINT, verify)
+                raise AssertionError("Unauthenticated Rust-to-Rust upgrade committed")
+            except ValueError as error:
+                assert "rolled back" in str(error)
+        assert state["active"] == "old"
+        assert unit.read_text() == original_unit
+        assert launcher.readlink() == old / APP / "scripts/rca.sh"
+        assert receipts.read_bytes() == original_receipts
+        assert not Path(str(unit) + ".upgrade-backup").exists()
+        assert not Path(str(key) + ".native-upgrade-intent").exists()
+    finally:
+        ctx.cleanup()
+
+    # An interrupted Rust-to-Rust switch must be recoverable using the
+    # exact same attended recovery command; the oldest Node stays untouched.
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        original_unit = unit.read_text()
+        unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+        state, mocks, verify = fake_services(home, old, new)
+        state["active"] = "new"
+        bootstrap.native_create_file(Path(str(unit) + ".upgrade-backup"),
+                                     original_unit.encode())
+        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+            json.dumps({"operation_id": "d" * 32, "device_id": ID,
+                        "target_version": new.name}).encode())
+        original_key, original_receipts = key.read_bytes(), receipts.read_bytes()
+        with patch.multiple(bootstrap, **mocks):
+            result = bootstrap.native_recover(home)
+        assert result["status"] == "previous_service_restored"
+        assert result["version"] == old.name and result["signed_wss"] == "unconfirmed"
+        assert state["active"] == "old"
+        assert unit.read_text() == original_unit
+        assert launcher.readlink() == old / APP / "scripts/rca.sh"
+        assert key.read_bytes() == original_key
+        assert receipts.read_bytes() == original_receipts
         assert not Path(str(unit) + ".upgrade-backup").exists()
         assert not Path(str(key) + ".native-upgrade-intent").exists()
     finally:
