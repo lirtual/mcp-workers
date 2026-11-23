@@ -652,7 +652,7 @@ def owned_unit_root(unit, versions):
                           if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
         if len(endpoint_lines) != 1:
             raise ValueError("Ambiguous Rust service endpoint")
-        endpoint = endpoint_lines[0].partition("=")[2]
+        endpoint = endpoint_lines[0].removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
         parsed = urllib.parse.urlsplit(endpoint)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.username
                 or parsed.password or parsed.query or parsed.fragment
