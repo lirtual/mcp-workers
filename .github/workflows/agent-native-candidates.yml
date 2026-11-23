@@ -309,6 +309,16 @@ jobs:
             RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_RUST_ARCHIVE="$rust_archive" \
             "$(node -p 'process.execPath')" --experimental-strip-types \
             "$source_dir/tests/linux-systemd-upgrade-recovery.integration.mjs"
+          # Real old Node systemd service -> Node-free Rust attempt with NO signed
+          # Worker WSS. The real old service must be restored without replaying
+          # existing Unknown receipts; no production endpoint or grant involved.
+          native_archive="$fixture_dir/native-only-v0.1.57-rust-candidate.1-$SPEC914_TARGET.tar.gz"
+          install -m 0644 "$SPEC914_TEMP/native-only/remote-control-agent-v0.1.57-rust-candidate.1-$SPEC914_TARGET.tar.gz" "$native_archive"
+          sudo -u "$test_user" test -r "$native_archive"
+          sudo -u "$test_user" "${user_env[@]}" \
+            RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_NATIVE_ARCHIVE="$native_archive" \
+            "$(node -p 'process.execPath')" --experimental-strip-types \
+            "$source_dir/tests/linux-native-only-systemd.integration.mjs"
   macos-native-candidate:
     name: Unpublished native macOS 15 / ${{ matrix.arch }} candidate
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'

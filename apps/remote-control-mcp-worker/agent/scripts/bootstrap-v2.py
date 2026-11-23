@@ -416,9 +416,10 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         if (name is not None or upgrade or
                 not isinstance(asset_sha256, str) or
                 not re.fullmatch(r"[0-9a-f]{64}", asset_sha256)):
-            raise ValueError("Native staging/switch requires a reviewed SHA-256 and no Node install action")
+            scope = "Stage-only" if stage_only else "Native upgrade"
+            raise ValueError(scope + " requires a reviewed SHA-256 and no Node install action")
     elif asset_sha256 is not None:
-        raise ValueError("An asset SHA-256 is only accepted for native staging/switch")
+        raise ValueError("An asset SHA-256 is only accepted for stage-only or native upgrade")
     target = preflight(tag, commit, endpoint, stage_only=stage_only)
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
     location = program_home(os.path.expanduser("~"))
