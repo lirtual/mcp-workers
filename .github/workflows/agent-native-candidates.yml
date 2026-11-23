@@ -756,6 +756,34 @@ jobs:
           Expand-Archive -LiteralPath $rustArchive -DestinationPath $rustReopened -ErrorAction Stop
           node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $rustReopened
           if ($LASTEXITCODE -ne 0) { throw 'Reopened Rust Windows candidate archive refused' }
+
+          # Same real Windows PE, separate native-only artifact; no Node or JS.
+          # This stage-only candidate is not uploaded or a promotable Release.
+          $nativeTag = 'v0.1.58-rust-candidate.1'
+          $nativeOut = Join-Path $env:RUNNER_TEMP 'windows-native-only'
+          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $nativeTag --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --artifact-profile rust-native-only-v1 --out $nativeOut
+          if ($LASTEXITCODE -ne 0) { throw 'Native-only Windows candidate build failed' }
+          $nativeStage = Join-Path $nativeOut ('remote-control-agent-' + $nativeTag + '-windows-x64')
+          $nativeVerifier = 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1'
+          & $nativeVerifier -Root $nativeStage -Version $nativeTag
+          $nativeArchive = Join-Path $env:RUNNER_TEMP 'candidate-native-only.zip'
+          Compress-Archive -Path (Join-Path $nativeStage '*') -DestinationPath $nativeArchive -CompressionLevel Optimal
+          $nativeReopened = Join-Path $env:RUNNER_TEMP 'windows-native-only-reopened'
+          Expand-Archive -LiteralPath $nativeArchive -DestinationPath $nativeReopened -ErrorAction Stop
+          & $nativeVerifier -Root $nativeReopened -Version $nativeTag
+          # Reject a Node runtime injected into an otherwise valid inventory.
+          $extraNode = Join-Path $nativeReopened 'bin/node.exe'
+          [IO.File]::WriteAllText($extraNode, 'unexpected-runtime')
+          $refused = $false
+          try { & $nativeVerifier -Root $nativeReopened -Version $nativeTag } catch { $refused = $true }
+          if (-not $refused) { throw 'Native-only verification accepted an extra Node file' }
+          Remove-Item -LiteralPath $extraNode -Force
+          # Reject a checksum mismatch in the actual reopened archive.
+          $helper = Join-Path $nativeReopened 'bin/rca-background.exe'
+          [IO.File]::AppendAllText($helper,'tamper')
+          $refused = $false
+          try { & $nativeVerifier -Root $nativeReopened -Version $nativeTag } catch { $refused = $true }
+          if (-not $refused) { throw 'Native-only verification accepted a damaged file' }
       - name: Register and remove user-logon task with synthetic identity (no cloud calls)
         shell: pwsh
         run: |
@@ -1069,6 +1097,36 @@ jobs:
                 ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
               throw 'Published Node process escaped the registered interactive user identity'
             }
+
+            # Verify/stage the real Node-free archive using the existing
+            # installer while the published Node service is still active.
+            $nativeVersion = 'v0.1.58-rust-candidate.1'
+            $nativeArchive = Join-Path $env:RUNNER_TEMP 'candidate-native-only.zip'
+            $nativeDigest = (Get-FileHash -LiteralPath $nativeArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+            $nativeDir = Join-Path $basePrograms ($nativeVersion + '-windows-x64')
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/install.ps1' -StageOnly -Version $nativeVersion -OfflineArchive $nativeArchive -ExpectedSha256 $nativeDigest
+            if ($LASTEXITCODE -ne 0) { throw 'Existing installer could not stage Node-free Windows archive' }
+            & 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1' -Root $nativeDir -Version $nativeVersion
+            if (Test-Path -LiteralPath (Join-Path $nativeDir 'bin/node.exe')) { throw 'Unexpected Node runtime in native-only installed directory' }
+            $unchanged = Get-ScheduledTask -TaskName $taskName
+            if ($unchanged.State -ne 'Running' -or
+                [string]$unchanged.Actions[0].Execute -cne $originalAction -or
+                [string]$unchanged.Actions[0].Arguments -cne $originalArguments) {
+              throw 'StageOnly changed the published Node task'
+            }
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/uninstall-windows.ps1' -Version $nativeVersion
+            if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $nativeDir)) {
+              throw 'Inactive Node-free candidate could not be removed safely'
+            }
+            $unchanged = Get-ScheduledTask -TaskName $taskName
+            if ($unchanged.State -ne 'Running' -or
+                [string]$unchanged.Actions[0].Execute -cne $originalAction -or
+                [string]$unchanged.Actions[0].Arguments -cne $originalArguments -or
+                (Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
+                (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey) {
+              throw 'Native-only staging/removal changed the active task or identity'
+            }
+            Write-Output 'WINDOWS_NATIVE_ONLY_STAGE_AND_INACTIVE_UNINSTALL_PASS'
 
             $rustVersion = 'v0.1.57-rust-candidate.1'
             $rustArchive = Join-Path $env:RUNNER_TEMP 'candidate-rust-version.zip'

@@ -27,15 +27,17 @@ export function parseWindowsPreviewBuildArgs(argv) {
     ["--version", "version"], ["--node-bin", "nodeBin"], ["--node-sha256", "nodeSha256"],
     ["--out", "out"], ["--background-bin", "backgroundBin"],
     ["--rust-agent-bin", "rustAgentBin"], ["--rust-agent-sha256", "rustAgentSha256"],
+    ["--artifact-profile", "artifactProfile"],
   ]);
   const out = {};
-  if (![10, 14].includes(argv.length)) throw Error("Windows candidate requires five pinned inputs and an optional Rust candidate pair.");
+  if (![10, 14, 16].includes(argv.length)) throw Error("Windows candidate requires five pinned inputs and an optional Rust candidate pair.");
   for (let i = 0; i < argv.length; i += 2) {
     const key = keys.get(argv[i]);
     if (!key || out[key] !== undefined || !argv[i + 1]) throw Error("Unsafe packaging arguments.");
     out[key] = argv[i + 1];
   }
-  if (!/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(out.version) ||
+  if ((out.artifactProfile !== undefined && (out.artifactProfile !== "rust-native-only-v1" || !out.rustAgentBin)) ||
+      !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(out.version) ||
       !/^[a-f0-9]{64}$/.test(out.nodeSha256) ||
       out.nodeSha256 !== EXPECTED_NODE_SHA256 ||
       !path.isAbsolute(out.nodeBin) || !path.isAbsolute(out.backgroundBin) || !path.isAbsolute(out.out) ||
@@ -59,6 +61,9 @@ function rewriteImports(source) {
 export function buildWindowsPreview(args) {
   if (process.platform !== "win32" || process.arch !== "x64")
     throw Error("Windows x64 native packaging is required.");
+  const nativeOnly = args.artifactProfile === "rust-native-only-v1";
+  if (nativeOnly && (!args.rustAgentBin || !/-rust-candidate\.[1-9][0-9]*$/.test(args.version)))
+    throw Error("Native-only packaging is restricted to reviewed Rust prerelease candidates.");
   if (!statSync(args.nodeBin).isFile() ||
       digest(readFileSync(args.nodeBin)) !== EXPECTED_NODE_SHA256)
     throw Error("Official Node.js Windows x64 checksum mismatch.");
@@ -78,10 +83,10 @@ export function buildWindowsPreview(args) {
     throw Error("Untrusted non-empty candidate output directory.");
   mkdirSync(args.out, { recursive: true, mode: 0o700 });
   const stage = path.join(args.out, "remote-control-agent-" + args.version + "-windows-x64");
-  for (const relative of ["bin", "apps/remote-control-agent/src", "apps/remote-control-agent/scripts"]) {
+  for (const relative of ["bin", "apps/remote-control-agent/scripts", ...(nativeOnly ? [] : ["apps/remote-control-agent/src"])]) {
     mkdirSync(path.join(stage, relative), { recursive: true, mode: 0o700 });
   }
-  copyFileSync(args.nodeBin, path.join(stage, "bin/node.exe"));
+  if (!nativeOnly) copyFileSync(args.nodeBin, path.join(stage, "bin/node.exe"));
   copyFileSync(args.backgroundBin, path.join(stage, "bin/rca-background.exe"));
   let rustAgentHash;
   if (args.rustAgentBin) {
@@ -96,9 +101,9 @@ export function buildWindowsPreview(args) {
     copyFileSync(args.rustAgentBin,path.join(stage,"apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"));
     rustAgentHash=digest(rustAgent);
   }
-  const modules = runtimeSources(["windows-v2.ts", "session-rca-windows.ts"]);
+  const modules = nativeOnly ? [] : runtimeSources(["windows-v2.ts", "session-rca-windows.ts"]);
   const hashes = {
-    "bin/node.exe": EXPECTED_NODE_SHA256,
+    ...(!nativeOnly ? {"bin/node.exe": EXPECTED_NODE_SHA256} : {}),
     "bin/rca-background.exe": digest(launcher),
   };
   if (rustAgentHash) hashes["apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"] = rustAgentHash;
@@ -116,11 +121,14 @@ export function buildWindowsPreview(args) {
     writeFileSync(path.join(stage, name), content, { mode: 0o600 });
     hashes[name] = digest(Buffer.from(content));
   }
-  // The launcher uses only the bundled Node, not a global PATH or npm.
-  const launcherBytes = Buffer.from(readFileSync(path.join(root, "scripts/windows-rca.cmd"), "utf8")
-    .replace(/\r?\n/g, "\r\n"));
-  writeFileSync(path.join(stage, "rca.cmd"), launcherBytes, { mode: 0o600 });
-  hashes["rca.cmd"] = digest(launcherBytes);
+  // Native-only staging deliberately does not ship the Node management CLI.
+  if (!nativeOnly) {
+    // The launcher uses only the bundled Node, not a global PATH or npm.
+    const launcherBytes = Buffer.from(readFileSync(path.join(root, "scripts/windows-rca.cmd"), "utf8")
+      .replace(/\r?\n/g, "\r\n"));
+    writeFileSync(path.join(stage, "rca.cmd"), launcherBytes, { mode: 0o600 });
+    hashes["rca.cmd"] = digest(launcherBytes);
+  }
   // Bundle the already-reviewed public installer itself for StageOnly use.
   // One immutable source for Release/JWT-independent checks; do not fetch or
   // execute a remote PowerShell script at upgrade time.
@@ -128,20 +136,25 @@ export function buildWindowsPreview(args) {
   const installerBytes = readFileSync(path.join(root, "install.ps1"));
   writeFileSync(path.join(stage, stageInstaller), installerBytes, { mode: 0o600 });
   hashes[stageInstaller] = digest(installerBytes);
-  const scripts = ["windows-private-store.ps1", "windows-session-private-store.ps1", "windows-user-task.ps1", "verify-windows-preview.mjs"];
+  const scripts = nativeOnly
+    ? ["windows-private-store.ps1", "windows-user-task.ps1", "verify-windows-native.ps1"]
+    : ["windows-private-store.ps1", "windows-session-private-store.ps1", "windows-user-task.ps1", "verify-windows-preview.mjs"];
   for (const name of scripts) {
     const relative = "apps/remote-control-agent/scripts/" + name;
     const bytes = readFileSync(path.join(root, "scripts", name));
     writeFileSync(path.join(stage, relative), bytes, { mode: 0o600 });
     hashes[relative] = digest(bytes);
   }
-  const packageJson = Buffer.from('{"type":"module"}\n');
-  const packagePath = "apps/remote-control-agent/package.json";
-  writeFileSync(path.join(stage, packagePath), packageJson, { mode: 0o600 });
-  hashes[packagePath] = digest(packageJson);
+  if (!nativeOnly) {
+    const packageJson = Buffer.from('{"type":"module"}\n');
+    const packagePath = "apps/remote-control-agent/package.json";
+    writeFileSync(path.join(stage, packagePath), packageJson, { mode: 0o600 });
+    hashes[packagePath] = digest(packageJson);
+  }
   writeFileSync(path.join(stage, "bundle.json"), JSON.stringify({
     name: "remote-control-agent", version: args.version, target: "windows-x64",
-    node: EXPECTED_NODE_VERSION, device_protocol: 2, artifact_schema: 1,
+    ...(nativeOnly ? {artifact_profile:"rust-native-only-v1"} : {node:EXPECTED_NODE_VERSION}),
+    device_protocol: 2, artifact_schema: 1,
     upgrade_profile: "paired-full-v1",
     ...(rustAgentHash ? {agent_runtime:"rust-standard-windows-v1",
       runtime_profile:"standard-windows-rust-runtime-v1"} : {agent_runtime:"node-standard-windows-v2"}),
@@ -149,7 +162,7 @@ export function buildWindowsPreview(args) {
   }, null, 2) + "\n", { mode: 0o600 });
   return {
     stage, target: "windows-x64", modules: modules.length,
-    nodeSha256: EXPECTED_NODE_SHA256,
+    ...(nativeOnly ? {artifact_profile:"rust-native-only-v1"} : {nodeSha256:EXPECTED_NODE_SHA256}),
     releasePublished: false,
   };
 }
