@@ -10,8 +10,8 @@ mod windows {
     use rca_native_agent::session_transport_env::session_transport_environment;
     use rca_native_agent::windows_managed::WindowsManagedSessions;
     use rca_native_agent::windows_session_runner::{
-        checked_runner_context, checked_transport_child_identity, record_candidate_stage,
-        spawn_credential_free_transport, validate_transport_grant,
+        checked_runner_context, checked_transport_child_identity, create_candidate_receipt_directory,
+        record_candidate_stage, spawn_credential_free_transport, validate_transport_grant,
     };
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -99,12 +99,7 @@ mod windows {
         if identity.attempt != attempt {
             return Err(());
         }
-        let runner_temp = std::path::PathBuf::from(source.get("RUNNER_TEMP").ok_or(())?);
-        let receipts = runner_temp.join("session-rca").join("receipts");
-        std::fs::create_dir(&receipts).map_err(|_| ())?;
-        // Hosted Windows may assign an inherited group Owner to new children.
-        // Seal only this newly-created directory; never rewrite existing state.
-        rca_native_agent::seal_new_windows_private_directory(&receipts).map_err(|_| ())?;
+        let receipts = create_candidate_receipt_directory(source).map_err(|_| ())?;
         let _ = record_candidate_stage(source, "receipts_ready", false);
 
         let managed =
