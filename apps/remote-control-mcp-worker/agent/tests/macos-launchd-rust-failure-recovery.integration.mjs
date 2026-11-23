@@ -112,11 +112,22 @@ test("published Node LaunchAgent rolls back after a real Rust candidate fails si
     online:async(_identity,generation)=>{
       if(generation===oldGeneration)return oldOnline(_identity,generation);
       assert.equal(generation!==oldGeneration,true);
-      candidateObserved=!!await activePid("rca-standard-darwin-candidate");
+      try{
+        candidateObserved=!!await activePid("rca-standard-darwin-candidate");
+      }catch{
+        // An invalid WSS endpoint may make a genuine Rust process exit before
+        // a PID snapshot. Require launchd's registered Rust program, a run,
+        // and the binary's exit(1), not just a successful plist bootstrap.
+        const recorded=run(["print",service]);
+        candidateObserved=recorded.status===0&&
+          /^\\s*program = .*rca-standard-darwin-candidate\\s*$/m.test(recorded.stdout)&&
+          /^\\s*runs = [1-9]\\d*\\s*$/m.test(recorded.stdout)&&
+          /^\\s*last exit code = 1\\s*$/m.test(recorded.stdout);
+      }
       return false;
     },
   }),/Upgrade blocked at signed-wss-activation/);
-  assert.equal(candidateObserved,true,"the real Rust candidate must launch before activation is rejected");
+  assert.equal(candidateObserved,true,"Rust must be observed live or launchd must record its real failed execution");
   const plist=path.join(home,"Library/LaunchAgents/org.mcp-workers.remote-control-agent.plist");
   const restored=parsePlist(await readFile(plist,"utf8"),
     path.join(identity,"macos/programs"),endpoint);
