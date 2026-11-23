@@ -294,8 +294,20 @@ with tempfile.TemporaryDirectory(prefix="rca-native-uninstall-") as dirname:
     launcher.symlink_to(app/"scripts/rca.sh")
     unit=home/".config/systemd/user/remote-control-agent.service"
     unit.parent.mkdir(parents=True,mode=0o700)
-    unit.write_text(b.MARKER+"\n[Service]\nWorkingDirectory="+str(app)+
-       "\nExecStart="+str(app/".build/rca-standard-linux-candidate")+"\n")
+    endpoint="https://example.invalid/"
+    unit_body="\n".join([
+      b.MARKER,"[Unit]","Description=Remote Control Agent (signed outbound WSS)",
+      "StartLimitIntervalSec=0","","[Service]","Type=simple",
+      "WorkingDirectory="+str(app),
+      "Environment=REMOTE_CONTROL_AGENT_ENDPOINT="+endpoint,
+      "Environment=REMOTE_CONTROL_AGENT_KEY_PATH="+str(keys),
+      "UMask=0077","ExecStartPre=/usr/bin/test -r "+str(keys),
+      "ExecStartPre=/usr/bin/test -r "+str(keys)+".device-id",
+      "ExecStartPre=/usr/bin/test -x "+str(app/".build/session-supervisor"),
+      "ExecStart="+str(app/".build/rca-standard-linux-candidate"),
+      "Restart=on-failure","RestartSec=15s","TimeoutStopSec=15s",
+      "","[Install]","WantedBy=default.target",""])
+    unit.write_text(unit_body)
     def attempt(confirm=True,check=None):
         return b.local_uninstall(home,confirm,
           systemctl=lambda args:actions.append(args),
@@ -317,6 +329,12 @@ with tempfile.TemporaryDirectory(prefix="rca-native-uninstall-") as dirname:
     except ValueError:pass
     assert launcher.is_symlink() and not actions
     launcher.unlink();launcher.symlink_to(app/"scripts/rca.sh")
+    unit.write_text(unit_body+"ExecStopPost=/usr/bin/touch /tmp/foreign\n")
+    try:attempt();raise AssertionError("foreign systemd hook executed")
+    except ValueError:pass
+    assert unit.read_text().endswith("ExecStopPost=/usr/bin/touch /tmp/foreign\n")
+    assert not actions and program.exists()
+    unit.write_text(unit_body)
     result=attempt()
     assert actions==[["--user","disable","--now",b.UNIT],
                      ["--user","daemon-reload"]]
