@@ -167,13 +167,26 @@ pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError
             return Err(error);
         }
     };
-    let flags = attributes(&handle)?;
+    let flags = match attributes(&handle) {
+        Ok(flags) => flags,
+        Err(error) => {
+            #[cfg(test)]
+            eprintln!("candidate ACL setup: attributes failed");
+            return Err(error);
+        }
+    };
     if flags & FILE_ATTRIBUTE_REPARSE_POINT != 0 || flags & FILE_ATTRIBUTE_DIRECTORY == 0 {
+        #[cfg(test)]
+        eprintln!("candidate ACL setup: directory attributes rejected");
         return Err(unsafe_path());
     }
     let user_sid_len = unsafe { GetLengthSid(user) } as usize;
     let system_sid_len = unsafe { GetLengthSid(system.cast()) } as usize;
     if !(8..=68).contains(&user_sid_len) || !(8..=68).contains(&system_sid_len) {
+        #[cfg(test)]
+        eprintln!(
+            "candidate ACL setup: SID length rejected user={user_sid_len} system={system_sid_len}"
+        );
         return Err(unsafe_path());
     }
     let acl_len = std::mem::size_of::<ACL>() + 8 + user_sid_len + 8 + system_sid_len;
@@ -183,26 +196,37 @@ pub(crate) fn seal_new_private_directory(path: &Path) -> Result<(), ReceiptError
     let words = acl_len.div_ceil(std::mem::size_of::<usize>());
     let mut acl_storage = vec![0usize; words];
     let dacl = acl_storage.as_mut_ptr().cast::<ACL>();
-    if unsafe { InitializeAcl(dacl, acl_len as u32, ACL_REVISION) } == 0
-        || unsafe {
-            AddAccessAllowedAceEx(
-                dacl,
-                ACL_REVISION,
-                CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
-                FILE_ALL_ACCESS,
-                user,
-            )
-        } == 0
-        || unsafe {
-            AddAccessAllowedAceEx(
-                dacl,
-                ACL_REVISION,
-                CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
-                FILE_ALL_ACCESS,
-                system,
-            )
-        } == 0
+    if unsafe { InitializeAcl(dacl, acl_len as u32, ACL_REVISION) } == 0 {
+        #[cfg(test)]
+        eprintln!("candidate ACL setup: InitializeAcl failed");
+        return Err(unsafe_path());
+    }
+    if unsafe {
+        AddAccessAllowedAceEx(
+            dacl,
+            ACL_REVISION,
+            CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
+            FILE_ALL_ACCESS,
+            user,
+        )
+    } == 0
     {
+        #[cfg(test)]
+        eprintln!("candidate ACL setup: user ACE failed");
+        return Err(unsafe_path());
+    }
+    if unsafe {
+        AddAccessAllowedAceEx(
+            dacl,
+            ACL_REVISION,
+            CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE,
+            FILE_ALL_ACCESS,
+            system,
+        )
+    } == 0
+    {
+        #[cfg(test)]
+        eprintln!("candidate ACL setup: SYSTEM ACE failed");
         return Err(unsafe_path());
     }
     let set_status = unsafe {
