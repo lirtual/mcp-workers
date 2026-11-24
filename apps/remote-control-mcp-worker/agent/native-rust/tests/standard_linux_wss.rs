@@ -198,6 +198,7 @@ mod linux {
             "target_version":version});
         if initial {
             intent["initial_endpoint"] = json!(&endpoint);
+            intent["initial_launcher"] = json!(&version);
         }
         private_file(
             &root.path().join("v2-identity.pem.native-upgrade-intent"),

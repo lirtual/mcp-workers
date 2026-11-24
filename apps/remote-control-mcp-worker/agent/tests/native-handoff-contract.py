@@ -182,11 +182,17 @@ def verify_temporary_install():
 def verify_initial_install():
     # Use the same package, identity, launcher and receipt contracts as an
     # upgrade, but no previously installed service or approved identity.
-    for case in ("approved", "pair-denied", "no-proof", "foreign-service", "interrupted"):
+    for case in ("approved", "pair-denied", "no-proof", "foreign-service", "interrupted",
+                 "temporary-launcher-approved", "temporary-launcher-no-proof",
+                 "temporary-launcher-older-approved", "temporary-launcher-older-no-proof"):
         ctx, home, old, new, unit, launcher, key, receipts = fixture()
         try:
             unit.unlink()
             launcher.unlink()
+            preexisting_launcher = case.startswith("temporary-launcher-")
+            prior = make_version(home, "v0.1.55", True) if "older" in case else new
+            if preexisting_launcher:
+                launcher.symlink_to(prior / APP / "scripts/rca.sh")
             key.unlink()
             id_path = Path(str(key) + ".device-id")
             id_path.unlink()
@@ -208,7 +214,7 @@ def verify_initial_install():
                 state["commands"].append(args)
                 if args[0] == "enable":
                     assert id_path.read_text().strip() == ID
-                    assert intent.is_file() and not launcher.exists()
+                    assert intent.is_file() and launcher.exists() == preexisting_launcher
                     state["pid"] = 200
                     if case == "interrupted":
                         raise KeyboardInterrupt("installer terminated after start")
@@ -224,12 +230,12 @@ def verify_initial_install():
                     raise ValueError("Pairing refused")
                 owned_file(id_path, ID + "\n")
             def verify(path, operation, device_id, target, pid):
-                assert not launcher.exists()
-                assert json.loads(intent.read_text()) == {
-                    "operation_id": operation, "device_id": ID,
-                    "target_version": new.name, "initial_endpoint": ENDPOINT}
+                assert launcher.exists() == preexisting_launcher
+                record = json.loads(intent.read_text())
+                assert record["operation_id"] == operation and record["device_id"] == ID
+                assert record["target_version"] == new.name and record["initial_endpoint"] == ENDPOINT
                 assert device_id == ID and target == new.name and pid == 200
-                if case in ("no-proof", "interrupted"):
+                if case in ("no-proof", "interrupted") or case.endswith("no-proof"):
                     return False
                 owned_file(path, json.dumps({"operation_id":operation,"device_id":ID,
                     "target_version":target,"pid":pid,"status":"authenticated_wss"}))
@@ -238,7 +244,7 @@ def verify_initial_install():
                 "native_process_executable":lambda pid: new / APP / ".build/rca-standard-linux-candidate",
                 "native_consent":lambda key, action: "ready"}
             with patch.multiple(bootstrap, **mocks):
-                if case == "approved":
+                if case.endswith("approved"):
                     result = bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
                         verify=verify, process_check=lambda versions: not state["pid"])
                     assert result["signed_wss"] is True
@@ -255,11 +261,14 @@ def verify_initial_install():
                         raise AssertionError("Unsafe first activation accepted: " + case)
                     except (ValueError, KeyboardInterrupt):
                         pass
-                    assert not launcher.exists()
-                    if case in ("no-proof", "interrupted"):
+                    assert launcher.exists() == preexisting_launcher
+                    if case in ("no-proof", "interrupted") or case.endswith("no-proof"):
                         assert intent.exists() and unit.exists()
                         assert bootstrap.native_recover(home, process_check=lambda versions: not state["pid"])["status"] == "initial_service_removed"
                         assert not intent.exists() and not unit.exists() and not proof.exists()
+                        assert launcher.exists() == preexisting_launcher
+                        if preexisting_launcher:
+                            assert launcher.readlink() == prior / APP / "scripts/rca.sh"
                         assert key.read_text() == "disposable-approved-key"
                         assert id_path.read_text().strip() == ID
                     else:
@@ -272,7 +281,131 @@ def verify_initial_install():
             ctx.cleanup()
 
 
+def verify_permanent_repair():
+    replacement = "123e4567-e89b-42d3-a456-426614174002"
+    for case in ("healthy", "denied", "busy", "approved", "resume", "no-proof"):
+        ctx, home, root, new, unit, launcher, key, receipts = native_pair_fixture()
+        try:
+            original = key.read_bytes()
+            receipt_bytes = receipts.read_bytes()
+            id_path = Path(str(key) + ".device-id")
+            marker = Path(str(key) + ".re-pair-transition")
+            staged_key = Path(str(key) + ".re-pair-new")
+            staged_id = Path(str(staged_key) + ".device-id")
+            intent = Path(str(key) + ".native-upgrade-intent")
+            state = {"pid": 100, "events": []}
+
+            def prepare():
+                owned_file(staged_key, "replacement-approved-key")
+                owned_file(staged_id, replacement + "\n")
+                owned_file(marker, json.dumps({"version": 1, "old_id": ID, "new_id": replacement}))
+
+            if case == "resume":
+                prepare()
+                unit.unlink()
+                state["pid"] = 0
+
+            def control(*args):
+                if args[0] == "show":
+                    return "\n".join(("LoadState=" + ("loaded" if unit.exists() else "not-found"),
+                        "ActiveState=" + ("active" if state["pid"] else "inactive"),
+                        "MainPID=" + str(state["pid"]),
+                        "FragmentPath=" + (str(unit) if unit.exists() else ""), "DropInPaths="))
+                state["events"].append(args[0])
+                if args[0] == "disable":
+                    assert marker.exists() or intent.exists()
+                    state["pid"] = 0
+                elif args[0] == "enable":
+                    assert not marker.exists() and intent.exists()
+                    assert id_path.read_text().strip() == replacement
+                    state["pid"] = 200
+                return ""
+
+            def consent(_, action):
+                state["events"].append(action)
+                return "busy" if case == "busy" and action == "freeze" else "ready"
+
+            def pair(program, endpoint, name, repair_phase=None, lock_fd=None):
+                assert program == root and endpoint == ENDPOINT
+                state["events"].append(repair_phase or "recover-approved")
+                if repair_phase is not None:
+                    assert lock_fd is not None
+                    with open(key.parent / "v2-installer.lock", "rb") as independent:
+                        try:
+                            bootstrap.fcntl.flock(independent, bootstrap.fcntl.LOCK_EX | bootstrap.fcntl.LOCK_NB)
+                            raise AssertionError("Parent installer lock not held")
+                        except BlockingIOError:
+                            pass
+                if repair_phase == "prepare":
+                    assert key.read_bytes() == original
+                    if case == "denied":
+                        raise ValueError("Signed replacement approval denied")
+                    if case != "healthy" and not marker.exists():
+                        prepare()
+                    assert key.read_bytes() == original
+                elif repair_phase == "promote":
+                    assert not unit.exists() and not state["pid"]
+                    assert key.read_bytes() == original and marker.exists()
+                    archive = key.parent / ("revoked-" + ID)
+                    archive.mkdir(mode=0o700)
+                    key.rename(archive / "identity.pem")
+                    id_path.rename(archive / "identity.pem.device-id")
+                    staged_key.rename(key)
+                    staged_id.rename(id_path)
+                    marker.unlink()
+                else:
+                    assert id_path.read_text().strip() == replacement
+
+            def verify(path, operation, device, target, pid):
+                assert device == replacement and pid == 200 and target == root.name
+                if case == "no-proof":
+                    return False
+                owned_file(path, json.dumps({"operation_id": operation, "device_id": device,
+                    "target_version": target, "pid": pid, "status": "authenticated_wss"}))
+                return bootstrap.native_wait_proof(path, operation, device, target, pid, 1)
+
+            mocks = {"native_systemctl": control, "native_main_pid": lambda: state["pid"],
+                     "native_process_executable": lambda pid: root / APP / ".build/rca-standard-linux-candidate",
+                     "native_consent": consent}
+            with (patch.multiple(bootstrap, **mocks),
+                  patch.object(bootstrap.sys.stdin, "isatty", return_value=True),
+                  patch.object(bootstrap.sys.stdout, "isatty", return_value=True)):
+                if case in ("healthy", "approved", "resume"):
+                    result = bootstrap.native_pair_or_install(home, root, ENDPOINT, "test",
+                        pair=pair, verify=verify, process_check=lambda versions: not state["pid"])
+                    if case == "healthy":
+                        assert result["status"] == "already_installed" and state["events"] == ["prepare"]
+                        assert key.read_bytes() == original
+                    else:
+                        assert result["signed_wss"] is True
+                        assert result["identity_preserved"] is False and result["previous_identity_archived"] is True
+                        events = state["events"]
+                        assert events.index("prepare") < events.index("promote") < events.index("enable")
+                        if case == "approved":
+                            assert events.index("prepare") < events.index("freeze") < events.index("disable") < events.index("promote")
+                        assert id_path.read_text().strip() == replacement
+                else:
+                    try:
+                        bootstrap.native_pair_or_install(home, root, ENDPOINT, "test",
+                            pair=pair, verify=verify, process_check=lambda versions: not state["pid"])
+                        raise AssertionError("Unsafe re-pair accepted: " + case)
+                    except ValueError:
+                        pass
+                    if case == "no-proof":
+                        assert intent.exists() and not marker.exists()
+                        assert bootstrap.native_recover(home, process_check=lambda versions: not state["pid"])["status"] == "initial_service_removed"
+                        assert id_path.read_text().strip() == replacement
+                    else:
+                        assert unit.exists() and state["pid"] == 100 and key.read_bytes() == original
+                        assert "disable" not in state["events"] and "promote" not in state["events"]
+                assert launcher.readlink() == root / APP / "scripts/rca.sh"
+                assert receipts.read_bytes() == receipt_bytes
+        finally:
+            ctx.cleanup()
+
+
 def verify_isolated():
+    verify_permanent_repair()
     verify_initial_install()
     verify_temporary_install()
     # Preserve the canonical systemd unit exactly across the language boundary.
