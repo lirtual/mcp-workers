@@ -641,8 +641,13 @@ if ($Action -eq 'Switch') {
     Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
   }
   $changed = $false
+  $stage = 'stop original'
   try {
-    if ($wasRunning) { Stop-ScheduledTask -TaskName $name -ErrorAction Stop }
+    if ($wasRunning) {
+      Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+      Wait-VersionExited ([pscustomobject]@{Root=(Join-Path $root $oldDir)})
+    }
+    $stage = 'switch task'
     Set-ScheduledTask -TaskName $name -Action $newAction -ErrorAction Stop | Out-Null
     $changed = $true
     if ($CIInjectFailure) {
@@ -656,6 +661,7 @@ if ($Action -eq 'Switch') {
       throw 'Task switch was not persisted'
     }
     if ($wasRunning -and -not $ownerStopped) {
+      $stage = 'start target'
       Start-ScheduledTask -TaskName $name -ErrorAction Stop
       Start-Sleep -Seconds 2
       $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
@@ -665,11 +671,17 @@ if ($Action -eq 'Switch') {
     Write-Output ('switched-local-' + $Direction.ToLowerInvariant())
     exit 0
   } catch {
+    Write-Verbose ('Local version switch failed at ' + $stage + ': ' + $_.Exception.Message)
     $rollbackOkay = $false
     try {
-      # Restore the saved original action without changing principal,
-      # trigger, Worker endpoint, cloud grant or identity material.
-      if ($changed) { Set-ScheduledTask -TaskName $name -Action $oldAction -ErrorAction Stop | Out-Null }
+      # Restore the saved original action only after the target has exited.
+      # Never overlap two receipt owners or change principal, endpoint or keys.
+      if ($changed) {
+        $current = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+        if ($current.State -eq 'Running') { Stop-ScheduledTask -TaskName $name -ErrorAction Stop }
+        Wait-VersionExited ([pscustomobject]@{Root=$candidate})
+        Set-ScheduledTask -TaskName $name -Action $oldAction -ErrorAction Stop | Out-Null
+      }
       $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
       Check-Existing
       if (-not [string]::Equals([string]$task.Actions[0].Execute,$oldNode,[StringComparison]::OrdinalIgnoreCase) -or
