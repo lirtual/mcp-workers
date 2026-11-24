@@ -85,13 +85,15 @@ fn real_native_pair_entry_refuses_non_interactive_invocation_without_identity() 
     let identity = home.path().join(".local/share/mcp-workers/remote-control");
     std::fs::create_dir_all(&identity).unwrap();
     std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"))
-        .args(["--pair-local", "https://127.0.0.1:9/", "fixture"])
-        .env_clear()
-        .env("HOME", home.path())
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(std::fs::read_dir(&identity).unwrap().next().is_none());
+    for command in ["--pair-local", "--temporary-local"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"))
+            .args([command, "https://127.0.0.1:9/", "fixture"])
+            .env_clear()
+            .env("HOME", home.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(std::fs::read_dir(&identity).unwrap().next().is_none());
+    }
 }

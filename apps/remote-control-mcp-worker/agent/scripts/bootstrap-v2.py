@@ -384,6 +384,13 @@ def clean_orphaned_staging(parent):
             entry.unlink()
 
 
+def worker_origin(endpoint):
+    uri = urllib.parse.urlsplit(endpoint)
+    return (uri.scheme == "https" and bool(uri.hostname)
+            and not (uri.username or uri.password or uri.query or uri.fragment)
+            and uri.path in ("", "/"))
+
+
 def preflight(tag, commit, endpoint, stage_only=False):
     # Remote staging is data-only; the existing manual installer still demands
     # a real console, and no noninteractive path may pair or switch systemd.
@@ -401,9 +408,7 @@ def preflight(tag, commit, endpoint, stage_only=False):
     if libc != "glibc" or not re.match(r"^\d+\.\d+$", ver) \
             or tuple(map(int, ver.split("."))) < (2, 28):
         raise ValueError("glibc 2.28+ required; musl is unsupported")
-    uri = urllib.parse.urlsplit(endpoint)
-    if (uri.scheme != "https" or not uri.hostname or uri.username or uri.password
-            or uri.query or uri.fragment or uri.path not in ("", "/")):
+    if not worker_origin(endpoint):
         raise ValueError("Supply the reviewed HTTPS Worker origin, without credentials")
     if not TAG.fullmatch(tag) or not SHA.fullmatch(commit):
         raise ValueError("Pinned Release tag and commit are required")
@@ -411,7 +416,9 @@ def preflight(tag, commit, endpoint, stage_only=False):
 
 
 def install(tag, commit, endpoint, name=None, upgrade=False,
-            stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False):
+            stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False):
+    if temporary and not native_install:
+        raise ValueError("Temporary mode requires --native-install")
     if stage_only or native_upgrade or native_install:
         if ((name is not None and not native_install) or upgrade or
                 not isinstance(asset_sha256, str) or
@@ -477,6 +484,8 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             # No install-v2, systemctl, identity mutation, approval or pairing.
             return
         if native_install:
+            if temporary:
+                return native_temporary(pathlib.Path.home(), version, endpoint, name)
             if input("Type NATIVE-INSTALL for owner-reviewed permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
                 raise ValueError("Native installation not confirmed")
             print(json.dumps(native_first_install(pathlib.Path.home(), version, endpoint, name), indent=2))
@@ -782,7 +791,7 @@ def native_initial_state(home, root, endpoint):
     return versions, unit, current, ids, key, intent, proof, record, launcher, rendered, pid
 
 
-def native_pair_permanent(root, endpoint, name):
+def native_pair_local(root, endpoint, name, temporary=False):
     import socket
     suggested = socket.gethostname()
     label = name if name is not None else input("Device name [" + suggested + "]: ").strip() or suggested
@@ -795,13 +804,44 @@ def native_pair_permanent(root, endpoint, name):
         raise ValueError("Required native supervisor safety probe timed out") from error
     if probe.returncode:
         raise ValueError("Required native supervisor safety probe failed")
-    if subprocess.run([str(binary), "--pair-local", endpoint, label],
+    command = "--temporary-local" if temporary else "--pair-local"
+    if subprocess.run([str(binary), command, endpoint, label],
                       check=False).returncode:
-        raise ValueError("Native pairing not confirmed; original identity retained")
+        raise ValueError("Native pairing or foreground session not completed; identity retained")
+
+
+def native_temporary(home, root, endpoint, name=None, process_check=None):
+    """Owner-local foreground only; no permanent service or identity mutation."""
+    if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Temporary Agent requires a real non-root local terminal")
+    if not worker_origin(endpoint):
+        raise ValueError("Supply the reviewed HTTPS Worker origin")
+    home = pathlib.Path(home)
+    root = pathlib.Path(root)
+    _, versions, _, _, _ = local_inventory(home)
+    if root not in versions:
+        raise ValueError("Unknown staged Agent version")
+    validated_owned_version(root)
+    if json.loads((root / "bundle.json").read_text("utf8")).get("artifact_profile") != "rust-native-only-v1":
+        raise ValueError("Temporary install needs a reviewed native-only bundle")
+    # The existing operation receipt ledger has exactly one writer. Avoid
+    # registering a new temporary key when an existing installed Agent is
+    # already running; never stop that Agent to make room.
+    if not (process_check or no_running_programs)(versions):
+        raise ValueError("Running or uncertain Agent owns the local runtime; no temporary pairing")
+    native_receipts_compatible(home)
+    if input("Type TEMPORARY for an owner-reviewed 24h foreground grant: ").strip() != "TEMPORARY":
+        raise ValueError("Temporary pairing not confirmed")
+    print("Foreground only; no service will be installed. Closing the terminal disconnects, not revokes.")
+    print("Reviewed local manager: " + str(root / APP / "scripts/rca.sh"), flush=True)
+    # Rust holds the existing installer lock from identity recovery through
+    # the end of foreground execution; no additional process manager.
+    native_pair_local(root, endpoint, name, temporary=True)
+    return 0
 
 
 def native_first_install(home, root, endpoint, name=None,
-                         pair=native_pair_permanent, verify=native_wait_proof,
+                         pair=native_pair_local, verify=native_wait_proof,
                          process_check=None):
     """Fresh permanent install; only the exact authenticated PID may commit."""
     home = pathlib.Path(home)
@@ -1679,7 +1719,7 @@ def main():
     actions.add_argument("--stage-only", action="store_true",
                          help="verify and stage a separately pinned immutable Linux upgrade; never switch")
     actions.add_argument("--native-install", action="store_true",
-                         help="owner-local permanent Node-free Rust first install and signed activation")
+                         help="owner-local Node-free Rust first install (permanent unless --temporary)")
     actions.add_argument("--native-upgrade", action="store_true",
                          help="owner-local Node/native to Node-free Rust signed WSS cutover")
     actions.add_argument("--uninstall", action="store_true")
@@ -1687,6 +1727,7 @@ def main():
                          help="owner-confirmed recovery of one interrupted native upgrade")
     actions.add_argument("--purge-local-identity", action="store_true",
                          help="separate explicit v2 key/ID purge after uninstall; shared SQLite retained")
+    parser.add_argument("--temporary", action="store_true", help="native install in the foreground with a 24h grant")
     parser.add_argument("--name")
     parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
     parser.add_argument("--asset-sha256", help="independently reviewed SHA-256 for native staging, install or switch")
@@ -1748,7 +1789,7 @@ def main():
             if not args.tag or not args.commit or not args.endpoint:
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
-                    args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install)
+                    args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install, args.temporary)
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)
