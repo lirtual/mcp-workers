@@ -884,6 +884,7 @@ mod linux {
             managed,
             &stop,
             UpgradeRuntimeOptions {
+                on_disconnected: None,
                 key_path: key,
                 on_connected: Some(Arc::new(move || {
                     // Missing/invalid intent never becomes a success receipt.

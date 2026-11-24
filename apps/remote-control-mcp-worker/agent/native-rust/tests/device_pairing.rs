@@ -97,3 +97,46 @@ fn real_native_pair_entry_refuses_non_interactive_invocation_without_identity() 
         assert!(std::fs::read_dir(&identity).unwrap().next().is_none());
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_native_pair_entry_refuses_non_interactive_invocation() {
+    let home = tempfile::tempdir().unwrap();
+    for mode in ["permanent", "temporary"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-windows-candidate"))
+            .args(["--pair-local", "https://127.0.0.1:9/", "fixture", mode])
+            .env("LOCALAPPDATA", home.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-windows-candidate"))
+        .args(["--cli", "run", "--endpoint", "https://127.0.0.1:9/"])
+        .env("LOCALAPPDATA", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    for args in [
+        vec!["--cli", "enable", "--endpoint", "https://127.0.0.1:9/"],
+        vec!["--cli", "onboard", "--endpoint", "https://127.0.0.1:9/"],
+        vec!["--cli", "upgrade", "--version", "v0.1.59-rust-candidate.1"],
+        vec!["--cli", "recover"],
+        vec!["--cli", "stop"],
+        vec!["--cli", "start"],
+        vec!["--cli", "disable"],
+        vec!["--cli", "re-pair", "--endpoint", "https://127.0.0.1:9/"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-windows-candidate"))
+            .args(args)
+            .env("LOCALAPPDATA", home.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    }
+}

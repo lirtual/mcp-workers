@@ -594,6 +594,7 @@ pub fn run_native_managed_session(
             timing,
             upgrade_key: None,
             on_connected: None,
+            on_disconnected: None,
         },
     )
 }
@@ -620,6 +621,7 @@ pub fn run_native_managed_session_with_upgrade(
             timing: HeartbeatTiming::default(),
             upgrade_key: Some(upgrade.key_path),
             on_connected: upgrade.on_connected,
+            on_disconnected: upgrade.on_disconnected,
         },
     )
 }
@@ -628,6 +630,7 @@ pub fn run_native_managed_session_with_upgrade(
 pub struct UpgradeRuntimeOptions<'a> {
     pub key_path: &'a Path,
     pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -635,6 +638,7 @@ struct ManagedRunOptions<'a> {
     timing: HeartbeatTiming,
     upgrade_key: Option<&'a Path>,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -691,6 +695,7 @@ fn run_native_managed_session_inner(
             timing: options.timing,
             managed: Arc::clone(&managed),
             on_connected: options.on_connected,
+            on_disconnected: options.on_disconnected,
         },
     );
     stop.store(true, Ordering::Release);

@@ -584,6 +584,7 @@ struct TransportMode {
     timing: HeartbeatTiming,
     policy: FramePolicy,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 pub fn maintain_authenticated_transport(
@@ -606,6 +607,7 @@ pub fn maintain_authenticated_transport(
             timing,
             policy: FramePolicy::Any,
             on_connected: None,
+            on_disconnected: None,
         },
     )
 }
@@ -632,6 +634,7 @@ pub fn maintain_native_read_transport(
             timing,
             policy: FramePolicy::ReadOnly,
             on_connected: None,
+            on_disconnected: None,
         },
     )
 }
@@ -658,6 +661,7 @@ pub fn maintain_native_file_transport(
             timing,
             policy: FramePolicy::NativeFiles,
             on_connected: None,
+            on_disconnected: None,
         },
     )
 }
@@ -667,6 +671,7 @@ pub struct ManagedTransportConfig {
     pub timing: HeartbeatTiming,
     pub managed: Arc<ManagedSessions>,
     pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -690,6 +695,7 @@ pub fn maintain_native_managed_transport(
             timing: config.timing,
             policy: FramePolicy::NativeManaged(config.managed),
             on_connected: config.on_connected,
+            on_disconnected: config.on_disconnected,
         },
     )
 }
@@ -721,6 +727,9 @@ fn maintain_transport_mode(
                         socket.pump_native_managed(stop, incoming, outgoing, managed)
                     }
                 };
+                if let Some(on_disconnected) = mode.on_disconnected.as_ref() {
+                    on_disconnected();
+                }
                 match pump {
                     Ok(()) | Err(SessionError::Superseded) => return Ok(()),
                     Err(error) if !retryable(&error) => return Err(error),

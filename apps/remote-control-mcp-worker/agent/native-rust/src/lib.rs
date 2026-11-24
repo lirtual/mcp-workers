@@ -42,6 +42,8 @@ pub mod upgrade_control;
 #[cfg(windows)]
 pub mod windows_job;
 #[cfg(windows)]
+pub mod windows_log;
+#[cfg(windows)]
 pub mod windows_managed;
 #[cfg(windows)]
 pub mod windows_output;

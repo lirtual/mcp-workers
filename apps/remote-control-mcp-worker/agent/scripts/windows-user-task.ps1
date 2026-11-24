@@ -2,7 +2,7 @@
 # Does not create an elevated service, use a password or touch cloud grants.
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('Enable','Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade')][string]$Action,
+  [Parameter(Mandatory=$true)][ValidateSet('Enable','Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative','EnableNative','ConfirmStopped')][string]$Action,
   [string]$Endpoint, [string]$Entry, [string]$Node,
   [string]$Version, [ValidateSet('Upgrade','Rollback')][string]$Direction,
   [string]$Generation,
@@ -103,8 +103,7 @@ function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   # user Task and its child executable. Running alone is never sufficient.
   Check-Existing
   if ($Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$' -or
-      $Generation -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
-      $Endpoint -or $Node -or $Entry -or $CIInjectFailure) {
+      $Generation -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$') {
     throw 'Invalid expected activation identity'
   }
   $versionDir = [IO.Path]::Combine($root,$Version + '-windows-x64')
@@ -154,7 +153,7 @@ function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   return $true
 }
 if ($Action -eq 'VerifyActivation') {
-  if ($Direction) { throw 'Unexpected switch direction' }
+  if ($Direction -or $Endpoint -or $Node -or $Entry -or $CIInjectFailure) { throw 'Unexpected activation arguments' }
   $null = Confirm-NativeActivation $Version $Generation
   'authenticated-activation-observed'
   exit 0
@@ -174,6 +173,12 @@ if ($Action -eq 'Endpoint') {
   (Read-TaskLaunch $task.Actions[0]).Endpoint
   exit 0
 }
+function Register-OwnedTask($scheduledAction) {
+  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
+  $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
+  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $name -Action $scheduledAction -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+}
 if ($Action -eq 'Enable') {
   if (Test-Path -LiteralPath ([IO.Path]::Combine([IO.Path]::GetDirectoryName($root),'windows-native-upgrade.json'))) {
     throw 'Unreconciled native upgrade'
@@ -191,10 +196,7 @@ if ($Action -eq 'Enable') {
   Check-Program $background $Entry
   $arguments = '"' + $Entry + '" run --endpoint "' + $Endpoint + '"'
   $scheduledAction = New-ScheduledTaskAction -Execute $background -Argument $arguments -WorkingDirectory ([IO.Path]::GetDirectoryName($Entry))
-  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
-  $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-  Register-ScheduledTask -TaskName $name -Action $scheduledAction -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+  Register-OwnedTask $scheduledAction
   'enabled'
   exit 0
 }
@@ -321,9 +323,9 @@ function Get-OwnedAgentProcess($program) {
       (Invoke-CimMethod -InputObject $parent -MethodName GetOwnerSid).Sid -cne $sid) { throw 'Owner Agent launcher not confirmed' }
   $matches[0]
 }
-# The legacy rca.cmd version switch invokes this controller from the same
-# packaged node.exe. Exclude only that exact, identified management caller,
-# not arbitrary Node processes, foreground Agents or unknown paths.
+# Management CLI and Agent may share the same versioned executable. Only
+# the exact same-owner direct parent running a known local management
+# command may be excluded from exit observation; never exclude a service.
 function Get-LocalSwitchCaller([string]$directionValue,[string]$versionTag) {
   $controller = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $PID) -ErrorAction Stop
   $caller = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [uint32]$controller.ParentProcessId) -ErrorAction Stop
@@ -331,12 +333,24 @@ function Get-LocalSwitchCaller([string]$directionValue,[string]$versionTag) {
       $caller.CreationDate -gt $controller.CreationDate) { return }
   $exe = [string]$caller.ExecutablePath
   $prefix = $root.TrimEnd('\') + '\'
-  if (-not $exe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -or
-      $exe.Substring($prefix.Length) -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-windows-x64\\bin\\node\.exe$') { return }
-  $entry = Join-Path (Split-Path -Parent (Split-Path -Parent $exe)) 'apps/remote-control-agent/src/windows-v2.js'
-  $entry = [IO.Path]::GetFullPath($entry)
-  $expected = '^"?' + [regex]::Escape($exe) + '"?\s+"?' + [regex]::Escape($entry) +
-    '"?\s+' + $directionValue.ToLowerInvariant() + '\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+  if (-not $exe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)) { return }
+  $relative = $exe.Substring($prefix.Length)
+  $versionPrefix = '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-windows-x64'
+  $expected = '^"?' + [regex]::Escape($exe) + '"?\s+'
+  if ($relative -match ($versionPrefix + '\\bin\\node\.exe$') -and $directionValue -in @('Upgrade','Rollback')) {
+    $entry = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent (Split-Path -Parent $exe)) 'apps/remote-control-agent/src/windows-v2.js'))
+    $expected += '"?' + [regex]::Escape($entry) + '"?\s+' + $directionValue.ToLowerInvariant() +
+      '\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+  } elseif ($relative -match ($versionPrefix + '\\apps\\remote-control-agent\\\.build\\rca-standard-windows-candidate\.exe$')) {
+    if ($directionValue -eq 'Upgrade') {
+      $expected += '--cli\s+upgrade\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+    } elseif ($directionValue -eq 'Recover') {
+      $expected += '--cli\s+recover\s*$'
+    } elseif ($directionValue -in @('RePair','Onboard')) {
+      $command = if ($directionValue -eq 'RePair') {'re-pair'} else {'onboard'}
+      $expected += '--cli\s+' + $command + '\s+--endpoint\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+    } else { return }
+  } else { return }
   if ($caller.CommandLine -notmatch $expected -or
       (Invoke-CimMethod -InputObject $caller -MethodName GetOwnerSid -ErrorAction Stop).Sid -cne $sid) { return }
   $caller
@@ -411,7 +425,7 @@ function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false) {
     throw 'Agent changed during freeze'
   }
 }
-function Restore-NativeOriginal($record,$original,$target,$oldAction,$newAction) {
+function Restore-NativeOriginal($record,$original,$target,$oldAction,$newAction,$managementCaller=$null) {
   Assert-UpgradeIdentity $record
   $current = Read-OwnedTask
   if (Test-SameAction $current.Actions[0] $newAction) {
@@ -419,7 +433,7 @@ function Restore-NativeOriginal($record,$original,$target,$oldAction,$newAction)
       Freeze-OwnedAgent $target $newAction $true
       Stop-ScheduledTask -TaskName $name -ErrorAction Stop
     }
-    Wait-VersionExited $target
+    Wait-VersionExited $target $managementCaller
     Assert-UpgradeState $target $record
     $current = Read-OwnedTask
     if ($current.State -eq 'Running' -or -not (Test-SameAction $current.Actions[0] $newAction)) {
@@ -429,7 +443,7 @@ function Restore-NativeOriginal($record,$original,$target,$oldAction,$newAction)
   } elseif (-not (Test-SameAction $current.Actions[0] $oldAction)) {
     throw 'Unknown Task action; no automatic recovery permitted'
   }
-  Wait-VersionExited $target
+  Wait-VersionExited $target $managementCaller
   Assert-UpgradeIdentity $record
   $current = Read-OwnedTask
   if (-not (Test-SameAction $current.Actions[0] $oldAction)) { throw 'Previous task action not restored' }
@@ -437,7 +451,7 @@ function Restore-NativeOriginal($record,$original,$target,$oldAction,$newAction)
     $null = Get-OwnedAgentProcess $original
     Invoke-AgentUpgradeFreeze $identityFile 'release'
   } else {
-    Wait-VersionExited $original
+    Wait-VersionExited $original $managementCaller
     Assert-UpgradeState $target $record
     Start-ScheduledTask -TaskName $name -ErrorAction Stop
   }
@@ -467,6 +481,7 @@ function Read-NativeJournal($stream) {
   $record
 }
 function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
+  $managementCaller = Get-LocalSwitchCaller 'Upgrade' $newVersion
   Check-UpgradeStore
   $original = Get-ReviewedProgram $oldVersion
   $target = Get-ReviewedProgram $newVersion
@@ -478,7 +493,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $oldAction)) {
     throw 'Existing reviewed running Task required'
   }
-  Wait-VersionExited $target
+  Wait-VersionExited $target $managementCaller
   $raw = & $target.Entry --cli status
   if ($LASTEXITCODE -ne 0) { throw 'Candidate local identity validation failed' }
   $localStatus = $raw | ConvertFrom-Json
@@ -506,7 +521,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     Assert-UpgradeIdentity $record
     $stage = 'stop original'
     Stop-ScheduledTask -TaskName $name -ErrorAction Stop
-    Wait-VersionExited $original
+    Wait-VersionExited $original $managementCaller
     Assert-UpgradeState $target $record
     $observed = Read-OwnedTask
     if ($observed.State -eq 'Running' -or -not (Test-SameAction $observed.Actions[0] $oldAction)) {
@@ -516,7 +531,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     Set-ScheduledTask -TaskName $name -Action $newAction -ErrorAction Stop | Out-Null
     $observed = Read-OwnedTask
     if (-not (Test-SameAction $observed.Actions[0] $newAction)) { throw 'New Task action not persisted' }
-    Wait-VersionExited $original
+    Wait-VersionExited $original $managementCaller
     Assert-UpgradeIdentity $record
     Start-ScheduledTask -TaskName $name -ErrorAction Stop
     $stage = 'signed WSS'
@@ -532,7 +547,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $newAction)) {
       throw 'Task changed after activation observation'
     }
-    Wait-VersionExited $original
+    Wait-VersionExited $original $managementCaller
     Assert-UpgradeIdentity $record
     $complete = $true
   } catch {
@@ -540,7 +555,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     # A lost freeze response is uncertain. Preserve the journal rather than
     # changing the task or releasing somebody else's possible freeze.
     if ($frozen) {
-      try { Restore-NativeOriginal $record $original $target $oldAction $newAction; $restored = $true }
+      try { Restore-NativeOriginal $record $original $target $oldAction $newAction $managementCaller; $restored = $true }
       catch { Write-Verbose ('Native restore refused: ' + $_.Exception.Message) }
     }
   } finally {
@@ -552,6 +567,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   throw ('Native upgrade uncertain at ' + $stage + '; journal retained; attended recovery required')
 }
 function Invoke-NativeRecovery {
+  $managementCaller = Get-LocalSwitchCaller 'Recover' ''
   $stream = Open-NativeJournal
   $restored = $false
   try {
@@ -561,7 +577,7 @@ function Invoke-NativeRecovery {
     if (-not $target.Native -or -not $target.Rust) { throw 'Unreviewed recovery target' }
     $oldAction = New-ReviewedAction $original $record.endpoint $record.original_generation
     $newAction = New-ReviewedAction $target $record.endpoint $record.target_generation
-    Restore-NativeOriginal $record $original $target $oldAction $newAction
+    Restore-NativeOriginal $record $original $target $oldAction $newAction $managementCaller
     $restored = $true
   } finally {
     $stream.Dispose()
@@ -575,6 +591,142 @@ if ($Action -eq 'RecoverNativeUpgrade') {
   exit 0
 }
 if (Test-Path -LiteralPath $nativeJournal) { throw 'Unreconciled native upgrade; preserve versions and recover explicitly' }
+
+if ($Action -eq 'ConfirmStopped') {
+  if ($Version -or $Direction -or $Node -or $Entry -or $CIInjectFailure -or
+      $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$') { throw 'Unexpected stopped-check arguments' }
+  Check-Existing
+  $launch = Read-TaskLaunch $task.Actions[0]
+  if ($task.State -eq 'Running' -or $launch.Endpoint -cne $Endpoint) { throw 'Existing Task is not stopped at the expected endpoint' }
+  $action = $task.Actions[0]
+  $caller = Get-LocalSwitchCaller 'RePair' $Endpoint
+  if (-not $caller) { $caller = Get-LocalSwitchCaller 'Onboard' $Endpoint }
+  Wait-VersionExited ([pscustomobject]@{Root=$root}) $caller
+  $task = Read-OwnedTask
+  if ($task.State -eq 'Running' -or -not (Test-SameAction $task.Actions[0] $action)) { throw 'Task changed during exit observation' }
+  'stopped-confirmed'
+  exit 0
+}
+
+if ($Action -eq 'EnableNative') {
+  if ($Direction -or $Node -or $Entry -or $CIInjectFailure -or
+      $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$' -or
+      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$') { throw 'Unreviewed native enable' }
+  Check-UpgradeStore
+  if ($task) { throw 'Cannot overwrite an existing scheduled task' }
+  $modeGuard = [IO.File]::Open(($identityFile + '.install-mode'),[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+  try {
+    $program = Get-ReviewedProgram $Version
+    if (-not $program.Native -or -not $program.Rust) { throw 'Node-free candidate required' }
+    $record = [pscustomobject]@{
+      key_hash=(Get-FileHash -LiteralPath $identityFile -Algorithm SHA256).Hash
+      id_hash=(Get-FileHash -LiteralPath ($identityFile + '.device-id') -Algorithm SHA256).Hash
+    }
+    $raw = & $program.Entry --verify-enable-pairing $Endpoint
+    if ($LASTEXITCODE -ne 0) { throw 'Signed permanent grant not confirmed' }
+    $approved = $raw | ConvertFrom-Json
+    Assert-UpgradeIdentity $record
+    if ($approved.device_id -cne (Get-Content -LiteralPath ($identityFile + '.device-id') -Raw).Trim()) {
+      throw 'Signed identity changed before enable'
+    }
+    if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+      throw 'Cannot overwrite an existing scheduled task'
+    }
+    Register-OwnedTask (New-ReviewedAction $program $Endpoint ([guid]::NewGuid().ToString('D')))
+  } finally { $modeGuard.Dispose() }
+  'enabled'
+  exit 0
+}
+
+if ($Action -eq 'ActivateNative') {
+  if ($Direction -or $Node -or $Entry -or $CIInjectFailure -or
+      $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$' -or
+      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$') {
+    throw 'Unreviewed native initial activation'
+  }
+  Check-UpgradeStore
+  $program = Get-ReviewedProgram $Version
+  if (-not $program.Native -or -not $program.Rust) { throw 'Node-free candidate required' }
+  $pending = $identityFile + '.activation-pending'
+  # The existing activation intent doubles as the exclusive activation lock.
+  # Read-only observers can inspect it; another installer cannot consume it.
+  $stream = [IO.File]::Open($pending,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+  $confirmed = $false
+  try {
+    $record = [pscustomobject]@{
+      key_hash=(Get-FileHash -LiteralPath $identityFile -Algorithm SHA256).Hash
+      id_hash=(Get-FileHash -LiteralPath ($identityFile + '.device-id') -Algorithm SHA256).Hash
+    }
+    $raw = & $program.Entry --verify-initial-pairing $Endpoint
+    if ($LASTEXITCODE -ne 0) { throw 'Signed initial identity not confirmed' }
+    $approved = $raw | ConvertFrom-Json
+    Assert-UpgradeIdentity $record
+    if ($approved.device_id -cne (Get-Content -LiteralPath ($identityFile + '.device-id') -Raw).Trim()) {
+      throw 'Signed identity changed before activation'
+    }
+    $previous = $null
+    $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if ($task) {
+      Check-Existing
+      $launch = Read-TaskLaunch $task.Actions[0]
+      if (-not $launch.Generation -or $launch.Endpoint -cne $Endpoint) { throw 'Unrelated existing Task' }
+      $previous = New-ReviewedAction $program $Endpoint $launch.Generation
+      if (-not (Test-SameAction $task.Actions[0] $previous)) { throw 'Unrelated existing Task action' }
+      if ($task.State -eq 'Running') {
+        try { $confirmed = Confirm-NativeActivation $Version $launch.Generation } catch { $confirmed = $false }
+        if (-not $confirmed) {
+          Freeze-OwnedAgent $program $previous $true
+          Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+        }
+      }
+    }
+    if (-not $confirmed) {
+      Wait-VersionExited ([pscustomobject]@{Root=$root})
+      Assert-UpgradeState $program $record
+      $generationValue = [guid]::NewGuid().ToString('D')
+      $action = New-ReviewedAction $program $Endpoint $generationValue
+      $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+      if ($task) {
+        Check-Existing
+        if (-not $previous -or $task.State -eq 'Running' -or -not (Test-SameAction $task.Actions[0] $previous)) {
+          throw 'Pending Task changed before retry'
+        }
+        Set-ScheduledTask -TaskName $name -Action $action -ErrorAction Stop | Out-Null
+      } else {
+        Register-OwnedTask $action
+      }
+      Start-ScheduledTask -TaskName $name -ErrorAction Stop
+      $deadline = [Diagnostics.Stopwatch]::StartNew()
+      while ($deadline.Elapsed.TotalSeconds -lt 90) {
+        try { $confirmed = Confirm-NativeActivation $Version $generationValue } catch { $confirmed = $false }
+        if ($confirmed) { break }
+        Start-Sleep -Milliseconds 500
+      }
+      if (-not $confirmed) {
+        # Remove only our exact unconfirmed Task, after freeze/exit evidence.
+        # Unknown ownership or a lost freeze response preserves the intent.
+        $task = Read-OwnedTask
+        if (-not (Test-SameAction $task.Actions[0] $action)) { throw 'Activation Task changed; intent retained' }
+        if ($task.State -eq 'Running') {
+          Freeze-OwnedAgent $program $action $true
+          Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+        }
+        Wait-VersionExited $program
+        $task = Read-OwnedTask
+        if ($task.State -eq 'Running' -or -not (Test-SameAction $task.Actions[0] $action)) {
+          throw 'Activation Task uncertain; intent retained'
+        }
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop
+        throw 'Signed WSS not confirmed; Task removed and activation intent retained'
+      }
+    }
+    Assert-UpgradeIdentity $record
+  } finally { $stream.Dispose() }
+  if (-not $confirmed) { throw 'Native initial activation not confirmed' }
+  Remove-Item -LiteralPath $pending -ErrorAction Stop
+  'authenticated-initial-activation'
+  exit 0
+}
 
 if ($Action -eq 'Switch') {
   # Transactional local program switch. Both versions are installed and
