@@ -816,3 +816,184 @@ fn search_cursors_do_not_survive_signed_transport_reconnect() {
     server.join().unwrap();
     assert!(result.is_ok(), "{result:?}");
 }
+
+#[test]
+fn receipt_storage_faults_keep_signed_reads_and_deny_new_effects() {
+    use rusqlite::Connection;
+    for (mode, expected, content) in [
+        ("corrupt", "unavailable", "original"),
+        ("before", "unavailable", "original"),
+        ("after", "unknown", "originalonce"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        common::seal_windows_dir(root.path());
+        let receipt_dir = root.path().join("receipts");
+        drop(ReceiptStore::open(&receipt_dir).unwrap());
+        let db = receipt_dir.join("operation-receipts.sqlite");
+        if mode == "corrupt" {
+            std::fs::write(&db, b"corrupt ledger -- preserve these bytes").unwrap();
+        } else {
+            let conn = Connection::open(&db).unwrap();
+            let phase = if mode == "before" {
+                "running"
+            } else {
+                "completed"
+            };
+            conn.execute_batch(&format!(
+                "CREATE TRIGGER fail_fixture BEFORE UPDATE ON receipts
+                 WHEN NEW.state='{phase}' BEGIN SELECT RAISE(ABORT,'fixture fault'); END;"
+            ))
+            .unwrap();
+        }
+        let original = std::fs::read(&db).unwrap();
+        let target = root.path().join("target.txt");
+        std::fs::write(&target, "original").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let end = Arc::clone(&stop);
+        let file = target.clone();
+        let directory = receipt_dir.clone();
+        let server = thread::spawn(move || {
+            struct Stop(Arc<AtomicBool>);
+            impl Drop for Stop {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::Release);
+                }
+            }
+            let _stop = Stop(end);
+            // Bound the red case: the old Agent exits before connecting.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(4);
+            let http = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "Agent never connected: {mode}"
+                        );
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(e) => panic!("{e}"),
+                }
+            };
+            http.set_nonblocking(false).unwrap();
+            challenge(http);
+            listener.set_nonblocking(false).unwrap();
+            let (ws, _) = listener.accept().unwrap();
+            ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            #[allow(clippy::result_large_err)]
+            let mut socket = tungstenite::accept_hdr(ws, |_: &Request, mut response: Response| {
+                response
+                    .headers_mut()
+                    .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
+                Ok(response)
+            })
+            .unwrap();
+            let mut exchange = |body: String| -> Value {
+                socket.send(Message::Text(body.into())).unwrap();
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap()
+            };
+            let args = json!({"path":file,"content":"once","mode":"append"});
+            let first = exchange(request(
+                "11111111-1111-1111-1111-111111111111",
+                "write_file",
+                "fault-op",
+                args.clone(),
+            ));
+            assert_eq!(first["result"]["status"], expected, "{mode}");
+            let retry = exchange(request(
+                "22222222-2222-2222-2222-222222222222",
+                "write_file",
+                "fault-op",
+                args.clone(),
+            ));
+            assert_eq!(retry["result"]["status"], "unavailable");
+            let fresh = exchange(request(
+                "33333333-3333-3333-3333-333333333333",
+                "write_file",
+                "fresh-op",
+                args,
+            ));
+            assert_eq!(fresh["result"]["status"], "unavailable");
+            let status = exchange(request(
+                "44444444-4444-4444-4444-444444444444",
+                "get_operation_status",
+                "fault-op",
+                json!({"operation_id":"fault-op"}),
+            ));
+            assert_eq!(status["result"]["status"], "unavailable");
+            let read = exchange(json!({"kind":"read","request_id":"55555555-5555-5555-5555-555555555555","tool":"read_file","arguments":{"path":file}}).to_string());
+            assert_eq!(read["status"], "completed");
+            assert_eq!(read["text"], content);
+            assert!(
+                ReceiptStore::open(&directory).is_err(),
+                "a degraded Agent must still exclude another receipt owner"
+            );
+            #[cfg(unix)]
+            if mode == "corrupt" {
+                let read = exchange(json!({"kind":"read","request_id":"66666666-6666-6666-6666-666666666666","tool":"read_file","arguments":{"path":directory.join("operation-receipts.sqlite")}}).to_string());
+                assert_eq!(read["status"], "completed");
+            }
+            // A corrupt database would itself cause open to fail; demand
+            // SQLITE_BUSY from a genuinely separate SQLite process instead.
+            let contender = std::process::Command::new("node")
+                .args(["--input-type=module", "-e", r#"
+                    import {DatabaseSync} from 'node:sqlite';
+                    const db = new DatabaseSync(process.argv[1]);
+                    db.exec('PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE');
+                    try { db.exec('BEGIN EXCLUSIVE'); }
+                    catch(e) { if (e.errcode === 5 || /database is locked/i.test(String(e))) process.exit(0); throw e; }
+                    throw Error('exclusive lock escaped');
+                "#])
+                .arg(directory.join("operation-receipts.sqlite"))
+                .output().unwrap();
+            assert!(
+                contender.status.success(),
+                "second process: {}",
+                String::from_utf8_lossy(&contender.stderr)
+            );
+        });
+        let result = run_native_file_session(
+            &endpoint,
+            &common::test_pem(),
+            DEVICE_ID,
+            &receipt_dir,
+            &stop,
+            HeartbeatTiming::default(),
+        );
+        server.join().unwrap();
+        assert!(result.is_ok(), "{mode}: {result:?}");
+        assert_eq!(std::fs::read_to_string(target).unwrap(), content);
+        if mode == "corrupt" {
+            assert_eq!(std::fs::read(&db).unwrap(), original);
+        } else {
+            let conn = Connection::open(&db).unwrap();
+            let state: String = conn
+                .query_row(
+                    "SELECT state FROM receipts WHERE operation_id='fault-op'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                state,
+                if mode == "before" {
+                    "admitted"
+                } else {
+                    "running"
+                }
+            );
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM receipts WHERE operation_id='fresh-op'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0);
+        }
+    }
+}

@@ -112,7 +112,8 @@ use crate::linux_supervisor::CleanupState;
 use crate::native_process::{self, NativeProcessEngine, ProcessRead};
 use crate::native_read::{self, ReadCommand};
 use crate::native_search::{self, SearchFrame, SearchSessions};
-use crate::native_write::{NativeWriteError, NativeWriteExecutor};
+use crate::native_write::{NativeWriteError, NativeWriteExecutor, WriteOutcome};
+use crate::receipts::ReceiptError;
 #[cfg(unix)]
 use crate::upgrade_control::{UpgradeCommand, UpgradeRequest, UpgradeServer};
 #[cfg(windows)]
@@ -319,9 +320,11 @@ fn execute_native_file(
         searches.expire();
         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         if let Some(process) = processes.as_mut() {
-            process
-                .reconcile(writes.receipt_store_mut())
-                .map_err(NativeWriteError::from)?;
+            if writes.available() {
+                if let Err(error) = process.reconcile(writes.receipt_store_mut()) {
+                    writes.isolate(&error)?;
+                }
+            }
         }
         #[cfg(any(unix, windows))]
         if let Some(control) = upgrade_requests.as_ref() {
@@ -329,6 +332,7 @@ fn execute_native_file(
                 let answer = match request.command {
                     UpgradeCommand::Freeze
                         if !upgrade_frozen
+                            && writes.available()
                             && !stop.load(Ordering::Acquire)
                             && processes
                                 .as_ref()
@@ -340,6 +344,7 @@ fn execute_native_file(
                     UpgradeCommand::Freeze => "busy\n",
                     UpgradeCommand::VerifyFrozen
                         if upgrade_frozen
+                            && writes.available()
                             && !stop.load(Ordering::Acquire)
                             && processes
                                 .as_ref()
@@ -437,12 +442,18 @@ fn execute_native_file(
                 let outcome = match result {
                     Ok(outcome) => outcome,
                     Err(NativeWriteError::LeaseRevoked) => continue,
-                    Err(error) => {
-                        // An unpersistable mutation may already have had an
-                        // effect. Stop this candidate; never retry that ID.
-                        stop.store(true, Ordering::Release);
-                        return Err(error.into());
+                    Err(NativeWriteError::Receipt(error)) => {
+                        writes.isolate(&error)?;
+                        WriteOutcome {
+                            state: if matches!(error, ReceiptError::AfterEffect(_)) {
+                                "unknown"
+                            } else {
+                                "unavailable"
+                            },
+                            receipt: None,
+                        }
                     }
+                    Err(error) => return Err(error.into()),
                 };
                 json!({"kind":"operation_result","request_id":request_id,
                     "result":{"operation_id":operation_id,"status":outcome.state,"receipt":outcome.receipt}}).to_string()
@@ -472,10 +483,17 @@ fn execute_native_file(
                 let outcome = match result {
                     Ok(outcome) => outcome,
                     Err(error) => {
-                        // Admission/update can fail after an effect: stop and
-                        // preserve the guarded receipt; never replay.
-                        stop.store(true, Ordering::Release);
-                        return Err(NativeWriteError::from(error).into());
+                        writes.isolate(&error)?;
+                        let uncertain = matches!(error, ReceiptError::AfterEffect(_))
+                            || processes
+                                .as_ref()
+                                .ok_or(NativeFileError::Policy)?
+                                .emergency_stop(&tool, &arguments, request.lease().is_active());
+                        native_process::ProcessOutcome {
+                            state: if uncertain { "unknown" } else { "unavailable" },
+                            receipt: None,
+                            session_id: None,
+                        }
                     }
                 };
                 json!({"kind":"operation_result", "request_id":request_id,
@@ -487,8 +505,19 @@ fn execute_native_file(
                 request_id,
                 operation_id,
             } => {
-                let receipt = writes.get_receipt(&operation_id)?;
-                let status = receipt.as_ref().map_or("not_found", |r| r.state.as_str());
+                let (receipt, unavailable) = match writes.get_receipt(&operation_id) {
+                    Ok(receipt) => (receipt, false),
+                    Err(NativeWriteError::Receipt(error)) => {
+                        writes.isolate(&error)?;
+                        (None, true)
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let status = if unavailable {
+                    "unavailable"
+                } else {
+                    receipt.as_ref().map_or("not_found", |r| r.state.as_str())
+                };
                 json!({"kind":"operation_result","request_id":request_id,
                     "result":{"operation_id":operation_id,"status":status,"receipt":receipt}})
                 .to_string()
@@ -514,9 +543,11 @@ fn execute_native_file(
     }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(process) = processes.as_mut() {
-        process
-            .reconcile(writes.receipt_store_mut())
-            .map_err(NativeWriteError::from)?;
+        if writes.available() {
+            if let Err(error) = process.reconcile(writes.receipt_store_mut()) {
+                writes.isolate(&error)?;
+            }
+        }
     }
     Ok(())
 }
@@ -533,7 +564,7 @@ pub fn run_native_file_session(
     stop: &Arc<AtomicBool>,
     timing: HeartbeatTiming,
 ) -> Result<(), NativeFileError> {
-    let writes = NativeWriteExecutor::open(receipt_directory)?;
+    let writes = NativeWriteExecutor::open_runtime(receipt_directory)?;
     let (request_sender, requests) = sync_channel(4);
     let (reply_sender, mut replies) = tokio::sync::mpsc::channel(4);
     let worker_stop = Arc::clone(stop);
@@ -652,7 +683,7 @@ fn run_native_managed_session_inner(
     stop: &Arc<AtomicBool>,
     options: ManagedRunOptions<'_>,
 ) -> Result<(), NativeFileError> {
-    let writes = NativeWriteExecutor::open(receipt_directory)?;
+    let writes = NativeWriteExecutor::open_runtime(receipt_directory)?;
     #[cfg(any(unix, windows))]
     let (_upgrade_server, upgrade_requests) = if let Some(key) = options.upgrade_key {
         let (sender, requests) = sync_channel(4);

@@ -557,6 +557,21 @@ impl NativeWriteExecutor {
         })
     }
 
+    pub(crate) fn open_runtime(directory: &Path) -> Result<Self, NativeWriteError> {
+        Ok(Self {
+            receipts: ReceiptStore::open_runtime(directory)?,
+        })
+    }
+
+    pub(crate) fn available(&self) -> bool {
+        self.receipts.available()
+    }
+
+    pub(crate) fn isolate(&mut self, error: &ReceiptError) -> Result<(), NativeWriteError> {
+        self.receipts.isolate(error)?;
+        Ok(())
+    }
+
     pub fn get_receipt(&self, id: &str) -> Result<Option<Receipt>, NativeWriteError> {
         Ok(self.receipts.query_runtime(id)?)
     }
@@ -724,7 +739,10 @@ impl NativeWriteExecutor {
                 ("unknown", "Operation outcome cannot be established.", false)
             }
         };
-        let receipt = self.receipts.update(id, state, summary, None, no_effect)?;
+        let receipt = self
+            .receipts
+            .update(id, state, summary, None, no_effect)
+            .map_err(ReceiptError::after_effect)?;
         Ok(WriteOutcome {
             state,
             receipt: Some(receipt),

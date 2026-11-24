@@ -49,6 +49,12 @@ pub enum ReceiptError {
     InvalidOperation,
     #[error("receipt not found")]
     NotFound,
+    #[error("receipt storage disabled for this runtime")]
+    Unavailable,
+    #[error("exclusive receipt ownership cannot be established")]
+    Ownership,
+    #[error("effect outcome could not be persisted")]
+    AfterEffect(Box<ReceiptError>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -81,6 +87,7 @@ pub enum Admission {
 
 pub struct ReceiptStore {
     connection: Connection,
+    available: bool,
     pub directory: PathBuf,
 }
 
@@ -266,10 +273,170 @@ fn cleanup_expired(conn: &Connection) -> Result<(), ReceiptError> {
     Ok(())
 }
 
+impl ReceiptError {
+    pub(crate) fn after_effect(self) -> Self {
+        Self::AfterEffect(Box::new(self))
+    }
+
+    fn cause(&self) -> &Self {
+        match self {
+            Self::AfterEffect(error) => error.cause(),
+            _ => self,
+        }
+    }
+
+    pub(crate) fn diagnostic(&self) -> &'static str {
+        use rusqlite::ErrorCode::*;
+        match self.cause() {
+            Self::UnsafePath => "receipt_unsafe_path",
+            Self::Ownership => "receipt_owner_unavailable",
+            Self::Incompatible => "receipt_incompatible",
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _)) => match error.code {
+                DatabaseBusy | DatabaseLocked | FileLockingProtocolFailed => {
+                    "receipt_owner_unavailable"
+                }
+                DatabaseCorrupt | NotADatabase => "receipt_corrupt",
+                ReadOnly | PermissionDenied => "receipt_readonly",
+                DiskFull => "receipt_full",
+                _ => "receipt_storage_unavailable",
+            },
+            _ => "receipt_storage_unavailable",
+        }
+    }
+
+    fn startup_storage_failure(&self) -> bool {
+        use rusqlite::ErrorCode::*;
+        matches!(self, Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+            if matches!(error.code, DatabaseCorrupt | NotADatabase | DiskFull | ReadOnly))
+    }
+}
+
+// A degraded runtime never opens a replacement ledger. A fresh, SQL-unused
+// SQLite connection holds the same database-file locks without parsing a
+// damaged header. No SQL may run on this connection after direct VFS locking.
+fn lock_unreadable_database(path: &Path) -> Result<Connection, ReceiptError> {
+    use rusqlite::ffi;
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
+    )?;
+    // SAFETY: the connection has no prepared statements, SQL transactions
+    // or other users. The file and methods belong to the live connection;
+    // no pointer escapes. SQLite closes its own file and releases its locks.
+    unsafe {
+        let mut file: *mut ffi::sqlite3_file = std::ptr::null_mut();
+        let rc = ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            ffi::SQLITE_FCNTL_FILE_POINTER,
+            (&mut file as *mut *mut ffi::sqlite3_file).cast(),
+        );
+        if rc != ffi::SQLITE_OK || file.is_null() || (*file).pMethods.is_null() {
+            return Err(ReceiptError::Ownership);
+        }
+        let lock = (*(*file).pMethods).xLock.ok_or(ReceiptError::Ownership)?;
+        for level in [
+            ffi::SQLITE_LOCK_SHARED,
+            ffi::SQLITE_LOCK_RESERVED,
+            ffi::SQLITE_LOCK_EXCLUSIVE,
+        ] {
+            if lock(file, level) != ffi::SQLITE_OK {
+                return Err(ReceiptError::Ownership);
+            }
+        }
+    }
+    verify_exclusive(&connection)?;
+    Ok(connection)
+}
+
+fn verify_exclusive(connection: &Connection) -> Result<(), ReceiptError> {
+    use rusqlite::ffi;
+    let mut state = ffi::SQLITE_LOCK_NONE;
+    // SAFETY: synchronous query of the live connection's VFS lock state.
+    let rc = unsafe {
+        ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            ffi::SQLITE_FCNTL_LOCKSTATE,
+            (&mut state as *mut i32).cast(),
+        )
+    };
+    if rc != ffi::SQLITE_OK || state != ffi::SQLITE_LOCK_EXCLUSIVE {
+        return Err(ReceiptError::Ownership);
+    }
+    Ok(())
+}
+
 impl ReceiptStore {
     /// Refuses nonprivate directories, unfamiliar versions and concurrent writers.
     pub fn open(directory: &Path) -> Result<Self, ReceiptError> {
         Self::open_with_historical(directory, None)
+    }
+
+    /// Network runtime may degrade only while holding the original exclusive
+    /// lock. Offline migration and probe callers remain strict.
+    pub(crate) fn open_runtime(directory: &Path) -> Result<Self, ReceiptError> {
+        match Self::open(directory) {
+            Ok(store) => Ok(store),
+            Err(error) if error.startup_storage_failure() => {
+                private_path(directory, true)?;
+                let db_path = directory.join("operation-receipts.sqlite");
+                private_path(&db_path, false)?;
+                for suffix in ["-wal", "-shm"] {
+                    let sidecar = directory.join(format!("operation-receipts.sqlite{suffix}"));
+                    match fs::symlink_metadata(sidecar) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        _ => return Err(ReceiptError::Ownership),
+                    }
+                }
+                let connection = lock_unreadable_database(&db_path)?;
+                eprintln!(
+                    "{{\"event\":\"{}\",\"mode\":\"read_only\"}}",
+                    error.diagnostic()
+                );
+                Ok(Self {
+                    connection,
+                    available: false,
+                    directory: directory.to_owned(),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn available(&self) -> bool {
+        self.available
+    }
+
+    /// Latch failure for this owner; no repair, retries or new effects.
+    pub(crate) fn isolate(&mut self, error: &ReceiptError) -> Result<(), ReceiptError> {
+        if matches!(
+            error.cause(),
+            ReceiptError::UnsafePath
+                | ReceiptError::Ownership
+                | ReceiptError::Incompatible
+                | ReceiptError::InvalidOperation
+        ) || error.diagnostic() == "receipt_owner_unavailable"
+        {
+            return Err(ReceiptError::Ownership);
+        }
+        if self.available {
+            verify_exclusive(&self.connection)?;
+            self.available = false;
+            eprintln!(
+                "{{\"event\":\"{}\",\"mode\":\"read_only\"}}",
+                error.diagnostic()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_available(&self) -> Result<(), ReceiptError> {
+        if self.available {
+            Ok(())
+        } else {
+            Err(ReceiptError::Unavailable)
+        }
     }
 
     /// Operator-selected legacy history only: never guess a backup file.
@@ -413,11 +580,13 @@ impl ReceiptStore {
         tx.commit()?;
         Ok(Self {
             connection,
+            available: true,
             directory: directory.to_owned(),
         })
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Receipt>, ReceiptError> {
+        self.require_available()?;
         if !valid_id(id) {
             return Err(ReceiptError::InvalidOperation);
         }
@@ -427,6 +596,7 @@ impl ReceiptStore {
     /// Runtime status lookup uses the established retention policy. Internal
     /// recovery and migration verification keep using the lossless lookup.
     pub(crate) fn query_runtime(&self, id: &str) -> Result<Option<Receipt>, ReceiptError> {
+        self.require_available()?;
         if !valid_id(id) {
             return Err(ReceiptError::InvalidOperation);
         }
@@ -443,6 +613,7 @@ impl ReceiptStore {
         tool: &str,
         arguments: &Value,
     ) -> Result<Admission, ReceiptError> {
+        self.require_available()?;
         if !valid_id(id) || !ACTIVE_TOOLS.contains(&tool) {
             return Err(ReceiptError::InvalidOperation);
         }
@@ -486,6 +657,7 @@ impl ReceiptStore {
         session_id: Option<&str>,
         known_no_effect: bool,
     ) -> Result<Receipt, ReceiptError> {
+        self.require_available()?;
         if !STATES.contains(&state) {
             return Err(ReceiptError::InvalidOperation);
         }

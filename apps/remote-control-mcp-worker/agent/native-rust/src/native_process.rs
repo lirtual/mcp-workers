@@ -358,6 +358,25 @@ impl NativeProcessEngine {
         Ok(())
     }
 
+    /// During receipt failure only an already-owned active session can be
+    /// signaled. No launch, input or persisted success may be inferred.
+    pub(crate) fn emergency_stop(&self, tool: &str, args: &Value, lease_active: bool) -> bool {
+        if !lease_active {
+            return false;
+        }
+        if let Some(ProcessMutation::Terminate { session_id }) = parse_process_mutation(tool, args)
+        {
+            if self
+                .sessions
+                .get(&session_id)
+                .is_some_and(|s| matches!(s.state, SessionState::Running | SessionState::Unknown))
+            {
+                return self.sessions.request_stop(&session_id);
+            }
+        }
+        false
+    }
+
     pub fn execute(
         &mut self,
         receipts: &mut ReceiptStore,
@@ -475,13 +494,15 @@ impl NativeProcessEngine {
                         let sid = started.session_id;
                         self.starts.insert(operation_id.to_owned(), sid.clone());
                         // Persist the OS session association before any waiting.
-                        receipts.update(
-                            operation_id,
-                            "running",
-                            "Development command session recorded.",
-                            Some(&sid),
-                            false,
-                        )?;
+                        receipts
+                            .update(
+                                operation_id,
+                                "running",
+                                "Development command session recorded.",
+                                Some(&sid),
+                                false,
+                            )
+                            .map_err(ReceiptError::after_effect)?;
                         while Instant::now() < deadline {
                             if self
                                 .sessions
@@ -492,8 +513,12 @@ impl NativeProcessEngine {
                             }
                             thread::sleep(Duration::from_millis(25));
                         }
-                        self.reconcile(receipts)?;
-                        let receipt = receipts.get(operation_id)?.ok_or(ReceiptError::NotFound)?;
+                        self.reconcile(receipts)
+                            .map_err(ReceiptError::after_effect)?;
+                        let receipt = receipts
+                            .get(operation_id)
+                            .and_then(|r| r.ok_or(ReceiptError::NotFound))
+                            .map_err(ReceiptError::after_effect)?;
                         let state = match receipt.state.as_str() {
                             "completed" => "completed",
                             "failed" => "failed",
@@ -591,13 +616,15 @@ impl NativeProcessEngine {
                 }
             }
         };
-        let receipt = receipts.update(
-            operation_id,
-            state,
-            summary,
-            session_id.as_deref(),
-            known_no_effect,
-        )?;
+        let receipt = receipts
+            .update(
+                operation_id,
+                state,
+                summary,
+                session_id.as_deref(),
+                known_no_effect,
+            )
+            .map_err(ReceiptError::after_effect)?;
         Ok(ProcessOutcome {
             state,
             session_id,
