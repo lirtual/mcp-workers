@@ -2036,18 +2036,37 @@ def local_identity_purge(home, confirm, process_check=None):
 
 
 def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
-    # No portable way to certify no copied key is in use. Refuse known local
-    # CLI or Agent processes, including an active temporary foreground v2.
+    # Purge is destructive even after uninstall: a detached or manually
+    # started process can outlive its installed directory. Check the actual
+    # executable as well as argv, and refuse uncertain same-user processes.
+    # Old executable names remain negative safety checks, not upgrade support.
+    def agent_path(value):
+        value = value.removesuffix(b" (deleted)")
+        return (value.rsplit(b"/", 1)[-1] == b"rca-standard-linux-candidate"
+                or b"/remote-control-agent/scripts/bootstrap-v2.py" in value
+                or b"/remote-control-agent/src/v2-main." in value
+                or b"/remote-control-agent/scripts/install-v2.mjs" in value
+                or b"/remote-control-agent/src/pair-device." in value)
+
     for process in proc_root.iterdir():
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
         try:
             if process.stat().st_uid != os.getuid():
                 continue
-            argv = (process / "cmdline").read_bytes()
-            if (b"/remote-control-agent/src/v2-main." in argv
-                    or b"/remote-control-agent/scripts/install-v2.mjs" in argv
-                    or b"/remote-control-agent/src/pair-device." in argv):
+            status = (process / "status").read_text("ascii")
+            if re.search(r"^State:\s*Z\b", status, re.MULTILINE):
+                continue
+            argv = (process / "cmdline").read_bytes().split(b"\0")
+            if any(agent_path(arg) for arg in argv):
+                return False
+            # Same exact systemd user-manager exception as no_running_programs.
+            proc_name = re.search(r"^Name:\s*([^\n]+)", status, re.MULTILINE)
+            if proc_name and argv and (proc_name.group(1).strip(), argv[0]) in (
+                    ("systemd", b"/usr/lib/systemd/systemd"),
+                    ("(sd-pam)", b"(sd-pam)")):
+                continue
+            if agent_path(os.fsencode(os.readlink(process / "exe"))):
                 return False
         except (FileNotFoundError, ProcessLookupError):
             if process.exists():

@@ -117,6 +117,37 @@ print("PROCESS_OWNER_FAIL_CLOSED_OK")
  assert.match(r.stdout,/PROCESS_OWNER_FAIL_CLOSED_OK/);
 });
 
+test("#914 identity purge blocks live Rust executable even with altered argv",()=>{
+ if(process.platform!=="linux")return;
+ const code=String.raw`import importlib.util,sys,tempfile,pathlib
+spec=importlib.util.spec_from_file_location("b",sys.argv[1])
+b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+with tempfile.TemporaryDirectory() as root:
+    proc=pathlib.Path(root)/"999999999";proc.mkdir()
+    status=proc/"status";status.write_text("Name:\tfixture\nState:\tS (sleeping)\n")
+    cmd=proc/"cmdline";exe=proc/"exe"
+    for binary,args in [
+        ("/tmp/rca-standard-linux-candidate",b"hidden-name"),
+        ("/tmp/rca-standard-linux-candidate (deleted)",b"hidden-name"),
+        ("/usr/bin/python3",b"/tmp/remote-control-agent/scripts/bootstrap-v2.py"),
+        ("/usr/bin/node",b"/tmp/remote-control-agent/src/v2-main.js"),
+        ("/usr/bin/python3",b"/tmp/rca-standard-linux-candidate"),
+    ]:
+        if exe.is_symlink():exe.unlink()
+        exe.symlink_to(binary);cmd.write_bytes(args+b"\0")
+        assert not b.no_live_v2_identity_processes(pathlib.Path(root)),binary
+    exe.unlink();exe.symlink_to("/usr/bin/python3")
+    cmd.write_bytes(b"/usr/bin/python3\0")
+    assert b.no_live_v2_identity_processes(pathlib.Path(root))
+    exe.unlink()
+    assert not b.no_live_v2_identity_processes(pathlib.Path(root))
+print("NATIVE_PURGE_PROCESS_GUARD_PASS")
+`;
+ const result=spawnSync("python3",["-B","-c",code,script],{encoding:"utf8",timeout:15000});
+ assert.equal(result.status,0,result.stderr);
+ assert.match(result.stdout,/NATIVE_PURGE_PROCESS_GUARD_PASS/);
+});
+
 test("#78 optional v2-only identity purge needs separate consent; shared receipts and foreign files survive",()=>{
  const code=String.raw`import importlib.util,sys,tempfile,pathlib,os
 spec=importlib.util.spec_from_file_location("b",sys.argv[1])
