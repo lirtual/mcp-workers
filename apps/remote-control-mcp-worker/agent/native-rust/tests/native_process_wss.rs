@@ -153,6 +153,7 @@ fn signed_managed_process_start_input_read_receipt_and_revoke() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         let args = json!({"command":"IFS= read -r v; printf '%s' \"$v\"","timeout_ms":0});
         let first = reply(
             &mut socket,
@@ -271,6 +272,7 @@ fn owner_revoke_terminates_active_owned_descendants_before_confirmed_ack() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         let start = reply(
             &mut socket,
             operation(
@@ -330,6 +332,7 @@ fn malformed_process_operation_stays_forbidden_with_policy_close_1008() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         socket
             .send(Message::Text(
                 operation(
@@ -383,6 +386,7 @@ fn four_concurrent_long_process_starts_fit_worker_deadline() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         socket
             .get_mut()
             .set_read_timeout(Some(Duration::from_secs(8)))
@@ -453,6 +457,7 @@ fn mixed_busy_worker_keeps_reads_status_and_owned_stop_available() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         socket
             .get_mut()
             .set_read_timeout(Some(Duration::from_secs(7)))
@@ -567,4 +572,59 @@ fn mixed_busy_worker_keeps_reads_status_and_owned_stop_available() {
         matches!(result, Err(NativeFileError::Session(SessionError::Policy))),
         "{result:?}"
     );
+}
+
+#[test]
+#[ignore = "requires disposable Unix runner and platform C helper"]
+fn device_info_is_reported_once_per_authenticated_managed_connection() {
+    let root = tempfile::tempdir().unwrap();
+    let receipt_dir = root.path().join("receipts");
+    let target = root.path().join("ordinary");
+    std::fs::write(&target, "metadata-reconnect").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let _stop = StopOnPanic(server_stop);
+        let mut first = signed_socket(listener.try_clone().unwrap());
+        let info = common::receive_device_info(&mut first, true);
+        assert_eq!(
+            read(&mut first, "read_file", json!({"path":target}))["text"],
+            "metadata-reconnect"
+        );
+        first
+            .close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "transport restart".into(),
+            }))
+            .unwrap();
+        drop(first);
+        let mut second = signed_socket(listener);
+        assert_eq!(common::receive_device_info(&mut second, true), info);
+        assert_eq!(
+            read(&mut second, "read_file", json!({"path":target}))["text"],
+            "metadata-reconnect"
+        );
+        second
+            .close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                reason: "revoked".into(),
+            }))
+            .unwrap();
+    });
+    let result = run_native_managed_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        managed(),
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    assert!(matches!(
+        result,
+        Err(NativeFileError::Session(SessionError::Policy))
+    ));
+    server.join().unwrap();
 }

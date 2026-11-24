@@ -118,3 +118,33 @@ foreach ($sid in @($userSid, $systemSid)) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// Worker consumes the runtime report exactly once before executing requests.
+#[allow(dead_code)]
+pub fn receive_device_info(
+    socket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    healthy: bool,
+) -> serde_json::Value {
+    let text = socket.read().unwrap().into_text().unwrap();
+    let info: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(info["kind"], "device_info");
+    assert!(text.encode_utf16().count() <= 1200);
+    assert_eq!(
+        info["os"],
+        if cfg!(target_os = "macos") {
+            "darwin"
+        } else {
+            std::env::consts::OS
+        }
+    );
+    assert_eq!(
+        info["capabilities"],
+        if healthy {
+            serde_json::json!(["read", "file_write", "shell"])
+        } else {
+            serde_json::json!(["read"])
+        }
+    );
+    assert!(info.get("upgrade_protocol").is_none());
+    info
+}

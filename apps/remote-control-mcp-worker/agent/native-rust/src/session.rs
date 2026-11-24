@@ -681,6 +681,7 @@ enum FramePolicy {
 }
 
 struct TransportMode {
+    receipt_health: Option<Arc<AtomicBool>>,
     timing: HeartbeatTiming,
     policy: FramePolicy,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -705,6 +706,7 @@ pub fn maintain_authenticated_transport(
         incoming,
         outgoing,
         TransportMode {
+            receipt_health: None,
             timing,
             policy: FramePolicy::Any,
             on_connected: None,
@@ -733,6 +735,7 @@ pub fn maintain_native_read_transport(
         incoming,
         outgoing,
         TransportMode {
+            receipt_health: None,
             timing,
             policy: FramePolicy::ReadOnly,
             on_connected: None,
@@ -761,6 +764,7 @@ pub fn maintain_native_file_transport(
         incoming,
         outgoing,
         TransportMode {
+            receipt_health: None,
             timing,
             policy: FramePolicy::NativeFiles,
             on_connected: None,
@@ -772,6 +776,7 @@ pub fn maintain_native_file_transport(
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub struct ManagedTransportConfig {
+    pub receipt_health: Arc<AtomicBool>,
     pub timing: HeartbeatTiming,
     pub managed: Arc<ManagedSessions>,
     pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -797,6 +802,7 @@ pub fn maintain_native_managed_transport(
         incoming,
         outgoing,
         TransportMode {
+            receipt_health: Some(config.receipt_health),
             timing: config.timing,
             policy: FramePolicy::NativeManaged(config.managed),
             on_connected: config.on_connected,
@@ -828,22 +834,34 @@ fn maintain_transport_mode(
         let elapsed = match connect_authenticated(endpoint, private_pem, device_id) {
             Ok(mut socket) => {
                 socket.set_heartbeat_timing(mode.timing)?;
-                if let Some(on_connected) = mode.on_connected.as_ref() {
-                    on_connected();
-                }
                 let connected_at = Instant::now();
-                let pump = match &mode.policy {
-                    FramePolicy::Any => socket.pump(stop, incoming, outgoing),
-                    FramePolicy::ReadOnly => socket.pump_native_read(stop, incoming, outgoing),
-                    FramePolicy::NativeFiles => socket.pump_native_file(stop, incoming, outgoing),
-                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                    FramePolicy::NativeManaged(managed) => {
-                        socket.pump_native_managed(stop, incoming, outgoing, managed)
+                let pump = (|| {
+                    if stop.load(Ordering::Acquire) {
+                        return Ok(());
                     }
-                };
-                if let Some(on_disconnected) = mode.on_disconnected.as_ref() {
-                    on_disconnected();
-                }
+                    if let Some(health) = mode.receipt_health.as_ref() {
+                        let info = crate::device_info::DeviceInfo::collect();
+                        socket.send_text(&info.frame(health.load(Ordering::Acquire)))?;
+                    }
+                    if let Some(on_connected) = mode.on_connected.as_ref() {
+                        on_connected();
+                    }
+                    let result = match &mode.policy {
+                        FramePolicy::Any => socket.pump(stop, incoming, outgoing),
+                        FramePolicy::ReadOnly => socket.pump_native_read(stop, incoming, outgoing),
+                        FramePolicy::NativeFiles => {
+                            socket.pump_native_file(stop, incoming, outgoing)
+                        }
+                        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                        FramePolicy::NativeManaged(managed) => {
+                            socket.pump_native_managed(stop, incoming, outgoing, managed)
+                        }
+                    };
+                    if let Some(on_disconnected) = mode.on_disconnected.as_ref() {
+                        on_disconnected();
+                    }
+                    result
+                })();
                 match pump {
                     Ok(()) => return Ok(()),
                     Err(error) => {

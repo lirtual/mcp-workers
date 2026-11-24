@@ -131,6 +131,7 @@ fn real_cli_sigterm_stops_owned_shell_and_persists_confirmed_receipt() {
     let (pid_tx, pid_rx) = sync_channel::<i32>(1);
     let server = thread::spawn(move || {
         let mut ws = socket(&listener);
+        common::receive_device_info(&mut ws, true);
         let started = exchange(
             &mut ws,
             json!({
@@ -240,6 +241,7 @@ fn real_cli_owner_revoke_confirms_cleanup_before_exit_and_receipt_close() {
     listener.set_nonblocking(true).unwrap();
     let server = thread::spawn(move || {
         let mut ws = socket(&listener);
+        common::receive_device_info(&mut ws, true);
         let start = exchange(
             &mut ws,
             json!({

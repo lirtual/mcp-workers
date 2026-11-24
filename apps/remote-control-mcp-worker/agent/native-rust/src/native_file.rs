@@ -729,6 +729,7 @@ fn run_native_managed_session_inner(
         NativeWriteExecutor::open_runtime(receipt_directory, options.on_diagnostic.clone())?;
     let health = writes.health();
     let on_connected = options.on_connected.map(|callback| {
+        let health = Arc::clone(&health);
         Arc::new(move || {
             if health.load(Ordering::Acquire) {
                 callback();
@@ -776,6 +777,7 @@ fn run_native_managed_session_inner(
         &request_sender,
         &mut replies,
         session::ManagedTransportConfig {
+            receipt_health: health,
             timing: options.timing,
             managed: Arc::clone(&managed),
             on_connected,

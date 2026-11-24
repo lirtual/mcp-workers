@@ -1212,6 +1212,7 @@ fn receipt_runtime_storage_failure_preserves_only_owned_stop() {
         }
         let _stop = Stop(end);
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         let mut call = |id: &str, tool: &str, args: Value| -> Value {
             socket
                 .send(Message::Text(
@@ -1375,6 +1376,7 @@ fn receipt_runtime_degraded_connection_does_not_authorize_upgrade() {
         }
         let _stop = Stop(end);
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, false);
         socket.send(Message::Text(json!({"kind":"read","request_id":"11111111-1111-1111-1111-111111111111","tool":"read_file","arguments":{"path":target}}).to_string().into())).unwrap();
         let read: Value =
             serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();

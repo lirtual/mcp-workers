@@ -208,6 +208,12 @@ mod linux {
         let upgrade_socket = root.path().join("upgrade.sock");
         let server = thread::spawn(move || {
             let mut socket = connected(listener);
+            let info: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(info["kind"], "device_info");
+            assert_eq!(info["agent_version"], "v0.1.57");
+            assert_eq!(info["os"], "linux");
+            assert_eq!(info["capabilities"], json!(["read", "file_write", "shell"]));
             assert_eq!(upgrade(&upgrade_socket, "freeze"), "ready\n");
             assert_eq!(upgrade(&upgrade_socket, "verify-frozen"), "ready\n");
             let denied = reply(
@@ -363,6 +369,7 @@ mod linux {
         let pid_file = root.path().join("managed.pid");
         let server = thread::spawn(move || {
             let mut socket = connected(listener);
+            common::receive_device_info(&mut socket, true);
             let started = reply(
                 &mut socket,
                 json!({
