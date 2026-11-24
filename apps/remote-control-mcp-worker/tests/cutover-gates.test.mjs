@@ -31,14 +31,36 @@ function bundleFor(target) {
     return {
       ...bundle,
       receipt_schema: 1,
+      node: "v24.21.0",
+      agent_runtime: "node-v2",
       candidate_profile: "darwin-permanent-local-v1",
       native_supervisor: "darwin-owned-group-v1",
       source_commit: SHA,
       upgrade_profile: null,
     };
   }
-  if (target === "windows-x64") return { ...bundle, upgrade_profile: "paired-full-v1" };
-  return { ...bundle, receipt_schema: 1, upgrade_profile: "paired-full-v1" };
+  const native = {
+    ...bundle,
+    artifact_profile: "rust-native-only-v1",
+    upgrade_profile: "paired-full-v1",
+    modules: [],
+  };
+  if (target === "windows-x64") {
+    return {
+      ...native,
+      preview: true,
+      agent_runtime: "rust-standard-windows-v1",
+      runtime_profile: "standard-windows-rust-runtime-v1",
+      session_runtime: "rust-session-v1",
+    };
+  }
+  return {
+    ...native,
+    receipt_schema: 1,
+    agent_runtime: "rust-standard-linux-v1",
+    candidate_profile: "standard-linux-rust-runtime-v1",
+    ...(target === "linux-x64-glibc" ? { session_runtime: "rust-session-v1" } : {}),
+  };
 }
 
 function candidateFor([target, artifact, extension, digestByte]) {

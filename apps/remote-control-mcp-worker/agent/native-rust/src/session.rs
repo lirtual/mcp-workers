@@ -628,7 +628,12 @@ fn retryable(error: &SessionError) -> bool {
         SessionError::Ws(
             tungstenite::Error::Io(_)
             | tungstenite::Error::ConnectionClosed
-            | tungstenite::Error::AlreadyClosed,
+            | tungstenite::Error::AlreadyClosed
+            // A lost transport may have no close handshake (Node close 1006).
+            // Other WebSocket protocol violations remain nonretryable.
+            | tungstenite::Error::Protocol(
+                tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+            ),
         ) => true,
         SessionError::Ws(tungstenite::Error::Http(response)) => {
             [408, 425, 429].contains(&response.status().as_u16())
@@ -1101,9 +1106,15 @@ mod tests {
             SessionError::Superseded,
             SessionError::Protocol,
             SessionError::Queue,
+            SessionError::Ws(tungstenite::Error::Protocol(
+                tungstenite::error::ProtocolError::InvalidOpcode(3),
+            )),
         ] {
             assert!(!retryable(&error), "{error}");
         }
+        assert!(retryable(&SessionError::Ws(tungstenite::Error::Protocol(
+            tungstenite::error::ProtocolError::ResetWithoutClosingHandshake,
+        ))));
         for code in [408, 425, 429, 503] {
             assert!(retryable(&SessionError::Unavailable(code)));
             let response = tungstenite::http::Response::builder()
