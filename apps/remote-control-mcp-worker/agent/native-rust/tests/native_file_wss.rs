@@ -754,6 +754,15 @@ fn signed_file_search_pages_content_stop_and_bad_args_stay_connected() {
 
 #[test]
 fn search_cursors_do_not_survive_signed_transport_reconnect() {
+    check_search_cursor_reconnect(false);
+}
+
+#[test]
+fn search_cursors_do_not_survive_abrupt_transport_disconnect() {
+    check_search_cursor_reconnect(true);
+}
+
+fn check_search_cursor_reconnect(abrupt: bool) {
     let root = tempfile::tempdir().unwrap();
     let receipts = root.path().join("receipts");
     let files = root.path().join("files");
@@ -799,12 +808,14 @@ fn search_cursors_do_not_survive_signed_transport_reconnect() {
             let page: Value = serde_json::from_str(reply["text"].as_str().unwrap()).unwrap();
             ids.push(page["session_id"].as_str().unwrap().to_owned());
         }
-        first
-            .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
-                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
-                reason: "reconnect".into(),
-            })))
-            .unwrap();
+        if !abrupt {
+            first
+                .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
+                    code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                    reason: "reconnect".into(),
+                })))
+                .unwrap();
+        }
         drop(first);
         let mut second = signed_socket_ref(&listener);
         let old = read(
@@ -826,6 +837,8 @@ fn search_cursors_do_not_survive_signed_transport_reconnect() {
                 "all four slots must be available"
             );
         }
+        // Stop before dropping the final socket, rather than racing Drop order.
+        _guard.0.store(true, Ordering::Release);
     });
     let result = run_native_file_session(
         &endpoint,
