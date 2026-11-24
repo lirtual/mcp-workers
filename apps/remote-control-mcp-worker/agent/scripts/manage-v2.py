@@ -243,9 +243,8 @@ def main():
             continue
         action = mapping[choice]
         if action == "upgrade" and not native_only:
-            print("Provide the reviewed immutable Release tag and its 40-character commit"
-                  + (", and asset SHA-256." if native_only else "."))
-            args = input("tag commit" + (" asset-sha256" if native_only else "") + ": ").split()
+            print("Provide the reviewed immutable Release tag and its 40-character commit.")
+            args = input("tag commit: ").split()
         elif action == "pair" and native_only and not installed_endpoint(bootstrap):
             args = [input("Approved HTTPS Worker origin: ").strip()]
         else:
@@ -256,13 +255,13 @@ def main():
                 return 0
             if result:
                 print("Operation was not completed; existing identity was not discarded.")
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
             print("Operation refused: " + str(exc), file=sys.stderr)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (ValueError, OSError, KeyError, json.JSONDecodeError):
+    except (ValueError, OSError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
         print("Remote Control Agent manager refused unsafe or unavailable local state.", file=sys.stderr)
         sys.exit(1)

@@ -1088,6 +1088,11 @@ def verify_native_owner_lifecycle():
             assert started["cloud"] == "resume_pending_signed_WSS"
             assert state["events"][-3:] == ["stop", "resume", "systemd-start"]
             assert state["active"] and not marker.exists()
+            stopped = bootstrap.native_owner_lifecycle(home, "stop")
+            assert stopped == {"local": "stopped", "cloud": "confirmed"}
+            assert not state["active"] and marker.read_bytes() == b"stopped\n"
+            assert bootstrap.native_owner_lifecycle(home, "stop") == stopped
+            bootstrap.native_owner_lifecycle(home, "start")
             assert key.read_bytes() == original and b"disposable-receipt-history" in receipts.read_bytes()
         with patch.object(sys.stdin, "isatty", return_value=False):
             refused("stop")
@@ -1137,6 +1142,60 @@ def verify_latest_selection():
             except ValueError:
                 continue
             raise AssertionError("Invalid five-platform Latest accepted")
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        import hashlib
+        data = b"disposable-verified-archive"
+        selected = {"tag":tag, "download":assets[0]["browser_download_url"],
+                    "size":len(data), "digest":hashlib.sha256(data).hexdigest()}
+
+        def install_checked(tag, commit, endpoint, **kwargs):
+            assert tag == selected["tag"] and commit is None and endpoint == ENDPOINT
+            assert kwargs["asset_sha256"] == selected["digest"] and kwargs["native_upgrade"] is True
+            assert kwargs["latest_archive"].read_bytes() == data
+            assert kwargs["latest_archive"].stat().st_mode & 0o777 == 0o600
+            return 0
+
+        # The actual archive staging, confirmation, and cutover are already
+        # exercised by verify_public_native_archive/verify_isolated. Here
+        # observe the newly restored no-argument command's trust boundary.
+        lookup = Mock(return_value=selected)
+        download = Mock(return_value=data)
+        install = Mock(side_effect=install_checked)
+        with patch.dict(os.environ, {"HOME":str(home)}), patch.object(
+                sys.stdin, "isatty", return_value=True), patch.object(
+                sys.stdout, "isatty", return_value=True), patch.multiple(
+                    bootstrap, resolve_latest_native=lookup, fetch=download,
+                    preflight=Mock(return_value=targets[0]), install=install):
+            assert bootstrap.native_upgrade_latest(ENDPOINT) == 0
+            lookup.assert_called_once_with(targets[0])
+            download.assert_called_once_with(selected["download"], "application/octet-stream", len(data))
+            assert install.call_count == 1
+            assert not install.call_args.kwargs["latest_archive"].exists()
+            download.reset_mock()
+            install.reset_mock()
+            lookup.return_value = {**selected,"tag":"v0.1.57"}
+            assert bootstrap.native_upgrade_latest(ENDPOINT) == 0
+            download.assert_not_called()
+            install.assert_not_called()
+            lookup.return_value = {**selected,"tag":"v0.1.56"}
+            try:
+                bootstrap.native_upgrade_latest(ENDPOINT)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Latest downgrade accepted")
+            download.assert_not_called()
+            lookup.return_value = {**selected,"digest":"0"*64}
+            try:
+                bootstrap.native_upgrade_latest(ENDPOINT)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Bad Latest archive digest accepted")
+            install.assert_not_called()
+    finally:
+        ctx.cleanup()
     print("NATIVE_LATEST_SELECTION_CONTRACT_PASS")
 
 
