@@ -166,7 +166,7 @@ def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
         if native_only:
             print("Usage: rca [status|pair|logs|upgrade|recover|uninstall]")
-            print("First permanent pairing and pair --temporary are supported; re-pair is not yet available.")
+            print("First permanent pairing and pair --temporary (including revoked/expired temporary re-pair) are supported; permanent re-pair is not yet available.")
         else:
             print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
