@@ -563,6 +563,29 @@ impl NativeWriteExecutor {
         &self.boundary
     }
 
+    pub(crate) fn open_runtime(directory: &Path) -> Result<Self, NativeWriteError> {
+        let receipts = ReceiptStore::open_runtime(directory)?;
+        let boundary = ReceiptBoundary::new(directory)?;
+        Ok(Self { receipts, boundary })
+    }
+
+    pub(crate) fn available(&self) -> bool {
+        self.receipts.available()
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(crate) fn health(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.receipts.health()
+    }
+
+    pub(crate) fn isolate(&mut self, error: &ReceiptError) -> Result<(), NativeWriteError> {
+        if self.boundary.verify_current().is_err() {
+            self.receipts.isolate(&ReceiptError::Ownership)?;
+        }
+        self.receipts.isolate(error)?;
+        Ok(())
+    }
+
     pub fn get_receipt(&self, id: &str) -> Result<Option<Receipt>, NativeWriteError> {
         Ok(self.receipts.query_runtime(id)?)
     }
@@ -748,7 +771,10 @@ impl NativeWriteExecutor {
                 ("unknown", "Operation outcome cannot be established.", false)
             }
         };
-        let receipt = self.receipts.update(id, state, summary, None, no_effect)?;
+        let receipt = self
+            .receipts
+            .update(id, state, summary, None, no_effect)
+            .map_err(ReceiptError::after_effect)?;
         Ok(WriteOutcome {
             state,
             receipt: Some(receipt),

@@ -9,6 +9,10 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use thiserror::Error;
 
 const ACTIVE_TOOLS: &[&str] = &[
@@ -49,6 +53,12 @@ pub enum ReceiptError {
     InvalidOperation,
     #[error("receipt not found")]
     NotFound,
+    #[error("receipt storage disabled for this runtime")]
+    Unavailable,
+    #[error("exclusive receipt ownership cannot be established")]
+    Ownership,
+    #[error("effect outcome could not be persisted")]
+    AfterEffect(Box<ReceiptError>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -81,6 +91,7 @@ pub enum Admission {
 
 pub struct ReceiptStore {
     connection: Connection,
+    available: Arc<AtomicBool>,
     pub directory: PathBuf,
 }
 
@@ -266,10 +277,192 @@ fn cleanup_expired(conn: &Connection) -> Result<(), ReceiptError> {
     Ok(())
 }
 
+impl ReceiptError {
+    pub(crate) fn after_effect(self) -> Self {
+        Self::AfterEffect(Box::new(self))
+    }
+
+    fn cause(&self) -> &Self {
+        match self {
+            Self::AfterEffect(error) => error.cause(),
+            _ => self,
+        }
+    }
+
+    pub(crate) fn diagnostic(&self) -> &'static str {
+        use rusqlite::ErrorCode::*;
+        match self.cause() {
+            Self::UnsafePath => "receipt_unsafe_path",
+            Self::Ownership => "receipt_owner_unavailable",
+            Self::Incompatible => "receipt_incompatible",
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+                if matches!(
+                    error.extended_code,
+                    rusqlite::ffi::SQLITE_IOERR_LOCK
+                        | rusqlite::ffi::SQLITE_IOERR_UNLOCK
+                        | rusqlite::ffi::SQLITE_IOERR_RDLOCK
+                        | rusqlite::ffi::SQLITE_IOERR_CHECKRESERVEDLOCK
+                        | rusqlite::ffi::SQLITE_IOERR_SHMLOCK
+                ) =>
+            {
+                "receipt_owner_unavailable"
+            }
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _)) => match error.code {
+                DatabaseBusy | DatabaseLocked | FileLockingProtocolFailed => {
+                    "receipt_owner_unavailable"
+                }
+                DatabaseCorrupt | NotADatabase => "receipt_corrupt",
+                ReadOnly | PermissionDenied => "receipt_readonly",
+                DiskFull => "receipt_full",
+                _ => "receipt_storage_unavailable",
+            },
+            Self::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                "receipt_readonly"
+            }
+            _ => "receipt_storage_unavailable",
+        }
+    }
+
+    fn startup_storage_failure(&self) -> bool {
+        use rusqlite::ErrorCode::*;
+        matches!(self, Self::Sqlite(rusqlite::Error::SqliteFailure(error, _))
+            if matches!(error.code, DatabaseCorrupt | NotADatabase | DiskFull | ReadOnly))
+    }
+}
+
+// A degraded runtime never opens a replacement ledger. A fresh, SQL-unused
+// SQLite connection holds the same database-file locks without parsing a
+// damaged header. No SQL may run on this connection after direct VFS locking.
+fn lock_unreadable_database(path: &Path) -> Result<Connection, ReceiptError> {
+    use rusqlite::ffi;
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_FULL_MUTEX,
+    )?;
+    // SAFETY: the connection has no prepared statements, SQL transactions
+    // or other users. The file and methods belong to the live connection;
+    // no pointer escapes. SQLite closes its own file and releases its locks.
+    unsafe {
+        let mut file: *mut ffi::sqlite3_file = std::ptr::null_mut();
+        let rc = ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            ffi::SQLITE_FCNTL_FILE_POINTER,
+            (&mut file as *mut *mut ffi::sqlite3_file).cast(),
+        );
+        if rc != ffi::SQLITE_OK || file.is_null() || (*file).pMethods.is_null() {
+            return Err(ReceiptError::Ownership);
+        }
+        let lock = (*(*file).pMethods).xLock.ok_or(ReceiptError::Ownership)?;
+        for level in [
+            ffi::SQLITE_LOCK_SHARED,
+            ffi::SQLITE_LOCK_RESERVED,
+            ffi::SQLITE_LOCK_EXCLUSIVE,
+        ] {
+            if lock(file, level) != ffi::SQLITE_OK {
+                return Err(ReceiptError::Ownership);
+            }
+        }
+    }
+    verify_exclusive(&connection)?;
+    Ok(connection)
+}
+
+fn verify_exclusive(connection: &Connection) -> Result<(), ReceiptError> {
+    use rusqlite::ffi;
+    let mut state = ffi::SQLITE_LOCK_NONE;
+    // SAFETY: synchronous query of the live connection's VFS lock state.
+    let rc = unsafe {
+        ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            ffi::SQLITE_FCNTL_LOCKSTATE,
+            (&mut state as *mut i32).cast(),
+        )
+    };
+    if rc != ffi::SQLITE_OK || state != ffi::SQLITE_LOCK_EXCLUSIVE {
+        return Err(ReceiptError::Ownership);
+    }
+    Ok(())
+}
+
 impl ReceiptStore {
     /// Refuses nonprivate directories, unfamiliar versions and concurrent writers.
     pub fn open(directory: &Path) -> Result<Self, ReceiptError> {
         Self::open_with_historical(directory, None)
+    }
+
+    /// Network runtime may degrade only while holding the original exclusive
+    /// lock. Offline migration and probe callers remain strict.
+    pub(crate) fn open_runtime(directory: &Path) -> Result<Self, ReceiptError> {
+        match Self::open(directory) {
+            Ok(store) => Ok(store),
+            Err(error) if error.startup_storage_failure() => {
+                private_path(directory, true)?;
+                let db_path = directory.join("operation-receipts.sqlite");
+                private_path(&db_path, false)?;
+                for suffix in ["-wal", "-shm"] {
+                    let sidecar = directory.join(format!("operation-receipts.sqlite{suffix}"));
+                    match fs::symlink_metadata(sidecar) {
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        _ => return Err(ReceiptError::Ownership),
+                    }
+                }
+                let connection = lock_unreadable_database(&db_path)?;
+                eprintln!(
+                    "{{\"event\":\"{}\",\"mode\":\"read_only\"}}",
+                    error.diagnostic()
+                );
+                Ok(Self {
+                    connection,
+                    available: Arc::new(AtomicBool::new(false)),
+                    directory: directory.to_owned(),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn available(&self) -> bool {
+        self.available.load(Ordering::Acquire)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(crate) fn health(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.available)
+    }
+
+    /// Latch failure for this owner; no repair, retries or new effects.
+    pub(crate) fn isolate(&mut self, error: &ReceiptError) -> Result<(), ReceiptError> {
+        let was_available = self.available.swap(false, Ordering::AcqRel);
+        if matches!(
+            error.cause(),
+            ReceiptError::UnsafePath
+                | ReceiptError::Ownership
+                | ReceiptError::Incompatible
+                | ReceiptError::InvalidOperation
+        ) || error.diagnostic() == "receipt_owner_unavailable"
+        {
+            return Err(ReceiptError::Ownership);
+        }
+        if was_available {
+            private_path(&self.directory, true)?;
+            private_path(&self.directory.join("operation-receipts.sqlite"), false)?;
+            verify_exclusive(&self.connection)?;
+            eprintln!(
+                "{{\"event\":\"{}\",\"mode\":\"read_only\"}}",
+                error.diagnostic()
+            );
+        }
+        Ok(())
+    }
+
+    fn require_available(&self) -> Result<(), ReceiptError> {
+        if self.available() {
+            Ok(())
+        } else {
+            Err(ReceiptError::Unavailable)
+        }
     }
 
     /// Operator-selected legacy history only: never guess a backup file.
@@ -413,11 +606,13 @@ impl ReceiptStore {
         tx.commit()?;
         Ok(Self {
             connection,
+            available: Arc::new(AtomicBool::new(true)),
             directory: directory.to_owned(),
         })
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Receipt>, ReceiptError> {
+        self.require_available()?;
         if !valid_id(id) {
             return Err(ReceiptError::InvalidOperation);
         }
@@ -427,6 +622,7 @@ impl ReceiptStore {
     /// Runtime status lookup uses the established retention policy. Internal
     /// recovery and migration verification keep using the lossless lookup.
     pub(crate) fn query_runtime(&self, id: &str) -> Result<Option<Receipt>, ReceiptError> {
+        self.require_available()?;
         if !valid_id(id) {
             return Err(ReceiptError::InvalidOperation);
         }
@@ -443,6 +639,7 @@ impl ReceiptStore {
         tool: &str,
         arguments: &Value,
     ) -> Result<Admission, ReceiptError> {
+        self.require_available()?;
         if !valid_id(id) || !ACTIVE_TOOLS.contains(&tool) {
             return Err(ReceiptError::InvalidOperation);
         }
@@ -486,6 +683,7 @@ impl ReceiptStore {
         session_id: Option<&str>,
         known_no_effect: bool,
     ) -> Result<Receipt, ReceiptError> {
+        self.require_available()?;
         if !STATES.contains(&state) {
             return Err(ReceiptError::InvalidOperation);
         }
@@ -512,5 +710,113 @@ impl ReceiptStore {
         )?;
         tx.commit()?;
         self.get(id)?.ok_or(ReceiptError::NotFound)
+    }
+}
+
+#[cfg(test)]
+mod runtime_fault_tests {
+    use super::*;
+
+    fn temporary_store() -> (tempfile::TempDir, ReceiptStore) {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(windows)]
+        crate::seal_new_windows_private_directory(root.path()).unwrap();
+        let store = ReceiptStore::open(&root.path().join("receipts")).unwrap();
+        (root, store)
+    }
+
+    #[test]
+    fn real_sqlite_readonly_and_full_latch_without_reopening() {
+        let (_root, mut readonly) = temporary_store();
+        readonly
+            .connection
+            .execute_batch("PRAGMA query_only=ON")
+            .unwrap();
+        let error = readonly
+            .admit("blocked", "write_file", &serde_json::json!({}))
+            .unwrap_err();
+        assert_eq!(error.diagnostic(), "receipt_readonly");
+        readonly.isolate(&error).unwrap();
+        assert!(!readonly.available());
+        assert!(matches!(
+            readonly.admit("blocked-again", "write_file", &serde_json::json!({})),
+            Err(ReceiptError::Unavailable)
+        ));
+        verify_exclusive(&readonly.connection).unwrap();
+
+        let (_root, mut full) = temporary_store();
+        let pages: i64 = full
+            .connection
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        let _: i64 = full
+            .connection
+            .query_row(&format!("PRAGMA max_page_count={pages}"), [], |r| r.get(0))
+            .unwrap();
+        let error = (0..2000)
+            .find_map(|n| {
+                full.admit(
+                    &format!("full-{n:04}"),
+                    "write_file",
+                    &serde_json::json!({}),
+                )
+                .err()
+            })
+            .expect("page limit must produce an actual SQLite FULL error");
+        assert_eq!(error.diagnostic(), "receipt_full");
+        full.isolate(&error).unwrap();
+        assert!(!full.available());
+        verify_exclusive(&full.connection).unwrap();
+    }
+
+    #[test]
+    fn deferred_constraint_commit_failure_preserves_guarded_running_record() {
+        let (_root, mut store) = temporary_store();
+        store.connection.execute_batch("PRAGMA foreign_keys=ON;
+          CREATE TABLE fixture_parent(id INTEGER PRIMARY KEY);
+          CREATE TABLE fixture_child(parent INTEGER REFERENCES fixture_parent(id) DEFERRABLE INITIALLY DEFERRED);
+          CREATE TRIGGER fixture_commit AFTER UPDATE ON receipts WHEN NEW.state='completed'
+          BEGIN INSERT INTO fixture_child VALUES (7); END;").unwrap();
+        assert!(matches!(
+            store
+                .admit("commit-fault", "write_file", &serde_json::json!({}))
+                .unwrap(),
+            Admission::New(_)
+        ));
+        store
+            .update(
+                "commit-fault",
+                "running",
+                "before external effect",
+                None,
+                false,
+            )
+            .unwrap();
+        let error = store
+            .update("commit-fault", "completed", "effect done", None, false)
+            .unwrap_err();
+        assert_eq!(store.get("commit-fault").unwrap().unwrap().state, "running");
+        store.isolate(&error).unwrap();
+        assert!(!store.available());
+        verify_exclusive(&store.connection).unwrap();
+    }
+
+    #[test]
+    fn unsafe_or_competing_startup_does_not_degrade() {
+        let (root, owner) = temporary_store();
+        assert!(ReceiptStore::open_runtime(&owner.directory).is_err());
+        drop(owner);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let directory = root.path().join("receipts");
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(matches!(
+                ReceiptStore::open_runtime(&directory),
+                Err(ReceiptError::UnsafePath)
+            ));
+        }
+        #[cfg(windows)]
+        drop(root);
     }
 }

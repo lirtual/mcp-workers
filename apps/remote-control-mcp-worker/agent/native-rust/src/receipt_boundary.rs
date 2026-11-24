@@ -48,6 +48,15 @@ impl ReceiptBoundary {
         })
     }
 
+    pub(crate) fn verify_current(&self) -> Result<(), ReceiptError> {
+        if identity(&self.root).ok() != Some(self.root_id)
+            || identity(&self.root.join("operation-receipts.sqlite")).ok() != Some(self.db_id)
+        {
+            return Err(ReceiptError::Ownership);
+        }
+        Ok(())
+    }
+
     // Resolve existing symlinks, aliases and the closest existing parent of
     // a new target. A dangling or unresolvable existing link is not safe to
     // open with create/truncate; do not assume it refers to an ordinary file.
@@ -60,17 +69,46 @@ impl ReceiptBoundary {
                 Err(_) => return true,
             }
         };
-        let mut candidate = absolute.as_path();
+        let mut candidate = absolute;
+        let mut links = 0;
         let resolved = loop {
-            match fs::canonicalize(candidate) {
+            // A path inside the ledger tree is private even if the final
+            // component links to an outside file.
+            if candidate
+                .parent()
+                .and_then(|p| fs::canonicalize(p).ok())
+                .is_some_and(|p| {
+                    p.starts_with(&self.root) || identity(&p).ok() == Some(self.root_id)
+                })
+            {
+                return true;
+            }
+            match fs::canonicalize(&candidate) {
                 Ok(path) => break path,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    if fs::symlink_metadata(candidate).is_ok() {
-                        return true;
-                    }
-                    match candidate.parent() {
-                        Some(parent) => candidate = parent,
-                        None => return true,
+                    match fs::symlink_metadata(&candidate) {
+                        Ok(meta) if meta.file_type().is_symlink() && links < 40 => {
+                            let target = match fs::read_link(&candidate) {
+                                Ok(target) => target,
+                                Err(_) => return true,
+                            };
+                            candidate = if target.is_absolute() {
+                                target
+                            } else {
+                                match candidate.parent() {
+                                    Some(parent) => parent.join(target),
+                                    None => return true,
+                                }
+                            };
+                            links += 1;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            match candidate.parent() {
+                                Some(parent) => candidate = parent.to_owned(),
+                                None => return true,
+                            }
+                        }
+                        _ => return true,
                     }
                 }
                 Err(_) => return true,
