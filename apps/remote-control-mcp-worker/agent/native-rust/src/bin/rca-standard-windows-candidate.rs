@@ -10,11 +10,24 @@ mod windows {
     use rca_native_agent::validate_windows_private_path;
     use rca_native_agent::windows_managed::WindowsManagedSessions;
     use std::fs;
-    use std::io::{ErrorKind, Read, Write};
+    use std::io::{ErrorKind, IsTerminal, Read, Write};
     use std::path::{Path, PathBuf};
+    use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+    use windows_sys::Win32::System::Console::{
+        SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
+    };
+    static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "system" fn request_stop(event: u32) -> i32 {
+        if event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT {
+            SIGNAL_STOP.store(true, Ordering::Release);
+            return 1;
+        }
+        0
+    }
 
     fn store_root() -> Result<PathBuf, ()> {
         let base = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or(())?);
@@ -213,7 +226,6 @@ mod windows {
 
     fn pair_local(endpoint: &str, name: &str, mode: &str) -> Result<(), ()> {
         use rca_native_agent::device_pairing::{pair_windows_identity, PairingClient};
-        use std::io::IsTerminal;
         if !std::io::stdin().is_terminal()
             || !std::io::stdout().is_terminal()
             || name.is_empty()
@@ -238,6 +250,98 @@ mod windows {
         Ok(())
     }
 
+    fn approved_identity(endpoint: &str, temporary: bool) -> Result<(PathBuf, String, String), ()> {
+        use rca_native_agent::device_pairing::PairingClient;
+        let root = store_root()?;
+        validate_windows_private_path(&root, true).map_err(|_| ())?;
+        let key = root.join("v2-identity.pem");
+        let expected = if temporary {
+            b"temporary\n".as_slice()
+        } else {
+            b"permanent\n".as_slice()
+        };
+        if stopped(&key)?
+            || read_private(&root.join("v2-identity.pem.install-mode"), 32)? != expected
+            || optional_private(&root.join("windows-native-upgrade.json"), 4096)?.is_some()
+            || optional_private(&root.join("v2-identity.pem.device-id.pending"), 128)?.is_some()
+        {
+            return Err(());
+        }
+        let (pem, id) = local_identity(&key)?;
+        let pem = pem.ok_or(())?;
+        let id = id.ok_or(())?;
+        let pending = optional_private(&root.join("v2-identity.pem.activation-pending"), 128)?;
+        if (temporary && pending.is_some())
+            || (!temporary && pending.as_deref() != Some(format!("{id}\n").as_bytes()))
+        {
+            return Err(());
+        }
+        PairingClient::new(endpoint)
+            .map_err(|_| ())?
+            .recover(&pem, Some(&id))
+            .map_err(|_| ())?;
+        Ok((key, pem, id))
+    }
+
+    fn program_root() -> Result<(PathBuf, String), ()> {
+        let executable = std::env::current_exe().map_err(|_| ())?;
+        let directory = executable.ancestors().nth(4).ok_or(())?.to_path_buf();
+        let root = store_root()?.join("programs");
+        let name = directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(())?;
+        let tag = name.strip_suffix("-windows-x64").ok_or(())?.to_owned();
+        validate_windows_private_path(&directory, true).map_err(|_| ())?;
+        if fs::canonicalize(directory.parent().ok_or(())?).map_err(|_| ())?
+            != fs::canonicalize(root).map_err(|_| ())?
+            || !tag.starts_with('v')
+        {
+            return Err(());
+        }
+        Ok((directory, tag))
+    }
+
+    fn task_command(directory: &Path, args: &[&str]) -> Result<std::process::Output, ()> {
+        let system = PathBuf::from(std::env::var_os("SystemRoot").ok_or(())?);
+        if !system.is_absolute() {
+            return Err(());
+        }
+        let script = directory.join("apps/remote-control-agent/scripts/windows-user-task.ps1");
+        validate_windows_private_path(&script, false).map_err(|_| ())?;
+        let output = Command::new(system.join("System32/WindowsPowerShell/v1.0/powershell.exe"))
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(script)
+            .args(args)
+            .output()
+            .map_err(|_| ())?;
+        if !output.status.success() {
+            eprintln!("Windows Task action refused; review retained owner state.");
+            return Err(());
+        }
+        Ok(output)
+    }
+
+    fn foreground(endpoint: &str) -> Result<(), ()> {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let status = task_command(&directory, &["-Action", "Status"])?;
+        let state: serde_json::Value = serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+        if state["installed"] != false {
+            return Err(());
+        }
+        let (key, pem, id) = approved_identity(endpoint, true)?;
+        run_agent(endpoint, &key, &pem, &id, None)
+    }
+
     pub fn run() -> Result<(), ()> {
         if !cfg!(target_arch = "x86_64")
             || rca_native_agent::is_windows_system_identity().map_err(|_| ())?
@@ -254,15 +358,22 @@ mod windows {
             return verify_upgrade_state();
         }
         if args.first().map(String::as_str) == Some("--cli") {
-            return if args.as_slice() == ["--cli", "status"] {
-                local_status()
-            } else {
-                Err(())
+            return match args.as_slice() {
+                [_, command] if command == "status" => local_status(),
+                [_, command, flag, endpoint] if command == "run" && flag == "--endpoint" => {
+                    foreground(endpoint)
+                }
+                _ => Err(()),
             };
         }
         if let [command, generation] = args.as_slice() {
             if command == "--verify-activation-proof" {
                 return activation_proof(generation);
+            }
+            if command == "--verify-initial-pairing" {
+                let (_, _, id) = approved_identity(generation, false)?;
+                println!("{}", serde_json::json!({"device_id":id}));
+                return Ok(());
             }
         }
         let [mode, endpoint_flag, endpoint, generation_flag, generation] = args.as_slice() else {
@@ -293,7 +404,22 @@ mod windows {
         let (pem, id) = local_identity(&key)?;
         let id = id.ok_or(())?;
         let private_pem = pem.ok_or(())?;
-        let device_id = id.as_str();
+        if optional_private(&root.join("v2-identity.pem.install-mode"), 32)?
+            .is_some_and(|mode| mode != b"permanent\n")
+        {
+            return Err(());
+        }
+        run_agent(endpoint, &key, &private_pem, &id, Some(generation))
+    }
+
+    fn run_agent(
+        endpoint: &str,
+        key: &Path,
+        private_pem: &str,
+        device_id: &str,
+        generation: Option<&str>,
+    ) -> Result<(), ()> {
+        let root = store_root()?;
         let receipts = root.join("receipts");
         let meta = fs::symlink_metadata(&receipts).map_err(|_| ())?;
         if !meta.is_dir() || meta.file_type().is_symlink() {
@@ -303,25 +429,47 @@ mod windows {
         let managed =
             Arc::new(WindowsManagedSessions::new(Duration::from_secs(60 * 60)).map_err(|_| ())?);
         let stop = Arc::new(AtomicBool::new(false));
-        let marker_root = root.clone();
-        let marker_generation = generation.clone();
-        let marker_id = id.clone();
-        let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            let _ = record_connected(&marker_root, &marker_generation, &marker_id);
+        let monitor = if generation.is_none() {
+            if unsafe { SetConsoleCtrlHandler(Some(request_stop), 1) } == 0 {
+                return Err(());
+            }
+            let flag = Arc::clone(&stop);
+            Some(std::thread::spawn(move || {
+                while !flag.load(Ordering::Acquire) {
+                    if SIGNAL_STOP.load(Ordering::Acquire) {
+                        flag.store(true, Ordering::Release);
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }))
+        } else {
+            None
+        };
+        let on_connected = generation.map(|value| {
+            let generation = value.to_owned();
+            let id = device_id.to_owned();
+            let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                let _ = record_connected(&root, &generation, &id);
+            });
+            callback
         });
         let outcome = run_native_managed_session_with_upgrade(
             endpoint,
-            &private_pem,
+            private_pem,
             device_id,
             &receipts,
             Arc::clone(&managed),
             &stop,
             UpgradeRuntimeOptions {
-                key_path: &key,
-                on_connected: Some(on_connected),
+                key_path: key,
+                on_connected,
             },
         );
         stop.store(true, Ordering::Release);
+        if let Some(monitor) = monitor {
+            monitor.join().map_err(|_| ())?;
+        }
         if managed.stop_all(Duration::from_secs(8))
             != rca_native_agent::windows_job::JobCleanup::Confirmed
         {

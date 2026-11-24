@@ -2,7 +2,7 @@
 # Does not create an elevated service, use a password or touch cloud grants.
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('Enable','Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade')][string]$Action,
+  [Parameter(Mandatory=$true)][ValidateSet('Enable','Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative')][string]$Action,
   [string]$Endpoint, [string]$Entry, [string]$Node,
   [string]$Version, [ValidateSet('Upgrade','Rollback')][string]$Direction,
   [string]$Generation,
@@ -103,8 +103,7 @@ function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   # user Task and its child executable. Running alone is never sufficient.
   Check-Existing
   if ($Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$' -or
-      $Generation -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
-      $Endpoint -or $Node -or $Entry -or $CIInjectFailure) {
+      $Generation -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$') {
     throw 'Invalid expected activation identity'
   }
   $versionDir = [IO.Path]::Combine($root,$Version + '-windows-x64')
@@ -154,7 +153,7 @@ function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   return $true
 }
 if ($Action -eq 'VerifyActivation') {
-  if ($Direction) { throw 'Unexpected switch direction' }
+  if ($Direction -or $Endpoint -or $Node -or $Entry -or $CIInjectFailure) { throw 'Unexpected activation arguments' }
   $null = Confirm-NativeActivation $Version $Generation
   'authenticated-activation-observed'
   exit 0
@@ -551,6 +550,99 @@ if ($Action -eq 'RecoverNativeUpgrade') {
   exit 0
 }
 if (Test-Path -LiteralPath $nativeJournal) { throw 'Unreconciled native upgrade; preserve versions and recover explicitly' }
+
+if ($Action -eq 'ActivateNative') {
+  if ($Direction -or $Node -or $Entry -or $CIInjectFailure -or
+      $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$' -or
+      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$') {
+    throw 'Unreviewed native initial activation'
+  }
+  Check-UpgradeStore
+  $program = Get-ReviewedProgram $Version
+  if (-not $program.Native -or -not $program.Rust) { throw 'Node-free candidate required' }
+  $pending = $identityFile + '.activation-pending'
+  # The existing activation intent doubles as the exclusive activation lock.
+  # Read-only observers can inspect it; another installer cannot consume it.
+  $stream = [IO.File]::Open($pending,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+  $confirmed = $false
+  try {
+    $record = [pscustomobject]@{
+      key_hash=(Get-FileHash -LiteralPath $identityFile -Algorithm SHA256).Hash
+      id_hash=(Get-FileHash -LiteralPath ($identityFile + '.device-id') -Algorithm SHA256).Hash
+    }
+    $raw = & $program.Entry --verify-initial-pairing $Endpoint
+    if ($LASTEXITCODE -ne 0) { throw 'Signed initial identity not confirmed' }
+    $approved = $raw | ConvertFrom-Json
+    Assert-UpgradeIdentity $record
+    if ($approved.device_id -cne (Get-Content -LiteralPath ($identityFile + '.device-id') -Raw).Trim()) {
+      throw 'Signed identity changed before activation'
+    }
+    $previous = $null
+    $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if ($task) {
+      Check-Existing
+      $launch = Read-TaskLaunch $task.Actions[0]
+      if (-not $launch.Generation -or $launch.Endpoint -cne $Endpoint) { throw 'Unrelated existing Task' }
+      $previous = New-ReviewedAction $program $Endpoint $launch.Generation
+      if (-not (Test-SameAction $task.Actions[0] $previous)) { throw 'Unrelated existing Task action' }
+      if ($task.State -eq 'Running') {
+        try { $confirmed = Confirm-NativeActivation $Version $launch.Generation } catch { $confirmed = $false }
+        if (-not $confirmed) {
+          Freeze-OwnedAgent $program $previous $true
+          Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+        }
+      }
+    }
+    if (-not $confirmed) {
+      Wait-VersionExited ([pscustomobject]@{Root=$root})
+      Assert-UpgradeState $program $record
+      $generationValue = [guid]::NewGuid().ToString('D')
+      $action = New-ReviewedAction $program $Endpoint $generationValue
+      $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+      if ($task) {
+        Check-Existing
+        if (-not $previous -or $task.State -eq 'Running' -or -not (Test-SameAction $task.Actions[0] $previous)) {
+          throw 'Pending Task changed before retry'
+        }
+        Set-ScheduledTask -TaskName $name -Action $action -ErrorAction Stop | Out-Null
+      } else {
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
+        $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+      }
+      Start-ScheduledTask -TaskName $name -ErrorAction Stop
+      $deadline = [Diagnostics.Stopwatch]::StartNew()
+      while ($deadline.Elapsed.TotalSeconds -lt 90) {
+        try { $confirmed = Confirm-NativeActivation $Version $generationValue } catch { $confirmed = $false }
+        if ($confirmed) { break }
+        Start-Sleep -Milliseconds 500
+      }
+      if (-not $confirmed) {
+        # Remove only our exact unconfirmed Task, after freeze/exit evidence.
+        # Unknown ownership or a lost freeze response preserves the intent.
+        $task = Read-OwnedTask
+        if (-not (Test-SameAction $task.Actions[0] $action)) { throw 'Activation Task changed; intent retained' }
+        if ($task.State -eq 'Running') {
+          Freeze-OwnedAgent $program $action $true
+          Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+        }
+        Wait-VersionExited $program
+        $task = Read-OwnedTask
+        if ($task.State -eq 'Running' -or -not (Test-SameAction $task.Actions[0] $action)) {
+          throw 'Activation Task uncertain; intent retained'
+        }
+        Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop
+        throw 'Signed WSS not confirmed; Task removed and activation intent retained'
+      }
+    }
+    Assert-UpgradeIdentity $record
+  } finally { $stream.Dispose() }
+  if (-not $confirmed) { throw 'Native initial activation not confirmed' }
+  Remove-Item -LiteralPath $pending -ErrorAction Stop
+  'authenticated-initial-activation'
+  exit 0
+}
 
 if ($Action -eq 'Switch') {
   # Transactional local program switch. Both versions are installed and

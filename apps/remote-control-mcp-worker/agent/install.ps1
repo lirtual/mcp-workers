@@ -186,6 +186,29 @@ function Resolve-LatestAgentRelease {
   if (-not $windows) { throw 'Windows x64 Agent asset is missing' }
   return @{ Tag = $tag; Sha = $windows.digest.Substring(7); Url = [string]$windows.browser_download_url; Size = [long]$windows.size }
 }
+function Resolve-ReviewedNativeRelease([string]$tag,[string]$sha) {
+  # Explicit owner pin: one official tag lookup, no mutable tag or fallback.
+  if ($tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -or
+      $sha -cnotmatch '^[a-f0-9]{64}$') { throw 'Reviewed native candidate tag and SHA-256 required' }
+  $uri = "https://api.github.com/repos/lirtual/mcp-workers/releases/tags/$tag"
+  $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'rca-windows-reviewed-installer' }
+  $response = Invoke-WebRequest -Uri $uri -Headers $headers -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 30
+  if ([int]$response.StatusCode -ne 200) { throw 'Reviewed native Release lookup failed' }
+  $release = $response.Content | ConvertFrom-Json
+  if ($release.immutable -ne $true -or $release.draft -ne $false -or
+      $release.prerelease -ne $true -or $release.tag_name -cne $tag) {
+    throw 'Selected native Release is not the reviewed immutable prerelease'
+  }
+  $name = "remote-control-agent-$tag-windows-x64.zip"
+  $expected = "https://github.com/lirtual/mcp-workers/releases/download/$tag/$name"
+  $assets = @($release.assets | Where-Object { $_.name -ceq $name })
+  if ($assets.Count -ne 1 -or $assets[0].state -ne 'uploaded' -or
+      $assets[0].digest -cne ('sha256:' + $sha) -or $assets[0].browser_download_url -cne $expected -or
+      $assets[0].size -lt 100000 -or $assets[0].size -gt 100000000) {
+    throw 'Reviewed native asset digest, URL or size does not match'
+  }
+  return @{ Tag=$tag; Sha=$sha; Url=$expected; Size=[long]$assets[0].size }
+}
 function Assert-ArchiveDigest([string]$file, [string]$sha) {
   if ($sha -cnotmatch '^[a-f0-9]{64}$') { throw 'SHA256 must be the official digest' }
   $item = Get-Item -LiteralPath $file -Force
@@ -281,6 +304,72 @@ function Complete-ApprovedOnboarding([string]$launcher) {
     throw 'Authorization incomplete. Identity kept.'
   }
 }
+# Explicitly pinned prerelease only. Keep the stable Node installer and
+# detached production upgrade path unchanged until release acceptance.
+function Complete-NativeInstall([string]$directory) {
+  $scripts = Join-Path $directory 'apps/remote-control-agent/scripts'
+  $entry = Join-Path $directory 'apps/remote-control-agent/.build/rca-standard-windows-candidate.exe'
+  $controller = Join-Path $scripts 'windows-user-task.ps1'
+  $ps = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+  $origin = 'https://rca.lirtual.dpdns.org/'
+  if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+    throw 'Real owner console required for reviewed native install'
+  }
+  & (Join-Path $scripts 'verify-windows-native.ps1') -Root $directory -Version $Version | Out-Null
+  & (Join-Path $scripts 'windows-private-store.ps1') -Action Check -Directory $root
+  if (Test-Path -LiteralPath ($identityFile + '.owner-stopped')) {
+    Write-Output 'Owner STOP preserved. Agent was not started.'
+    return
+  }
+  if ($upgradeExisting) {
+    & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
+    if ($LASTEXITCODE -ne 0) { throw 'Native upgrade refused or uncertain; review retained state' }
+    return
+  }
+  $raw = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Status
+  if ($LASTEXITCODE -ne 0) { throw 'Existing Task status uncertain' }
+  $state = $raw | ConvertFrom-Json
+  $modePath = $identityFile + '.install-mode'
+  if (Test-Path -LiteralPath $modePath) {
+    $mode = (Get-Content -LiteralPath $modePath -Raw).Trim()
+    if ($mode -cnotin @('permanent','temporary')) { throw 'Untrusted install mode' }
+  } else {
+    if ($state.installed -or (Test-Path -LiteralPath $identityFile) -or (Test-Path -LiteralPath $idFile)) {
+      throw 'Existing identity requires explicit management'
+    }
+    Write-Host -NoNewline 'Install mode [1] permanent / [2] temporary: '
+    try { $selected = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { throw 'Real owner console required' }
+    Write-Host ''
+    $mode = switch -CaseSensitive ($selected.Character) {
+      '1' { 'permanent' }
+      '2' { 'temporary' }
+      default { throw 'Cancelled. No identity changes.' }
+    }
+  }
+  if ($state.installed -and ($mode -eq 'temporary' -or -not (Test-Path -LiteralPath $idFile))) {
+    throw 'Existing Task conflicts with pairing'
+  }
+  $name = [Environment]::MachineName
+  if (-not (Test-Path -LiteralPath $idFile)) {
+    $entered = Read-Host ('Device name [' + $name + ']')
+    if ($entered.Trim()) { $name = $entered.Trim() }
+  }
+  & $entry --pair-local $origin $name $mode
+  if ($LASTEXITCODE -ne 0) { throw 'Native authorization incomplete; existing identity retained' }
+  if ($mode -ceq 'temporary') {
+    Write-Output 'Temporary foreground only. Closing the terminal disconnects, not revokes.'
+    & $entry --cli run --endpoint $origin
+    if ($LASTEXITCODE -ne 0) { throw 'Native foreground session refused' }
+    return
+  }
+  if (-not (Test-Path -LiteralPath ($identityFile + '.activation-pending'))) {
+    Write-Output 'Approved identity unchanged; no Task modification.'
+    return
+  }
+  & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action ActivateNative -Version $Version -Endpoint $origin
+  if ($LASTEXITCODE -ne 0) { throw 'Native initial activation incomplete; identity and intent retained' }
+}
+
 # Read a console key directly: PromptForChoice renders system-localized
 # help/default text even when its title and choices are English.
 # Read-Host can consume piped script input from "irm ... | iex".
@@ -346,6 +435,12 @@ try {
     $Version = $SelectedTag
     $releaseSha = $SelectedReleaseSha256
     $releaseUrl = "https://github.com/lirtual/mcp-workers/releases/download/$Version/remote-control-agent-$Version-windows-x64.zip"
+    if ($Version -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -and
+        -not $StageOnly -and -not $detachedUpgrade -and -not $detachedRequest) {
+      $reviewed = Resolve-ReviewedNativeRelease $Version $releaseSha
+      $releaseUrl = $reviewed.Url
+      $releaseSize = $reviewed.Size
+    }
   } else {
     if ($Version -or $ExpectedSha256) { throw 'Live install resolves the latest Agent Release and does not accept a source pin' }
     $latest = Resolve-LatestAgentRelease
@@ -444,15 +539,21 @@ try {
     return
   }
 
+  $candidateOnboarding = $SelectedTag -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -and
+    -not $StageOnly -and -not $OfflineArchive -and -not $detachedUpgrade -and -not $detachedRequest
   $upgradeExisting = $false
   if ($alreadyPaired) {
     if (-not (Test-Path -LiteralPath $identityFile -PathType Leaf)) {
       throw 'Existing device ID has no private key; refusing upgrade'
     }
-    if (-not $task -or $task.Actions.Count -ne 1) {
-      throw 'Existing device has no user-logon task; use explicit device management'
+    if (-not $task) {
+      if (-not $candidateOnboarding -or -not (Test-Path -LiteralPath ($identityFile + '.install-mode'))) {
+        throw 'Existing device has no user-logon task; use explicit device management'
+      }
+    } elseif ($task.Actions.Count -ne 1) {
+      throw 'Unreviewed existing user-logon Task'
     }
-    $oldVersion = Get-ExistingAgentVersion $programs ([string]$task.Actions[0].Execute)
+    $oldVersion = if ($task) { Get-ExistingAgentVersion $programs ([string]$task.Actions[0].Execute) } else { $Version }
     if ($oldVersion -cne $Version) {
       $oldNumber = [version](($oldVersion.Substring(1) -split '-')[0])
       $newNumber = [version](($Version.Substring(1) -split '-')[0])
@@ -476,13 +577,30 @@ try {
   }
   if (Test-Path -LiteralPath $target) {
     Assert-PrivateFolder $target
-    # The staged native-only profile is not yet an install/upgrade entry.
-    # Never execute or overwrite an already present native-only candidate.
+    # Reuse only the explicitly reviewed immutable native candidate.
+    # Never overwrite an already present program directory.
     $installedManifest = Get-Content -LiteralPath (Join-Path $target 'bundle.json') -Raw | ConvertFrom-Json
     $installedProfile = $installedManifest.PSObject.Properties['artifact_profile']
     if ($null -ne $installedProfile -and $installedProfile.Value -ceq 'rust-native-only-v1') {
-      throw 'Native-only candidate already staged; remove the inactive candidate explicitly before restaging'
+      if (-not $candidateOnboarding) { throw 'Native-only candidate requires explicit reviewed onboarding' }
+      $temp = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('rca-' + [guid]::NewGuid().ToString('N') + '.zip'))
+      Download-ApprovedAsset $releaseUrl $temp $releaseSize
+      Assert-ArchiveDigest $temp $releaseSha
+      $stage = [IO.Path]::Combine($programs, ('.stage-' + [guid]::NewGuid().ToString('N')))
+      Ensure-PrivateFolder $stage
+      Expand-SafeArchive $temp $stage
+      & (Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1') -Root $stage -Version $Version | Out-Null
+      if ((Get-FileHash -LiteralPath (Join-Path $stage 'bundle.json') -Algorithm SHA256).Hash -cne
+          (Get-FileHash -LiteralPath (Join-Path $target 'bundle.json') -Algorithm SHA256).Hash) {
+        throw 'Installed candidate does not match reviewed asset'
+      }
+      # Run the trusted verifier from the reviewed ZIP against the installed
+      # directory before executing any installed script or binary.
+      & (Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1') -Root $target -Version $Version | Out-Null
+      Complete-NativeInstall $target
+      return
     }
+    if ($alreadyPaired -and -not $task) { throw 'Unreviewed existing identity without Task' }
     $nodeExisting = [IO.Path]::Combine($target,'bin','node.exe')
     $verifyExisting = [IO.Path]::Combine($target,'apps','remote-control-agent','scripts','verify-windows-preview.mjs')
     & $nodeExisting $verifyExisting $target | Out-Null
@@ -543,13 +661,14 @@ try {
   if ($manifest.version -cne $Version) { throw 'Manifest version mismatch' }
   $profile = $manifest.PSObject.Properties['artifact_profile']
   if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
-    if (-not $StageOnly) {
-      throw 'Native-only Windows candidate supports verified staging only; activation is not reviewed'
+    if (-not $StageOnly -and -not $candidateOnboarding) {
+      throw 'Native-only Windows candidate requires explicit reviewed onboarding'
     }
     # The outer reviewed ZIP SHA256 was checked before extraction.
     $verifier = Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1'
     & $verifier -Root $stage -Version $Version | Out-Null
   } else {
+    if ($alreadyPaired -and -not $task) { throw 'Unreviewed existing identity without Task' }
     $node = [IO.Path]::Combine($stage, 'bin', 'node.exe')
     $verifier = [IO.Path]::Combine($stage, 'apps', 'remote-control-agent',
                                   'scripts', 'verify-windows-preview.mjs')
@@ -561,6 +680,10 @@ try {
   Write-Output "Installed: $Version"
   if ($StageOnly) {
     Write-Output ('Verified staging complete; running Agent task unchanged: ' + $Version)
+    return
+  }
+  if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
+    Complete-NativeInstall $target
     return
   }
   if ($upgradeExisting) {

@@ -281,6 +281,13 @@ fn pair_windows_identity_with(
         }
         write_new(&id, value.as_bytes())?;
     }
+    let receipts = directory.join("receipts");
+    if present(&receipts)? {
+        validate_windows_private_path(&receipts, true).map_err(|_| invalid())?;
+    } else {
+        fs::create_dir(&receipts).map_err(|_| SessionRecoveryError::Unavailable)?;
+        crate::seal_new_windows_private_directory(&receipts).map_err(|_| invalid())?;
+    }
     drop(guard);
     Ok(approved)
 }

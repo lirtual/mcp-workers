@@ -112,4 +112,12 @@ fn windows_native_pair_entry_refuses_non_interactive_invocation() {
         assert!(!output.status.success());
         assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
     }
+    let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-windows-candidate"))
+        .args(["--cli", "run", "--endpoint", "https://127.0.0.1:9/"])
+        .env("LOCALAPPDATA", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
 }

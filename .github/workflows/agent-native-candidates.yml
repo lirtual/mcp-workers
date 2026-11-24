@@ -1152,6 +1152,21 @@ jobs:
             $unsupported = Start-Process -FilePath $nativeExe -ArgumentList @('--cli','upgrade') -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'native-cli-refusal.txt')
             if ($unsupported.ExitCode -eq 0) { throw 'Staged native CLI allowed an unsupported mutation' }
             Write-Output 'WINDOWS_NATIVE_ONLY_STATUS_PASS'
+            # A local ID and even a private activation marker must never
+            # authorize a new Task without fresh signed Worker recovery.
+            $pendingActivation = $key + '.activation-pending'
+            if (Test-Path -LiteralPath $pendingActivation) { throw 'Unexpected fixture activation intent' }
+            [IO.File]::WriteAllText($pendingActivation,((Get-Content -LiteralPath $device -Raw).Trim() + [char]10),[Text.UTF8Encoding]::new($false))
+            try {
+              & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $nativeDir 'apps/remote-control-agent/scripts/windows-private-store.ps1') -Action Seal -Directory $root -FileName 'v2-identity.pem.activation-pending'
+              if ($LASTEXITCODE -ne 0) { throw 'Cannot seal disposable activation intent' }
+              $activation = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $nativeDir 'apps/remote-control-agent/scripts/windows-user-task.ps1') -Action ActivateNative -Version $nativeVersion -Endpoint 'https://127.0.0.1:9/' 2>&1 | Out-String
+              if ($LASTEXITCODE -eq 0 -or $activation -notmatch 'Signed initial identity not confirmed' -or
+                  -not (Test-Path -LiteralPath $pendingActivation)) {
+                throw ('Unsigned activation must refuse and retain intent: ' + $activation)
+              }
+            } finally { Remove-Item -LiteralPath $pendingActivation -Force }
+            Write-Output 'WINDOWS_NATIVE_INITIAL_UNSIGNED_REFUSAL_PASS'
             $unchanged = Get-ScheduledTask -TaskName $taskName
             if ($unchanged.State -ne 'Running' -or
                 [string]$unchanged.Actions[0].Execute -cne $originalAction -or
