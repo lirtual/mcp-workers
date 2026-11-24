@@ -404,6 +404,7 @@ impl SearchSessions {
         path: PathBuf,
         pattern: String,
         kind: SearchType,
+        reply_deadline: Instant,
     ) -> Result<Page, SearchError> {
         self.expire();
         if self.cursors.len() >= MAX_SESSIONS {
@@ -445,12 +446,12 @@ impl SearchSessions {
                 pending: None,
             },
         );
-        self.page(&id)
+        self.page(&id, reply_deadline)
     }
-    fn page(&mut self, id: &str) -> Result<Page, SearchError> {
+    fn page(&mut self, id: &str, reply_deadline: Instant) -> Result<Page, SearchError> {
         self.expire();
         let cursor = self.cursors.get_mut(id).ok_or(SearchError::NotFound)?;
-        let deadline = Instant::now() + PAGE_WAIT;
+        let deadline = (Instant::now() + PAGE_WAIT).min(reply_deadline);
         let mut results = Vec::new();
         if let Some(hit) = cursor.pending.take() {
             results.push(hit);
@@ -514,7 +515,12 @@ impl SearchSessions {
             session_id: None,
         })
     }
-    pub(crate) fn execute_scoped(&mut self, frame: &SearchFrame, lease: &ExecutionLease) -> String {
+    pub(crate) fn execute_scoped(
+        &mut self,
+        frame: &SearchFrame,
+        lease: &ExecutionLease,
+        reply_deadline: Instant,
+    ) -> String {
         self.expire();
         if !self
             .lease
@@ -524,17 +530,17 @@ impl SearchSessions {
             self.cursors.clear();
             self.lease = Some(lease.clone());
         }
-        self.execute(frame)
+        self.execute(frame, reply_deadline)
     }
 
-    fn execute(&mut self, frame: &SearchFrame) -> String {
+    fn execute(&mut self, frame: &SearchFrame, reply_deadline: Instant) -> String {
         let outcome = match frame.command.clone() {
             Some(SearchCommand::Start {
                 path,
                 pattern,
                 search_type,
-            }) => self.start(path, pattern, search_type),
-            Some(SearchCommand::More(id)) => self.page(&id),
+            }) => self.start(path, pattern, search_type, reply_deadline),
+            Some(SearchCommand::More(id)) => self.page(&id, reply_deadline),
             Some(SearchCommand::Stop(id)) => self.stop(&id),
             None => Err(SearchError::Failed),
         };
@@ -566,7 +572,7 @@ mod tests {
     fn call(s: &mut SearchSessions, tool: &str, args: Value) -> Value {
         let frame = json!({"kind":"read","request_id":ID,"tool":tool,"arguments":args});
         let parsed = parse_frame(frame.as_object().unwrap()).unwrap().unwrap();
-        serde_json::from_str(&s.execute(&parsed)).unwrap()
+        serde_json::from_str(&s.execute(&parsed, Instant::now() + PAGE_WAIT)).unwrap()
     }
     fn page(value: Value) -> Value {
         assert_eq!(value["status"], "completed", "{value}");
@@ -833,6 +839,39 @@ mod tests {
     }
 
     #[test]
+    fn expired_relay_wait_preserves_running_cursor_without_waiting_for_producer() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let id = SearchSessions::new_id().unwrap();
+        let mut sessions = SearchSessions::default();
+        sessions.cursors.insert(
+            id.clone(),
+            Cursor {
+                receiver,
+                cancel: Arc::new(AtomicBool::new(false)),
+                truncated_flag: Arc::new(AtomicBool::new(false)),
+                created: Instant::now(),
+                pending: None,
+            },
+        );
+        let page = sessions.page(&id, Instant::now()).unwrap();
+        assert!(page.has_more);
+        assert_eq!(page.status, "running");
+        assert!(page.results.is_empty());
+        let producer = thread::spawn(move || {
+            sender
+                .send(Event::Match(Hit::Path {
+                    path: "next".into(),
+                }))
+                .unwrap();
+            sender.send(Event::Done(false)).unwrap();
+        });
+        let next = sessions.page(&id, Instant::now() + PAGE_WAIT).unwrap();
+        assert_eq!(next.results.len(), 1);
+        assert!(!next.has_more);
+        producer.join().unwrap();
+    }
+
+    #[test]
     fn running_page_reports_shared_truncation_before_done_event() {
         let (sender, receiver) = mpsc::sync_channel(1);
         let producer = thread::spawn(move || {
@@ -859,7 +898,7 @@ mod tests {
                 pending: None,
             },
         );
-        let result = s.page(&id).unwrap();
+        let result = s.page(&id, Instant::now() + PAGE_WAIT).unwrap();
         assert!(result.has_more);
         assert!(result.truncated);
         assert_eq!(result.results.len(), PAGE_SIZE);

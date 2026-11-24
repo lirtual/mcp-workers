@@ -145,6 +145,7 @@ impl ExecutionLease {
 pub struct ExecutionRequest {
     frame: String,
     lease: ExecutionLease,
+    reply_deadline: Instant,
 }
 
 impl ExecutionRequest {
@@ -156,6 +157,12 @@ impl ExecutionRequest {
         &self.lease
     }
 
+    // The Worker waits five seconds, including time already spent in the
+    // queue. Leave one second for transport and mandatory OS/receipt work.
+    // This is an optional-result-wait budget, not a guarantee of IO latency.
+    pub(crate) fn reply_deadline(&self) -> Instant {
+        self.reply_deadline
+    }
     pub fn response(&self, frame: String) -> ExecutionResponse {
         ExecutionResponse {
             frame,
@@ -529,6 +536,7 @@ impl AuthenticatedSocket {
                         .try_send(ExecutionRequest {
                             frame,
                             lease: lease.clone(),
+                            reply_deadline: Instant::now() + Duration::from_secs(4),
                         })
                         .map_err(|_| SessionError::Queue)?;
                 }

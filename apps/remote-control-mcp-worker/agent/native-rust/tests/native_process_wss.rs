@@ -370,3 +370,201 @@ fn malformed_process_operation_stays_forbidden_with_policy_close_1008() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+#[ignore = "requires disposable Unix runner and platform C helper"]
+fn four_concurrent_long_process_starts_fit_worker_deadline() {
+    let root = tempfile::tempdir().unwrap();
+    let receipt_dir = root.path().join("receipts");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
+        let mut socket = signed_socket(listener);
+        socket
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(8)))
+            .unwrap();
+        let sent = Instant::now();
+        for n in 1..=4 {
+            let id = format!("00000000-0000-0000-0000-{n:012}");
+            let frame = json!({"kind":"operation","request_id":id,"operation_id":format!("queue-{n}"),"tool":"start_process","arguments":{"command":"sleep 8","timeout_ms":1500}});
+            socket
+                .send(Message::Text(frame.to_string().into()))
+                .unwrap();
+        }
+        let mut latencies = Vec::new();
+        for _ in 0..4 {
+            let response: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(response["result"]["status"], "running");
+            latencies.push(sent.elapsed().as_millis());
+        }
+        eprintln!("four_start_latency_ms={latencies:?}");
+        let revoke = reply(
+            &mut socket,
+            json!({"kind":"revoke_cleanup","request_id":"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+                .to_string(),
+        );
+        assert_eq!(revoke["status"], "confirmed");
+        server_stop.store(true, Ordering::Release);
+        assert!(
+            latencies.iter().all(|&ms| ms < 5000),
+            "Worker 5s deadline missed: {latencies:?}"
+        );
+    });
+    let registry = managed();
+    let result = run_native_managed_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        Arc::clone(&registry),
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(
+        matches!(result, Err(NativeFileError::Session(SessionError::Policy))),
+        "{result:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires disposable Unix runner and platform C helper"]
+fn mixed_busy_worker_keeps_reads_status_and_owned_stop_available() {
+    let root = tempfile::tempdir().unwrap();
+    let receipt_dir = root.path().join("receipts");
+    let files = root.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    for n in 0..16 {
+        std::fs::write(files.join(format!("{n}.txt")), vec![b'x'; 2 * 1024 * 1024]).unwrap();
+    }
+    let sentinel = files.join("sentinel.txt");
+    std::fs::write(&sentinel, "readable").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let registry = managed();
+    let observed = Arc::clone(&registry);
+    let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
+        let mut socket = signed_socket(listener);
+        socket
+            .get_mut()
+            .set_read_timeout(Some(Duration::from_secs(7)))
+            .unwrap();
+        let initial = reply(
+            &mut socket,
+            operation(
+                "owned-start",
+                "start_process",
+                json!({"command":"sleep 9","timeout_ms":0}),
+            ),
+        );
+        assert_eq!(initial["result"]["status"], "running");
+        let sid = initial["result"]["session_id"].as_str().unwrap().to_owned();
+        let burst = Instant::now();
+        for (n, kind, tool, args) in [
+            (
+                1,
+                "operation",
+                "start_process",
+                json!({"command":"sleep 8","timeout_ms":1500}),
+            ),
+            (
+                2,
+                "operation",
+                "start_process",
+                json!({"command":"sleep 8","timeout_ms":1500}),
+            ),
+            (
+                3,
+                "read",
+                "start_search",
+                json!({"path":files,"pattern":"never-matches-914","search_type":"content"}),
+            ),
+            (4, "operation", "force_terminate", json!({"session_id":sid})),
+        ] {
+            let mut frame = json!({"kind":kind,"request_id":format!("00000000-0000-0000-0000-{n:012}"),"tool":tool,"arguments":args});
+            if kind == "operation" {
+                frame["operation_id"] = json!(format!("mixed-{n}"));
+            }
+            socket
+                .send(Message::Text(frame.to_string().into()))
+                .unwrap();
+        }
+        for n in 1..=4 {
+            let response: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(
+                response["request_id"],
+                format!("00000000-0000-0000-0000-{n:012}")
+            );
+            assert!(
+                burst.elapsed() < Duration::from_secs(5),
+                "mixed reply {n} exceeded Worker budget"
+            );
+            if n == 3 {
+                assert_eq!(response["status"], "completed");
+            } else if n == 4 {
+                assert!(matches!(
+                    response["result"]["status"].as_str(),
+                    Some("completed" | "unknown")
+                ));
+            } else {
+                assert_eq!(response["result"]["status"], "running");
+            }
+        }
+        assert_eq!(
+            read(&mut socket, "read_file", json!({"path":sentinel}))["text"],
+            "readable"
+        );
+        let status = reply(
+            &mut socket,
+            operation(
+                "mixed-1",
+                "get_operation_status",
+                json!({"operation_id":"mixed-1"}),
+            ),
+        );
+        assert_eq!(status["result"]["status"], "running");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            let snapshot = observed.get(&sid).unwrap();
+            if snapshot.state != SessionState::Running {
+                assert!(matches!(
+                    snapshot.state,
+                    SessionState::Completed | SessionState::Failed
+                ));
+                break;
+            }
+            assert!(Instant::now() < deadline, "owned stop did not complete");
+            thread::sleep(Duration::from_millis(20));
+        }
+        let revoked = reply(
+            &mut socket,
+            json!({"kind":"revoke_cleanup","request_id":"cccccccc-cccc-cccc-cccc-cccccccccccc"})
+                .to_string(),
+        );
+        assert_eq!(revoked["status"], "confirmed");
+        server_stop.store(true, Ordering::Release);
+    });
+    let result = run_native_managed_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        registry,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(
+        matches!(result, Err(NativeFileError::Session(SessionError::Policy))),
+        "{result:?}"
+    );
+}

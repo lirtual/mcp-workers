@@ -405,7 +405,9 @@ fn execute_native_file(
         }
         let response = match command {
             NativeFileCommand::Read(read) => native_read::execute_read_frame(&read),
-            NativeFileCommand::Search(search) => searches.execute_scoped(&search, request.lease()),
+            NativeFileCommand::Search(search) => {
+                searches.execute_scoped(&search, request.lease(), request.reply_deadline())
+            }
             NativeFileCommand::Mutation {
                 request_id,
                 operation_id,
@@ -462,13 +464,17 @@ fn execute_native_file(
                 tool,
                 arguments,
             } => {
-                let result = processes.as_mut().ok_or(NativeFileError::Policy)?.execute(
-                    writes.receipt_store_mut(),
-                    &operation_id,
-                    &tool,
-                    &arguments,
-                    || request.lease().is_active(),
-                );
+                let result = processes
+                    .as_mut()
+                    .ok_or(NativeFileError::Policy)?
+                    .execute_before(
+                        writes.receipt_store_mut(),
+                        &operation_id,
+                        &tool,
+                        &arguments,
+                        || request.lease().is_active(),
+                        request.reply_deadline(),
+                    );
                 let outcome = match result {
                     Ok(outcome) => outcome,
                     Err(error) => {

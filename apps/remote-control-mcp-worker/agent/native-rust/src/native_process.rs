@@ -366,6 +366,25 @@ impl NativeProcessEngine {
         arguments: &Value,
         lease_active: impl Fn() -> bool,
     ) -> Result<ProcessOutcome, ReceiptError> {
+        self.execute_before(
+            receipts,
+            operation_id,
+            tool,
+            arguments,
+            lease_active,
+            Instant::now() + MAX_START_WAIT,
+        )
+    }
+
+    pub(crate) fn execute_before(
+        &mut self,
+        receipts: &mut ReceiptStore,
+        operation_id: &str,
+        tool: &str,
+        arguments: &Value,
+        lease_active: impl Fn() -> bool,
+        reply_deadline: Instant,
+    ) -> Result<ProcessOutcome, ReceiptError> {
         let mutation =
             parse_process_mutation(tool, arguments).ok_or(ReceiptError::InvalidOperation)?;
         self.reconcile(receipts)?;
@@ -468,8 +487,9 @@ impl NativeProcessEngine {
             } => {
                 // Include the synchronous C-supervisor handshake in the reply
                 // budget; never add another full wait after slow startup.
-                let deadline =
-                    Instant::now() + Duration::from_millis(timeout_ms).min(MAX_START_WAIT);
+                let deadline = (Instant::now()
+                    + Duration::from_millis(timeout_ms).min(MAX_START_WAIT))
+                .min(reply_deadline);
                 match self.sessions.start(&command) {
                     Ok(started) => {
                         let sid = started.session_id;
@@ -482,7 +502,7 @@ impl NativeProcessEngine {
                             Some(&sid),
                             false,
                         )?;
-                        while Instant::now() < deadline {
+                        while lease_active() && Instant::now() < deadline {
                             if self
                                 .sessions
                                 .get(&sid)
@@ -554,7 +574,7 @@ impl NativeProcessEngine {
                     )
                 } else {
                     self.sessions.request_stop(&session_id);
-                    let deadline = Instant::now() + STOP_WAIT;
+                    let deadline = (Instant::now() + STOP_WAIT).min(reply_deadline);
                     let state = loop {
                         match self.sessions.get(&session_id) {
                             Some(snapshot)
@@ -569,7 +589,7 @@ impl NativeProcessEngine {
                                 break "unknown"
                             }
                             None => break "unknown",
-                            _ if Instant::now() >= deadline => break "unknown",
+                            _ if !lease_active() || Instant::now() >= deadline => break "unknown",
                             _ => thread::sleep(Duration::from_millis(25)),
                         }
                     };
