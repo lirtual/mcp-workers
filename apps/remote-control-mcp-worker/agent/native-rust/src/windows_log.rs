@@ -14,7 +14,29 @@ const MAX_LINES: usize = 80;
 fn known(event: &str) -> bool {
     matches!(
         event,
-        "starting" | "connected" | "disconnected" | "rejected" | "stopping" | "owner_stopped"
+        "starting"
+            | "connected"
+            | "disconnected"
+            | "rejected"
+            | "stopping"
+            | "owner_stopped"
+            | "receipt_unsafe_path"
+            | "receipt_incompatible"
+            | "receipt_owner_unavailable"
+            | "receipt_corrupt"
+            | "receipt_readonly"
+            | "receipt_full"
+            | "receipt_storage_unavailable"
+            | "authorization_unavailable"
+            | "connection_protocol_unavailable"
+            | "worker_unavailable"
+            | "heartbeat_timeout"
+            | "connection_superseded"
+            | "execution_queue_unavailable"
+            | "connection_unavailable"
+            | "execution_unavailable"
+            | "upgrade_control_unavailable"
+            | "cleanup_uncertain"
     )
 }
 fn unsafe_log() -> io::Error {
@@ -124,6 +146,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::seal_new_windows_private_directory(dir.path()).unwrap();
         record(dir.path(), "connected");
+        record(dir.path(), "receipt_corrupt");
+        record(dir.path(), "authorization_unavailable");
         record(dir.path(), "not-a-reviewed-event");
         let path = dir.path().join(LOG);
         let mut file = OpenOptions::new().append(true).open(&path).unwrap();
@@ -135,7 +159,9 @@ mod tests {
         writeln!(file, "{{\"utc\":\"2026-11-24T00:00:00.000Z\",\"event\":\"connected\",\"private\":\"sensitive value\"}}").unwrap();
         drop(file);
         let output = read_events(dir.path()).unwrap();
-        assert_eq!(output.lines().count(), 1);
+        assert_eq!(output.lines().count(), 3);
+        assert!(output.contains("receipt_corrupt"));
+        assert!(output.contains("authorization_unavailable"));
         assert!(output.contains("connected"));
         assert!(!output.contains("sensitive"));
         let file = OpenOptions::new().write(true).open(&path).unwrap();

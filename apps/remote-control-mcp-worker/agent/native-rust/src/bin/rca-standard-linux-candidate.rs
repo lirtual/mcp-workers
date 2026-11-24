@@ -885,6 +885,7 @@ mod linux {
             &stop,
             UpgradeRuntimeOptions {
                 on_disconnected: None,
+                on_diagnostic: None,
                 key_path: key,
                 on_connected: Some(Arc::new(move || {
                     // Missing/invalid intent never becomes a success receipt.
@@ -894,6 +895,11 @@ mod linux {
         );
         stop.store(true, Ordering::Release);
         monitor.join().map_err(|_| ())?;
+        if let Err(error) = &result {
+            if !matches!(error, NativeFileError::Session(_)) {
+                rca_native_agent::session::report_diagnostic(error.diagnostic_event());
+            }
+        }
         match result {
             Ok(()) | Err(NativeFileError::Session(SessionError::Policy)) => Ok(()),
             Err(_) => Err(()),

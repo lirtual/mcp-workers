@@ -44,11 +44,33 @@ fn challenge(mut stream: TcpStream) {
 fn signed_socket(listener: TcpListener) -> WebSocket<TcpStream> {
     signed_socket_ref(&listener)
 }
+fn accept_bounded(listener: &TcpListener) -> TcpStream {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                return stream;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "local WSS fixture accept timed out"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+}
 #[allow(clippy::result_large_err)]
 fn signed_socket_ref(listener: &TcpListener) -> WebSocket<TcpStream> {
-    let (http, _) = listener.accept().unwrap();
-    challenge(http);
-    let (ws, _) = listener.accept().unwrap();
+    challenge(accept_bounded(listener));
+    let ws = accept_bounded(listener);
     ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
     tungstenite::accept_hdr(ws, |request: &Request, mut response: Response| {
         assert!(request
@@ -1292,4 +1314,98 @@ fn receipt_runtime_storage_failure_preserves_only_owned_stop() {
     );
     assert!(reopened.get("new-start").unwrap().is_none());
     assert!(reopened.get("input").unwrap().is_none());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+#[ignore = "requires disposable Unix runner and real platform C helper"]
+fn receipt_runtime_degraded_connection_does_not_authorize_upgrade() {
+    #[cfg(target_os = "macos")]
+    use rca_native_agent::darwin_managed::DarwinManagedSessions as Managed;
+    #[cfg(target_os = "linux")]
+    use rca_native_agent::linux_managed::LinuxManagedSessions as Managed;
+    use rca_native_agent::native_file::{
+        run_native_managed_session_with_upgrade, UpgradeRuntimeOptions,
+    };
+    use std::os::unix::net::UnixStream;
+    let root = tempfile::Builder::new()
+        .prefix("rca-fixture-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let directory = root.path().join("receipts");
+    drop(ReceiptStore::open(&directory).unwrap());
+    std::fs::write(
+        directory.join("operation-receipts.sqlite"),
+        b"corrupt fixture",
+    )
+    .unwrap();
+    let target = root.path().join("ordinary.txt");
+    std::fs::write(&target, "readable").unwrap();
+    #[cfg(target_os = "linux")]
+    let helper = std::env::var("RCA_NATIVE_SUPERVISOR_BIN").unwrap();
+    #[cfg(target_os = "macos")]
+    let helper = std::env::var("RCA_DARWIN_SUPERVISOR_BIN").unwrap();
+    let managed = Arc::new(
+        Managed::new(
+            std::path::Path::new(&helper),
+            std::path::Path::new("/bin/sh"),
+            Duration::from_secs(20),
+        )
+        .unwrap(),
+    );
+    let connected = Arc::new(AtomicBool::new(false));
+    let activation = Arc::clone(&connected);
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let captured = Arc::clone(&events);
+    let stop = Arc::new(AtomicBool::new(false));
+    let end = Arc::clone(&stop);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let ipc = root.path().join("upgrade.sock");
+    let server = thread::spawn(move || {
+        struct Stop(Arc<AtomicBool>);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _stop = Stop(end);
+        let mut socket = signed_socket(listener);
+        socket.send(Message::Text(json!({"kind":"read","request_id":"11111111-1111-1111-1111-111111111111","tool":"read_file","arguments":{"path":target}}).to_string().into())).unwrap();
+        let read: Value =
+            serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+        assert_eq!(read["text"], "readable");
+        assert!(!activation.load(Ordering::Acquire));
+        assert_eq!(captured.lock().unwrap().as_slice(), ["receipt_corrupt"]);
+        for command in ["freeze\n", "verify-frozen\n"] {
+            let mut client = UnixStream::connect(&ipc).unwrap();
+            client
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            client.write_all(command.as_bytes()).unwrap();
+            let mut reply = String::new();
+            BufReader::new(client).read_line(&mut reply).unwrap();
+            assert_eq!(reply, "busy\n");
+        }
+    });
+    let result = run_native_managed_session_with_upgrade(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &directory,
+        managed,
+        &stop,
+        UpgradeRuntimeOptions {
+            key_path: &root.path().join("fixture-ipc"),
+            on_connected: Some(Arc::new(move || {
+                connected.store(true, Ordering::Release);
+            })),
+            on_disconnected: None,
+            on_diagnostic: Some(Arc::new(move |event| events.lock().unwrap().push(event))),
+        },
+    );
+    assert!(result.is_ok(), "{result:?}");
+    server.join().unwrap();
 }

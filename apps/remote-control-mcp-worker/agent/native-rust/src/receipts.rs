@@ -394,7 +394,10 @@ impl ReceiptStore {
 
     /// Network runtime may degrade only while holding the original exclusive
     /// lock. Offline migration and probe callers remain strict.
-    pub(crate) fn open_runtime(directory: &Path) -> Result<Self, ReceiptError> {
+    pub(crate) fn open_runtime(
+        directory: &Path,
+        notify: impl FnOnce(&'static str),
+    ) -> Result<Self, ReceiptError> {
         match Self::open(directory) {
             Ok(store) => Ok(store),
             Err(error) if error.startup_storage_failure() => {
@@ -409,10 +412,7 @@ impl ReceiptStore {
                     }
                 }
                 let connection = lock_unreadable_database(&db_path)?;
-                eprintln!(
-                    "{{\"event\":\"{}\",\"mode\":\"read_only\"}}",
-                    error.diagnostic()
-                );
+                notify(error.diagnostic());
                 Ok(Self {
                     connection,
                     available: Arc::new(AtomicBool::new(false)),
@@ -433,7 +433,7 @@ impl ReceiptStore {
     }
 
     /// Latch failure for this owner; no repair, retries or new effects.
-    pub(crate) fn isolate(&mut self, error: &ReceiptError) -> Result<(), ReceiptError> {
+    pub(crate) fn isolate(&mut self, error: &ReceiptError) -> Result<bool, ReceiptError> {
         let was_available = self.available.swap(false, Ordering::AcqRel);
         if matches!(
             error.cause(),
@@ -449,12 +449,8 @@ impl ReceiptStore {
             private_path(&self.directory, true)?;
             private_path(&self.directory.join("operation-receipts.sqlite"), false)?;
             verify_exclusive(&self.connection)?;
-            eprintln!(
-                "{{\"event\":\"{}\",\"mode\":\"read_only\"}}",
-                error.diagnostic()
-            );
         }
-        Ok(())
+        Ok(was_available)
     }
 
     fn require_available(&self) -> Result<(), ReceiptError> {
@@ -804,7 +800,7 @@ mod runtime_fault_tests {
     #[test]
     fn unsafe_or_competing_startup_does_not_degrade() {
         let (root, owner) = temporary_store();
-        assert!(ReceiptStore::open_runtime(&owner.directory).is_err());
+        assert!(ReceiptStore::open_runtime(&owner.directory, |_| {}).is_err());
         drop(owner);
         #[cfg(unix)]
         {
@@ -812,7 +808,7 @@ mod runtime_fault_tests {
             let directory = root.path().join("receipts");
             fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
             assert!(matches!(
-                ReceiptStore::open_runtime(&directory),
+                ReceiptStore::open_runtime(&directory, |_| {}),
                 Err(ReceiptError::UnsafePath)
             ));
         }

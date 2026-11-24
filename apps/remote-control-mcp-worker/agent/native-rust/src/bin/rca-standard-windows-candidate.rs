@@ -724,6 +724,7 @@ mod windows {
         let on_disconnected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             windows_log::record(&disconnected_root, "disconnected");
         });
+        let diagnostic_root = root.clone();
         let outcome = run_native_managed_session_with_upgrade(
             endpoint,
             private_pem,
@@ -735,6 +736,9 @@ mod windows {
                 key_path: key,
                 on_connected: Some(on_connected),
                 on_disconnected: Some(on_disconnected),
+                on_diagnostic: Some(Arc::new(move |event| {
+                    windows_log::record(&diagnostic_root, event)
+                })),
             },
         );
         stop.store(true, Ordering::Release);
@@ -745,6 +749,11 @@ mod windows {
             ))
         ) {
             windows_log::record(&root, "rejected");
+        }
+        if let Err(error) = &outcome {
+            if !matches!(error, NativeFileError::Session(_)) {
+                windows_log::record(&root, error.diagnostic_event());
+            }
         }
         windows_log::record(&root, "stopping");
         if let Some(monitor) = monitor {

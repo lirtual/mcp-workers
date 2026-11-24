@@ -33,6 +33,7 @@ pub struct WriteOutcome {
 pub struct NativeWriteExecutor {
     receipts: ReceiptStore,
     boundary: ReceiptBoundary,
+    on_diagnostic: Option<crate::session::DiagnosticSink>,
 }
 
 struct WriteArgs {
@@ -556,17 +557,30 @@ impl NativeWriteExecutor {
     pub fn open(receipt_directory: &Path) -> Result<Self, NativeWriteError> {
         let receipts = ReceiptStore::open(receipt_directory)?;
         let boundary = ReceiptBoundary::new(receipt_directory)?;
-        Ok(Self { receipts, boundary })
+        Ok(Self {
+            receipts,
+            boundary,
+            on_diagnostic: None,
+        })
     }
 
     pub(crate) fn boundary(&self) -> &ReceiptBoundary {
         &self.boundary
     }
 
-    pub(crate) fn open_runtime(directory: &Path) -> Result<Self, NativeWriteError> {
-        let receipts = ReceiptStore::open_runtime(directory)?;
+    pub(crate) fn open_runtime(
+        directory: &Path,
+        on_diagnostic: Option<crate::session::DiagnosticSink>,
+    ) -> Result<Self, NativeWriteError> {
+        let receipts = ReceiptStore::open_runtime(directory, |event| {
+            crate::session::emit_diagnostic(on_diagnostic.as_ref(), event);
+        })?;
         let boundary = ReceiptBoundary::new(directory)?;
-        Ok(Self { receipts, boundary })
+        Ok(Self {
+            receipts,
+            boundary,
+            on_diagnostic,
+        })
     }
 
     pub(crate) fn available(&self) -> bool {
@@ -582,7 +596,9 @@ impl NativeWriteExecutor {
         if self.boundary.verify_current().is_err() {
             self.receipts.isolate(&ReceiptError::Ownership)?;
         }
-        self.receipts.isolate(error)?;
+        if self.receipts.isolate(error)? {
+            crate::session::emit_diagnostic(self.on_diagnostic.as_ref(), error.diagnostic());
+        }
         Ok(())
     }
 
