@@ -100,6 +100,24 @@ fn signed_wss_read_file_matches_node_reference_with_real_file_and_bounded_queue(
         assert_eq!(result["request_id"], REQUEST_ID);
         assert_eq!(result["status"], "completed");
         assert_eq!(result["text"], "line-one\nline-two");
+        // A sequential caller waits for each reply before sending the next
+        // request. No unrelated inbound frame should be needed to flush a
+        // completed response. Four reads must not incur four idle polls.
+        let started = std::time::Instant::now();
+        for _ in 0..4 {
+            socket
+                .send(Message::Text(read_request(file.to_str().unwrap()).into()))
+                .unwrap();
+            let result: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(result["status"], "completed");
+            assert_eq!(result["text"], "line-one\nline-two");
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "completed responses were held until the idle read timeout: {:?}",
+            started.elapsed()
+        );
         worker_stop.store(true, Ordering::Release);
     });
     let result = run_native_read_session(
