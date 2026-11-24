@@ -1206,7 +1206,8 @@ jobs:
                   $switch.WaitForExit()
                   $diagnostic = (Get-Content -LiteralPath $stdoutFile -Raw) + (Get-Content -LiteralPath $stderrFile -Raw)
                   if ($switch.ExitCode -eq 0 -or $diagnostic -notmatch 'Native upgrade refused at signed WSS; previous task restored') {
-                    Write-Output $diagnostic.Substring(0,[Math]::Min(3500,$diagnostic.Length))
+                    # Keep the actual refusal at the end of each stream, not module-import chatter.
+                    Get-Content -LiteralPath $stdoutFile,$stderrFile -Tail 35 -ErrorAction Stop | Write-Output
                     throw 'Native-only missing-proof upgrade did not verify rollback'
                   }
                 }
