@@ -131,7 +131,7 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
         assert Path(str(home / ".config/systemd/user/remote-control-agent.service") +
                     ".upgrade-backup").exists()
         if proof_good:
-            bootstrap.native_create_file(path, json.dumps({
+            owned_file(path, json.dumps({
                 "operation_id": operation, "device_id": device_id,
                 "target_version": target, "status": "authenticated_wss", "pid": pid
             }).encode())
@@ -258,9 +258,9 @@ def verify_isolated():
         unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
         state, mocks, verify = fake_services(home, old, new)
         state["active"] = "new"
-        bootstrap.native_create_file(Path(str(unit) + ".upgrade-backup"),
+        owned_file(Path(str(unit) + ".upgrade-backup"),
                                      original_unit.encode())
-        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+        owned_file(Path(str(key) + ".native-upgrade-intent"),
             json.dumps({"operation_id": "d" * 32, "device_id": ID,
                         "target_version": new.name}).encode())
         original_key, original_receipts = key.read_bytes(), receipts.read_bytes()
@@ -288,11 +288,11 @@ def verify_isolated():
             original_unit = unit.read_text()
             original_receipts = receipts.read_bytes()
             if phase == "intent-only":
-                bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+                owned_file(Path(str(key) + ".native-upgrade-intent"),
                     json.dumps({"operation_id": "e" * 32, "device_id": ID,
                                 "target_version": new.name}).encode())
             else:
-                bootstrap.native_create_file(Path(str(unit) + ".upgrade-backup"),
+                owned_file(Path(str(unit) + ".upgrade-backup"),
                                              original_unit.encode())
                 if phase == "backup-only-new":
                     unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
@@ -316,7 +316,7 @@ def verify_isolated():
     try:
         state, mocks, verify = fake_services(home, old, new)
         backup = Path(str(unit) + ".upgrade-backup")
-        bootstrap.native_create_file(backup, unit.read_bytes())
+        owned_file(backup, unit.read_bytes())
         unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
         state["active"] = "new"
         with patch.multiple(bootstrap, **mocks):
@@ -354,13 +354,48 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
+    # Two additional interruption points in the same transaction:
+    # unit published before restart, and proof visible before its JSON write.
+    for phase in ("unit-before-restart", "partial-proof", "rollback-before-restart"):
+        ctx, home, old, new, unit, launcher, key, receipts = fixture()
+        try:
+            state, mocks, verify = fake_services(home, old, new)
+            original_unit = unit.read_bytes()
+            original_receipts = receipts.read_bytes()
+            backup = Path(str(unit) + ".upgrade-backup")
+            intent = Path(str(key) + ".native-upgrade-intent")
+            proof = Path(str(key) + ".native-upgrade-proof")
+            owned_file(backup, original_unit)
+            owned_file(intent, json.dumps({"operation_id": "e" * 32,
+                       "device_id": ID, "target_version": new.name}))
+            unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+            if phase == "partial-proof":
+                state["active"] = "new"
+                owned_file(proof, '{"operation_id":')
+            elif phase == "rollback-before-restart":
+                unit.write_bytes(original_unit)
+                state["active"] = "new"
+                launcher.unlink()
+                launcher.symlink_to(new / APP / "scripts/rca.sh")
+            with patch.multiple(bootstrap, **mocks):
+                result = bootstrap.native_recover(home)
+            assert result["status"] == "previous_service_restored"
+            assert result["signed_wss"] == "unconfirmed"
+            assert state["active"] == "old"
+            assert unit.read_bytes() == original_unit
+            assert launcher.readlink() == old / APP / "scripts/rca.sh"
+            assert receipts.read_bytes() == original_receipts
+            assert not any(p.exists() for p in (backup, intent, proof))
+        finally:
+            ctx.cleanup()
+
     # A process can authenticate and exit before the installer first observes
     # MainPID. The replacement has the same executable but not the proof PID.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
         state, mocks, verify = fake_services(home, old, new)
         def stale_proof(path, operation, device_id, target, pid):
-            bootstrap.native_create_file(path, json.dumps({
+            owned_file(path, json.dumps({
                 "operation_id": operation, "device_id": device_id,
                 "target_version": target, "status": "authenticated_wss", "pid": pid - 1
             }).encode())
@@ -475,9 +510,9 @@ def verify_isolated():
         unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
         state, mocks, verify = fake_services(home, old, new)
         state["active"] = "new"
-        bootstrap.native_create_file(Path(str(unit) + ".upgrade-backup"),
+        owned_file(Path(str(unit) + ".upgrade-backup"),
                                      old_unit.encode())
-        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+        owned_file(Path(str(key) + ".native-upgrade-intent"),
             json.dumps({"operation_id": "a" * 32, "device_id": ID,
                         "target_version": new.name}).encode())
         original_key, original_receipts = key.read_bytes(), receipts.read_bytes()
@@ -504,8 +539,8 @@ def verify_isolated():
         state, mocks, verify = fake_services(home, old, new)
         state["active"] = "new"
         backup = Path(str(unit) + ".upgrade-backup")
-        bootstrap.native_create_file(backup, old_unit.encode())
-        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+        owned_file(backup, old_unit.encode())
+        owned_file(Path(str(key) + ".native-upgrade-intent"),
             json.dumps({"operation_id": "b" * 32, "device_id": ID,
                         "target_version": old.name}).encode())
         with patch.multiple(bootstrap, **mocks):
@@ -526,8 +561,8 @@ def verify_isolated():
         old_unit = unit.read_text("utf8")
         unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
         backup = Path(str(unit) + ".upgrade-backup")
-        bootstrap.native_create_file(backup, old_unit.encode())
-        bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+        owned_file(backup, old_unit.encode())
+        owned_file(Path(str(key) + ".native-upgrade-intent"),
             json.dumps({"operation_id": "c" * 32, "device_id": ID,
                         "target_version": new.name}).encode())
         state, mocks, verify = fake_services(home, old, new, rollback_failure=True)

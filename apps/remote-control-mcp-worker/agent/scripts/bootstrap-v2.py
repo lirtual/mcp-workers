@@ -552,17 +552,6 @@ def native_sync_parent(path):
         os.close(fd)
 
 
-def native_create_file(path, data):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-    finally:
-        native_sync_parent(path)
-
-
 def native_atomic_file(path, data):
     fd, temporary = tempfile.mkstemp(prefix=".rca-upgrade-", dir=path.parent)
     try:
@@ -931,19 +920,36 @@ def native_recover(home):
                 or (old != new and record["target_version"] != new.name)):
             raise ValueError("Recovery intent or device identity mismatch")
         partial = not (has_backup and has_intent)
+        target = new
+        if not partial:
+            target = next(v for v in versions if v.name == record["target_version"])
+            validated_owned_version(target)
+            if (target == old or new not in (old, target)
+                    or json.loads((target / "bundle.json").read_text("utf8")).get("artifact_profile")
+                    != "rust-native-only-v1"):
+                raise ValueError("Recovery target does not match the reviewed native switch")
         if os.path.lexists(proof):
             if partial:
                 raise ValueError("Incomplete recovery records with activation proof")
-            signed = json.loads(native_owned_file(proof, 512))
-            if (set(signed) not in (set(record) | {"status"}, set(record) | {"status", "pid"})
-                    or any(signed.get(field) != value for field, value in record.items())
-                    or signed["status"] != "authenticated_wss"):
-                raise ValueError("Recovery proof does not match this attempt")
+            raw_proof = native_owned_file(proof, 512)
+            try:
+                signed = json.loads(raw_proof)
+            except json.JSONDecodeError:
+                # A killed Rust writer may leave an incomplete private proof.
+                # It never approves activation; the validated backup and
+                # intent still allow a safe, attended rollback.
+                pass
+            else:
+                if (not isinstance(signed, dict)
+                        or set(signed) not in (set(record) | {"status"}, set(record) | {"status", "pid"})
+                        or any(signed.get(field) != value for field, value in record.items())
+                        or signed["status"] != "authenticated_wss"):
+                    raise ValueError("Recovery proof does not match this attempt")
         native_receipts_compatible(home)
         launcher = home / ".local/bin/rca"
         if (not launcher.is_symlink()
                 or os.readlink(launcher) not in
-                {str(root / APP / "scripts/rca.sh") for root in (old, new)}):
+                {str(root / APP / "scripts/rca.sh") for root in (old, target)}):
             raise ValueError("Unreviewed recovery launcher")
         # Before any switch, intent can exist alone. After a verified commit
         # or rollback, backup can remain alone. Never guess which program to
@@ -955,13 +961,22 @@ def native_recover(home):
         current_exe = (new / APP / ".build/rca-standard-linux-candidate"
                        if new_info.get("artifact_profile") == "rust-native-only-v1"
                        else new / "bin/node")
-        if native_process_executable(pid) != current_exe:
-            raise ValueError("Recovery process does not match its systemd unit")
+        old_info = json.loads((old / "bundle.json").read_text("utf8"))
+        old_exe = (old / APP / ".build/rca-standard-linux-candidate"
+                   if old_info.get("artifact_profile") == "rust-native-only-v1"
+                   else old / "bin/node")
+        target_exe = target / APP / ".build/rca-standard-linux-candidate"
+        active_exe = native_process_executable(pid)
+        # The unit and the actual service can be one step apart if killed
+        # between atomic unit replacement and the following restart.
+        if active_exe != current_exe and (partial or active_exe not in (old_exe, target_exe)):
+            raise ValueError("Recovery process does not match its systemd unit or transaction")
         answer = native_consent(key, "freeze")
         if answer != "ready" and native_consent(key, "verify-frozen") != "ready":
             raise ValueError("Operations still active; recovery refused")
         try:
-            if (native_main_pid() != pid or unit.read_text("utf8") != current
+            if (native_main_pid() != pid or native_process_executable(pid) != active_exe
+                    or unit.read_text("utf8") != current
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
                 raise ValueError("Recovery state changed while frozen")
             if partial:
@@ -977,21 +992,17 @@ def native_recover(home):
                         native_sync_parent(item)
                 return {"status": "active_service_reconciled", "version": new.name,
                         "identity_preserved": True, "signed_wss": "unconfirmed"}
-            if current != previous:
+            if current != previous or active_exe != old_exe:
                 native_atomic_file(unit, previous.encode())
                 native_systemctl("daemon-reload")
                 native_systemctl("restart", UNIT)
             else:
                 native_consent(key, "release")
-            old_info = json.loads((old / "bundle.json").read_text("utf8"))
-            old_exe = (old / APP / ".build/rca-standard-linux-candidate"
-                       if old_info.get("artifact_profile") == "rust-native-only-v1"
-                       else old / "bin/node")
             if (native_process_executable(native_main_pid()) != old_exe
                     or unit.read_text("utf8") != previous
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
                 raise ValueError("Previous Agent was not restored")
-            native_restore_launcher(home, old, new)
+            native_restore_launcher(home, old, target)
             native_receipts_compatible(home)
             for item in (proof, intent, backup):
                 if os.path.lexists(item):
@@ -1005,7 +1016,8 @@ def native_recover(home):
             # Never release a Rust process if the on-disk systemd unit was
             # switched but restart failed. Keep it frozen for attended repair.
             try:
-                if unit.read_text("utf8") == current:
+                if (unit.read_text("utf8") == current and native_main_pid() == pid
+                        and native_process_executable(pid) == current_exe):
                     native_consent(key, "release")
             except Exception:
                 pass
