@@ -175,3 +175,15 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.match(release, /GITHUB_SHA.*git ls-remote origin refs\/heads\/main/, 'Historical reruns must compare to current main');
   assert.match(release, /Stage selected Worker Secrets for every release/);
 });
+
+
+test('Spec 1018 temporary probe rejects non-RCA and other release modes, and never broadens Clerk management Secret',()=>{
+  for(const [from,to,expected] of [
+    ['inputs.rca_clerk_probe != true &&','true &&',/exclude other release modes/],
+    ["!= \"remote-control-mcp-worker\" ]]; then","!= \"ssh-mcp-worker\" ]]; then",/reject other Workers/],
+    ["CLERK_SECRET_KEY: "+'$'+"{{ inputs.worker == 'mcp-gateway-worker' && secrets.CLERK_SECRET_KEY || '' }}","CLERK_SECRET_KEY: "+'$'+"{{ secrets.CLERK_SECRET_KEY }}",/management Secret/],
+  ]) {
+    assert.ok(release.includes(from));
+    assert.throws(()=>verifyReleaseWorkers(release.replace(from,to),RELEASE_WORKERS),expected);
+  }
+});

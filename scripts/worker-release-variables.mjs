@@ -150,6 +150,19 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "remote-control-mcp-worker") {
     const origin=remoteControlInstallOrigin(options.config);
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + origin);
+    if (env.RCA_CLERK_PROBE === "true") {
+      const key = env.CLERK_PILOT_PUBLISHABLE_KEY;
+      const owner = env.CLERK_PILOT_OWNER_USER_ID;
+      const issuer = env.CLERK_PILOT_ISSUER;
+      if (origin !== "https://rca.lirtual.dpdns.org" || issuer !== "https://clerk.lirtual.dpdns.org" ||
+          typeof key !== "string" || !/^pk_live_[A-Za-z0-9+/=]+$/.test(key) ||
+          Buffer.from(key.slice(8), "base64").toString("utf8") !== new URL(issuer).hostname + "$" ||
+          typeof owner !== "string" || !/^user_[A-Za-z0-9]+$/.test(owner)) {
+        throw Error("Spec 1018 probe requires the existing reviewed Clerk identity and canonical RCA origin");
+      }
+      variables.push("CLERK_PUBLISHABLE_KEY:" + key, "CLERK_OWNER_USER_ID:" + owner,
+        "RCA_CLERK_PROBE_EXPIRES_AT:" + (Math.floor(Date.now() / 1000) + 1800));
+    }
   }
   if (worker === 'database-mcp-worker') {
     // Validate with only reviewed named inputs; output retains unresolved Secret tokens.
