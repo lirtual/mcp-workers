@@ -12,6 +12,7 @@ use crate::native_read::parse_read_frame;
 use crate::windows_job::JobCleanup as CleanupState;
 #[cfg(windows)]
 use crate::windows_managed::WindowsManagedSessions as ManagedSessions;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde::Deserialize;
@@ -19,16 +20,18 @@ use serde_json::{json, Value};
 use std::io::{self, Read};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc::Receiver;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tungstenite::client::IntoClientRequest;
-use tungstenite::handshake::HandshakeError;
 use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::protocol::frame::coding::CloseCode;
-use tungstenite::protocol::{CloseFrame, WebSocket, WebSocketConfig};
-use tungstenite::stream::MaybeTlsStream;
+use tungstenite::protocol::{CloseFrame, WebSocketConfig};
+use tungstenite::Message;
 use url::Url;
 
 #[derive(Debug, Error)]
@@ -171,7 +174,8 @@ pub struct ExecutionResponse {
 
 pub struct AuthenticatedSocket {
     pub device_id: String,
-    socket: WebSocket<MaybeTlsStream<TcpStream>>,
+    runtime: Arc<Runtime>,
+    socket: WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
     timing: HeartbeatTiming,
     last_ping: Instant,
     awaiting_pong: Option<Instant>,
@@ -194,54 +198,51 @@ impl AuthenticatedSocket {
         self.awaiting_pong = None;
         self.last_auth_probe_sent = Instant::now();
         self.awaiting_auth = None;
-        self.configure_read_poll()
-    }
-
-    fn configure_read_poll(&mut self) -> Result<(), SessionError> {
-        self.configure_response_poll(false)
-    }
-
-    fn configure_response_poll(&mut self, pending: bool) -> Result<(), SessionError> {
-        // An idle connection can sleep for one second, but an admitted
-        // request may finish while the socket is waiting for another frame.
-        // Poll promptly only while a response is outstanding.
-        let maximum = if pending {
-            Duration::from_millis(20)
-        } else {
-            Duration::from_secs(1)
-        };
-        let timeout = self
-            .timing
-            .timeout
-            .min(maximum)
-            .max(Duration::from_millis(20));
-        // A successful TLS/WS handshake has a 10s dial timeout; persistent
-        // sockets instead poll for liveness without treating idle as failure.
-        match self.socket.get_mut() {
-            MaybeTlsStream::Plain(stream) => stream.set_read_timeout(Some(timeout))?,
-            MaybeTlsStream::Rustls(stream) => stream.sock.set_read_timeout(Some(timeout))?,
-            _ => return Err(SessionError::Protocol),
-        }
         Ok(())
     }
 
-    pub fn send_text(&mut self, frame: &str) -> Result<(), SessionError> {
+    // Single owner of the WSS state. A timed-out write ends the connection;
+    // a partly written frame must never be retried on the same socket.
+    async fn send_message(&mut self, message: Message) -> Result<(), SessionError> {
+        tokio::time::timeout(Duration::from_secs(10), self.socket.send(message))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "WSS write deadline"))??;
+        Ok(())
+    }
+
+    async fn send_text_async(&mut self, frame: &str) -> Result<(), SessionError> {
         if frame.len() > 65_536 {
             return Err(SessionError::Protocol);
         }
-        self.socket.send(tungstenite::Message::Text(frame.into()))?;
-        Ok(())
+        self.send_message(Message::Text(frame.into())).await
     }
 
-    /// One bounded socket read; liveness always advances even if a separate
-    /// execution worker is busy. Callers may poll outbound responses between reads.
-    pub fn poll_text(&mut self) -> Result<Option<String>, SessionError> {
+    pub fn send_text(&mut self, frame: &str) -> Result<(), SessionError> {
+        let runtime = Arc::clone(&self.runtime);
+        runtime.block_on(self.send_text_async(frame))
+    }
+
+    // Only the external atomic Stop needs periodic observation. Network and
+    // completed replies wake the reactor immediately; no active read polling.
+    fn next_deadline(&self) -> Instant {
+        let ping = self
+            .awaiting_pong
+            .map_or(self.last_ping + self.timing.interval, |since| {
+                since + self.timing.timeout
+            });
+        let auth = self.awaiting_auth.as_ref().map_or(
+            self.last_auth_probe_sent + self.timing.auth_interval,
+            |(_, since)| *since + self.timing.timeout,
+        );
+        ping.min(auth).min(Instant::now() + Duration::from_secs(1))
+    }
+
+    async fn advance_liveness(&mut self) -> Result<(), SessionError> {
         let now = Instant::now();
         if self
             .awaiting_pong
             .is_some_and(|since| now.duration_since(since) >= self.timing.timeout)
         {
-            let _ = self.socket.close(None);
             return Err(SessionError::HeartbeatTimeout);
         }
         if self
@@ -249,14 +250,12 @@ impl AuthenticatedSocket {
             .as_ref()
             .is_some_and(|(_, since)| now.duration_since(*since) >= self.timing.timeout)
         {
-            let _ = self.socket.close(None);
             return Err(SessionError::AuthorizationTimeout);
         }
         if self.awaiting_pong.is_none()
             && now.duration_since(self.last_ping) >= self.timing.interval
         {
-            self.socket
-                .send(tungstenite::Message::Text("rc-v2:ping".into()))?;
+            self.send_text_async("rc-v2:ping").await?;
             self.awaiting_pong = Some(now);
             self.last_ping = now;
         }
@@ -266,13 +265,18 @@ impl AuthenticatedSocket {
             let mut random = [0u8; 16];
             getrandom::fill(&mut random).map_err(|_| SessionError::Entropy)?;
             let nonce: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-            self.socket.send(tungstenite::Message::Text(
-                format!("rc-v2:auth:{nonce}").into(),
-            ))?;
+            self.send_text_async(&format!("rc-v2:auth:{nonce}")).await?;
             self.awaiting_auth = Some((nonce, now));
             self.last_auth_probe_sent = now;
         }
-        match self.socket.read() {
+        Ok(())
+    }
+
+    async fn process_frame(
+        &mut self,
+        frame: Option<Result<Message, tungstenite::Error>>,
+    ) -> Result<Option<String>, SessionError> {
+        match frame.ok_or(SessionError::Ws(tungstenite::Error::ConnectionClosed))? {
             Ok(tungstenite::Message::Text(frame)) if frame == "rc-v2:pong" => {
                 // An unsolicited or duplicated pong is not admission.
                 if self.awaiting_pong.is_some() {
@@ -292,8 +296,13 @@ impl AuthenticatedSocket {
             Ok(tungstenite::Message::Text(frame)) if frame.len() <= 65_536 => {
                 return Ok(Some(frame.to_string()));
             }
-            // Tungstenite queues a matching transport-level pong.
-            Ok(tungstenite::Message::Ping(_) | tungstenite::Message::Pong(_)) => {}
+            // Tungstenite queues the matching transport-level pong.
+            Ok(Message::Ping(_)) => {
+                tokio::time::timeout(Duration::from_secs(10), self.socket.flush())
+                    .await
+                    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "WSS pong deadline"))??;
+            }
+            Ok(Message::Pong(_)) => {}
             Ok(tungstenite::Message::Close(Some(frame)))
                 if frame.code == tungstenite::protocol::frame::coding::CloseCode::Policy =>
             {
@@ -315,7 +324,6 @@ impl AuthenticatedSocket {
                 ) => {}
             Err(error) => return Err(SessionError::Ws(error)),
             _ => {
-                let _ = self.socket.close(None);
                 return Err(SessionError::Protocol);
             }
         }
@@ -324,11 +332,21 @@ impl AuthenticatedSocket {
 
     /// Compatibility helper for the one-shot Gate 0 probe.
     pub fn receive_text(&mut self) -> Result<String, SessionError> {
-        loop {
-            if let Some(frame) = self.poll_text()? {
-                return Ok(frame);
+        let runtime = Arc::clone(&self.runtime);
+        runtime.block_on(async {
+            loop {
+                self.advance_liveness().await?;
+                let deadline = self.next_deadline();
+                tokio::select! {
+                    frame = self.socket.next() => {
+                        if let Some(text) = self.process_frame(frame).await? {
+                            return Ok(text);
+                        }
+                    }
+                    _ = tokio::time::sleep_until(deadline.into()) => {}
+                }
             }
-        }
+        })
     }
 
     /// Liveness continues while the executor works. Each pump creates a new
@@ -340,7 +358,7 @@ impl AuthenticatedSocket {
         &mut self,
         stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
-        outgoing: &Receiver<ExecutionResponse>,
+        outgoing: &mut Receiver<ExecutionResponse>,
     ) -> Result<(), SessionError> {
         // The transport has no verified process ownership or cleanup ability.
         self.pump_with_cleanup(stop, incoming, outgoing, || CleanupStatus::Uncertain)
@@ -352,7 +370,7 @@ impl AuthenticatedSocket {
         &mut self,
         stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
-        outgoing: &Receiver<ExecutionResponse>,
+        outgoing: &mut Receiver<ExecutionResponse>,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
         let result = self.pump_scoped(
@@ -373,7 +391,7 @@ impl AuthenticatedSocket {
         &mut self,
         stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
-        outgoing: &Receiver<ExecutionResponse>,
+        outgoing: &mut Receiver<ExecutionResponse>,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
         let result = self.pump_scoped(
@@ -396,7 +414,7 @@ impl AuthenticatedSocket {
         &mut self,
         stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
-        outgoing: &Receiver<ExecutionResponse>,
+        outgoing: &mut Receiver<ExecutionResponse>,
         managed: &Arc<ManagedSessions>,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
@@ -422,7 +440,7 @@ impl AuthenticatedSocket {
         &mut self,
         stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
-        outgoing: &Receiver<ExecutionResponse>,
+        outgoing: &mut Receiver<ExecutionResponse>,
         cleanup: F,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
@@ -435,85 +453,88 @@ impl AuthenticatedSocket {
         &mut self,
         stop: &Arc<AtomicBool>,
         incoming: &SyncSender<ExecutionRequest>,
-        outgoing: &Receiver<ExecutionResponse>,
+        outgoing: &mut Receiver<ExecutionResponse>,
         lease: &ExecutionLease,
         cleanup: F,
         policy: FramePolicy,
     ) -> Result<(), SessionError> {
-        // Each successfully admitted request has exactly one response on
-        // this incarnation, or its lease is invalidated when the pump exits.
-        // Stale replies must not alter this connection's outstanding count.
-        let mut pending = 0usize;
-        while !stop.load(Ordering::Acquire) {
-            for _ in 0..4 {
-                match outgoing.try_recv() {
-                    Ok(reply) if reply.lease.same_incarnation(lease) && reply.lease.is_active() => {
-                        self.send_text(&reply.frame)?;
-                        pending = pending.checked_sub(1).ok_or(SessionError::Protocol)?;
-                        if pending == 0 {
-                            self.configure_response_poll(false)?;
+        let runtime = Arc::clone(&self.runtime);
+        runtime.block_on(async {
+            while !stop.load(Ordering::Acquire) {
+                self.advance_liveness().await?;
+                let deadline = self.next_deadline();
+                let frame = tokio::select! {
+                    frame = self.socket.next() => {
+                        if stop.load(Ordering::Acquire) { return Ok(()); }
+                        match self.process_frame(frame).await {
+                            Ok(frame) => frame,
+                            Err(_) if stop.load(Ordering::Acquire) => return Ok(()),
+                            Err(error) => return Err(error),
                         }
                     }
-                    Ok(_) => {} // Discard results from a prior socket incarnation.
-                    Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-                }
-            }
-            let frame = match self.poll_text() {
-                Ok(value) => value,
-                Err(_) if stop.load(Ordering::Acquire) => return Ok(()),
-                Err(error) => return Err(error),
-            };
-            // A local Stop may arrive while the blocking read is pending.
-            // Prevent that frame from becoming executable after Stop.
-            if stop.load(Ordering::Acquire) {
-                return Ok(());
-            }
-            if let Some(frame) = frame {
-                if let Some(request_id) = revocation_request_id(&frame)? {
-                    lease.revoke(); // Abort queued and in-flight operations before cleanup.
-                    let status = cleanup();
-                    // Even if the socket died while cleanup ran, revocation is
-                    // permanent. The Worker will honestly report unconfirmed.
-                    let _ = self.send_text(
-                        &json!({"kind":"revoke_cleanup_result","request_id":request_id,
-                            "status":status.as_str()})
-                        .to_string(),
-                    );
-                    return Err(SessionError::Policy);
-                }
-                let permitted = match &policy {
-                    FramePolicy::Any => true,
-                    FramePolicy::ReadOnly => parse_read_frame(&frame).is_ok(),
-                    FramePolicy::NativeFiles => {
-                        crate::native_file::parse_native_file_frame(&frame).is_ok()
+                    reply = outgoing.recv(), if !outgoing.is_closed() || !outgoing.is_empty() => {
+                        if let Some(reply) = reply {
+                            if reply.lease.same_incarnation(lease) && reply.lease.is_active() {
+                                self.send_text_async(&reply.frame).await?;
+                            }
+                        }
+                        continue;
                     }
-                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                    FramePolicy::NativeManaged(_) => {
-                        crate::native_file::parse_native_managed_frame(&frame).is_ok()
-                    }
+                    _ = tokio::time::sleep_until(deadline.into()) => continue,
                 };
-                if !permitted {
-                    // A signed connection is not an authorization to interpret
-                    // unexpected traffic. Keep failure scoped to this socket.
-                    let _ = self.socket.close(Some(CloseFrame {
-                        code: CloseCode::Policy,
-                        reason: "invalid native operation".into(),
-                    }));
-                    return Err(SessionError::Policy);
+                if stop.load(Ordering::Acquire) {
+                    return Ok(());
                 }
-                incoming
-                    .try_send(ExecutionRequest {
-                        frame,
-                        lease: lease.clone(),
-                    })
-                    .map_err(|_| SessionError::Queue)?;
-                if pending == 0 {
-                    self.configure_response_poll(true)?;
+                if let Some(frame) = frame {
+                    if let Some(request_id) = revocation_request_id(&frame)? {
+                        lease.revoke(); // Abort queued and in-flight operations before cleanup.
+                        let status = cleanup();
+                        // Even if the socket died while cleanup ran, revocation is
+                        // permanent. The Worker will honestly report unconfirmed.
+                        let frame = json!({"kind":"revoke_cleanup_result","request_id":request_id,
+                            "status":status.as_str()})
+                        .to_string();
+                        // Cleanup has a 1.8s budget; never wait the normal write
+                        // deadline for an acknowledgement on a broken socket.
+                        let _ = tokio::time::timeout(
+                            Duration::from_millis(500),
+                            self.send_text_async(&frame),
+                        )
+                        .await;
+                        return Err(SessionError::Policy);
+                    }
+                    let permitted = match &policy {
+                        FramePolicy::Any => true,
+                        FramePolicy::ReadOnly => parse_read_frame(&frame).is_ok(),
+                        FramePolicy::NativeFiles => {
+                            crate::native_file::parse_native_file_frame(&frame).is_ok()
+                        }
+                        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                        FramePolicy::NativeManaged(_) => {
+                            crate::native_file::parse_native_managed_frame(&frame).is_ok()
+                        }
+                    };
+                    if !permitted {
+                        // A signed connection is not an authorization to interpret
+                        // unexpected traffic. Keep failure scoped to this socket.
+                        let _ = self
+                            .send_message(Message::Close(Some(CloseFrame {
+                                code: CloseCode::Policy,
+                                reason: "invalid native operation".into(),
+                            })))
+                            .await;
+                        return Err(SessionError::Policy);
+                    }
+                    incoming
+                        .try_send(ExecutionRequest {
+                            frame,
+                            lease: lease.clone(),
+                        })
+                        .map_err(|_| SessionError::Queue)?;
                 }
-                pending += 1;
             }
-        }
-        Ok(())
+            Ok(())
+        })
     }
 }
 
@@ -617,7 +638,7 @@ pub fn maintain_authenticated_transport(
     device_id: &str,
     stop: &Arc<AtomicBool>,
     incoming: &SyncSender<ExecutionRequest>,
-    outgoing: &Receiver<ExecutionResponse>,
+    outgoing: &mut Receiver<ExecutionResponse>,
     timing: HeartbeatTiming,
 ) -> Result<(), SessionError> {
     maintain_transport_mode(
@@ -644,7 +665,7 @@ pub fn maintain_native_read_transport(
     device_id: &str,
     stop: &Arc<AtomicBool>,
     incoming: &SyncSender<ExecutionRequest>,
-    outgoing: &Receiver<ExecutionResponse>,
+    outgoing: &mut Receiver<ExecutionResponse>,
     timing: HeartbeatTiming,
 ) -> Result<(), SessionError> {
     maintain_transport_mode(
@@ -671,7 +692,7 @@ pub fn maintain_native_file_transport(
     device_id: &str,
     stop: &Arc<AtomicBool>,
     incoming: &SyncSender<ExecutionRequest>,
-    outgoing: &Receiver<ExecutionResponse>,
+    outgoing: &mut Receiver<ExecutionResponse>,
     timing: HeartbeatTiming,
 ) -> Result<(), SessionError> {
     maintain_transport_mode(
@@ -705,7 +726,7 @@ pub fn maintain_native_managed_transport(
     device_id: &str,
     stop: &Arc<AtomicBool>,
     incoming: &SyncSender<ExecutionRequest>,
-    outgoing: &Receiver<ExecutionResponse>,
+    outgoing: &mut Receiver<ExecutionResponse>,
     config: ManagedTransportConfig,
 ) -> Result<(), SessionError> {
     maintain_transport_mode(
@@ -730,7 +751,7 @@ fn maintain_transport_mode(
     device_id: &str,
     stop: &Arc<AtomicBool>,
     incoming: &SyncSender<ExecutionRequest>,
-    outgoing: &Receiver<ExecutionResponse>,
+    outgoing: &mut Receiver<ExecutionResponse>,
     mode: TransportMode,
 ) -> Result<(), SessionError> {
     let mut backoff = ReconnectBackoff::default();
@@ -887,30 +908,47 @@ pub fn connect_authenticated(
     }
     let stream = connected.ok_or(SessionError::Io(last_error))?;
     stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let (mut socket, response) =
-        tungstenite::client_tls_with_config(request, stream, Some(config), None).map_err(
-            |error| match error {
-                HandshakeError::Failure(tungstenite::Error::Http(response))
-                    if [401, 403, 404].contains(&response.status().as_u16()) =>
-                {
-                    SessionError::Rejected(response.status().as_u16())
-                }
-                HandshakeError::Failure(failure) => SessionError::Ws(failure),
-                HandshakeError::Interrupted(_) => SessionError::Protocol,
-            },
-        )?;
+    stream.set_nonblocking(true)?;
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?,
+    );
+    let (mut socket, response) = runtime.block_on(async {
+        let stream = tokio::net::TcpStream::from_std(stream)?;
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), None),
+        )
+        .await
+        .map_err(|_| {
+            SessionError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "WSS handshake deadline",
+            ))
+        })?
+        .map_err(|error| match error {
+            tungstenite::Error::Http(response)
+                if [401, 403, 404].contains(&response.status().as_u16()) =>
+            {
+                SessionError::Rejected(response.status().as_u16())
+            }
+            error => SessionError::Ws(error),
+        })
+    })?;
     if response
         .headers()
         .get(SEC_WEBSOCKET_PROTOCOL)
         .and_then(|v| v.to_str().ok())
         != Some("rc-v2")
     {
-        let _ = socket.close(None);
+        let _ = runtime.block_on(async {
+            tokio::time::timeout(Duration::from_secs(1), socket.close(None)).await
+        });
         return Err(SessionError::Protocol);
     }
-    let mut authenticated = AuthenticatedSocket {
+    let authenticated = AuthenticatedSocket {
+        runtime,
         device_id: device_id.to_owned(),
         socket,
         timing: HeartbeatTiming::default(),
@@ -919,7 +957,6 @@ pub fn connect_authenticated(
         last_auth_probe_sent: Instant::now(),
         awaiting_auth: None,
     };
-    authenticated.configure_read_poll()?;
     Ok(authenticated)
 }
 

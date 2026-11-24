@@ -87,7 +87,7 @@ fn transient_transport_failure_redials_with_new_challenge_but_policy_stops() {
             .unwrap();
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
-    let (_answers_tx, answers_rx) = mpsc::channel();
+    let (_answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let stop = std::sync::Arc::new(AtomicBool::new(false));
     let result = maintain_authenticated_transport(
         &endpoint,
@@ -95,7 +95,7 @@ fn transient_transport_failure_redials_with_new_challenge_but_policy_stops() {
         DEVICE_ID,
         &stop,
         &requests_tx,
-        &answers_rx,
+        &mut answers_rx,
         HeartbeatTiming::default(),
     );
     assert!(matches!(result, Err(SessionError::Policy)));

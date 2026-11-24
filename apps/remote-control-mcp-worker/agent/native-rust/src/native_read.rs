@@ -378,11 +378,12 @@ pub fn execute_read_frame(command: &ReadCommand) -> String {
 pub fn run_native_read_executor(
     stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     incoming: &std::sync::mpsc::Receiver<crate::session::ExecutionRequest>,
-    outgoing: &std::sync::mpsc::SyncSender<crate::session::ExecutionResponse>,
+    outgoing: &tokio::sync::mpsc::Sender<crate::session::ExecutionResponse>,
 ) -> Result<(), NativeReadExecutorError> {
     use std::sync::atomic::Ordering;
-    use std::sync::mpsc::{RecvTimeoutError, TrySendError};
+    use std::sync::mpsc::RecvTimeoutError;
     use std::time::Duration;
+    use tokio::sync::mpsc::error::TrySendError;
     while !stop.load(Ordering::Acquire) {
         let request = match incoming.recv_timeout(Duration::from_millis(100)) {
             Ok(request) => request,
@@ -405,7 +406,7 @@ pub fn run_native_read_executor(
         match outgoing.try_send(request.response(response)) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => return Err(NativeReadExecutorError::Queue),
-            Err(TrySendError::Disconnected(_)) => break,
+            Err(TrySendError::Closed(_)) => break,
         }
     }
     Ok(())
@@ -432,7 +433,7 @@ pub fn run_native_read_session(
     use std::sync::atomic::Ordering;
     use std::sync::mpsc::sync_channel;
     let (request_sender, requests) = sync_channel(4);
-    let (response_sender, responses) = sync_channel(4);
+    let (response_sender, mut responses) = tokio::sync::mpsc::channel(4);
     let worker_stop = std::sync::Arc::clone(stop);
     let worker = std::thread::spawn(move || {
         run_native_read_executor(&worker_stop, &requests, &response_sender)
@@ -443,7 +444,7 @@ pub fn run_native_read_session(
         device_id,
         stop,
         &request_sender,
-        &responses,
+        &mut responses,
         timing,
     );
     stop.store(true, Ordering::Release);
