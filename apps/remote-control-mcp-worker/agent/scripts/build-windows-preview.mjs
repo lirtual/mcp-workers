@@ -121,15 +121,15 @@ export function buildWindowsPreview(args) {
     writeFileSync(path.join(stage, name), content, { mode: 0o600 });
     hashes[name] = digest(Buffer.from(content));
   }
-  // Preserve the same rca.cmd entry; the native candidate currently
-  // exposes only status and refuses unsupported management operations.
+  // Preserve the same rca.cmd entry; the native candidate dispatches its
+  // reviewed local status and temporary foreground operations.
   const launcherSource = nativeOnly
     ? '@echo off\nsetlocal DisableDelayedExpansion\n"%~dp0apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe" --cli %*\nexit /b %ERRORLEVEL%\n'
     : readFileSync(path.join(root, "scripts/windows-rca.cmd"), "utf8");
   const launcherBytes = Buffer.from(launcherSource.replace(/\r?\n/g, "\r\n"));
   writeFileSync(path.join(stage, "rca.cmd"), launcherBytes, { mode: 0o600 });
   hashes["rca.cmd"] = digest(launcherBytes);
-  // Bundle the already-reviewed public installer itself for StageOnly use.
+  // Bundle the same reviewed installer for staging and pinned candidate onboarding.
   // One immutable source for Release/JWT-independent checks; do not fetch or
   // execute a remote PowerShell script at upgrade time.
   const stageInstaller = "apps/remote-control-agent/scripts/windows-stage-install.ps1";

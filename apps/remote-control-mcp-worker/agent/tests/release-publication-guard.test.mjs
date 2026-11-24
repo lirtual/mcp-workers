@@ -182,7 +182,7 @@ test('push, an incomplete set, a duplicate, an unreviewed run, drift, damage, an
     /unreviewed native candidate/);
 });
 
-test('a stage-only Windows native candidate cannot enter a stable Release', () => {
+test('an unaccepted Windows native-only candidate cannot enter a stable Release', () => {
   const input = reviewed();
   const windows = input.candidates.find(({target}) => target === 'windows-x64');
   windows.bundle.artifact_profile = 'rust-native-only-v1';

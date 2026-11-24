@@ -173,6 +173,12 @@ if ($Action -eq 'Endpoint') {
   (Read-TaskLaunch $task.Actions[0]).Endpoint
   exit 0
 }
+function Register-OwnedTask($scheduledAction) {
+  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
+  $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
+  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $name -Action $scheduledAction -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+}
 if ($Action -eq 'Enable') {
   if (Test-Path -LiteralPath ([IO.Path]::Combine([IO.Path]::GetDirectoryName($root),'windows-native-upgrade.json'))) {
     throw 'Unreconciled native upgrade'
@@ -190,10 +196,7 @@ if ($Action -eq 'Enable') {
   Check-Program $background $Entry
   $arguments = '"' + $Entry + '" run --endpoint "' + $Endpoint + '"'
   $scheduledAction = New-ScheduledTaskAction -Execute $background -Argument $arguments -WorkingDirectory ([IO.Path]::GetDirectoryName($Entry))
-  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
-  $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-  Register-ScheduledTask -TaskName $name -Action $scheduledAction -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+  Register-OwnedTask $scheduledAction
   'enabled'
   exit 0
 }
@@ -606,10 +609,7 @@ if ($Action -eq 'ActivateNative') {
         }
         Set-ScheduledTask -TaskName $name -Action $action -ErrorAction Stop | Out-Null
       } else {
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
-        $principal = New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
-        $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-        Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
+        Register-OwnedTask $action
       }
       Start-ScheduledTask -TaskName $name -ErrorAction Stop
       $deadline = [Diagnostics.Stopwatch]::StartNew()
