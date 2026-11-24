@@ -295,7 +295,7 @@ mod linux {
             proof,
             json!({
                 "operation_id": operation_id,"device_id":ID,
-                "target_version":version,"status":"authenticated_wss"
+                "target_version":version,"status":"authenticated_wss","pid":child.0.id()
             })
         );
         let deadline = Instant::now() + Duration::from_secs(10);
