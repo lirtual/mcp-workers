@@ -179,8 +179,16 @@ jobs:
           python3 -B "$agent/scripts/validate-local-archive.py" "$archive" "$version" "$SPEC914_TARGET"
           docker pull --quiet python:3.12-slim-bookworm >/dev/null
           temp_dir="$(mktemp -d)"
-          trap 'rm -rf "$temp_dir"' EXIT
+          image=rca-native-offline-smoke:local
+          trap 'docker image rm "$image" >/dev/null 2>&1 || true; rm -rf "$temp_dir"' EXIT
           chmod 755 "$temp_dir"
+          # The official Python image installs its interpreter in /usr/local.
+          # Match the production OS's fixed /usr/bin/python3 contract without
+          # altering the reviewed launcher or the read-only test container.
+          docker build --network none --pull=false -t "$image" -f - "$temp_dir" <<'DOCKERFILE'
+          FROM python:3.12-slim-bookworm
+          RUN ln -s /usr/local/bin/python3 /usr/bin/python3
+          DOCKERFILE
           cp "$agent/scripts/bootstrap-v2.py" "$agent/scripts/validate-local-archive.py" "$temp_dir/"
           chmod 644 "$temp_dir/"*.py
           docker run --rm --network none --read-only \
@@ -188,8 +196,9 @@ jobs:
             --user 65534:65534 --tmpfs /tmp:rw,exec,mode=1777 \
             -v "$archive:/opt/agent.tar.gz:ro" \
             -v "$temp_dir:/opt/bootstrap:ro" \
-            python:3.12-slim-bookworm sh -ec \
-            'for tool in node git cc; do
+            "$image" sh -ec \
+            'test -x /usr/bin/python3
+             for tool in node git cc; do
                if command -v "$tool" >/dev/null; then exit 11; fi
              done
              exec python3 -B /opt/bootstrap/validate-local-archive.py \
