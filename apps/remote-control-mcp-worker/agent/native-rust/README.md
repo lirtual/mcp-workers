@@ -1,6 +1,6 @@
 # RCA Rust Native Agent
 
-The shared Rust RCA core and OS adapters are released in Stable v0.1.58 for Linux x64/arm64 and Windows x64. macOS x64/arm64 retain the Node v2 runtime; native macOS migration is deferred. [Spec #914](https://github.com/lirtual/mcp-workers/issues/914) records acceptance, including remaining real packaged Session, first/re-pair and stable-to-stable detached upgrade evidence. Root and Legacy remain independently tracked by #912 and #911.
+The shared Rust RCA core and OS adapters ship in the repository-wide immutable Stable Latest for Linux x64/arm64 and Windows x64. macOS x64/arm64 retain the Node v2 runtime; native macOS migration is deferred. [Spec #914](https://github.com/lirtual/mcp-workers/issues/914) records the real packaged Ubuntu and Windows Session acceptance, and the owner-approved deferral of physical permanent-device first enrollment/re-pair and successful detached stable-to-stable upgrade verification until actual use. Existing native lifecycle safeguards and recovery tests remain required. Root and Legacy remain independently tracked by #912 and #911.
 
 ## Runtime and release contract
 
