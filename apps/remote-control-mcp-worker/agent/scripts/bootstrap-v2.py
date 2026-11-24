@@ -46,6 +46,7 @@ ALLOWED_DIRS = frozenset((
 ALLOWED_FILES = frozenset((
     "bin/node", "bundle.json", APP + "/package.json",
     APP + "/.build/rca-standard-linux-candidate",
+    APP + "/.build/rca-session-linux-candidate",
     APP + "/scripts/install-v2.mjs", APP + "/scripts/bootstrap-v2.py",
     APP + "/scripts/manage-v2.py", APP + "/.build/session-supervisor",
     APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
@@ -56,7 +57,7 @@ ALLOWED_FILES = frozenset((
     APP + "/scripts/verify-v2-release.mjs", APP + "/scripts/rca.sh",
 ))
 ELF_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor",
-                        APP + "/.build/rca-standard-linux-candidate"))
+                        APP + "/.build/rca-standard-linux-candidate", APP + "/.build/rca-session-linux-candidate"))
 EXEC_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor"))
 NODE_REQUIRED = frozenset((
     APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
@@ -200,6 +201,13 @@ def inspect_archive(archive, tag, target):
                         APP + "/.build/rca-standard-linux-candidate",
                         APP + "/scripts/bootstrap-v2.py", APP + "/scripts/manage-v2.py",
                         APP + "/scripts/rca.sh"}
+        session_entry = APP + "/.build/rca-session-linux-candidate"
+        if "session_runtime" in manifest:
+            if not native_only or target != "linux-x64-glibc" or manifest["session_runtime"] != "rust-session-v1":
+                raise ValueError("Unreviewed packaged Session runtime")
+            native_files.add(session_entry)
+        elif session_entry in names:
+            raise ValueError("Undeclared packaged Session runtime")
         if native_only:
             files = {name for name, member in records if member.isfile()}
             if files != native_files:
@@ -321,7 +329,7 @@ def unpack_verified(archive, destination, records, tag, target):
                         os.fsync(stream.fileno())
                 except Exception:
                     raise
-                if name in EXEC_FILES or name == APP + "/.build/rca-standard-linux-candidate" or name in (
+                if name in ELF_FILES or name in (
                         APP + "/scripts/manage-v2.py", APP + "/scripts/rca.sh"):
                     output.chmod(0o700)
         # Under this private parent and exclusive flock, only the current user

@@ -33,20 +33,24 @@ export function parseArgs(argv) {
   const params = {};
   for (let i = 0; i < argv.length; i += 2) {
     if (!["--version", "--target", "--node-bin", "--native", "--out", "--node-sha256", "--native-sha256",
-      "--rust-agent-bin", "--rust-agent-sha256", "--artifact-profile"].includes(argv[i]) ||
+      "--rust-agent-bin", "--rust-agent-sha256", "--artifact-profile", "--rust-session-bin", "--rust-session-sha256"].includes(argv[i]) ||
       !argv[i+1] || params[argv[i]]) throw new Error("Invalid packaging parameters.");
     params[{"--node-bin":"nodeBin","--node-sha256":"nodeSha256","--native-sha256":"nativeSha256",
       "--rust-agent-bin":"rustAgentBin","--rust-agent-sha256":"rustAgentSha256",
-      "--artifact-profile":"artifactProfile"}[argv[i]] ?? argv[i].slice(2)] = argv[i+1];
+      "--artifact-profile":"artifactProfile", "--rust-session-bin":"rustSessionBin", "--rust-session-sha256":"rustSessionSha256"}[argv[i]] ?? argv[i].slice(2)] = argv[i+1];
   }
   const hasRustCandidate = Boolean(params.rustAgentBin || params.rustAgentSha256);
   const nativeOnly = params.artifactProfile === "rust-native-only-v1";
-  if ((params.artifactProfile !== undefined && !nativeOnly) ||
+  const hasSession = Boolean(params.rustSessionBin || params.rustSessionSha256);
+  if ((hasSession && (!nativeOnly || params.target !== "linux-x64-glibc" ||
+      !params.rustSessionBin || !path.isAbsolute(params.rustSessionBin) ||
+      !/^[a-f0-9]{64}$/.test(params.rustSessionSha256))) ||
+      (params.artifactProfile !== undefined && !nativeOnly) ||
       (nativeOnly && (!hasRustCandidate || !params.target?.startsWith("linux-"))) ||
       (hasRustCandidate && (!params.rustAgentBin || !params.rustAgentSha256 ||
       !params.version?.includes("-rust-candidate") ||
       !["linux-x64-glibc","linux-arm64-glibc","darwin-arm64","darwin-x64"].includes(params.target))) ||
-      Object.keys(params).length !== (hasRustCandidate ? (nativeOnly ? 10 : 9) : 7) ||
+      Object.keys(params).length !== (hasRustCandidate ? (nativeOnly ? 10 : 9) : 7) + (hasSession ? 2 : 0) ||
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(params.version) ||
       !ALLOWED.has(params.target) ||
       !/^[a-f0-9]{64}$/.test(params.nodeSha256) ||
@@ -275,9 +279,17 @@ export function build(args) {
   const darwin = args.target === "darwin-arm64" || args.target === "darwin-x64";
   const nativeOnly = args.artifactProfile === "rust-native-only-v1";
   if (nativeOnly && (!rustCandidate || darwin)) throw Error("Native-only staging requires reviewed Linux Rust.");
+  const hasSession = Boolean(args.rustSessionBin || args.rustSessionSha256);
+  if (hasSession && (!nativeOnly || args.target !== "linux-x64-glibc"))
+    throw Error("Packaged Session entry requires reviewed Linux x64 native-only archive.");
+  const sessionCandidate = hasSession ? ensureRustCandidate({
+    target:args.target, rustAgentBin:args.rustSessionBin,
+    rustAgentSha256:args.rustSessionSha256,maxGlibcMin:glibcMin,
+  }) : null;
   // No runtime Node symbols may determine the ABI floor of a Node-free archive.
   const effectiveGlibcMin = nativeOnly
-    ? [requiredGlibcVersion(args.native),rustCandidate.glibcMin].sort((a,b)=>{
+    ? [requiredGlibcVersion(args.native),rustCandidate.glibcMin,
+      ...(sessionCandidate ? [sessionCandidate.glibcMin] : [])].sort((a,b)=>{
       const [am,an]=a.split(".").map(Number),[bm,bn]=b.split(".").map(Number);
       return am-bm || an-bn;
     }).at(-1) : glibcMin;
@@ -299,6 +311,11 @@ export function build(args) {
     const candidateName = darwin ? "rca-standard-darwin-candidate" : "rca-standard-linux-candidate";
     copyFileSync(args.rustAgentBin,
       path.join(work, "apps/remote-control-agent/.build",candidateName));
+  }
+  if (sessionCandidate) {
+    const dest=path.join(work,"apps/remote-control-agent/.build/rca-session-linux-candidate");
+    copyFileSync(args.rustSessionBin,dest);
+    chmodSync(dest,0o700);
   }
   for (const relative of [...(nativeOnly ? [] : ["bin/node"]),
       "apps/remote-control-agent/.build/"+helperFile,
@@ -374,6 +391,7 @@ export function build(args) {
       candidate_profile:"standard-linux-rust-runtime-v1"}) : {agent_runtime:"node-v2"}),
     ...(darwin ? {candidate_profile:"darwin-permanent-local-v1",native_supervisor:"darwin-owned-group-v1",source_commit:sourceCommit.stdout.trim()} :
       {glibc_build:libc,glibc_min:effectiveGlibcMin}),modules,
+    ...(sessionCandidate ? {session_runtime:"rust-session-v1"} : {}),
     artifact_schema:1,device_protocol:2,receipt_schema:1,
     ...(!darwin ? {upgrade_profile:"paired-full-v1"} : {})
   })+"\n",{mode:0o600});

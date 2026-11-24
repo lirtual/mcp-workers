@@ -269,6 +269,7 @@ function safePath(name,directory) {
        n==="apps/remote-control-agent/scripts/"+name) ||
     n==="apps/remote-control-agent/.build/session-supervisor" ||
     n==="apps/remote-control-agent/.build/rca-standard-linux-candidate" ||
+    n==="apps/remote-control-agent/.build/rca-session-linux-candidate" ||
     /^apps\/remote-control-agent\/src\/[a-z0-9-]+\.js$/.test(n))) {
     throw new Error("Unreviewed archive file.");
   }
@@ -324,6 +325,12 @@ export function inspectTarGzip(gzip,{tag,target}) {
   const nativeFiles=new Set(["bundle.json",app+"/.build/session-supervisor",
     app+"/.build/rca-standard-linux-candidate",app+"/scripts/bootstrap-v2.py",
     app+"/scripts/manage-v2.py",app+"/scripts/rca.sh"]);
+  const sessionEntry=app+"/.build/rca-session-linux-candidate";
+  if (manifest.session_runtime!==undefined) {
+    if (!nativeOnly || target!=="linux-x64-glibc" || manifest.session_runtime!=="rust-session-v1")
+      throw Error("Unreviewed packaged Session runtime.");
+    nativeFiles.add(sessionEntry);
+  } else if (entries.has(sessionEntry)) throw Error("Undeclared packaged Session runtime.");
   const required=nativeOnly ? nativeFiles : new Set(["bin/node","bundle.json",
     app+"/package.json",app+"/src/v2-main.js",app+"/scripts/install-v2.mjs",
     app+"/.build/session-supervisor"]);
@@ -368,7 +375,8 @@ export function inspectTarGzip(gzip,{tag,target}) {
   const expected=target==="linux-x64-glibc" ? 62 : 183;
   for(const name of [...(nativeOnly ? [] : ["bin/node"]),
       "apps/remote-control-agent/.build/session-supervisor",
-      ...(rustCandidate ? ["apps/remote-control-agent/.build/rca-standard-linux-candidate"] : [])]) {
+      ...(rustCandidate ? ["apps/remote-control-agent/.build/rca-standard-linux-candidate"] : []),
+      ...(manifest.session_runtime ? [sessionEntry] : [])]) {
     const b=entries.get(name).data;
     if(b.length<64 || b.toString("hex",0,4)!=="7f454c46" ||
       b[4]!==2 || b[5]!==1 || b.readUInt16LE(18)!==expected)
@@ -402,6 +410,7 @@ export async function extractVerifiedAsset(pinned,bytes,root) {
         JSON.parse(entries.get("bundle.json").data.toString("utf8")).artifact_profile==="rust-native-only-v1";
       if(name==="bin/node"||name==="apps/remote-control-agent/.build/session-supervisor"||
           name==="apps/remote-control-agent/.build/rca-standard-linux-candidate"||
+          name==="apps/remote-control-agent/.build/rca-session-linux-candidate"||
           (nativeOnly && ["apps/remote-control-agent/scripts/rca.sh",
             "apps/remote-control-agent/scripts/manage-v2.py"].includes(name)))
         await chmod(dest,0o700);

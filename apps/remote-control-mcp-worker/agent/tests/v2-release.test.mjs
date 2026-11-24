@@ -315,6 +315,20 @@ test("#914 native-only Rust archive excludes bundled Node and every JS runtime f
   ];
   for(const item of invalids)
     assert.throws(()=>inspectTarGzip(tar(item.files),{tag:candidateTag,target}),undefined,item.why);
+  const sessionName="apps/remote-control-agent/.build/rca-session-linux-candidate";
+  const declared=nativeFiles.map(f=>f.name==="bundle.json" ?
+    {...f,data:Buffer.from(JSON.stringify({...nativeManifest,session_runtime:"rust-session-v1"}))}:f);
+  const sessionBytes=tar([...declared,{name:sessionName,data:elf(62)}]);
+  assert.ok(inspectTarGzip(sessionBytes,{tag:candidateTag,target}).has(sessionName));
+  assert.throws(()=>inspectTarGzip(tar(declared),{tag:candidateTag,target}));
+  assert.throws(()=>inspectTarGzip(tar([...nativeFiles,{name:sessionName,data:elf(62)}]),{tag:candidateTag,target}));
+  assert.throws(()=>inspectTarGzip(tar([...declared,{name:sessionName,data:elf(183)}]),{tag:candidateTag,target}));
+  const sessionRoot=await mkdtemp(path.join(os.tmpdir(),"rca-native-session-"));
+  try {
+    const dest=path.join(sessionRoot,"bundle");
+    await extractVerifiedAsset({tag:candidateTag,target,digest:sha(sessionBytes)},sessionBytes,dest);
+    assert.equal((await stat(path.join(dest,sessionName))).mode&0o777,0o700);
+  } finally {await rm(sessionRoot,{recursive:true,force:true});}
   assert.throws(()=>inspectTarGzip(bytes,{tag:"v0.1.57",target}),/version|profile/i);
 });
 
@@ -326,6 +340,12 @@ test("#914 native-only packaging is explicit and cannot target Node or Darwin",(
     "--artifact-profile","rust-native-only-v1"];
   const selected=parseArgs(args);
   assert.equal(selected.artifactProfile,"rust-native-only-v1");
+  const sessionArgs=["--rust-session-bin","/opt/rca-session","--rust-session-sha256","d".repeat(64)];
+  assert.equal(parseArgs([...args,...sessionArgs]).rustSessionBin,"/opt/rca-session");
+  assert.throws(()=>parseArgs([...args,...sessionArgs.slice(0,2)]));
+  assert.throws(()=>parseArgs([...args.map(x=>x===target?"linux-arm64-glibc":x),...sessionArgs]));
+  assert.throws(()=>parseArgs([...args.slice(0,-2),...sessionArgs]));
+
   assert.throws(()=>parseArgs(args.map(x=>x===target?"darwin-arm64":x)));
   assert.throws(()=>parseArgs(args.slice(0,-2).concat("--artifact-profile","anything")));
   assert.throws(()=>parseArgs(args.filter((_,i)=>i<args.length-4 ||

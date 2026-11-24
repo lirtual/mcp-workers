@@ -28,15 +28,19 @@ export function parseWindowsPreviewBuildArgs(argv) {
     ["--out", "out"], ["--background-bin", "backgroundBin"],
     ["--rust-agent-bin", "rustAgentBin"], ["--rust-agent-sha256", "rustAgentSha256"],
     ["--artifact-profile", "artifactProfile"],
+    ["--rust-session-bin", "rustSessionBin"], ["--rust-session-sha256", "rustSessionSha256"],
   ]);
   const out = {};
-  if (![10, 14, 16].includes(argv.length)) throw Error("Windows candidate requires five pinned inputs and an optional Rust candidate pair.");
+  if (![10, 14, 16, 20].includes(argv.length)) throw Error("Windows candidate requires five pinned inputs and an optional Rust candidate pair.");
   for (let i = 0; i < argv.length; i += 2) {
     const key = keys.get(argv[i]);
     if (!key || out[key] !== undefined || !argv[i + 1]) throw Error("Unsafe packaging arguments.");
     out[key] = argv[i + 1];
   }
-  if ((out.artifactProfile !== undefined && (out.artifactProfile !== "rust-native-only-v1" || !out.rustAgentBin)) ||
+  const hasSession = Boolean(out.rustSessionBin || out.rustSessionSha256);
+  if ((hasSession && (out.artifactProfile !== "rust-native-only-v1" || !out.rustSessionBin ||
+      !path.isAbsolute(out.rustSessionBin) || !/^[a-f0-9]{64}$/.test(out.rustSessionSha256))) ||
+      (out.artifactProfile !== undefined && (out.artifactProfile !== "rust-native-only-v1" || !out.rustAgentBin)) ||
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(out.version) ||
       !/^[a-f0-9]{64}$/.test(out.nodeSha256) ||
       out.nodeSha256 !== EXPECTED_NODE_SHA256 ||
@@ -88,18 +92,29 @@ export function buildWindowsPreview(args) {
   }
   if (!nativeOnly) copyFileSync(args.nodeBin, path.join(stage, "bin/node.exe"));
   copyFileSync(args.backgroundBin, path.join(stage, "bin/rca-background.exe"));
-  let rustAgentHash;
-  if (args.rustAgentBin) {
-    const rustAgent = readFileSync(args.rustAgentBin);
+  const hasSession = Boolean(args.rustSessionBin || args.rustSessionSha256);
+  if (hasSession && !nativeOnly) throw Error("Packaged Session entry requires native-only archive.");
+  function checkedRustBinary(binary,expected) {
+    const rustAgent = readFileSync(binary);
     const pe = rustAgent.length >= 256 ? rustAgent.readUInt32LE(0x3c) : 0;
-    if (digest(rustAgent) !== args.rustAgentSha256 || rustAgent.toString("ascii",0,2) !== "MZ" ||
+    if (digest(rustAgent) !== expected || rustAgent.toString("ascii",0,2) !== "MZ" ||
         pe < 64 || pe + 96 > rustAgent.length || rustAgent.readUInt32LE(pe) !== 0x00004550 ||
         rustAgent.readUInt16LE(pe + 4) !== 0x8664) {
       throw Error("Rust candidate must be a hash-verified native Windows x64 PE executable.");
     }
+    return rustAgent;
+  }
+  let rustAgentHash, rustSessionHash;
+  if (args.rustAgentBin) {
+    const rustAgent = checkedRustBinary(args.rustAgentBin,args.rustAgentSha256);
     mkdirSync(path.join(stage,"apps/remote-control-agent/.build"),{recursive:true,mode:0o700});
-    copyFileSync(args.rustAgentBin,path.join(stage,"apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"));
+    writeFileSync(path.join(stage,"apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"),rustAgent);
     rustAgentHash=digest(rustAgent);
+  }
+  if (hasSession) {
+    const binary=checkedRustBinary(args.rustSessionBin,args.rustSessionSha256);
+    writeFileSync(path.join(stage,"apps/remote-control-agent/.build/rca-session-windows-candidate.exe"),binary);
+    rustSessionHash=digest(binary);
   }
   const modules = nativeOnly ? [] : runtimeSources(["windows-v2.ts", "session-rca-windows.ts"]);
   const hashes = {
@@ -107,6 +122,7 @@ export function buildWindowsPreview(args) {
     "bin/rca-background.exe": digest(launcher),
   };
   if (rustAgentHash) hashes["apps/remote-control-agent/.build/rca-standard-windows-candidate.exe"] = rustAgentHash;
+  if (rustSessionHash) hashes["apps/remote-control-agent/.build/rca-session-windows-candidate.exe"] = rustSessionHash;
   for (const file of modules) {
     const src = readFileSync(path.join(root, "src", file), "utf8");
     const compiled = ts.transpileModule(src, {
@@ -158,6 +174,7 @@ export function buildWindowsPreview(args) {
     upgrade_profile: "paired-full-v1",
     ...(rustAgentHash ? {agent_runtime:"rust-standard-windows-v1",
       runtime_profile:"standard-windows-rust-runtime-v1"} : {agent_runtime:"node-standard-windows-v2"}),
+    ...(rustSessionHash ? {session_runtime:"rust-session-v1"} : {}),
     preview: true, modules, hashes,
   }, null, 2) + "\n", { mode: 0o600 });
   return {
