@@ -681,7 +681,7 @@ enum FramePolicy {
 }
 
 struct TransportMode {
-    device_info: Option<(crate::device_info::DeviceInfo, Arc<AtomicBool>)>,
+    receipt_health: Option<Arc<AtomicBool>>,
     timing: HeartbeatTiming,
     policy: FramePolicy,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -706,7 +706,7 @@ pub fn maintain_authenticated_transport(
         incoming,
         outgoing,
         TransportMode {
-            device_info: None,
+            receipt_health: None,
             timing,
             policy: FramePolicy::Any,
             on_connected: None,
@@ -735,7 +735,7 @@ pub fn maintain_native_read_transport(
         incoming,
         outgoing,
         TransportMode {
-            device_info: None,
+            receipt_health: None,
             timing,
             policy: FramePolicy::ReadOnly,
             on_connected: None,
@@ -764,7 +764,7 @@ pub fn maintain_native_file_transport(
         incoming,
         outgoing,
         TransportMode {
-            device_info: None,
+            receipt_health: None,
             timing,
             policy: FramePolicy::NativeFiles,
             on_connected: None,
@@ -802,10 +802,7 @@ pub fn maintain_native_managed_transport(
         incoming,
         outgoing,
         TransportMode {
-            device_info: Some((
-                crate::device_info::DeviceInfo::collect(),
-                config.receipt_health,
-            )),
+            receipt_health: Some(config.receipt_health),
             timing: config.timing,
             policy: FramePolicy::NativeManaged(config.managed),
             on_connected: config.on_connected,
@@ -842,7 +839,8 @@ fn maintain_transport_mode(
                     if stop.load(Ordering::Acquire) {
                         return Ok(());
                     }
-                    if let Some((info, health)) = mode.device_info.as_ref() {
+                    if let Some(health) = mode.receipt_health.as_ref() {
+                        let info = crate::device_info::DeviceInfo::collect();
                         socket.send_text(&info.frame(health.load(Ordering::Acquire)))?;
                     }
                     if let Some(on_connected) = mode.on_connected.as_ref() {
