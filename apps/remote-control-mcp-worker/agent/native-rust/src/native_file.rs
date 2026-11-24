@@ -112,7 +112,8 @@ use crate::linux_supervisor::CleanupState;
 use crate::native_process::{self, NativeProcessEngine, ProcessRead};
 use crate::native_read::{self, ReadCommand};
 use crate::native_search::{self, SearchFrame, SearchSessions};
-use crate::native_write::{NativeWriteError, NativeWriteExecutor};
+use crate::native_write::{NativeWriteError, NativeWriteExecutor, WriteOutcome};
+use crate::receipts::ReceiptError;
 #[cfg(unix)]
 use crate::upgrade_control::{UpgradeCommand, UpgradeRequest, UpgradeServer};
 #[cfg(windows)]
@@ -296,6 +297,22 @@ pub enum NativeFileError {
     CleanupUncertain,
 }
 
+impl NativeFileError {
+    pub fn diagnostic_event(&self) -> &'static str {
+        match self {
+            Self::Session(error) => error.diagnostic_event(),
+            Self::Write(NativeWriteError::Receipt(error)) => error.diagnostic(),
+            Self::Write(_) | Self::Panicked => "execution_unavailable",
+            Self::Policy => "connection_protocol_unavailable",
+            Self::Queue => "execution_queue_unavailable",
+            #[cfg(any(unix, windows))]
+            Self::UpgradeUnavailable => "upgrade_control_unavailable",
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            Self::CleanupUncertain => "cleanup_uncertain",
+        }
+    }
+}
+
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] managed: Option<
@@ -313,205 +330,249 @@ fn execute_native_file(
     let mut processes = managed.map(NativeProcessEngine::new);
     #[cfg(any(unix, windows))]
     let mut upgrade_frozen = false;
-    let mut searches = SearchSessions::default();
-    while !stop.load(Ordering::Acquire) {
-        // Expire idle cursors even if the Owner never sends another request.
-        searches.expire();
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        if let Some(process) = processes.as_mut() {
-            process
-                .reconcile(writes.receipt_store_mut())
-                .map_err(NativeWriteError::from)?;
-        }
-        #[cfg(any(unix, windows))]
-        if let Some(control) = upgrade_requests.as_ref() {
-            while let Ok(request) = control.try_recv() {
-                let answer = match request.command {
-                    UpgradeCommand::Freeze
-                        if !upgrade_frozen
-                            && !stop.load(Ordering::Acquire)
-                            && processes
-                                .as_ref()
-                                .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
-                    {
-                        upgrade_frozen = true;
-                        "ready\n"
+    let mut searches = SearchSessions::with_boundary(writes.boundary().clone());
+    let result = (|| -> Result<(), NativeFileError> {
+        while !stop.load(Ordering::Acquire) {
+            // Expire idle cursors even if the Owner never sends another request.
+            searches.expire();
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            if let Some(process) = processes.as_mut() {
+                if writes.available() {
+                    if let Err(error) = process.reconcile(writes.receipt_store_mut()) {
+                        writes.isolate(&error)?;
                     }
-                    UpgradeCommand::Freeze => "busy\n",
-                    UpgradeCommand::VerifyFrozen
-                        if upgrade_frozen
-                            && !stop.load(Ordering::Acquire)
-                            && processes
-                                .as_ref()
-                                .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
-                    {
-                        "ready\n"
-                    }
-                    UpgradeCommand::VerifyFrozen => "busy\n",
-                    UpgradeCommand::Release => {
-                        upgrade_frozen = false;
-                        "released\n"
-                    }
-                };
-                let _ = request.reply.send(answer);
+                }
             }
-        }
-        let request = match requests.recv_timeout(Duration::from_millis(100)) {
-            Ok(request) => request,
-            Err(RecvTimeoutError::Timeout) => continue,
-            Err(RecvTimeoutError::Disconnected) => break,
-        };
-        let Some(frame) = request.frame_if_active() else {
-            continue;
-        };
-        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-        let command = if processes.is_some() {
-            parse_native_managed_frame(frame)
-        } else {
-            parse_native_file_frame(frame)
-        }
-        .map_err(|_| NativeFileError::Policy)?;
-        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-        let command = parse_native_file_frame(frame).map_err(|_| NativeFileError::Policy)?;
-        if !request.lease().is_active() {
-            continue;
-        }
-        #[cfg(any(unix, windows))]
-        if upgrade_frozen {
-            // Match the existing Node WSS envelopes without effect or receipt
-            // admission. A frozen read is a failed read_result; a frozen
-            // mutation/status query is an unavailable operation_result.
-            let frame: Value = serde_json::from_str(frame).map_err(|_| NativeFileError::Policy)?;
-            let id = frame["request_id"]
-                .as_str()
-                .ok_or(NativeFileError::Policy)?;
-            let response = if frame["kind"] == "read" {
-                json!({"kind":"read_result","request_id":id,"status":"failed"})
+            #[cfg(any(unix, windows))]
+            if let Some(control) = upgrade_requests.as_ref() {
+                while let Ok(request) = control.try_recv() {
+                    let answer = match request.command {
+                        UpgradeCommand::Freeze
+                            if !upgrade_frozen
+                                && writes.available()
+                                && !stop.load(Ordering::Acquire)
+                                && processes
+                                    .as_ref()
+                                    .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
+                        {
+                            upgrade_frozen = true;
+                            "ready\n"
+                        }
+                        UpgradeCommand::Freeze => "busy\n",
+                        UpgradeCommand::VerifyFrozen
+                            if upgrade_frozen
+                                && writes.available()
+                                && !stop.load(Ordering::Acquire)
+                                && processes
+                                    .as_ref()
+                                    .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
+                        {
+                            "ready\n"
+                        }
+                        UpgradeCommand::VerifyFrozen => "busy\n",
+                        UpgradeCommand::Release => {
+                            upgrade_frozen = false;
+                            "released\n"
+                        }
+                    };
+                    let _ = request.reply.send(answer);
+                }
+            }
+            let request = match requests.recv_timeout(Duration::from_millis(100)) {
+                Ok(request) => request,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => break,
+            };
+            let Some(frame) = request.frame_if_active() else {
+                continue;
+            };
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            let command = if processes.is_some() {
+                parse_native_managed_frame(frame)
             } else {
-                let operation_id = frame["operation_id"]
+                parse_native_file_frame(frame)
+            }
+            .map_err(|_| NativeFileError::Policy)?;
+            #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+            let command = parse_native_file_frame(frame).map_err(|_| NativeFileError::Policy)?;
+            if !request.lease().is_active() {
+                continue;
+            }
+            #[cfg(any(unix, windows))]
+            if upgrade_frozen {
+                // Match the existing Node WSS envelopes without effect or receipt
+                // admission. A frozen read is a failed read_result; a frozen
+                // mutation/status query is an unavailable operation_result.
+                let frame: Value =
+                    serde_json::from_str(frame).map_err(|_| NativeFileError::Policy)?;
+                let id = frame["request_id"]
                     .as_str()
                     .ok_or(NativeFileError::Policy)?;
-                json!({"kind":"operation_result","request_id":id,
+                let response = if frame["kind"] == "read" {
+                    json!({"kind":"read_result","request_id":id,"status":"failed"})
+                } else {
+                    let operation_id = frame["operation_id"]
+                        .as_str()
+                        .ok_or(NativeFileError::Policy)?;
+                    json!({"kind":"operation_result","request_id":id,
                     "result":{"operation_id":operation_id,"status":"unavailable"}})
-            };
-            if replies
-                .try_send(request.response(response.to_string()))
-                .is_err()
-            {
-                stop.store(true, Ordering::Release);
-                return Err(NativeFileError::Queue);
-            }
-            continue;
-        }
-        let response = match command {
-            NativeFileCommand::Read(read) => native_read::execute_read_frame(&read),
-            NativeFileCommand::Search(search) => {
-                searches.execute_scoped(&search, request.lease(), request.reply_deadline())
-            }
-            NativeFileCommand::Mutation {
-                request_id,
-                operation_id,
-                tool,
-                arguments,
-            } => {
-                let result = match tool.as_str() {
-                    "write_file" => writes.write_file_with_lease(&operation_id, &arguments, || {
-                        request.lease().is_active()
-                    }),
-                    "create_directory" => {
-                        writes.create_directory_with_lease(&operation_id, &arguments, || {
-                            request.lease().is_active()
-                        })
-                    }
-                    "delete_file" => {
-                        writes.delete_file_with_lease(&operation_id, &arguments, || {
-                            request.lease().is_active()
-                        })
-                    }
-                    "edit_block" => writes.edit_block_with_lease(&operation_id, &arguments, || {
-                        request.lease().is_active()
-                    }),
-                    "move_file" => writes.move_file_with_lease(&operation_id, &arguments, || {
-                        request.lease().is_active()
-                    }),
-                    _ => return Err(NativeFileError::Policy),
                 };
-                let outcome = match result {
-                    Ok(outcome) => outcome,
-                    Err(NativeWriteError::LeaseRevoked) => continue,
-                    Err(error) => {
-                        // An unpersistable mutation may already have had an
-                        // effect. Stop this candidate; never retry that ID.
-                        stop.store(true, Ordering::Release);
-                        return Err(error.into());
-                    }
-                };
-                json!({"kind":"operation_result","request_id":request_id,
+                if replies
+                    .try_send(request.response(response.to_string()))
+                    .is_err()
+                {
+                    stop.store(true, Ordering::Release);
+                    return Err(NativeFileError::Queue);
+                }
+                continue;
+            }
+            let response = match command {
+                NativeFileCommand::Read(read) => {
+                    native_read::execute_read_frame_guarded(&read, Some(writes.boundary()))
+                }
+                NativeFileCommand::Search(search) => {
+                    searches.execute_scoped(&search, request.lease(), request.reply_deadline())
+                }
+                NativeFileCommand::Mutation {
+                    request_id,
+                    operation_id,
+                    tool,
+                    arguments,
+                } => {
+                    let result = match tool.as_str() {
+                        "write_file" => {
+                            writes.write_file_with_lease(&operation_id, &arguments, || {
+                                request.lease().is_active()
+                            })
+                        }
+                        "create_directory" => {
+                            writes.create_directory_with_lease(&operation_id, &arguments, || {
+                                request.lease().is_active()
+                            })
+                        }
+                        "delete_file" => {
+                            writes.delete_file_with_lease(&operation_id, &arguments, || {
+                                request.lease().is_active()
+                            })
+                        }
+                        "edit_block" => {
+                            writes.edit_block_with_lease(&operation_id, &arguments, || {
+                                request.lease().is_active()
+                            })
+                        }
+                        "move_file" => {
+                            writes.move_file_with_lease(&operation_id, &arguments, || {
+                                request.lease().is_active()
+                            })
+                        }
+                        _ => return Err(NativeFileError::Policy),
+                    };
+                    let outcome = match result {
+                        Ok(outcome) => outcome,
+                        Err(NativeWriteError::LeaseRevoked) => continue,
+                        Err(NativeWriteError::Receipt(error)) => {
+                            writes.isolate(&error)?;
+                            WriteOutcome {
+                                state: if matches!(error, ReceiptError::AfterEffect(_)) {
+                                    "unknown"
+                                } else {
+                                    "unavailable"
+                                },
+                                receipt: None,
+                            }
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    json!({"kind":"operation_result","request_id":request_id,
                     "result":{"operation_id":operation_id,"status":outcome.state,"receipt":outcome.receipt}}).to_string()
-            }
-            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-            NativeFileCommand::ProcessRead { request_id, read } => {
-                native_process::execute_process_read(
-                    &processes.as_ref().ok_or(NativeFileError::Policy)?.sessions,
-                    &request_id,
-                    &read,
-                )
-            }
-            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-            NativeFileCommand::ProcessMutation {
-                request_id,
-                operation_id,
-                tool,
-                arguments,
-            } => {
-                let result = processes
-                    .as_mut()
-                    .ok_or(NativeFileError::Policy)?
-                    .execute_before(
-                        writes.receipt_store_mut(),
-                        &operation_id,
-                        &tool,
-                        &arguments,
-                        || request.lease().is_active(),
-                        request.reply_deadline(),
-                    );
-                let outcome = match result {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        // Admission/update can fail after an effect: stop and
-                        // preserve the guarded receipt; never replay.
-                        stop.store(true, Ordering::Release);
-                        return Err(NativeWriteError::from(error).into());
-                    }
-                };
-                json!({"kind":"operation_result", "request_id":request_id,
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                NativeFileCommand::ProcessRead { request_id, read } => {
+                    native_process::execute_process_read(
+                        &processes.as_ref().ok_or(NativeFileError::Policy)?.sessions,
+                        &request_id,
+                        &read,
+                    )
+                }
+                #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                NativeFileCommand::ProcessMutation {
+                    request_id,
+                    operation_id,
+                    tool,
+                    arguments,
+                } => {
+                    let result = processes
+                        .as_mut()
+                        .ok_or(NativeFileError::Policy)?
+                        .execute_before(
+                            writes.receipt_store_mut(),
+                            &operation_id,
+                            &tool,
+                            &arguments,
+                            || request.lease().is_active(),
+                            request.reply_deadline(),
+                        );
+                    let outcome = match result {
+                        Ok(outcome) => outcome,
+                        Err(error) => {
+                            writes.isolate(&error)?;
+                            let uncertain = matches!(error, ReceiptError::AfterEffect(_))
+                                || processes
+                                    .as_ref()
+                                    .ok_or(NativeFileError::Policy)?
+                                    .emergency_stop(&tool, &arguments, request.lease().is_active());
+                            native_process::ProcessOutcome {
+                                state: if uncertain { "unknown" } else { "unavailable" },
+                                receipt: None,
+                                session_id: None,
+                            }
+                        }
+                    };
+                    json!({"kind":"operation_result", "request_id":request_id,
                     "result":{"operation_id":operation_id, "status":outcome.state,
                         "session_id":outcome.session_id, "receipt":outcome.receipt}})
-                .to_string()
-            }
-            NativeFileCommand::Status {
-                request_id,
-                operation_id,
-            } => {
-                let receipt = writes.get_receipt(&operation_id)?;
-                let status = receipt.as_ref().map_or("not_found", |r| r.state.as_str());
-                json!({"kind":"operation_result","request_id":request_id,
+                    .to_string()
+                }
+                NativeFileCommand::Status {
+                    request_id,
+                    operation_id,
+                } => {
+                    let (receipt, unavailable) = match writes.get_receipt(&operation_id) {
+                        Ok(receipt) => (receipt, false),
+                        Err(NativeWriteError::Receipt(error)) => {
+                            writes.isolate(&error)?;
+                            (None, true)
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    let status = if unavailable {
+                        "unavailable"
+                    } else {
+                        receipt.as_ref().map_or("not_found", |r| r.state.as_str())
+                    };
+                    json!({"kind":"operation_result","request_id":request_id,
                     "result":{"operation_id":operation_id,"status":status,"receipt":receipt}})
-                .to_string()
+                    .to_string()
+                }
+            };
+            if !request.lease().is_active() {
+                continue;
             }
-        };
-        if !request.lease().is_active() {
-            continue;
-        }
-        match replies.try_send(request.response(response)) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                stop.store(true, Ordering::Release);
-                return Err(NativeFileError::Queue);
+            match replies.try_send(request.response(response)) {
+                Ok(()) => {}
+                Err(TrySendError::Full(_)) => {
+                    stop.store(true, Ordering::Release);
+                    return Err(NativeFileError::Queue);
+                }
+                Err(TrySendError::Closed(_)) => break,
             }
-            Err(TrySendError::Closed(_)) => break,
         }
-    }
+        Ok(())
+    })();
+    // All error exits stop transport before waiting for managed cleanup.
+    // Keep the SQLite owner alive through that barrier, including faults.
+    stop.store(true, Ordering::Release);
+    drop(searches);
     // Do not close the one SQLite receipt owner until native group cleanup has
     // finished. A stop flag alone does not prove the OS-owned job has exited.
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -520,11 +581,13 @@ fn execute_native_file(
     }
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     if let Some(process) = processes.as_mut() {
-        process
-            .reconcile(writes.receipt_store_mut())
-            .map_err(NativeWriteError::from)?;
+        if writes.available() {
+            if let Err(error) = process.reconcile(writes.receipt_store_mut()) {
+                writes.isolate(&error)?;
+            }
+        }
     }
-    Ok(())
+    result
 }
 
 /// A non-installable file runtime: receipt exclusivity is obtained before
@@ -539,7 +602,7 @@ pub fn run_native_file_session(
     stop: &Arc<AtomicBool>,
     timing: HeartbeatTiming,
 ) -> Result<(), NativeFileError> {
-    let writes = NativeWriteExecutor::open(receipt_directory)?;
+    let writes = NativeWriteExecutor::open_runtime(receipt_directory, None)?;
     let (request_sender, requests) = sync_channel(4);
     let (reply_sender, mut replies) = tokio::sync::mpsc::channel(4);
     let worker_stop = Arc::clone(stop);
@@ -602,6 +665,7 @@ pub fn run_native_managed_session(
             upgrade_key: None,
             on_connected: None,
             on_disconnected: None,
+            on_diagnostic: None,
         },
     )
 }
@@ -629,6 +693,7 @@ pub fn run_native_managed_session_with_upgrade(
             upgrade_key: Some(upgrade.key_path),
             on_connected: upgrade.on_connected,
             on_disconnected: upgrade.on_disconnected,
+            on_diagnostic: upgrade.on_diagnostic,
         },
     )
 }
@@ -638,6 +703,7 @@ pub struct UpgradeRuntimeOptions<'a> {
     pub key_path: &'a Path,
     pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub on_diagnostic: Option<session::DiagnosticSink>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -646,6 +712,7 @@ struct ManagedRunOptions<'a> {
     upgrade_key: Option<&'a Path>,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_diagnostic: Option<session::DiagnosticSink>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -658,7 +725,17 @@ fn run_native_managed_session_inner(
     stop: &Arc<AtomicBool>,
     options: ManagedRunOptions<'_>,
 ) -> Result<(), NativeFileError> {
-    let writes = NativeWriteExecutor::open(receipt_directory)?;
+    let writes =
+        NativeWriteExecutor::open_runtime(receipt_directory, options.on_diagnostic.clone())?;
+    let health = writes.health();
+    let on_connected = options.on_connected.map(|callback| {
+        Arc::new(move || {
+            if health.load(Ordering::Acquire) {
+                callback();
+            }
+        }) as Arc<dyn Fn() + Send + Sync>
+    });
+
     #[cfg(any(unix, windows))]
     let (_upgrade_server, upgrade_requests) = if let Some(key) = options.upgrade_key {
         let (sender, requests) = sync_channel(4);
@@ -701,8 +778,9 @@ fn run_native_managed_session_inner(
         session::ManagedTransportConfig {
             timing: options.timing,
             managed: Arc::clone(&managed),
-            on_connected: options.on_connected,
+            on_connected,
             on_disconnected: options.on_disconnected,
+            on_diagnostic: options.on_diagnostic,
         },
     );
     stop.store(true, Ordering::Release);

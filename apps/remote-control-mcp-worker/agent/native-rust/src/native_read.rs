@@ -1,6 +1,7 @@
 //! Nonproduction read-only file execution against the existing rc-v2 read_result wire format.
 //! Only an already authenticated, leased WSS session may call this module.
 //! Search, process inspection and every mutation remain deliberately unavailable.
+use crate::receipt_boundary::ReceiptBoundary;
 use serde_json::{json, Map, Value};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -407,7 +408,10 @@ fn read_from_end(mut file: File, offset: usize, length: usize) -> Result<String,
     }
 }
 
-fn read_local(options: &ReadOptions) -> Result<String, ()> {
+fn read_local(options: &ReadOptions, boundary: Option<&ReceiptBoundary>) -> Result<String, ()> {
+    if boundary.is_some_and(|b| b.blocks(Path::new(&options.path))) {
+        return Err(());
+    }
     let file = open_regular(&options.path)?;
     if options.offset < 0 {
         read_from_end(file, (-options.offset) as usize, options.length)
@@ -416,25 +420,41 @@ fn read_local(options: &ReadOptions) -> Result<String, ()> {
     }
 }
 
-pub(crate) fn read_default_path(path: &str) -> Result<String, ()> {
-    read_local(&ReadOptions {
-        path: path.to_owned(),
-        offset: 0,
-        length: 1000,
-    })
+pub(crate) fn read_default_path(
+    path: &str,
+    boundary: Option<&ReceiptBoundary>,
+) -> Result<String, ()> {
+    read_local(
+        &ReadOptions {
+            path: path.to_owned(),
+            offset: 0,
+            length: 1000,
+        },
+        boundary,
+    )
 }
 
 /// Build a bounded owner read_result. Excessive text is never partially sent.
 pub fn execute_read_frame(command: &ReadCommand) -> String {
+    execute_read_frame_guarded(command, None)
+}
+
+pub(crate) fn execute_read_frame_guarded(
+    command: &ReadCommand,
+    boundary: Option<&ReceiptBoundary>,
+) -> String {
     let (id, result) = match command {
         ReadCommand::File {
             request_id,
             options,
-        } => (request_id, read_local(options)),
+        } => (request_id, read_local(options, boundary)),
         ReadCommand::Browse {
             request_id,
             command,
-        } => (request_id, crate::native_browse::execute_browse(command)),
+        } => (
+            request_id,
+            crate::native_browse::execute_browse(command, boundary),
+        ),
         ReadCommand::Failed { request_id } => (request_id, Err(())),
     };
     if let Ok(text) = result {

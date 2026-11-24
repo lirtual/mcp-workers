@@ -1,5 +1,6 @@
 //! Existing Node Agent file browsing output, bounded to the authenticated read-result wire.
 //! All three tools are read-only. Path validation remains owned by native_read.
+use crate::receipt_boundary::ReceiptBoundary;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::{self, DirEntry, FileType, Metadata};
@@ -166,12 +167,12 @@ fn file_info(path: &str) -> Result<String, ()> {
     ))
 }
 
-fn multiple_files(paths: &[String]) -> Result<String, ()> {
+fn multiple_files(paths: &[String], boundary: Option<&ReceiptBoundary>) -> Result<String, ()> {
     let mut blocks = Vec::new();
     let mut chars = 0usize;
     let mut truncated = false;
     for (index, path) in paths.iter().enumerate() {
-        let body = match crate::native_read::read_default_path(path) {
+        let body = match crate::native_read::read_default_path(path, boundary) {
             Ok(text) => format!("status: ok\n{text}"),
             Err(()) => "status: failed\nmessage: The file read failed.".to_owned(),
         };
@@ -187,9 +188,12 @@ fn multiple_files(paths: &[String]) -> Result<String, ()> {
     Ok(format!("{}\ntruncated: {truncated}", blocks.join("\n")))
 }
 
-pub(crate) fn execute_browse(command: &BrowseCommand) -> Result<String, ()> {
+pub(crate) fn execute_browse(
+    command: &BrowseCommand,
+    boundary: Option<&ReceiptBoundary>,
+) -> Result<String, ()> {
     match command {
-        BrowseCommand::Multiple { paths } => multiple_files(paths),
+        BrowseCommand::Multiple { paths } => multiple_files(paths, boundary),
         BrowseCommand::Directory { path, depth } => list_directory(path, *depth),
         BrowseCommand::Info { path } => file_info(path),
     }

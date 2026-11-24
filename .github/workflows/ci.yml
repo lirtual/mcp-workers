@@ -225,6 +225,11 @@ jobs:
           --test windows_managed_wss --test windows_cli
           --test session_enrollment --test session_transport_env
           -- --nocapture
+      - name: Verify receipt isolation and ownership on Windows
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        run: cargo test --locked --test native_file_wss receipt_runtime_ -- --nocapture
       - name: Verify Linux owned-group and Standard CLI cleanup on disposable host
         if: runner.os == 'Linux'
         timeout-minutes: 5
@@ -234,7 +239,7 @@ jobs:
           node apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs
           RCA_NATIVE_SUPERVISOR_BIN="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/.build/session-supervisor" \
             cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
-            --locked --test linux_supervisor --test native_process_wss --test standard_linux_wss -- --ignored --nocapture
+            --locked --test linux_supervisor --test native_process_wss --test native_file_wss --test standard_linux_wss -- --ignored --nocapture
       - name: Verify Darwin owned-group and signed managed WSS on disposable host
         if: runner.os == 'macOS'
         timeout-minutes: 5
@@ -247,7 +252,7 @@ jobs:
           chmod 700 "$RUNNER_TEMP/rca-darwin-supervisor"
           RCA_DARWIN_SUPERVISOR_BIN="$RUNNER_TEMP/rca-darwin-supervisor" \
             cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
-            --locked --test darwin_supervisor --test native_process --test native_process_wss --test cli_managed -- --ignored --nocapture
+            --locked --test darwin_supervisor --test native_process --test native_process_wss --test native_file_wss --test cli_managed -- --ignored --nocapture
       - uses: pnpm/action-setup@v4
         if: runner.os == 'macOS'
         with:

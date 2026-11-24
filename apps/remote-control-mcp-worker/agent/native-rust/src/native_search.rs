@@ -1,5 +1,6 @@
 //! Bounded, in-memory native search for authenticated file/managed WSS sessions.
 //! Search is read-only and intentionally has no persistent receipt or cursor store.
+use crate::receipt_boundary::ReceiptBoundary;
 use crate::session::ExecutionLease;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -190,6 +191,7 @@ struct Scan<'a> {
     sender: &'a SyncSender<Event>,
     truncated_flag: &'a AtomicBool,
     counts: Counts,
+    boundary: Option<&'a ReceiptBoundary>,
 }
 impl Scan<'_> {
     fn mark_truncated(&mut self) {
@@ -218,6 +220,9 @@ impl Scan<'_> {
         self.active()
     }
     fn content(&mut self, path: &Path, relative: &str, pattern: &str) -> Result<bool, ()> {
+        if self.boundary.is_some_and(|b| b.blocks(path)) {
+            return Ok(true);
+        }
         let info = fs::metadata(path).map_err(|_| ())?;
         if info.len() > MAX_FILE_BYTES as u64 {
             self.mark_truncated();
@@ -298,6 +303,10 @@ impl Scan<'_> {
         if !self.active() {
             return Ok(false);
         }
+        if matches!(kind, SearchType::Content) && self.boundary.is_some_and(|b| b.blocks(directory))
+        {
+            return Ok(true);
+        }
         let info = fs::symlink_metadata(directory).map_err(|_| ())?;
         if !info.file_type().is_dir() {
             return Err(());
@@ -366,6 +375,7 @@ pub(crate) struct SearchSessions {
     cursors: HashMap<String, Cursor>,
     ttl: Duration,
     lease: Option<ExecutionLease>,
+    boundary: Option<ReceiptBoundary>,
 }
 impl Default for SearchSessions {
     fn default() -> Self {
@@ -373,10 +383,17 @@ impl Default for SearchSessions {
             cursors: HashMap::new(),
             ttl: SESSION_TTL,
             lease: None,
+            boundary: None,
         }
     }
 }
 impl SearchSessions {
+    pub(crate) fn with_boundary(boundary: ReceiptBoundary) -> Self {
+        Self {
+            boundary: Some(boundary),
+            ..Self::default()
+        }
+    }
     pub(crate) fn expire(&mut self) {
         if self.lease.as_ref().is_some_and(|lease| !lease.is_active()) {
             self.cursors.clear(); // Dropping receivers also unblocks producers.
@@ -416,6 +433,7 @@ impl SearchSessions {
         let worker_cancel = Arc::clone(&cancel);
         let truncated_flag = Arc::new(AtomicBool::new(false));
         let worker_truncated = Arc::clone(&truncated_flag);
+        let boundary = self.boundary.clone();
         std::thread::Builder::new()
             .name("rca-native-search".into())
             .spawn(move || {
@@ -425,6 +443,7 @@ impl SearchSessions {
                     sender: &sender,
                     truncated_flag: &worker_truncated,
                     counts: Counts::default(),
+                    boundary: boundary.as_ref(),
                 };
                 let outcome = scan.walk(&path, Path::new(""), 1, &pattern, kind);
                 if !worker_cancel.load(Ordering::Acquire) {
@@ -800,6 +819,7 @@ mod tests {
             sender: &sender,
             truncated_flag: &cancelled,
             counts: Counts::default(),
+            boundary: None,
         };
         assert_eq!(
             scan.walk(

@@ -15,9 +15,16 @@ if(process.platform!=="darwin"||!baseline||!candidate)
   throw Error("This integration requires published and unpublished bundles on native macOS.");
 const run=(args)=>spawnSync("/bin/launchctl",args,{encoding:"utf8",timeout:5000,maxBuffer:32768});
 const service="gui/"+process.getuid()+"/org.mcp-workers.remote-control-agent";
+// Match the production observeOnline 10-second observation window. Retain
+// only bounded launchd state fields on failure, not environment or paths.
 const activePid=async expected=>{
-  for(let i=0;i<60;i++){
+  const deadline=performance.now()+10000;
+  let observed={};
+  do{
     const state=run(["print",service]);
+    observed={status:state.status,state:state.stdout?.match(/^\s*state = ([a-zA-Z ]+)$/m)?.[1],
+      runs:state.stdout?.match(/^\s*runs = (\d+)$/m)?.[1],
+      lastExit:state.stdout?.match(/^\s*last exit code = (-?\d+)$/m)?.[1]};
     const match=state.status===0&&state.stdout.match(/(?:^|\n)\s*pid = (\d+)(?:\n|$)/);
     if(match){
       const pid=Number(match[1]);
@@ -26,7 +33,8 @@ const activePid=async expected=>{
       if(ps.status===0&&ps.stdout.includes(expected))return {pid,command:ps.stdout.trim()};
     }
     await new Promise(resolve=>setTimeout(resolve,100));
-  }
+  }while(performance.now()<deadline);
+  console.error("LaunchAgent observation failed",expected,JSON.stringify(observed));
   throw Error("Expected packaged LaunchAgent process did not become observable.");
 };
 
