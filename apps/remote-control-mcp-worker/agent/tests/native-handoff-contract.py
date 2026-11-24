@@ -1022,6 +1022,188 @@ def verify_public_native_archive():
     print("PUBLIC_NATIVE_ARCHIVE_CONTRACT_PASS")
 
 
+def verify_native_owner_lifecycle():
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        marker = Path(str(key) + ".owner-stopped")
+        original = key.read_bytes()
+        state = {"active": True, "events": [], "cloud_failure": True, "start_failure": False}
+
+        def intent(root, endpoint, action, lock):
+            assert root == old and endpoint == ENDPOINT and lock.fileno() >= 0
+            assert marker.read_bytes() == b"stopped\n"
+            state["events"].append(action)
+            if state["cloud_failure"]:
+                raise ValueError("Fixture offline")
+
+        def control(*args):
+            if args[0] == "show":
+                return ("ActiveState=active\nMainPID=100\n" if state["active"]
+                        else "ActiveState=inactive\nMainPID=0\n")
+            state["events"].append("systemd-" + args[0])
+            if args[0] == "stop":
+                assert marker.read_bytes() == b"stopped\n"
+                state["active"] = False
+            elif args[0] == "start":
+                assert not marker.exists()
+                state["active"] = True
+                if state["start_failure"]:
+                    raise ValueError("Fixture start uncertain")
+            else:
+                raise AssertionError(args)
+            return ""
+
+        def refused(action):
+            try:
+                bootstrap.native_owner_lifecycle(home, action)
+            except ValueError:
+                return
+            raise AssertionError("Unsafe owner lifecycle admitted")
+
+        with patch.object(sys.stdin, "isatty", return_value=True), patch.object(
+                sys.stdout, "isatty", return_value=True), patch.multiple(
+                    bootstrap, native_signed_owner_intent=intent, native_systemctl=control,
+                    native_wait_started=lambda entry: 100):
+            refused("start")
+            assert not state["events"]
+            stopped = bootstrap.native_owner_lifecycle(home, "stop")
+            assert stopped == {"local": "stopped", "cloud": "unconfirmed"}
+            assert state["events"] == ["stop", "systemd-stop"]
+            assert not state["active"] and marker.stat().st_mode & 0o777 == 0o600
+            refused("start")
+            assert marker.read_bytes() == b"stopped\n" and not state["active"]
+            state["cloud_failure"] = False
+            pending = Path(str(key) + ".native-upgrade-intent")
+            owned_file(pending)
+            before = list(state["events"])
+            refused("start")
+            assert state["events"] == before
+            pending.unlink()
+            state["start_failure"] = True
+            refused("start")
+            assert state["events"][-4:] == ["stop", "resume", "systemd-start", "systemd-stop"]
+            assert marker.read_bytes() == b"stopped\n" and not state["active"]
+            state["start_failure"] = False
+            started = bootstrap.native_owner_lifecycle(home, "start")
+            assert started["cloud"] == "resume_pending_signed_WSS"
+            assert state["events"][-3:] == ["stop", "resume", "systemd-start"]
+            assert state["active"] and not marker.exists()
+            stopped = bootstrap.native_owner_lifecycle(home, "stop")
+            assert stopped == {"local": "stopped", "cloud": "confirmed"}
+            assert not state["active"] and marker.read_bytes() == b"stopped\n"
+            assert bootstrap.native_owner_lifecycle(home, "stop") == stopped
+            bootstrap.native_owner_lifecycle(home, "start")
+            assert key.read_bytes() == original and b"disposable-receipt-history" in receipts.read_bytes()
+        with patch.object(sys.stdin, "isatty", return_value=False):
+            refused("stop")
+        assert not marker.exists()
+    finally:
+        ctx.cleanup()
+    print("NATIVE_OWNER_LIFECYCLE_CONTRACT_PASS")
+
+
+def verify_latest_selection():
+    import copy
+    from unittest.mock import Mock
+    tag = "v0.1.58"
+    targets = ("linux-x64-glibc", "linux-arm64-glibc", "windows-x64",
+               "darwin-arm64", "darwin-x64")
+    assets = []
+    for target in targets:
+        name = "remote-control-agent-" + tag + "-" + target + (
+            ".zip" if target == "windows-x64" else ".tar.gz")
+        assets.append({"name":name, "state":"uploaded", "size":2048,
+                       "digest":"sha256:"+"ab"*32,
+                       "browser_download_url":"https://github.com/"+bootstrap.OWNER+
+                       "/releases/download/"+tag+"/"+name})
+    release = {"tag_name":tag, "immutable":True, "draft":False,
+               "prerelease":False, "assets":assets}
+    lookup = Mock(return_value=release)
+    with patch.object(bootstrap, "json_api", lookup):
+        chosen = bootstrap.resolve_latest_native(targets[0])
+        assert chosen["tag"] == tag and chosen["digest"] == "ab"*32
+        lookup.assert_called_once_with("/releases/latest")
+    invalid = []
+    for name, value in [("immutable",False),("prerelease",True),("draft",True),
+                        ("tag_name",tag+"-rust-candidate.1")]:
+        invalid.append({**release,name:value})
+    invalid.extend([{**release,"assets":assets[:-1]},
+                    {**release,"assets":assets+[assets[0]]}])
+    wrong = copy.deepcopy(release)
+    wrong["assets"][0]["browser_download_url"] = "https://example.invalid/asset"
+    invalid.append(wrong)
+    bad = copy.deepcopy(release)
+    bad["assets"][1]["digest"] = "sha256:bad"
+    invalid.append(bad)
+    for value in invalid:
+        with patch.object(bootstrap, "json_api", return_value=value):
+            try:
+                bootstrap.resolve_latest_native(targets[0])
+            except ValueError:
+                continue
+            raise AssertionError("Invalid five-platform Latest accepted")
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        import hashlib
+        manager_spec = importlib.util.spec_from_file_location("rca_manager", SCRIPT.with_name("manage-v2.py"))
+        manager = importlib.util.module_from_spec(manager_spec)
+        manager_spec.loader.exec_module(manager)
+        with patch.dict(os.environ, {"HOME": str(home)}):
+            assert manager.installed_endpoint(bootstrap) == ENDPOINT
+        data = b"disposable-verified-archive"
+        selected = {"tag":tag, "download":assets[0]["browser_download_url"],
+                    "size":len(data), "digest":hashlib.sha256(data).hexdigest()}
+
+        def install_checked(tag, commit, endpoint, **kwargs):
+            assert tag == selected["tag"] and commit is None and endpoint == ENDPOINT
+            assert kwargs["asset_sha256"] == selected["digest"] and kwargs["native_upgrade"] is True
+            assert kwargs["latest_archive"].read_bytes() == data
+            assert kwargs["latest_archive"].stat().st_mode & 0o777 == 0o600
+            return 0
+
+        # The actual archive staging, confirmation, and cutover are already
+        # exercised by verify_public_native_archive/verify_isolated. Here
+        # observe the newly restored no-argument command's trust boundary.
+        lookup = Mock(return_value=selected)
+        download = Mock(return_value=data)
+        install = Mock(side_effect=install_checked)
+        with patch.dict(os.environ, {"HOME":str(home)}), patch.object(
+                sys.stdin, "isatty", return_value=True), patch.object(
+                sys.stdout, "isatty", return_value=True), patch.multiple(
+                    bootstrap, resolve_latest_native=lookup, fetch=download,
+                    preflight=Mock(return_value=targets[0]), install=install):
+            assert bootstrap.native_upgrade_latest(ENDPOINT) == 0
+            lookup.assert_called_once_with(targets[0])
+            download.assert_called_once_with(selected["download"], "application/octet-stream", len(data))
+            assert install.call_count == 1
+            assert not install.call_args.kwargs["latest_archive"].exists()
+            download.reset_mock()
+            install.reset_mock()
+            lookup.return_value = {**selected,"tag":"v0.1.57"}
+            assert bootstrap.native_upgrade_latest(ENDPOINT) == 0
+            download.assert_not_called()
+            install.assert_not_called()
+            lookup.return_value = {**selected,"tag":"v0.1.56"}
+            try:
+                bootstrap.native_upgrade_latest(ENDPOINT)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Latest downgrade accepted")
+            download.assert_not_called()
+            lookup.return_value = {**selected,"digest":"0"*64}
+            try:
+                bootstrap.native_upgrade_latest(ENDPOINT)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Bad Latest archive digest accepted")
+            install.assert_not_called()
+    finally:
+        ctx.cleanup()
+    print("NATIVE_LATEST_SELECTION_CONTRACT_PASS")
+
+
 if __name__ == "__main__":
     os.umask(0o077)  # Exactly the installed Agent's private program directories.
     if sys.argv[1:] == ["--units"]:
@@ -1036,4 +1218,6 @@ if __name__ == "__main__":
     else:
         verify_service_start()
         verify_public_native_archive()
+        verify_native_owner_lifecycle()
+        verify_latest_selection()
         verify_isolated()
