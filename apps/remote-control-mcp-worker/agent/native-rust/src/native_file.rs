@@ -296,6 +296,22 @@ pub enum NativeFileError {
     CleanupUncertain,
 }
 
+impl NativeFileError {
+    pub fn diagnostic_event(&self) -> &'static str {
+        match self {
+            Self::Session(error) => error.diagnostic_event(),
+            Self::Write(NativeWriteError::Receipt(error)) => error.diagnostic_event(),
+            Self::Write(_) | Self::Panicked => "execution_unavailable",
+            Self::Policy => "connection_protocol_unavailable",
+            Self::Queue => "execution_queue_unavailable",
+            #[cfg(any(unix, windows))]
+            Self::UpgradeUnavailable => "upgrade_control_unavailable",
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            Self::CleanupUncertain => "cleanup_uncertain",
+        }
+    }
+}
+
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] managed: Option<
@@ -596,6 +612,7 @@ pub fn run_native_managed_session(
             upgrade_key: None,
             on_connected: None,
             on_disconnected: None,
+            on_diagnostic: None,
         },
     )
 }
@@ -623,6 +640,7 @@ pub fn run_native_managed_session_with_upgrade(
             upgrade_key: Some(upgrade.key_path),
             on_connected: upgrade.on_connected,
             on_disconnected: upgrade.on_disconnected,
+            on_diagnostic: upgrade.on_diagnostic,
         },
     )
 }
@@ -632,6 +650,7 @@ pub struct UpgradeRuntimeOptions<'a> {
     pub key_path: &'a Path,
     pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub on_diagnostic: Option<session::DiagnosticSink>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -640,6 +659,7 @@ struct ManagedRunOptions<'a> {
     upgrade_key: Option<&'a Path>,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_diagnostic: Option<session::DiagnosticSink>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -697,6 +717,7 @@ fn run_native_managed_session_inner(
             managed: Arc::clone(&managed),
             on_connected: options.on_connected,
             on_disconnected: options.on_disconnected,
+            on_diagnostic: options.on_diagnostic,
         },
     );
     stop.store(true, Ordering::Release);

@@ -14,7 +14,29 @@ const MAX_LINES: usize = 80;
 fn known(event: &str) -> bool {
     matches!(
         event,
-        "starting" | "connected" | "disconnected" | "rejected" | "stopping" | "owner_stopped"
+        "starting"
+            | "connected"
+            | "disconnected"
+            | "rejected"
+            | "stopping"
+            | "owner_stopped"
+            | "receipt_unsafe_path"
+            | "receipt_incompatible"
+            | "receipt_owner_unavailable"
+            | "receipt_corrupt"
+            | "receipt_readonly"
+            | "receipt_full"
+            | "receipt_storage_unavailable"
+            | "authorization_unavailable"
+            | "connection_protocol_unavailable"
+            | "worker_unavailable"
+            | "heartbeat_timeout"
+            | "connection_superseded"
+            | "execution_queue_unavailable"
+            | "connection_unavailable"
+            | "execution_unavailable"
+            | "upgrade_control_unavailable"
+            | "cleanup_uncertain"
     )
 }
 fn unsafe_log() -> io::Error {

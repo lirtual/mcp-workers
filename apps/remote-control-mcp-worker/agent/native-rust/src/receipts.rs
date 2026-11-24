@@ -51,6 +51,29 @@ pub enum ReceiptError {
     NotFound,
 }
 
+impl ReceiptError {
+    pub(crate) fn diagnostic_event(&self) -> &'static str {
+        use rusqlite::ErrorCode::*;
+        match self {
+            Self::UnsafePath => "receipt_unsafe_path",
+            Self::Incompatible => "receipt_incompatible",
+            Self::Sqlite(rusqlite::Error::SqliteFailure(error, _)) => match error.code {
+                DatabaseBusy | DatabaseLocked | FileLockingProtocolFailed => {
+                    "receipt_owner_unavailable"
+                }
+                DatabaseCorrupt | NotADatabase => "receipt_corrupt",
+                ReadOnly | PermissionDenied => "receipt_readonly",
+                DiskFull => "receipt_full",
+                _ => "receipt_storage_unavailable",
+            },
+            Self::Io(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                "receipt_readonly"
+            }
+            _ => "receipt_storage_unavailable",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Receipt {
     pub operation_id: String,

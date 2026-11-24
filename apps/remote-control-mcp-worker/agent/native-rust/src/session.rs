@@ -66,6 +66,45 @@ pub enum SessionError {
     Queue,
 }
 
+impl SessionError {
+    pub(crate) fn diagnostic_event(&self) -> &'static str {
+        match self {
+            Self::Rejected(_) | Self::Policy | Self::AuthorizationTimeout => {
+                "authorization_unavailable"
+            }
+            Self::Endpoint | Self::Challenge | Self::Protocol | Self::Entropy => {
+                "connection_protocol_unavailable"
+            }
+            Self::Unavailable(_) => "worker_unavailable",
+            Self::HeartbeatTimeout => "heartbeat_timeout",
+            Self::Superseded => "connection_superseded",
+            Self::Queue => "execution_queue_unavailable",
+            Self::Ws(tungstenite::Error::Http(response))
+                if [401, 403, 404].contains(&response.status().as_u16()) =>
+            {
+                "authorization_unavailable"
+            }
+            Self::Ws(tungstenite::Error::Http(response))
+                if [408, 425, 429].contains(&response.status().as_u16())
+                    || response.status().is_server_error() =>
+            {
+                "worker_unavailable"
+            }
+            _ => "connection_unavailable",
+        }
+    }
+}
+
+// Only fixed classifications are emitted, never raw network or storage errors.
+pub fn report_diagnostic(event: &'static str) {
+    eprintln!(
+        "{}",
+        json!({"service":"remote-control-agent","event":event})
+    );
+}
+
+pub type DiagnosticSink = Arc<dyn Fn(&'static str) + Send + Sync>;
+
 #[derive(Deserialize)]
 struct Challenge {
     device_id: String,
@@ -630,6 +669,7 @@ struct TransportMode {
     policy: FramePolicy,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
+    on_diagnostic: Option<DiagnosticSink>,
 }
 
 pub fn maintain_authenticated_transport(
@@ -653,6 +693,7 @@ pub fn maintain_authenticated_transport(
             policy: FramePolicy::Any,
             on_connected: None,
             on_disconnected: None,
+            on_diagnostic: None,
         },
     )
 }
@@ -680,6 +721,7 @@ pub fn maintain_native_read_transport(
             policy: FramePolicy::ReadOnly,
             on_connected: None,
             on_disconnected: None,
+            on_diagnostic: None,
         },
     )
 }
@@ -707,6 +749,7 @@ pub fn maintain_native_file_transport(
             policy: FramePolicy::NativeFiles,
             on_connected: None,
             on_disconnected: None,
+            on_diagnostic: None,
         },
     )
 }
@@ -717,6 +760,7 @@ pub struct ManagedTransportConfig {
     pub managed: Arc<ManagedSessions>,
     pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
+    pub on_diagnostic: Option<DiagnosticSink>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -741,6 +785,7 @@ pub fn maintain_native_managed_transport(
             policy: FramePolicy::NativeManaged(config.managed),
             on_connected: config.on_connected,
             on_disconnected: config.on_disconnected,
+            on_diagnostic: config.on_diagnostic,
         },
     )
 }
@@ -755,6 +800,18 @@ fn maintain_transport_mode(
     mode: TransportMode,
 ) -> Result<(), SessionError> {
     let mut backoff = ReconnectBackoff::default();
+    let mut last_event = None;
+    let mut report = |error: &SessionError, reset: bool| {
+        let event = error.diagnostic_event();
+        if reset || last_event != Some(event) {
+            if let Some(sink) = mode.on_diagnostic.as_ref() {
+                sink(event);
+            } else {
+                report_diagnostic(event);
+            }
+        }
+        last_event = Some(event);
+    };
     while !stop.load(Ordering::Acquire) {
         let elapsed = match connect_authenticated(endpoint, private_pem, device_id) {
             Ok(mut socket) => {
@@ -776,14 +833,26 @@ fn maintain_transport_mode(
                     on_disconnected();
                 }
                 match pump {
-                    Ok(()) | Err(SessionError::Superseded) => return Ok(()),
-                    Err(error) if !retryable(&error) => return Err(error),
-                    Err(_) => {}
+                    Ok(()) => return Ok(()),
+                    Err(error) => {
+                        report(&error, true);
+                        if matches!(error, SessionError::Superseded) {
+                            return Ok(());
+                        }
+                        if !retryable(&error) {
+                            return Err(error);
+                        }
+                    }
                 }
                 Some(connected_at.elapsed())
             }
-            Err(error) if !retryable(&error) => return Err(error),
-            Err(_) => None,
+            Err(error) => {
+                report(&error, false);
+                if !retryable(&error) {
+                    return Err(error);
+                }
+                None
+            }
         };
         if stop.load(Ordering::Acquire) {
             break;
