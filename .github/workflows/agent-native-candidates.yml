@@ -822,6 +822,23 @@ jobs:
             $null = New-Item -ItemType Directory -Path $receipts
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Seal -Directory $root -FileName 'receipts'
             if ($LASTEXITCODE -ne 0) { throw 'Synthetic receipts ACL seal failed' }
+            # Independently seed the deployed v1 schema using Node's SQLite API,
+            # not the Rust writer. Unknown must survive both candidate attempts.
+            $history = Join-Path $receipts 'operation-receipts.sqlite'
+            $historyId = [guid]::NewGuid().ToString('D')
+            $seed = @'
+          const {DatabaseSync}=require('node:sqlite');
+          const db=new DatabaseSync(process.argv[1]);
+          db.exec("CREATE TABLE receipts (operation_id TEXT PRIMARY KEY NOT NULL, tool_name TEXT NOT NULL, argument_digest TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, safe_result_summary TEXT, session_id TEXT, guarded INTEGER NOT NULL CHECK(guarded IN (0,1))); PRAGMA user_version=1;");
+          const at=new Date().toISOString();
+          db.prepare("INSERT INTO receipts VALUES (?,?,?,?,?,?,?,NULL,1)").run(process.argv[2],"write_file","a".repeat(64),"unknown",at,at,"Historical unknown must not replay.");
+          db.close();
+          '@
+            & $nodeForKey -e $seed $history $historyId
+            if ($LASTEXITCODE -ne 0) { throw 'Node reference receipt fixture failed' }
+            $historyAcl = Get-Acl -LiteralPath $history
+            $historyAcl.SetOwner([Security.Principal.WindowsIdentity]::GetCurrent().User)
+            Set-Acl -LiteralPath $history -AclObject $historyAcl
             # An interrupted first Start persists a *protected* activation
             # marker. Validate its real PowerShell ACL path in disposable CI.
             $pending = $key + '.activation-pending'
@@ -1082,6 +1099,13 @@ jobs:
             }
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/install.ps1' -StageOnly -Version $publishedVersion -OfflineArchive $publishedArchive -ExpectedSha256 $publishedDigest
             if ($LASTEXITCODE -ne 0) { throw 'Real installer could not stage published v0.1.56 Windows Node package' }
+            # Permanent-mode metadata is an existing contract of the published
+            # Node freeze pipe. This disposable identity has no Worker grant.
+            $mode = $key + '.install-mode'
+            if (Test-Path -LiteralPath $mode) { throw 'Unexpected preexisting install mode' }
+            [IO.File]::WriteAllText($mode,('permanent' + [char]10))
+            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $acl -Action Seal -Directory $root -FileName 'v2-identity.pem.install-mode'
+            if ($LASTEXITCODE -ne 0) { throw 'Permanent fixture mode ACL seal failed' }
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $publishedVersion -Direction Upgrade
             if ($LASTEXITCODE -ne 0) { throw 'Windows task switch to published v0.1.56 Node package failed' }
             $publishedDir = Join-Path $basePrograms ($publishedVersion + '-windows-x64')
@@ -1133,6 +1157,78 @@ jobs:
                 [string]$unchanged.Actions[0].Execute -cne $originalAction -or
                 [string]$unchanged.Actions[0].Arguments -cne $originalArguments) {
               throw 'StageOnly changed the published Node task'
+            }
+            # Exercise the actual native-only handoff, not a synthetic proof.
+            # This endpoint cannot authenticate, so a successful exit would
+            # be a safety failure. The second attempt kills only the exact
+            # disposable updater after the new Task and its process are live.
+            $nativeJournal = Join-Path $root 'windows-native-upgrade.json'
+            $nativeLauncher = Join-Path $nativeDir 'bin/rca-background.exe'
+            $controller = (Resolve-Path 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1').Path
+            foreach ($interrupted in @($false,$true)) {
+              $label = if ($interrupted) {'interrupted'} else {'no-proof'}
+              $stdoutFile = Join-Path $env:RUNNER_TEMP ("native-switch-$label.out")
+              $stderrFile = Join-Path $env:RUNNER_TEMP ("native-switch-$label.err")
+              $switch = Start-Process -FilePath powershell.exe -ArgumentList @(
+                '-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $controller + '"'),
+                '-Action','Switch','-Direction','Upgrade','-Version',$nativeVersion,'-Verbose'
+              ) -PassThru -NoNewWindow -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+              try {
+                $activated = $false
+                $watch = [Diagnostics.Stopwatch]::StartNew()
+                while ($watch.Elapsed.TotalSeconds -lt 45 -and -not $switch.HasExited) {
+                  $current = Get-ScheduledTask -TaskName $taskName
+                  $candidateProcess = @(Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
+                    Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$nativeExe,[StringComparison]::OrdinalIgnoreCase) -and $_.CommandLine -match '--service' })
+                  if ($current.State -eq 'Running' -and
+                      [string]::Equals([string]$current.Actions[0].Execute,$nativeLauncher,[StringComparison]::OrdinalIgnoreCase) -and
+                      $candidateProcess.Count -eq 1 -and (Test-Path -LiteralPath $nativeJournal)) {
+                    $activated = $true
+                    break
+                  }
+                  Start-Sleep -Milliseconds 250
+                }
+                if (-not $activated) {
+                  Get-Content -LiteralPath $stdoutFile,$stderrFile -Tail 20 -ErrorAction SilentlyContinue | Write-Output
+                  throw 'Native-only candidate did not reach the real Task activation boundary'
+                }
+                $oldLive = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
+                  Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$publishedNode,[StringComparison]::OrdinalIgnoreCase) })
+                if ($oldLive.Count -ne 0) { throw 'Original Node process survived native-only activation' }
+                if ($interrupted) {
+                  $switch.Kill()
+                  if (-not $switch.WaitForExit(10000)) { throw 'Disposable updater did not exit' }
+                  if (-not (Test-Path -LiteralPath $nativeJournal)) { throw 'Interrupted cutover lost its durable journal' }
+                  & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action RecoverNativeUpgrade -Verbose
+                  if ($LASTEXITCODE -ne 0) { throw 'Attended native recovery failed' }
+                } else {
+                  if (-not $switch.WaitForExit(150000)) { throw 'Missing-proof upgrade did not complete bounded recovery' }
+                  $switch.WaitForExit()
+                  $diagnostic = (Get-Content -LiteralPath $stdoutFile -Raw) + (Get-Content -LiteralPath $stderrFile -Raw)
+                  if ($switch.ExitCode -eq 0 -or $diagnostic -notmatch 'Native upgrade refused at signed WSS; previous task restored') {
+                    Write-Output $diagnostic.Substring(0,[Math]::Min(3500,$diagnostic.Length))
+                    throw 'Native-only missing-proof upgrade did not verify rollback'
+                  }
+                }
+                $current = Get-ScheduledTask -TaskName $taskName
+                $nativeLive = @(Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
+                  Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$nativeExe,[StringComparison]::OrdinalIgnoreCase) })
+                $oldLive = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
+                  Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$publishedNode,[StringComparison]::OrdinalIgnoreCase) })
+                if ($current.State -ne 'Running' -or
+                    [string]$current.Actions[0].Execute -cne $originalAction -or
+                    [string]$current.Actions[0].Arguments -cne $originalArguments -or
+                    $nativeLive.Count -ne 0 -or $oldLive.Count -ne 1 -or
+                    (Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
+                    (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey -or
+                    (Test-Path -LiteralPath $nativeJournal)) {
+                  throw 'Restoration did not preserve the original Task, process and identity'
+                }
+                if ($interrupted) { Write-Output 'WINDOWS_NATIVE_INTERRUPTED_UPGRADE_RECOVERY_PASS' }
+                else { Write-Output 'WINDOWS_NATIVE_MISSING_WSS_ROLLBACK_PASS' }
+              } finally {
+                if (-not $switch.HasExited) { $switch.Kill(); $null = $switch.WaitForExit(10000) }
+              }
             }
             & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/uninstall-windows.ps1' -Version $nativeVersion
             if ($LASTEXITCODE -ne 0 -or (Test-Path -LiteralPath $nativeDir)) {
@@ -1254,11 +1350,29 @@ jobs:
             if ($remainingPublished.Count -ne 0) {
               throw 'Task disable left published Node runtime processes active; refuse uninstall'
             }
+            $readHistory = @'
+          const {DatabaseSync}=require('node:sqlite');
+          const db=new DatabaseSync(process.argv[1],{readOnly:true});
+          const r=db.prepare("SELECT state,argument_digest,guarded FROM receipts WHERE operation_id=?").get(process.argv[2]);
+          db.close();
+          if(!r||r.state!=="unknown"||r.argument_digest!=="a".repeat(64)||r.guarded!==1)process.exit(1);
+          '@
+            & $publishedNode -e $readHistory $history $historyId
+            if ($LASTEXITCODE -ne 0) { throw 'Original guarded Unknown receipt was lost or changed' }
+            Write-Output 'WINDOWS_NATIVE_UPGRADE_UNKNOWN_PRESERVED'
           } finally {
-            if ($created) { & $program disable }
-            Remove-Item -LiteralPath $device -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $receipts -Recurse -Force -ErrorAction SilentlyContinue
+            $pendingJournal = Join-Path $root 'windows-native-upgrade.json'
+            if (Test-Path -LiteralPath $pendingJournal) {
+              # Failed acceptance is already a failed Job; the disposable
+              # Runner may terminate without discarding uncertain state.
+              Write-Output 'Native recovery journal retained for failed acceptance; preserve identity and receipts'
+            } else {
+              if ($created) { & $program disable }
+              Remove-Item -LiteralPath $device -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $key -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $receipts -Recurse -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath ($key + '.install-mode') -Force -ErrorAction SilentlyContinue
+            }
           }
 
       - name: Uninstall inactive native version without deleting identity or logs

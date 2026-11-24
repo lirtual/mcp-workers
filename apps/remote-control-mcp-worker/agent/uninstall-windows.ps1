@@ -51,6 +51,9 @@ foreach ($dir in @(
   $programs
 )) { Assert-Private $dir }
 
+if (Test-Path -LiteralPath ([IO.Path]::Combine([IO.Path]::GetDirectoryName($programs),'windows-native-upgrade.json'))) {
+  throw 'Unreconciled native upgrade; retain both program versions'
+}
 if (-not (Test-Path -LiteralPath $target)) {
   Write-Output ('Version not installed; identity preserved: ' + $Version)
   exit 0

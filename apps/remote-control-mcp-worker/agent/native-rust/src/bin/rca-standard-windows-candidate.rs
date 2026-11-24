@@ -10,7 +10,7 @@ mod windows {
     use rca_native_agent::validate_windows_private_path;
     use rca_native_agent::windows_managed::WindowsManagedSessions;
     use std::fs;
-    use std::io::{ErrorKind, Write};
+    use std::io::{ErrorKind, Read, Write};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -108,6 +108,52 @@ mod windows {
         }
     }
 
+    // Same header compatibility boundary as the Linux handoff. Only called
+    // after the previous Agent has exited; never open a second SQLite writer.
+    fn verify_upgrade_state() -> Result<(), ()> {
+        let root = store_root()?;
+        validate_windows_private_path(&root, true).map_err(|_| ())?;
+        let key = root.join("v2-identity.pem");
+        let (pem, id) = local_identity(&key)?;
+        if pem.is_none() || id.is_none() || stopped(&key)? {
+            return Err(());
+        }
+        let directory = root.join("receipts");
+        validate_windows_private_path(&directory, true).map_err(|_| ())?;
+        let db = directory.join("operation-receipts.sqlite");
+        match fs::symlink_metadata(&db) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                for name in [
+                    "operation-receipts.json",
+                    "operation-receipts.pre-sqlite.json",
+                ] {
+                    match fs::symlink_metadata(directory.join(name)) {
+                        Err(error) if error.kind() == ErrorKind::NotFound => {}
+                        _ => return Err(()),
+                    }
+                }
+            }
+            Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() => {
+                validate_windows_private_path(&db, false).map_err(|_| ())?;
+                let mut header = [0u8; 100];
+                fs::File::open(&db)
+                    .map_err(|_| ())?
+                    .read_exact(&mut header)
+                    .map_err(|_| ())?;
+                if &header[..16] != b"SQLite format 3\0"
+                    || !matches!(
+                        u32::from_be_bytes(header[60..64].try_into().map_err(|_| ())?),
+                        0 | 1
+                    )
+                {
+                    return Err(());
+                }
+            }
+            _ => return Err(()),
+        }
+        Ok(())
+    }
+
     // Evidence of a handshake, not present network liveness. The task
     // controller additionally verifies the actual process and generation.
     fn activation_proof(generation: &str) -> Result<(), ()> {
@@ -172,6 +218,9 @@ mod windows {
             return Err(());
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.as_slice() == ["--verify-upgrade-state"] {
+            return verify_upgrade_state();
+        }
         if args.first().map(String::as_str) == Some("--cli") {
             return if args.as_slice() == ["--cli", "status"] {
                 local_status()
