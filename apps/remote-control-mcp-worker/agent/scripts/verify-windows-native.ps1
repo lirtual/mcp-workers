@@ -4,7 +4,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory=$true)][string]$Root,
-  [Parameter(Mandatory=$true)][ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$')][string]$Version
+  [Parameter(Mandatory=$true)][ValidatePattern('^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$')][string]$Version
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'

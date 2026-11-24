@@ -320,8 +320,8 @@ function Complete-ApprovedOnboarding([string]$launcher) {
     throw 'Authorization incomplete. Identity kept.'
   }
 }
-# Explicitly pinned prerelease only. Keep the stable Node installer and
-# detached production upgrade path unchanged until release acceptance.
+# Attended verified native install. Detached production upgrade stays on
+# its existing separate path; a console is mandatory for native activation.
 function Complete-NativeInstall([string]$directory) {
   $scripts = Join-Path $directory 'apps/remote-control-agent/scripts'
   $entry = Join-Path $directory 'apps/remote-control-agent/.build/rca-standard-windows-candidate.exe'
@@ -564,13 +564,18 @@ try {
 
   $candidateOnboarding = $SelectedTag -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -and
     -not $StageOnly -and -not $OfflineArchive -and -not $detachedUpgrade -and -not $detachedRequest
+  # Only the official immutable Latest lookup (not an arbitrary stable pin,
+  # offline fixture or detached task) can admit attended stable native install.
+  $stableOnboarding = -not $SelectedTag -and -not $OfflineArchive -and
+    -not $StageOnly -and -not $detachedUpgrade -and -not $detachedRequest
+  $nativeOnboarding = $candidateOnboarding -or $stableOnboarding
   $upgradeExisting = $false
   if ($alreadyPaired) {
     if (-not (Test-Path -LiteralPath $identityFile -PathType Leaf)) {
       throw 'Existing device ID has no private key; refusing upgrade'
     }
     if (-not $task) {
-      if (-not $candidateOnboarding -or -not (Test-Path -LiteralPath ($identityFile + '.install-mode'))) {
+      if (-not $nativeOnboarding -or -not (Test-Path -LiteralPath ($identityFile + '.install-mode'))) {
         throw 'Existing device has no user-logon task; use explicit device management'
       }
     } elseif ($task.Actions.Count -ne 1) {
@@ -580,7 +585,9 @@ try {
     if ($oldVersion -cne $Version) {
       $oldNumber = [version](($oldVersion.Substring(1) -split '-')[0])
       $newNumber = [version](($Version.Substring(1) -split '-')[0])
-      if ($newNumber -le $oldNumber) { throw 'Automatic downgrade or same-version replacement refused' }
+      $stablePromotion = $stableOnboarding -and ($newNumber -eq $oldNumber) -and
+        $oldVersion -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$'
+      if ($newNumber -le $oldNumber -and -not $stablePromotion) { throw 'Automatic downgrade or same-version replacement refused' }
       Write-Output ("Agent: {0} -> {1}" -f $oldVersion, $Version)
       Write-Output 'Finish active operations before upgrading.'
       Write-Output ("Task: {0} (state preserved)" -f $task.State)
@@ -605,7 +612,7 @@ try {
     $installedManifest = Get-Content -LiteralPath (Join-Path $target 'bundle.json') -Raw | ConvertFrom-Json
     $installedProfile = $installedManifest.PSObject.Properties['artifact_profile']
     if ($null -ne $installedProfile -and $installedProfile.Value -ceq 'rust-native-only-v1') {
-      if (-not $candidateOnboarding) { throw 'Native-only candidate requires explicit reviewed onboarding' }
+      if (-not $nativeOnboarding) { throw 'Native-only bundle requires reviewed attended onboarding' }
       $temp = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('rca-' + [guid]::NewGuid().ToString('N') + '.zip'))
       Download-ApprovedAsset $releaseUrl $temp $releaseSize
       Assert-ArchiveDigest $temp $releaseSha
@@ -684,8 +691,8 @@ try {
   if ($manifest.version -cne $Version) { throw 'Manifest version mismatch' }
   $profile = $manifest.PSObject.Properties['artifact_profile']
   if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
-    if (-not $StageOnly -and -not $candidateOnboarding) {
-      throw 'Native-only Windows candidate requires explicit reviewed onboarding'
+    if (-not $StageOnly -and -not $nativeOnboarding) {
+      throw 'Native-only Windows bundle requires reviewed attended onboarding'
     }
     # The outer reviewed ZIP SHA256 was checked before extraction.
     $verifier = Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1'

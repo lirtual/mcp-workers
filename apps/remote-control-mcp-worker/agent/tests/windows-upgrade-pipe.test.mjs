@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {spawn} from "node:child_process";
+import {spawn,spawnSync} from "node:child_process";
 import {createConnection} from "node:net";
 import {mkdtemp,readFile,rm} from "node:fs/promises";
 import os from "node:os";
@@ -188,4 +188,25 @@ Write-Output 'stage-retry-pass'
   });
   assert.equal(result.code,0,result.stderr);
   assert.equal(result.stdout.trim(),"stage-retry-pass");
+});
+
+windows("native Stable promotion retains forward-only journal validation",async()=>{
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Test-NativeForwardVersion\([\s\S]*?^\}/m)?.[0];
+  assert(fn);
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+if (-not (Test-NativeForwardVersion 'v0.1.56' 'v0.1.58')) { throw 'Stable forward denied' }
+if (-not (Test-NativeForwardVersion 'v0.1.58-rust-candidate.5' 'v0.1.58')) { throw 'Stable promotion denied' }
+if (-not (Test-NativeForwardVersion 'v0.1.56' 'v0.1.58-rust-candidate.5')) { throw 'Candidate forward denied' }
+if (Test-NativeForwardVersion 'v0.1.58-rust-candidate.3' 'v0.1.58-rust-candidate.5') { throw 'Same number candidate admitted' }
+if (Test-NativeForwardVersion 'v0.1.58' 'v0.1.58') { throw 'Same Stable admitted' }
+if (Test-NativeForwardVersion 'v0.1.59' 'v0.1.58') { throw 'Downgrade admitted' }
+if (Test-NativeForwardVersion 'v0.1.58' 'v0.1.59-beta.1') { throw 'Unknown profile admitted' }
+Write-Output 'native-forward-pass'
+`;
+  const result=spawnSync("powershell.exe",["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"native-forward-pass");
 });

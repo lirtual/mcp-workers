@@ -468,14 +468,22 @@ function Open-NativeJournal {
       $item.Length -lt 1 -or $item.Length -gt 4096) { throw 'Untrusted native upgrade journal' }
   [IO.File]::Open($nativeJournal,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None)
 }
+# Forward native versions: numeric increase, or candidate to final Stable.
+# Candidate-to-candidate replacement at the same number remains forbidden.
+function Test-NativeForwardVersion([string]$original,[string]$target) {
+  if ($original -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$' -or
+      $target -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$') { return $false }
+  $old = [version](($original.Substring(1) -split '-')[0])
+  $new = [version](($target.Substring(1) -split '-')[0])
+  return ($new -gt $old -or ($new -eq $old -and
+      $original -cmatch '-rust-candidate\.[1-9][0-9]*$' -and $target -cnotmatch '-'))
+}
 function Read-NativeJournal($stream) {
   $reader = [IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$false,4096,$true)
   try { $record = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
   if ($record.schema -ne 1 -or
       $record.key_hash -cnotmatch '^[A-F0-9]{64}$' -or $record.id_hash -cnotmatch '^[A-F0-9]{64}$' -or
-      $record.original -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$' -or
-      $record.target -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -or
-      [version](($record.target.Substring(1) -split '-')[0]) -le [version](($record.original.Substring(1) -split '-')[0])) {
+      -not (Test-NativeForwardVersion $record.original $record.target)) {
     throw 'Unreviewed native upgrade journal'
   }
   $record
@@ -611,7 +619,7 @@ if ($Action -eq 'ConfirmStopped') {
 if ($Action -eq 'EnableNative') {
   if ($Direction -or $Node -or $Entry -or $CIInjectFailure -or
       $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$' -or
-      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$') { throw 'Unreviewed native enable' }
+      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$') { throw 'Unreviewed native enable' }
   Check-UpgradeStore
   if ($task) { throw 'Cannot overwrite an existing scheduled task' }
   $modeGuard = [IO.File]::Open(($identityFile + '.install-mode'),[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
@@ -641,7 +649,7 @@ if ($Action -eq 'EnableNative') {
 if ($Action -eq 'ActivateNative') {
   if ($Direction -or $Node -or $Entry -or $CIInjectFailure -or
       $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$' -or
-      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$') {
+      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$') {
     throw 'Unreviewed native initial activation'
   }
   Check-UpgradeStore
@@ -752,7 +760,9 @@ if ($Action -eq 'Switch') {
   $oldVersion = $oldDir.Substring(0, $oldDir.Length - '-windows-x64'.Length)
   $oldNumber = [version](($oldVersion.Substring(1) -split '-')[0])
   $newNumber = [version](($Version.Substring(1) -split '-')[0])
-  if (($Direction -eq 'Upgrade' -and $newNumber -le $oldNumber) -or
+  $stablePromotion = $Direction -eq 'Upgrade' -and $newNumber -eq $oldNumber -and
+    (Test-NativeForwardVersion $oldVersion $Version)
+  if (($Direction -eq 'Upgrade' -and $newNumber -le $oldNumber -and -not $stablePromotion) -or
       ($Direction -eq 'Rollback' -and $newNumber -ge $oldNumber)) {
     throw 'Invalid version upgrade/rollback direction'
   }
@@ -784,8 +794,11 @@ if ($Action -eq 'Switch') {
   } else { throw 'Unreviewed Windows runtime profile' }
   Check-Program $nextActionExe $nextEntry
   $profile = $manifest.PSObject.Properties['artifact_profile']
+  if ($stablePromotion -and ($null -eq $profile -or $profile.Value -cne 'rust-native-only-v1')) {
+    throw 'Same-number Stable promotion requires verified native-only bundle'
+  }
   if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
-    if ($Direction -cne 'Upgrade' -or $ownerStopped -or $CIInjectFailure) { throw 'Native-only cutover requires owner-ON upgrade' }
+    if ($Direction -cne 'Upgrade' -or $ownerStopped -or $CIInjectFailure -or -not (Test-NativeForwardVersion $oldVersion $Version)) { throw 'Native-only cutover requires owner-ON upgrade' }
     Invoke-NativeUpgrade $oldVersion $Version $oldLaunch
     exit 0
   }

@@ -952,6 +952,76 @@ def verify_isolated():
     print("ISOLATED_NATIVE_HANDOFF_CONTRACT_PASS")
 
 
+
+def verify_public_native_archive():
+    import hashlib
+    import struct
+    import tarfile
+    from unittest.mock import Mock
+    # The verified public archive path does not resolve or fetch a second
+    # Release. Real staging/ABI checks run; only owner effects are mocked.
+    with tempfile.TemporaryDirectory(prefix="rca-public-native-") as tmp:
+        root = Path(tmp)
+        source = root / "source"
+        source.mkdir(mode=0o700)
+        tag = "v0.1.58"
+        packed_root = make_version(source, tag, True)
+        manifest = packed_root / "bundle.json"
+        meta = json.loads(manifest.read_text())
+        meta["glibc_min"] = "2.28"
+        manifest.write_text(json.dumps(meta))
+        elf = bytearray(80)
+        elf[:4] = b"\x7fELF"
+        elf[4:6] = b"\x02\x01"
+        target = "linux-x64-glibc" if bootstrap.platform.machine() == "x86_64" else "linux-arm64-glibc"
+        struct.pack_into("<H", elf, 18, 62 if target == "linux-x64-glibc" else 183)
+        meta["target"] = target
+        manifest.write_text(json.dumps(meta))
+        for name in ("session-supervisor", "rca-standard-linux-candidate"):
+            owned_file(packed_root / APP / ".build" / name, bytes(elf), mode=0o700)
+        archive = root / "verified.tar.gz"
+        with tarfile.open(archive, "w:gz", format=tarfile.USTAR_FORMAT) as tar:
+            for child in packed_root.iterdir():
+                tar.add(child, arcname=child.name)
+        archive.chmod(0o600)
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        home = root / "owner"
+        home.mkdir(mode=0o700)
+        pair = Mock(return_value={"status":"fixture"})
+        temporary = Mock(return_value=0)
+        with patch.dict(os.environ, {"HOME":str(home)}), patch.object(
+                sys.stdin, "isatty", return_value=True), patch.object(
+                sys.stdout, "isatty", return_value=True), patch.multiple(
+                    bootstrap, resolve_pinned=Mock(side_effect=AssertionError("no second Release lookup")),
+                    fetch=Mock(side_effect=AssertionError("no second download")),
+                    native_pair_or_install=pair, native_temporary=temporary):
+            for invalid_tag, invalid_digest in [(tag,"0"*64), (tag+"-rust-candidate.1",digest)]:
+                try:
+                    bootstrap.install(invalid_tag, None, ENDPOINT, native_install=True,
+                                      asset_sha256=invalid_digest, latest_archive=archive)
+                    raise AssertionError("Invalid public archive admitted")
+                except ValueError:
+                    pass
+            assert not pair.called and not temporary.called
+            with patch("builtins.input", side_effect=["1","NATIVE-INSTALL"]):
+                bootstrap.install(tag, None, ENDPOINT, native_install=True,
+                                  asset_sha256=digest, latest_archive=archive)
+            dest = bootstrap.program_home(home) / (tag+"-"+target)
+            assert (dest / APP / ".build/rca-standard-linux-candidate").is_file()
+            assert not (dest / "bin/node").exists()
+            pair.assert_called_once_with(home, dest, ENDPOINT, None)
+            with patch("builtins.input", return_value="2"):
+                bootstrap.install(tag, None, ENDPOINT, native_install=True,
+                                  asset_sha256=digest, latest_archive=archive)
+            temporary.assert_called_once_with(home, dest, ENDPOINT, None)
+    for old, new, expected in [
+            ("v0.1.56","v0.1.58",True), ("v0.1.58-rust-candidate.5","v0.1.58",True),
+            ("v0.1.58","v0.1.58",False), ("v0.1.59","v0.1.58",False),
+            ("v0.1.58-rust-candidate.3","v0.1.58-rust-candidate.5",False)]:
+        assert bootstrap.public_forward_version(old,new) == expected
+    print("PUBLIC_NATIVE_ARCHIVE_CONTRACT_PASS")
+
+
 if __name__ == "__main__":
     os.umask(0o077)  # Exactly the installed Agent's private program directories.
     if sys.argv[1:] == ["--units"]:
@@ -965,4 +1035,5 @@ if __name__ == "__main__":
             ctx.cleanup()
     else:
         verify_service_start()
+        verify_public_native_archive()
         verify_isolated()
