@@ -308,15 +308,19 @@ fn pair_windows_identity_with(
     } else {
         "permanent\n"
     };
-    for name in [
-        "v2-identity.pem.owner-stopped",
-        "windows-native-upgrade.json",
-        "v2-identity.pem.device-id.pending",
-    ] {
-        if present(&directory.join(name))? {
-            return Err(invalid());
+    let assert_no_conflicts = || -> Result<(), SessionRecoveryError> {
+        for name in [
+            "v2-identity.pem.owner-stopped",
+            "windows-native-upgrade.json",
+            "v2-identity.pem.device-id.pending",
+        ] {
+            if present(&directory.join(name))? {
+                return Err(invalid());
+            }
         }
-    }
+        Ok(())
+    };
+    assert_no_conflicts()?;
     if !present(&mode)? {
         if present(&key)? || present(&id)? || present(&activation)? {
             return Err(invalid()); // Legacy state requires its reviewed upgrade path.
@@ -325,6 +329,7 @@ fn pair_windows_identity_with(
     }
     // Same immutable-mode file is held by pairing, re-pair and owner intent.
     let guard = lock_windows_mode(directory, required_mode)?;
+    assert_no_conflicts()?;
     let existing = read(&id, 128)?;
     let pending = read(&activation, 128)?;
     if temporary && pending.is_some() {

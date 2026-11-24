@@ -258,6 +258,7 @@ mod darwin {
             managed,
             &stop,
             UpgradeRuntimeOptions {
+                on_disconnected: None,
                 key_path: &key,
                 on_connected: Some(on_connected),
             },

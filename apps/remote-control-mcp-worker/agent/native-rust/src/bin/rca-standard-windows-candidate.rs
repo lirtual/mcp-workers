@@ -8,6 +8,7 @@ mod windows {
     };
     use rca_native_agent::session::SessionError;
     use rca_native_agent::validate_windows_private_path;
+    use rca_native_agent::windows_log;
     use rca_native_agent::windows_managed::WindowsManagedSessions;
     use std::fs;
     use std::io::{ErrorKind, IsTerminal, Read, Write};
@@ -475,6 +476,13 @@ mod windows {
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
                 [_, command] if command == "status" => local_status(),
+                [_, command] if command == "logs" => {
+                    print!(
+                        "{}",
+                        windows_log::read_events(&store_root()?).map_err(|_| ())?
+                    );
+                    Ok(())
+                }
                 [_, command] if command == "stop" => owner_lifecycle(false),
                 [_, command] if command == "start" => owner_lifecycle(true),
                 [_, command, flag, endpoint] if command == "re-pair" && flag == "--endpoint" => {
@@ -541,6 +549,7 @@ mod windows {
         // Owner STOP preserves the existing behavior even if the ID is missing.
         if stopped(&key)? {
             read_private(&key, 8192)?;
+            windows_log::record(&root, "owner_stopped");
             return Ok(());
         }
         let (pem, id) = local_identity(&key)?;
@@ -588,13 +597,19 @@ mod windows {
         } else {
             None
         };
-        let on_connected = generation.map(|value| {
-            let generation = value.to_owned();
-            let id = device_id.to_owned();
-            let callback: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                let _ = record_connected(&root, &generation, &id);
-            });
-            callback
+        windows_log::record(&root, "starting");
+        let marker_generation = generation.map(str::to_owned);
+        let marker_id = device_id.to_owned();
+        let connected_root = root.clone();
+        let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            windows_log::record(&connected_root, "connected");
+            if let Some(generation) = marker_generation.as_deref() {
+                let _ = record_connected(&connected_root, generation, &marker_id);
+            }
+        });
+        let disconnected_root = root.clone();
+        let on_disconnected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            windows_log::record(&disconnected_root, "disconnected");
         });
         let outcome = run_native_managed_session_with_upgrade(
             endpoint,
@@ -605,10 +620,20 @@ mod windows {
             &stop,
             UpgradeRuntimeOptions {
                 key_path: key,
-                on_connected,
+                on_connected: Some(on_connected),
+                on_disconnected: Some(on_disconnected),
             },
         );
         stop.store(true, Ordering::Release);
+        if matches!(
+            &outcome,
+            Err(NativeFileError::Session(
+                SessionError::Policy | SessionError::Rejected(_)
+            ))
+        ) {
+            windows_log::record(&root, "rejected");
+        }
+        windows_log::record(&root, "stopping");
         if let Some(monitor) = monitor {
             monitor.join().map_err(|_| ())?;
         }

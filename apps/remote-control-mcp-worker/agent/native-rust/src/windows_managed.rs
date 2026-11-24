@@ -118,7 +118,7 @@ fn session_id() -> io::Result<String> {
     ))
 }
 
-fn utc_clock() -> String {
+pub(crate) fn utc_clock() -> String {
     let mut now = SYSTEMTIME::default();
     unsafe { GetSystemTime(&mut now) };
     format!(
