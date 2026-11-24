@@ -150,3 +150,42 @@ Write-Output 'exit-filter-pass'
   assert.equal(result.code,0,result.stderr);
   assert.equal(result.stdout.trim(),"exit-filter-pass");
 });
+
+windows("verified stage filesystem retry is bounded and never retries unrelated refusals",async()=>{
+  const source=await readFile(fileURLToPath(new URL("../install.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Invoke-StageFileOperation\([\s\S]*?^\}/m)?.[0];
+  assert(fn);
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+function Start-Sleep {}
+$script:attempts=0
+Invoke-StageFileOperation {
+  $script:attempts++
+  if ($script:attempts -lt 3) { throw [IO.IOException]::new('sharing fixture',-2147024864) }
+}
+if ($script:attempts -ne 3) { throw 'Expected sharing recovery' }
+$script:attempts=0
+try {
+  Invoke-StageFileOperation { $script:attempts++; throw [IO.IOException]::new('persistent sharing fixture',-2147024864) }
+  throw 'Unexpected success'
+} catch { if ($_.Exception.Message -ne 'persistent sharing fixture') { throw } }
+if ($script:attempts -ne 8) { throw 'Wrong retry limit' }
+$script:attempts=0
+try {
+  Invoke-StageFileOperation { $script:attempts++; throw 'Target already exists; refuse stage promotion' }
+  throw 'Unexpected success'
+} catch { if ($_.Exception.Message -ne 'Target already exists; refuse stage promotion') { throw } }
+if ($script:attempts -ne 1) { throw 'Unrelated failure retried' }
+Write-Output 'stage-retry-pass'
+`;
+  const result=await new Promise((resolve,reject)=>{
+    const child=spawn("powershell.exe",["-NoProfile","-NonInteractive","-Command",command],{windowsHide:true});
+    let stdout="",stderr="";
+    child.stdout.on("data",x=>stdout+=x);
+    child.stderr.on("data",x=>stderr+=x);
+    child.on("error",reject);
+    child.on("close",code=>resolve({code,stdout,stderr}));
+  });
+  assert.equal(result.code,0,result.stderr);
+  assert.equal(result.stdout.trim(),"stage-retry-pass");
+});

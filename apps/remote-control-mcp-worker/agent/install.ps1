@@ -276,6 +276,22 @@ function Expand-SafeArchive([string]$file, [string]$folder) {
     }
   } finally { $zip.Dispose() }
 }
+# Windows may briefly retain an executable file handle after the verifier
+# exits. Retry only the private staging filesystem operation, never the
+# installer, the grant request, or the Task switch. Access-denied from a
+# directory move can also be a loaded file; persistent denial still fails.
+function Invoke-StageFileOperation([scriptblock]$operation) {
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try { & $operation; return }
+    catch {
+      $cause = $_.Exception
+      while ($cause.InnerException) { $cause = $cause.InnerException }
+      $code = $cause.HResult -band 0xffff
+      if ($attempt -eq 8 -or $code -notin @(5,32,33)) { throw }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
 # Inspect the task target without launching it. The packaged CLI performs
 # the complete owner/ACL/task signature validation again before switching.
 function Get-ExistingAgentVersion([string]$programs, [string]$taskExe) {
@@ -427,6 +443,7 @@ $detachedRequest = $env:RCA_UNATTENDED_UPGRADE -ceq 'launch-approved-task-v1'
 $temp = $null
 $stage = $null
 $promoted = $false
+$primaryFailure = $false
 $releaseUrl = $null
 $releaseSha = $null
 $releaseSize = [long]0
@@ -681,7 +698,11 @@ try {
     & $node $verifier $stage | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Bundle file manifest failed verification' }
   }
-  [IO.Directory]::Move($stage, $target)
+  Invoke-StageFileOperation {
+    Assert-PrivateFolder $stage
+    if (Test-Path -LiteralPath $target) { throw 'Target already exists; refuse stage promotion' }
+    [IO.Directory]::Move($stage, $target)
+  }
   $promoted = $true
   Write-Output "Installed: $Version"
   if ($StageOnly) {
@@ -713,9 +734,28 @@ try {
     return
   }
   Complete-ApprovedOnboarding ([IO.Path]::Combine($target,'rca.cmd'))
+} catch {
+  $primaryFailure = $true
+  throw
 } finally {
-  if ($temp -and (Test-Path -LiteralPath $temp)) { Remove-Item -LiteralPath $temp -Force }
+  # An exception during cleanup must not mask the primary install result.
+  $cleanupFailed = $false
+  if ($temp -and (Test-Path -LiteralPath $temp)) {
+    try { Invoke-StageFileOperation { Remove-Item -LiteralPath $temp -Force -ErrorAction Stop } }
+    catch { $cleanupFailed = $true }
+  }
   if (-not $promoted -and $stage -and (Test-Path -LiteralPath $stage)) {
-    Remove-Item -LiteralPath $stage -Recurse -Force
+    try {
+      Invoke-StageFileOperation {
+        if (Test-Path -LiteralPath $stage) {
+          Assert-PrivateFolder $stage
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop
+        }
+      }
+    } catch { $cleanupFailed = $true }
+  }
+  if ($cleanupFailed) {
+    if (-not $primaryFailure) { throw 'Private installer staging cleanup incomplete' }
+    Write-Warning 'Private installer staging cleanup incomplete; original failure preserved'
   }
 }
