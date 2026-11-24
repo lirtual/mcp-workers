@@ -106,7 +106,7 @@ export async function handleClerkProbe(request: Request, config: ClerkProbeConfi
     if (typeof h.kid !== "string" || !h.kid.length) checks.push("key_id");
     if (p.v !== 2) checks.push("session_version");
     if (typeof p.sid !== "string" || !p.sid.startsWith("sess_")) checks.push("session_id");
-    if (typeof p.jti !== "string" || !p.jti.length) checks.push("token_id");
+    // jti is optional (RFC 7519 §4.1.7); RCA does not track token IDs for replay.
     if (p.sts !== undefined && p.sts !== "active") checks.push("session_status");
     if (p.act !== undefined) checks.push("impersonation");
     if (["aud","client_id","scope","scp","token_type"].some(k=>p[k] !== undefined)) checks.push("additional_token_claims");

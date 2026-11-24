@@ -84,12 +84,17 @@ test("Gate 0: probe verifies a bounded signed Owner session; denies alternate to
   assert.deepEqual(result, {verified:true,lifetime_seconds:60});
   assert.equal(good.headers.get("cache-control"), "no-store");
   assert.equal(keyRequests, 1);
+  // The real Clerk Owner session was rejected solely by the old jti predicate.
+  // Verify an otherwise valid signed session without that optional claim.
+  const withoutTokenId = await post(await mint({jti:undefined}));
+  assert.equal(withoutTokenId.status, 200);
+  assert.deepEqual(await withoutTokenId.json(), {verified:true,lifetime_seconds:60});
   for (const overrides of [
     {sub:"user_other"},{azp:"https://other.example"},{azp:undefined},
     {sid:undefined,v:undefined},{v:1},{sts:"pending"},{act:{sub:"user_other"}},
     {aud:"client_other",scope:"openid",client_id:"client_other",exp:now+86400},
     {sub:"mch_fixture",sid:undefined},{exp:now+61},{iat:now+30},{iss:"https://other.example"},
-    {exp:now-10},{jti:undefined},
+    {exp:now-10},{sub:"user_other",jti:undefined},{azp:undefined,jti:undefined},
   ]) assert.notEqual((await post(await mint(overrides))).status, 200);
   const signatureDenied = await post(await mint({},other.privateKey));
   assert.equal(signatureDenied.status, 401);
@@ -100,7 +105,7 @@ test("Gate 0: probe verifies a bounded signed Owner session; denies alternate to
   const diagnostic = await post(await mint({v:1,azp:undefined,jti:undefined,exp:now+61}));
   assert.equal(diagnostic.status,403);
   assert.deepEqual(await diagnostic.json(), {
-    verified:false,checks:["azp_missing","session_version","token_id","freshness"],
+    verified:false,checks:["azp_missing","session_version","freshness"],
   });
   const wrongOrigin = await post(await mint({azp:"https://other.example"}));
   assert.deepEqual(await wrongOrigin.json(), {verified:false,checks:["azp_mismatch"]});
