@@ -407,54 +407,6 @@ mod linux {
         Ok(())
     }
 
-    #[cfg(test)]
-    mod pairing_tests {
-        use super::*;
-        const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
-
-        #[test]
-        fn pending_key_survives_failure_and_signed_identity_is_not_replaced() {
-            let root = tempfile::tempdir().unwrap();
-            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
-            let store = root.path().join(".local/share/mcp-workers/remote-control");
-            fs::create_dir_all(&store).unwrap();
-            fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
-            let key = store.join("v2-identity.pem");
-            let id = sidecar(&key, ".device-id");
-            assert!(pair_local_identity(root.path(), |_, existing| {
-                assert!(existing.is_none());
-                Err(())
-            })
-            .is_err());
-            let original = fs::read_to_string(&key).unwrap();
-            assert!(!id.exists());
-            assert_eq!(fs::metadata(&key).unwrap().mode() & 0o777, 0o600);
-            pair_local_identity(root.path(), |pem, existing| {
-                assert_eq!(pem, original);
-                assert!(existing.is_none());
-                Ok(ID.to_owned())
-            })
-            .unwrap();
-            assert_eq!(fs::read_to_string(&id).unwrap().trim(), ID);
-            assert_eq!(fs::metadata(&id).unwrap().mode() & 0o777, 0o600);
-            assert!(pair_local_identity(root.path(), |pem, existing| {
-                assert_eq!(pem, original);
-                assert_eq!(existing, Some(ID));
-                Ok("123e4567-e89b-42d3-a456-426614174002".to_owned())
-            })
-            .is_err());
-            assert_eq!(fs::read_to_string(&key).unwrap(), original);
-            assert_eq!(fs::read_to_string(&id).unwrap().trim(), ID);
-            fs::remove_file(&key).unwrap();
-            assert!(pair_local_identity(root.path(), |_, _| panic!("orphan ID admitted")).is_err());
-            assert!(!key.exists());
-            std::os::unix::fs::symlink(&id, &key).unwrap();
-            assert!(
-                pair_local_identity(root.path(), |_, _| panic!("linked key admitted")).is_err()
-            );
-        }
-    }
-
     pub fn run() -> Result<(), ()> {
         if unsafe { libc::geteuid() } == 0 {
             return Err(());
@@ -533,6 +485,53 @@ mod linux {
         match result {
             Ok(()) | Err(NativeFileError::Session(SessionError::Policy)) => Ok(()),
             Err(_) => Err(()),
+        }
+    }
+    #[cfg(test)]
+    mod pairing_tests {
+        use super::*;
+        const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+        #[test]
+        fn pending_key_survives_failure_and_signed_identity_is_not_replaced() {
+            let root = tempfile::tempdir().unwrap();
+            fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            let store = root.path().join(".local/share/mcp-workers/remote-control");
+            fs::create_dir_all(&store).unwrap();
+            fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
+            let key = store.join("v2-identity.pem");
+            let id = sidecar(&key, ".device-id");
+            assert!(pair_local_identity(root.path(), |_, existing| {
+                assert!(existing.is_none());
+                Err(())
+            })
+            .is_err());
+            let original = fs::read_to_string(&key).unwrap();
+            assert!(!id.exists());
+            assert_eq!(fs::metadata(&key).unwrap().mode() & 0o777, 0o600);
+            pair_local_identity(root.path(), |pem, existing| {
+                assert_eq!(pem, original);
+                assert!(existing.is_none());
+                Ok(ID.to_owned())
+            })
+            .unwrap();
+            assert_eq!(fs::read_to_string(&id).unwrap().trim(), ID);
+            assert_eq!(fs::metadata(&id).unwrap().mode() & 0o777, 0o600);
+            assert!(pair_local_identity(root.path(), |pem, existing| {
+                assert_eq!(pem, original);
+                assert_eq!(existing, Some(ID));
+                Ok("123e4567-e89b-42d3-a456-426614174002".to_owned())
+            })
+            .is_err());
+            assert_eq!(fs::read_to_string(&key).unwrap(), original);
+            assert_eq!(fs::read_to_string(&id).unwrap().trim(), ID);
+            fs::remove_file(&key).unwrap();
+            assert!(pair_local_identity(root.path(), |_, _| panic!("orphan ID admitted")).is_err());
+            assert!(!key.exists());
+            std::os::unix::fs::symlink(&id, &key).unwrap();
+            assert!(
+                pair_local_identity(root.path(), |_, _| panic!("linked key admitted")).is_err()
+            );
         }
     }
 }
