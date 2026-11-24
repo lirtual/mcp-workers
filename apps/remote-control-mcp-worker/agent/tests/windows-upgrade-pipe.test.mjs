@@ -88,7 +88,7 @@ windows("Windows same-user private pipe freezes all admissions; native PowerShel
 // supplied live-process snapshot. No Windows task or process is terminated.
 windows("legacy switch excludes only its exact management caller, not an Agent or reused PID",async()=>{
   const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
-  const fn=source.match(/^function Wait-VersionExited\([\s\S]*?^\})/m)?.[0];
+  const fn=source.match(/^function Wait-VersionExited\([\s\S]*?^\}/m)?.[0];
   assert(fn);
   const command=fn+String.raw`
 $ErrorActionPreference='Stop'
