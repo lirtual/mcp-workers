@@ -87,7 +87,7 @@ impl PairingClient {
             client: recovery_client()?,
         })
     }
-    pub fn start(&self, enrollment: &PendingEnrollment) -> Result<(), SessionRecoveryError> {
+    fn start(&self, enrollment: &PendingEnrollment) -> Result<(), SessionRecoveryError> {
         let result = post_bounded(
             &self.client,
             &self.origin,

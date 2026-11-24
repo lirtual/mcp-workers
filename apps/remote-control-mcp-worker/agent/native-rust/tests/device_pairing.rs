@@ -75,3 +75,23 @@ fn bad_name_key_and_non_https_origin_are_rejected() {
         assert!(PairingClient::new(endpoint).is_err());
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn real_native_pair_entry_refuses_non_interactive_invocation_without_identity() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let identity = home.path().join(".local/share/mcp-workers/remote-control");
+    std::fs::create_dir_all(&identity).unwrap();
+    std::fs::set_permissions(&identity, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"))
+        .args(["--pair-local", "https://127.0.0.1:9/", "fixture"])
+        .env_clear()
+        .env("HOME", home.path())
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(std::fs::read_dir(&identity).unwrap().next().is_none());
+}
