@@ -20,7 +20,7 @@ $installer = (Resolve-Path (Join-Path $PSScriptRoot '../../install.ps1')).Path
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($installer,[ref]$tokens,[ref]$errors)
 if ($errors.Count) { throw 'Installer parse failed' }
-foreach ($functionName in @('Assert-PrivateFolder','Ensure-PrivateFolder','Assert-ArchiveDigest','Expand-SafeArchive')) {
+foreach ($functionName in @('Assert-PrivateFolder','Ensure-PrivateFolder','Assert-ArchiveDigest','Expand-SafeArchive','Seal-StagedArchive')) {
   $fn = $ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $functionName},$true)
   if (-not $fn) { throw 'Missing installer stage contract' }
   . ([scriptblock]::Create($fn.Extent.Text))
@@ -35,6 +35,9 @@ $stage = Join-Path $programs ('.stage-' + [guid]::NewGuid().ToString('N'))
 Ensure-PrivateFolder $stage
 try {
   Expand-SafeArchive $OfflineArchive $stage
+  $foreignOwners = @(Get-ChildItem -LiteralPath $stage -Recurse -Force | Where-Object { (Get-Acl -LiteralPath $_.FullName).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $userSid.Value }).Count
+  Write-Output ("Fresh extraction entries with non-user owners before sealing: " + $foreignOwners)
+  Seal-StagedArchive $stage
   & (Join-Path $PSScriptRoot '../../scripts/verify-windows-native.ps1') -Root $stage -Version $Version
   if (Test-Path -LiteralPath $target) { throw 'Refusing to overwrite fixture' }
   [IO.Directory]::Move($stage,$target)

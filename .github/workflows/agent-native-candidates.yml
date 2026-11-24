@@ -771,8 +771,11 @@ jobs:
               if (-not $publishedProcess) { Start-Sleep -Milliseconds 250 }
             }
             if (-not $publishedProcess -or (Invoke-CimMethod -InputObject $publishedProcess -MethodName GetOwnerSid).Sid -ne $owner.User.Value) { throw 'Published Rust owner process not confirmed' }
+            $publishedController = Join-Path $publishedDir 'apps/remote-control-agent/scripts/windows-user-task.ps1'
+            $controllerStatus = & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $publishedController -Action Status | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or $controllerStatus.installed -ne $true -or $controllerStatus.running -ne $true) { throw 'Published Rust controller refused the baseline Task' }
             $status = & $program task-status | ConvertFrom-Json
-            if ($LASTEXITCODE -ne 0 -or $status.installed -ne $true -or $status.running -ne $true) { throw 'Published Rust Task not running' }
+            if ($LASTEXITCODE -ne 0 -or $status.installed -ne $true -or $status.running -ne $true) { throw 'Published Rust CLI refused the baseline Task after controller verification' }
             $origId = (Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash
             $origKey = (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash
 

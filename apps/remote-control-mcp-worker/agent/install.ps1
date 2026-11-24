@@ -280,6 +280,38 @@ function Expand-SafeArchive([string]$file, [string]$folder) {
     }
   } finally { $zip.Dispose() }
 }
+# NTFS inheritance carries access rules, not the creator's owner SID.
+# Elevated users can create files owned by Administrators even inside an
+# owner-private stage. Seal only freshly extracted entries before promotion.
+function Seal-StagedArchive([string]$folder) {
+  Assert-PrivateFolder $folder
+  foreach ($item in @(Get-ChildItem -LiteralPath $folder -Recurse -Force -ErrorAction Stop)) {
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'Unexpected link in private archive stage'
+    }
+    $acl = if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($item.FullName) }
+      else { [IO.File]::GetAccessControl($item.FullName) }
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $userSid.Value) {
+      $acl.SetOwner($userSid)
+      if ($item.PSIsContainer) { [IO.Directory]::SetAccessControl($item.FullName,$acl) }
+      else { [IO.File]::SetAccessControl($item.FullName,$acl) }
+      $acl = if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($item.FullName) }
+        else { [IO.File]::GetAccessControl($item.FullName) }
+    }
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $userSid.Value) {
+      throw 'Staged archive entry is not owned by the current user'
+    }
+    $ownerFull = $false
+    foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+          $allowedSids -notcontains $rule.IdentityReference.Value) { throw 'Unexpected staged archive ACL' }
+      if ($rule.IdentityReference.Value -eq $userSid.Value -and
+          ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq
+          [Security.AccessControl.FileSystemRights]::FullControl) { $ownerFull = $true }
+    }
+    if (-not $ownerFull) { throw 'Staged archive entry lacks owner access' }
+  }
+}
 # Windows may briefly retain an executable file handle after the verifier
 # exits. Retry only the private staging filesystem operation, never the
 # installer, the grant request, or the Task switch. Access-denied from a
@@ -628,6 +660,7 @@ try {
     $stage = [IO.Path]::Combine($programs, ('.stage-' + [guid]::NewGuid().ToString('N')))
     Ensure-PrivateFolder $stage
     Expand-SafeArchive $temp $stage
+    Seal-StagedArchive $stage
     & (Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1') -Root $stage -Version $Version | Out-Null
     if ((Get-FileHash -LiteralPath (Join-Path $stage 'bundle.json') -Algorithm SHA256).Hash -cne
         (Get-FileHash -LiteralPath (Join-Path $target 'bundle.json') -Algorithm SHA256).Hash) {
@@ -653,6 +686,7 @@ try {
   $stage = [IO.Path]::Combine($programs, ('.stage-' + [guid]::NewGuid().ToString('N')))
   Ensure-PrivateFolder $stage
   Expand-SafeArchive $temp $stage
+  Seal-StagedArchive $stage
   $manifest = Get-Content -LiteralPath ([IO.Path]::Combine($stage, 'bundle.json')) -Raw | ConvertFrom-Json
   if ($manifest.version -cne $Version) { throw 'Manifest version mismatch' }
   $profile = $manifest.PSObject.Properties['artifact_profile']
