@@ -197,3 +197,81 @@ fn unrecognized_schema_and_unsafe_state_path_fail_closed() {
         Err(ReceiptError::UnsafePath)
     ));
 }
+
+#[test]
+fn normal_receipt_queries_expire_only_eligible_history_after_lossless_open() {
+    use rca_native_agent::native_write::NativeWriteExecutor;
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    {
+        let mut store = ReceiptStore::open(&directory).unwrap();
+        for (id, tool, state, known_no_effect) in [
+            ("ordinary", "write_file", "completed", false),
+            ("no-effect", "delete_file", "failed", true),
+            ("uncertain", "write_file", "unknown", false),
+            ("effectful", "start_process", "failed", false),
+            ("upgrade", "upgrade_agent", "completed", false),
+            ("recent", "write_file", "completed", false),
+        ] {
+            assert!(matches!(
+                store.admit(id, tool, &json!({})).unwrap(),
+                Admission::New(_)
+            ));
+            store
+                .update(id, state, "bounded summary", None, known_no_effect)
+                .unwrap();
+        }
+    }
+    let db = Connection::open(directory.join("operation-receipts.sqlite")).unwrap();
+    db.execute("UPDATE receipts SET created_at = '2000-01-01T00:00:00.000Z' WHERE operation_id != 'recent'", []).unwrap();
+    drop(db);
+    // Merely opening the store (including a migration/restart) cannot prune
+    // original history. Ordinary runtime admission/query may apply retention.
+    {
+        let store = ReceiptStore::open(&directory).unwrap();
+        for id in [
+            "ordinary",
+            "no-effect",
+            "uncertain",
+            "effectful",
+            "upgrade",
+            "recent",
+        ] {
+            assert!(store.get(id).unwrap().is_some(), "{id}");
+        }
+    }
+    let writer = NativeWriteExecutor::open(&directory).unwrap();
+    assert!(writer.get_receipt("ordinary").unwrap().is_none());
+    assert!(writer.get_receipt("no-effect").unwrap().is_none());
+    for (id, state) in [
+        ("uncertain", "unknown"),
+        ("effectful", "failed"),
+        ("upgrade", "completed"),
+        ("recent", "completed"),
+    ] {
+        let receipt = writer.get_receipt(id).unwrap().unwrap();
+        assert_eq!(receipt.state, state);
+        assert_eq!(receipt.operation_id, id);
+        if matches!(id, "uncertain" | "effectful") {
+            assert!(receipt.safe_result_summary.is_none());
+        } else {
+            assert!(receipt.safe_result_summary.is_some());
+        }
+    }
+    drop(writer);
+    let mut store = ReceiptStore::open(&directory).unwrap();
+    assert!(matches!(
+        store.admit("uncertain", "write_file", &json!({})).unwrap(),
+        Admission::Same(_)
+    ));
+    assert!(matches!(
+        store
+            .admit("uncertain", "write_file", &json!({"changed":true}))
+            .unwrap(),
+        Admission::Conflict(_)
+    ));
+    assert!(matches!(
+        store.admit("upgrade", "upgrade_agent", &json!({})).unwrap(),
+        Admission::Same(_)
+    ));
+}

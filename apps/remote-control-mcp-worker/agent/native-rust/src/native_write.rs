@@ -558,7 +558,7 @@ impl NativeWriteExecutor {
     }
 
     pub fn get_receipt(&self, id: &str) -> Result<Option<Receipt>, NativeWriteError> {
-        Ok(self.receipts.get(id)?)
+        Ok(self.receipts.query_runtime(id)?)
     }
 
     /// The process adapter shares this exact SQLite owner with file writes.

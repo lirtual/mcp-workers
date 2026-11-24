@@ -241,6 +241,31 @@ fn read_row(conn: &Connection, id: &str) -> Result<Option<Receipt>, ReceiptError
         .optional()?)
 }
 
+// Only ordinary, conclusively terminal history expires. This is normal
+// runtime maintenance, never part of opening/migrating an existing ledger.
+// Keep protected identity/digest/state and any session association that may
+// still be needed for recovery. No timer, schema change or extra database.
+fn cleanup_expired(conn: &Connection) -> Result<(), ReceiptError> {
+    let cutoff: String = conn.query_row(
+        "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days')",
+        [],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "DELETE FROM receipts WHERE guarded=0 AND tool_name!='upgrade_agent'
+         AND state IN ('completed','failed') AND created_at < ?1",
+        [&cutoff],
+    )?;
+    conn.execute(
+        "UPDATE receipts SET safe_result_summary=NULL
+         WHERE guarded=1 AND tool_name!='upgrade_agent'
+         AND state IN ('completed','failed','unknown')
+         AND created_at < ?1 AND safe_result_summary IS NOT NULL",
+        [&cutoff],
+    )?;
+    Ok(())
+}
+
 impl ReceiptStore {
     /// Refuses nonprivate directories, unfamiliar versions and concurrent writers.
     pub fn open(directory: &Path) -> Result<Self, ReceiptError> {
@@ -399,6 +424,19 @@ impl ReceiptStore {
         read_row(&self.connection, id)
     }
 
+    /// Runtime status lookup uses the established retention policy. Internal
+    /// recovery and migration verification keep using the lossless lookup.
+    pub(crate) fn query_runtime(&self, id: &str) -> Result<Option<Receipt>, ReceiptError> {
+        if !valid_id(id) {
+            return Err(ReceiptError::InvalidOperation);
+        }
+        let tx = self.connection.unchecked_transaction()?;
+        cleanup_expired(&tx)?;
+        let result = read_row(&tx, id)?;
+        tx.commit()?;
+        Ok(result)
+    }
+
     pub fn admit(
         &mut self,
         id: &str,
@@ -430,6 +468,7 @@ impl ReceiptStore {
                 return Ok(Admission::Full);
             }
         }
+        cleanup_expired(&tx)?;
         let now = iso_now(&tx)?;
         tx.execute(
             "INSERT INTO receipts VALUES (?1,?2,?3,'admitted',?4,?4,NULL,NULL,1)",
