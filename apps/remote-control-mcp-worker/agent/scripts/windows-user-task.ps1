@@ -13,6 +13,10 @@ $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT -or -not $env:LOCALAPPDATA) {
   throw 'Native Windows user session required'
 }
+# An owner controller may be launched from PowerShell 7 or a restricted
+# inherited PSModulePath. Resolve Utility from this Windows PowerShell
+# installation, not the caller's module search path (notably Get-FileHash).
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if ($identity.IsSystem) { throw 'System identity rejected' }
 $sid = $identity.User.Value
