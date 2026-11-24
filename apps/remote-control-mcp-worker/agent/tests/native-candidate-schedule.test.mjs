@@ -41,6 +41,8 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   const windowsReview=candidates.slice(candidates.indexOf('      - name: Assemble verifiable Windows release candidate'));
   assert.match(windowsReview,/'--artifact-profile','rust-native-only-v1'/);
   assert.doesNotMatch(windowsReview,/\$nativeOnly = \$tag/);
+  assert.doesNotMatch(candidates,/candidate-rust-version\.zip|windows-rust-candidate-reopened/);
+  assert.match(candidates, /WINDOWS_RUNNING_WITHOUT_SIGNED_WSS_REJECTED/);
   for (const name of ['Save reviewed native candidate for manual Release promotion','Save unpublished macOS candidate for owner-native E2E']) {
     assert.ok(candidates.includes(name + "\n        if: github.event_name == 'workflow_dispatch' && !contains(inputs.candidate_tag, '-rust-candidate.')"));
   }

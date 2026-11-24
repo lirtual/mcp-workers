@@ -724,22 +724,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust candidate build failed' }
           $rustBin = Join-Path $env:CARGO_TARGET_DIR 'release/rca-standard-windows-candidate.exe'
           if (-not (Test-Path -LiteralPath $rustBin -PathType Leaf)) { throw 'Windows Rust candidate binary missing' }
-          $rustTag = 'v0.1.57-rust-candidate.1'
-          $rustOut = Join-Path $env:RUNNER_TEMP 'windows-rust-candidate'
-          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $rustTag --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --out $rustOut
-          if ($LASTEXITCODE -ne 0) { throw 'Rust Windows candidate package build failed' }
-          $rustStage = Join-Path $rustOut ('remote-control-agent-' + $rustTag + '-windows-x64')
-          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $rustStage
-          if ($LASTEXITCODE -ne 0) { throw 'Rust Windows candidate manifest verification failed' }
-          $rustArchive = Join-Path $env:RUNNER_TEMP 'candidate-rust-version.zip'
-          Compress-Archive -Path (Join-Path $rustStage '*') -DestinationPath $rustArchive -CompressionLevel Optimal
-          $rustReopened = Join-Path $env:RUNNER_TEMP 'windows-rust-candidate-reopened'
-          Expand-Archive -LiteralPath $rustArchive -DestinationPath $rustReopened -ErrorAction Stop
-          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $rustReopened
-          if ($LASTEXITCODE -ne 0) { throw 'Reopened Rust Windows candidate archive refused' }
-
-          # Same real Windows PE, separate native-only artifact; no Node or JS.
-          # This stage-only candidate is not uploaded or a promotable Release.
+          # Build the released native-only profile; no mixed Node+Rust fixture.
           $nativeTag = 'v0.1.58-rust-candidate.1'
           $nativeOut = Join-Path $env:RUNNER_TEMP 'windows-native-only'
           $sessionBin = Join-Path $env:CARGO_TARGET_DIR 'release/rca-session-windows-candidate.exe'
@@ -1028,73 +1013,8 @@ jobs:
                 (Join-Path $oldDir 'bin\rca-background.exe'),[StringComparison]::OrdinalIgnoreCase)) {
               throw 'Windows task did not restore old executable'
             }
-            # Exercise Node -> Rust -> Node using the real installer and task
-            # switch path on this disposable Windows Runner. The synthetic key
-            # has no cloud grant; this proves local process lifecycle only.
-            $rustVersion = 'v0.1.57-rust-candidate.1'
-            $rustArchive = Join-Path $env:RUNNER_TEMP 'candidate-rust-version.zip'
-            if (-not (Test-Path -LiteralPath $rustArchive -PathType Leaf)) { throw 'Rust Windows candidate ZIP unavailable' }
-            $rustDigest = (Get-FileHash -LiteralPath $rustArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $stagerScript -StageOnly -Version $rustVersion -OfflineArchive $rustArchive -ExpectedSha256 $rustDigest
-            if ($LASTEXITCODE -ne 0) { throw 'Real installer could not stage the Windows Rust candidate' }
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $rustVersion -Direction Upgrade
-            if ($LASTEXITCODE -ne 0) { throw 'Windows Node-to-Rust scheduled-task switch failed' }
-            $rustDir = Join-Path $basePrograms ($rustVersion + '-windows-x64')
-            $rustEntry = [IO.Path]::GetFullPath([IO.Path]::Combine(
-              $rustDir, 'apps', 'remote-control-agent', '.build', 'rca-standard-windows-candidate.exe'))
-            $expectedLauncher = [IO.Path]::GetFullPath([IO.Path]::Combine($rustDir, 'bin', 'rca-background.exe'))
-            $current = Get-ScheduledTask -TaskName $taskName
-            $actualLauncher = [IO.Path]::GetFullPath([string]$current.Actions[0].Execute)
-            $argumentsContainRust = ([string]$current.Actions[0].Arguments).Contains($rustEntry)
-            Write-Output "RustTaskState=$($current.State)"
-            Write-Output "RustTaskLauncher=$actualLauncher"
-            Write-Output "RustTaskLauncherMatchesExpected=$([string]::Equals($actualLauncher,$expectedLauncher,[StringComparison]::OrdinalIgnoreCase))"
-            Write-Output "RustTaskArgumentsContainCandidate=$argumentsContainRust"
-            Write-Output "RustTaskLastResult=$((Get-ScheduledTaskInfo -TaskName $taskName).LastTaskResult)"
-            if ($current.State -ne 'Running') { throw 'Windows task state did not remain Running after the Rust switch' }
-            if (-not [string]::Equals($actualLauncher,$expectedLauncher,[StringComparison]::OrdinalIgnoreCase)) {
-              throw 'Windows task launcher path does not match the Rust candidate background launcher'
-            }
-            if (-not $argumentsContainRust) { throw 'Windows task arguments do not select the Rust candidate entry' }
-            $rustProcess = $null
-            for ($attempt = 0; $attempt -lt 20 -and -not $rustProcess; $attempt++) {
-              $rustProcess = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
-                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) } |
-                Select-Object -First 1
-              if (-not $rustProcess) { Start-Sleep -Milliseconds 500 }
-            }
-            if (-not $rustProcess) { throw 'Rust candidate process did not remain active on the synthetic retry endpoint' }
-            if ((Invoke-CimMethod -InputObject $rustProcess -MethodName GetOwnerSid).Sid -ne
-                ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
-              throw 'Rust candidate process escaped the registered interactive user identity'
-            }
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $oldVersion -Direction Rollback
-            if ($LASTEXITCODE -ne 0) { throw 'Windows Rust-to-Node rollback failed' }
-            $current = Get-ScheduledTask -TaskName $taskName
-            $rollbackLauncher = [string]$current.Actions[0].Execute
-            $rollbackArgumentsRestored = [string]::Equals([string]$current.Actions[0].Arguments,
-              [string]$originalTask.Actions[0].Arguments,[StringComparison]::Ordinal)
-            Write-Output "NodeRollbackLauncherRestored=$([string]::Equals($rollbackLauncher,$originalAction,[StringComparison]::OrdinalIgnoreCase))"
-            Write-Output "NodeRollbackArgumentsRestored=$rollbackArgumentsRestored"
-            if (-not [string]::Equals($rollbackLauncher,$originalAction,[StringComparison]::OrdinalIgnoreCase)) {
-              Write-Output "NodeRollbackActualLauncher=$rollbackLauncher"
-              Write-Output "NodeRollbackExpectedLauncher=$originalAction"
-              throw 'Windows rollback did not restore the original Node task launcher'
-            }
-            if (-not $rollbackArgumentsRestored) { throw 'Windows rollback did not restore the original Node task arguments' }
-            for ($attempt = 0; $attempt -lt 20; $attempt++) {
-              $remainingRust = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
-                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) } |
-                Select-Object -First 1
-              if (-not $remainingRust) { break }
-              Start-Sleep -Milliseconds 500
-            }
-            if ($remainingRust) { throw 'Rust candidate process survived task rollback' }
-
-            # Repeat Node -> Rust -> Node from the immutable published v0.1.56
-            # Windows release, rather than relying only on the synthetic CI
-            # Node fixture above. The Runner uses a disposable identity with
-            # no cloud grant; this remains a local installer/lifecycle test.
+            # The real immutable Node Release, not a rebuilt hybrid target,
+            # is the compatibility baseline for native-only rollback.
             $publishedVersion = 'v0.1.56'
             $publishedArchive = Join-Path $env:RUNNER_TEMP 'remote-control-agent-v0.1.56-windows-x64.zip'
             $publishedUrl = 'https://github.com/lirtual/mcp-workers/releases/download/v0.1.56/remote-control-agent-v0.1.56-windows-x64.zip'
@@ -1216,6 +1136,34 @@ jobs:
                 $oldLive = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" |
                   Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$publishedNode,[StringComparison]::OrdinalIgnoreCase) })
                 if ($oldLive.Count -ne 0) { throw 'Original Node process survived native-only activation' }
+                if ((Invoke-CimMethod -InputObject $candidateProcess[0] -MethodName GetOwnerSid).Sid -ne
+                    ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
+                  throw 'Native candidate process escaped the registered user identity'
+                }
+                if (-not $interrupted) {
+                  # Verify the actual running native-only Task, not a hybrid
+                  # fixture. Correct generation still requires signed WSS;
+                  # a wrong generation is rejected before proof lookup.
+                  if ([string]$current.Actions[0].Arguments -cnotmatch '--generation "([0-9a-f-]{36})"$') {
+                    throw 'Missing native Task generation'
+                  }
+                  $actualGeneration = $Matches[1]
+                  $verifyArgs = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',
+                    ('"' + $controller + '"'),'-Action','VerifyActivation','-Version',$nativeVersion,'-Generation')
+                  foreach ($generation in @($actualGeneration,[guid]::NewGuid().ToString('D'))) {
+                    $errorPath = Join-Path $env:RUNNER_TEMP ('native-activation-refusal-' + $generation + '.txt')
+                    $verify = Start-Process -FilePath powershell.exe -ArgumentList ($verifyArgs + @($generation)) -Wait -PassThru -NoNewWindow -RedirectStandardError $errorPath
+                    if ($verify.ExitCode -eq 0) { throw 'Native Task accepted absent or wrong-generation WSS evidence' }
+                    $reason = Get-Content -LiteralPath $errorPath -Raw
+                    if ($generation -ceq $actualGeneration -and $reason -notmatch 'Signed WSS activation not confirmed') {
+                      throw ('Unexpected activation refusal: ' + $reason.Substring(0,[Math]::Min(900,$reason.Length)))
+                    }
+                    if ($generation -cne $actualGeneration -and $reason -notmatch 'Expected native Task is not running') {
+                      throw 'Wrong-generation proof was not refused at the Task identity boundary'
+                    }
+                  }
+                  Write-Output 'WINDOWS_RUNNING_WITHOUT_SIGNED_WSS_REJECTED'
+                }
                 if ($interrupted) {
                   $switch.Kill()
                   if (-not $switch.WaitForExit(10000)) { throw 'Disposable updater did not exit' }
@@ -1265,76 +1213,6 @@ jobs:
               throw 'Native-only staging/removal changed the active task or identity'
             }
             Write-Output 'WINDOWS_NATIVE_ONLY_STAGE_AND_INACTIVE_UNINSTALL_PASS'
-
-            $rustVersion = 'v0.1.57-rust-candidate.1'
-            $rustArchive = Join-Path $env:RUNNER_TEMP 'candidate-rust-version.zip'
-            $rustDigest = (Get-FileHash -LiteralPath $rustArchive -Algorithm SHA256).Hash.ToLowerInvariant()
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/install.ps1' -StageOnly -Version $rustVersion -OfflineArchive $rustArchive -ExpectedSha256 $rustDigest
-            if ($LASTEXITCODE -ne 0) { throw 'Real installer could not stage Rust candidate from published Node baseline' }
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $rustVersion -Direction Upgrade
-            if ($LASTEXITCODE -ne 0) { throw 'Published Node-to-Rust scheduled-task switch failed' }
-            $rustDir = Join-Path $basePrograms ($rustVersion + '-windows-x64')
-            $rustEntry = [IO.Path]::GetFullPath([IO.Path]::Combine($rustDir, 'apps', 'remote-control-agent', '.build', 'rca-standard-windows-candidate.exe'))
-            $rustTask = Get-ScheduledTask -TaskName $taskName
-            $rustLauncher = [string]$rustTask.Actions[0].Execute
-            if ($rustTask.State -ne 'Running' -or
-                -not [string]::Equals([IO.Path]::GetFullPath($rustLauncher),[IO.Path]::GetFullPath((Join-Path $rustDir 'bin/rca-background.exe')),[StringComparison]::OrdinalIgnoreCase)) {
-              throw 'Published Node migration did not keep the Rust candidate task active'
-            }
-            $publishedRustProcess = $null
-            for ($attempt = 0; $attempt -lt 20 -and -not $publishedRustProcess; $attempt++) {
-              $publishedRustProcess = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
-                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) } |
-                Select-Object -First 1
-              if (-not $publishedRustProcess) { Start-Sleep -Milliseconds 500 }
-            }
-            if (-not $publishedRustProcess) { throw 'Rust process did not remain active after migration from published Node' }
-            if ((Invoke-CimMethod -InputObject $publishedRustProcess -MethodName GetOwnerSid).Sid -ne
-                ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)) {
-              throw 'Rust process migrated from published Node escaped the registered user identity'
-            }
-            # Actual running Rust Task on the existing non-Worker endpoint.
-            # No fake positive proof: Running without signed WSS must fail.
-            $current = Get-ScheduledTask -TaskName $taskName
-            if ([string]$current.Actions[0].Arguments -cnotmatch '--generation "([0-9a-f-]{36})"$') {
-              throw 'Missing native Task generation'
-            }
-            $actualGeneration = $Matches[1]
-            $verifyArgs = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',
-              'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1',
-              '-Action','VerifyActivation','-Version',$rustVersion,'-Generation')
-            foreach ($generation in @($actualGeneration,[guid]::NewGuid().ToString('D'))) {
-              $errorPath = Join-Path $env:RUNNER_TEMP ('native-activation-refusal-' + $generation + '.txt')
-              $verify = Start-Process -FilePath powershell.exe -ArgumentList ($verifyArgs + @($generation)) -Wait -PassThru -NoNewWindow -RedirectStandardError $errorPath
-              if ($verify.ExitCode -eq 0) { throw 'Native Task accepted absent or wrong-generation WSS evidence' }
-              $reason = Get-Content -LiteralPath $errorPath -Raw
-              if ($generation -ceq $actualGeneration -and $reason -notmatch 'Signed WSS activation not confirmed') {
-                throw ('Unexpected activation refusal: ' + $reason.Substring(0,[Math]::Min(900,$reason.Length)))
-              }
-              if ($generation -cne $actualGeneration -and $reason -notmatch 'Expected native Task is not running') {
-                throw 'Wrong-generation proof was not refused at the Task identity boundary'
-              }
-            }
-            Write-Output 'WINDOWS_RUNNING_WITHOUT_SIGNED_WSS_REJECTED'
-            & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File 'apps/remote-control-mcp-worker/agent/scripts/windows-user-task.ps1' -Action Switch -Version $publishedVersion -Direction Rollback
-            if ($LASTEXITCODE -ne 0) { throw 'Published Rust-to-Node rollback failed' }
-            $current = Get-ScheduledTask -TaskName $taskName
-            if (-not [string]::Equals([string]$current.Actions[0].Execute,$originalAction,[StringComparison]::OrdinalIgnoreCase) -or
-                -not [string]::Equals([string]$current.Actions[0].Arguments,$originalArguments,[StringComparison]::Ordinal)) {
-              throw 'Rollback did not restore published v0.1.56 Node task action and arguments'
-            }
-            for ($attempt = 0; $attempt -lt 20; $attempt++) {
-              $remainingRust = Get-CimInstance Win32_Process -Filter "Name = 'rca-standard-windows-candidate.exe'" |
-                Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$rustEntry,[StringComparison]::OrdinalIgnoreCase) } |
-                Select-Object -First 1
-              if (-not $remainingRust) { break }
-              Start-Sleep -Milliseconds 500
-            }
-            if ($remainingRust) { throw 'Rust process survived rollback to the published Node package' }
-            if ((Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
-                (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey) {
-              throw 'Published Node/Rust migration changed protected identity'
-            }
 
             if ((Get-FileHash -LiteralPath $device -Algorithm SHA256).Hash -ne $origId -or
                 (Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash -ne $origKey) {
