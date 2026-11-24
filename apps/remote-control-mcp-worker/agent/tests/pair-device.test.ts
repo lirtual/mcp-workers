@@ -7,10 +7,10 @@ import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { beginDeviceEnrollment } from "../src/pair-device.ts";
+import { beginDeviceEnrollment, approvalInstruction } from "../src/pair-device.ts";
 import { recoverDeviceId, signedSessionProof } from "../src/v2-session-client.ts";
 
-test("pending-only installer posts public material and displays only a short code", async () => {
+test("pending-only installer posts public material and returns a short code", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "remote-v2-local-pair-"));
   const file = path.join(home, "state", "device.pem");
   let calls = 0;
@@ -248,5 +248,16 @@ test("#76 OS SIGKILL after first pending request preserves private key for repea
       await exited.catch(()=>{});
     }
     await rm(home,{recursive:true,force:true});
+  }
+});
+
+
+test("#1018 browser authorization link is restricted to the canonical enrollment origin",()=>{
+  const pending={code:"ABCDEFGHIJ",fingerprint:"a".repeat(24)};
+  for(const [endpoint,canonical] of [["https://rca.lirtual.dpdns.org/",true],["https://other.example/",false],["https://rca.lirtual.dpdns.org:8443/",false]] as const){
+    const message=approvalInstruction(endpoint,pending,"temporary");
+    assert.equal(message.includes("https://rca.lirtual.dpdns.org/pair#"+pending.code),canonical);
+    assert.ok(message.includes(pending.fingerprint));
+    assert.ok(message.includes("temporary"));
   }
 });
