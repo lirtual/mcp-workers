@@ -218,17 +218,6 @@ pub fn parse_read_frame(frame: &str) -> Result<ReadCommand, ReadFrameError> {
     })
 }
 
-fn normalized_lines(bytes: &[u8]) -> Vec<String> {
-    let text = String::from_utf8_lossy(bytes)
-        .replace("\r\n", "\n")
-        .replace('\r', "\n");
-    let mut lines: Vec<String> = text.split('\n').map(str::to_owned).collect();
-    if text.ends_with('\n') {
-        lines.pop();
-    }
-    lines
-}
-
 fn open_regular(path: &str) -> Result<File, ()> {
     let mut options = OpenOptions::new();
     options.read(true);
@@ -241,56 +230,101 @@ fn open_regular(path: &str) -> Result<File, ()> {
     Ok(file)
 }
 
+// ASCII line delimiters never split a UTF-8 code point. Scan bytes once and
+// decode only the selected lines; keep CRLF intact across read boundaries.
+fn append_line(
+    result: &mut String,
+    chars: &mut usize,
+    selected: &mut usize,
+    bytes: &[u8],
+    strip_bom: bool,
+) -> Result<(), ()> {
+    let bytes = if strip_bom {
+        bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes)
+    } else {
+        bytes
+    };
+    let text = String::from_utf8_lossy(bytes);
+    let separator = usize::from(*selected != 0);
+    *chars += text.encode_utf16().count() + separator;
+    if *chars > MAX_RESULT_CHARS {
+        return Err(());
+    }
+    if separator != 0 {
+        result.push('\n');
+    }
+    result.push_str(&text);
+    *selected += 1;
+    Ok(())
+}
+
 fn read_forward(mut file: File, offset: usize, length: usize) -> Result<String, ()> {
     let mut bytes = Vec::new();
-    let mut eof = false;
+    let mut chunk = vec![0; CHUNK_BYTES];
+    let mut start = 0;
+    let mut scan = 0;
+    let mut line = 0;
+    let mut selected = 0;
+    let mut chars = 0;
+    let mut result = String::new();
     loop {
-        // Incremental scan: a small early window must not scan a huge file.
-        let decoded = String::from_utf8_lossy(&bytes)
-            .replace("\r\n", "\n")
-            .replace('\r', "\n");
-        let complete = decoded.matches('\n').count();
-        if complete >= offset.saturating_add(length) {
-            break;
+        let n = file.read(&mut chunk).map_err(|_| ())?;
+        if n == 0 {
+            // Like the reference streaming decoder, a final lone CR is
+            // removed and an empty pending final line is not emitted.
+            let pending = &bytes[start..];
+            let pending = pending.strip_suffix(b"\r").unwrap_or(pending);
+            if line >= offset && !pending.is_empty() {
+                append_line(&mut result, &mut chars, &mut selected, pending, line == 0)?;
+            }
+            return Ok(result);
         }
-        // Node's streaming decoder refuses a >200K UTF-16-char pending
-        // line even when the requested offset would otherwise skip it.
-        if decoded
-            .rsplit('\n')
-            .next()
-            .unwrap_or("")
-            .encode_utf16()
-            .count()
-            > MAX_RESULT_CHARS
+        if bytes.len() + n > MAX_SCAN_BYTES {
+            return Err(());
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+        while scan < bytes.len() {
+            let b = bytes[scan];
+            if b != b'\n' && b != b'\r' {
+                scan += 1;
+                continue;
+            }
+            if b == b'\r' && scan + 1 == bytes.len() {
+                break; // May be the first byte of a split CRLF.
+            }
+            if line >= offset {
+                append_line(
+                    &mut result,
+                    &mut chars,
+                    &mut selected,
+                    &bytes[start..scan],
+                    line == 0,
+                )?;
+                if selected == length {
+                    return Ok(result);
+                }
+            }
+            line += 1;
+            scan += if b == b'\r' && bytes.get(scan + 1) == Some(&b'\n') {
+                2
+            } else {
+                1
+            };
+            start = scan;
+        }
+        // Keep the reference's pending-line limit even for skipped lines.
+        let pending = &bytes[start..];
+        let pending = if line == 0 {
+            pending.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(pending)
+        } else {
+            pending
+        };
+        if pending.len() > MAX_RESULT_CHARS
+            && String::from_utf8_lossy(pending).encode_utf16().count() > MAX_RESULT_CHARS
         {
             return Err(());
         }
-        if eof {
-            break;
-        }
-        let available = MAX_SCAN_BYTES.saturating_sub(bytes.len());
-        if available == 0 {
-            return Err(());
-        }
-        let mut buffer = vec![0u8; available.min(CHUNK_BYTES)];
-        let n = file.read(&mut buffer).map_err(|_| ())?;
-        if n == 0 {
-            eof = true;
-        } else {
-            bytes.extend_from_slice(&buffer[..n]);
-        }
     }
-    let lines = normalized_lines(&bytes);
-    let text = lines
-        .into_iter()
-        .skip(offset)
-        .take(length)
-        .collect::<Vec<_>>()
-        .join("\n");
-    if text.encode_utf16().count() > MAX_RESULT_CHARS {
-        return Err(());
-    }
-    Ok(text)
 }
 
 fn read_from_end(mut file: File, offset: usize, length: usize) -> Result<String, ()> {
@@ -298,37 +332,79 @@ fn read_from_end(mut file: File, offset: usize, length: usize) -> Result<String,
     if size == 0 {
         return Ok(String::new());
     }
-    let remaining = usize::try_from(size.min(MAX_SCAN_BYTES as u64)).map_err(|_| ())?;
-    let start = size - remaining as u64;
-    file.seek(SeekFrom::Start(start)).map_err(|_| ())?;
-    let mut bytes = vec![0; remaining];
-    file.read_exact(&mut bytes).map_err(|_| ())?;
-    let mut lines = normalized_lines(&bytes);
-    if start > 0 {
-        // Truncated first line must never become a fabricated valid result.
-        let first_break = bytes
-            .iter()
-            .position(|&b| b == b'\n' || b == b'\r')
-            .ok_or(())?;
-        let prefix = String::from_utf8_lossy(&bytes[..first_break]);
-        if !prefix.is_empty() || bytes.first() == Some(&b'\n') || bytes.first() == Some(&b'\r') {
-            lines.remove(0);
+    let mut position = size;
+    let mut bytes = Vec::new();
+    let mut chunk = vec![0; CHUNK_BYTES];
+    let mut breaks = 0usize;
+    let mut next = None;
+    // Store the scanned suffix in reverse order, avoiding both repeated
+    // concatenation and per-line allocation for the unselected prefix.
+    loop {
+        let n = (position.min((MAX_SCAN_BYTES - bytes.len()) as u64) as usize).min(CHUNK_BYTES);
+        if n == 0 {
+            return Err(());
         }
+        position -= n as u64;
+        file.seek(SeekFrom::Start(position)).map_err(|_| ())?;
+        file.read_exact(&mut chunk[..n]).map_err(|_| ())?;
+        for &b in chunk[..n].iter().rev() {
+            if b == b'\n' || (b == b'\r' && next != Some(b'\n')) {
+                breaks += 1;
+            }
+            next = Some(b);
+            bytes.push(b);
+        }
+        let terminal_break = matches!(bytes.first(), Some(b'\r' | b'\n'));
+        let lines = breaks + usize::from(!terminal_break);
+        // Discard the first potentially incomplete line unless at byte zero.
+        if position != 0 && lines.saturating_sub(1) < offset {
+            continue;
+        }
+        bytes.reverse();
+        let from = lines.saturating_sub(offset);
+        let mut start = 0;
+        let mut scan = 0;
+        let mut line = 0;
+        let mut selected = 0;
+        let mut chars = 0;
+        let mut result = String::new();
+        while scan < bytes.len() {
+            let b = bytes[scan];
+            if b != b'\r' && b != b'\n' {
+                scan += 1;
+                continue;
+            }
+            if line >= from {
+                append_line(
+                    &mut result,
+                    &mut chars,
+                    &mut selected,
+                    &bytes[start..scan],
+                    false,
+                )?;
+                if selected == length {
+                    return Ok(result);
+                }
+            }
+            line += 1;
+            scan += if b == b'\r' && bytes.get(scan + 1) == Some(&b'\n') {
+                2
+            } else {
+                1
+            };
+            start = scan;
+        }
+        if start < bytes.len() && line >= from {
+            append_line(
+                &mut result,
+                &mut chars,
+                &mut selected,
+                &bytes[start..],
+                false,
+            )?;
+        }
+        return Ok(result);
     }
-    if start > 0 && lines.len() < offset {
-        return Err(());
-    }
-    let from = lines.len().saturating_sub(offset);
-    let text = lines
-        .into_iter()
-        .skip(from)
-        .take(length)
-        .collect::<Vec<_>>()
-        .join("\n");
-    if text.encode_utf16().count() > MAX_RESULT_CHARS {
-        return Err(());
-    }
-    Ok(text)
 }
 
 fn read_local(options: &ReadOptions) -> Result<String, ()> {
