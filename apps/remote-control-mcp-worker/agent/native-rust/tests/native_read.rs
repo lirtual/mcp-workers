@@ -165,3 +165,35 @@ fn overlong_unterminated_line_fails_even_when_offset_would_skip_it() {
     assert_eq!(got["status"], "failed");
     assert!(got.get("text").is_none());
 }
+
+#[test]
+fn node_reference_bom_and_chunk_boundary_utf8_crlf_match() {
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all("\u{feff}first\r\nsecond\n".as_bytes())
+        .unwrap();
+    let path = file.path().to_str().unwrap();
+    assert_eq!(
+        response(&frame(json!({"path":path,"offset":0,"length":1})))["text"],
+        "first"
+    );
+    // Node's forward streaming TextDecoder strips the BOM; the tail Buffer
+    // decoder intentionally preserves it when the window reaches byte zero.
+    assert_eq!(
+        response(&frame(json!({"path":path,"offset":-2,"length":1})))["text"],
+        "\u{feff}first"
+    );
+    let mut boundary = NamedTempFile::new().unwrap();
+    let mut bytes = vec![b'x'; 65_535];
+    bytes.extend_from_slice(b"\r\n");
+    bytes.extend_from_slice("Ω😀\r\nlast\r".as_bytes());
+    boundary.write_all(&bytes).unwrap();
+    let path = boundary.path().to_str().unwrap();
+    assert_eq!(
+        response(&frame(json!({"path":path,"offset":1,"length":2})))["text"],
+        "Ω😀\nlast"
+    );
+    assert_eq!(
+        response(&frame(json!({"path":path,"offset":-2,"length":2})))["text"],
+        "Ω😀\nlast"
+    );
+}

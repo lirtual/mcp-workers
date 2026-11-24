@@ -1,5 +1,6 @@
 //! Bounded, in-memory native search for authenticated file/managed WSS sessions.
 //! Search is read-only and intentionally has no persistent receipt or cursor store.
+use crate::session::ExecutionLease;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -364,17 +365,23 @@ enum SearchError {
 pub(crate) struct SearchSessions {
     cursors: HashMap<String, Cursor>,
     ttl: Duration,
+    lease: Option<ExecutionLease>,
 }
 impl Default for SearchSessions {
     fn default() -> Self {
         Self {
             cursors: HashMap::new(),
             ttl: SESSION_TTL,
+            lease: None,
         }
     }
 }
 impl SearchSessions {
     pub(crate) fn expire(&mut self) {
+        if self.lease.as_ref().is_some_and(|lease| !lease.is_active()) {
+            self.cursors.clear(); // Dropping receivers also unblocks producers.
+            self.lease = None;
+        }
         self.cursors.retain(|_, c| c.created.elapsed() < self.ttl);
     }
     fn new_id() -> Result<String, SearchError> {
@@ -452,12 +459,19 @@ impl SearchSessions {
         let mut finished = false;
         let mut truncated = false;
         while results.len() <= PAGE_SIZE {
+            if self.lease.as_ref().is_some_and(|lease| !lease.is_active()) {
+                self.cursors.remove(id);
+                return Err(SearchError::Failed);
+            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 waiting = true;
                 break;
             }
-            match cursor.receiver.recv_timeout(left) {
+            match cursor
+                .receiver
+                .recv_timeout(left.min(Duration::from_millis(25)))
+            {
                 Ok(Event::Match(hit)) if results.len() == PAGE_SIZE => {
                     cursor.pending = Some(hit);
                     break;
@@ -472,10 +486,7 @@ impl SearchSessions {
                     self.cursors.remove(id);
                     return Err(SearchError::Failed);
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    waiting = true;
-                    break;
-                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
             }
         }
         let has_more = !finished && (waiting || cursor.pending.is_some());
@@ -503,7 +514,20 @@ impl SearchSessions {
             session_id: None,
         })
     }
-    pub(crate) fn execute(&mut self, frame: &SearchFrame) -> String {
+    pub(crate) fn execute_scoped(&mut self, frame: &SearchFrame, lease: &ExecutionLease) -> String {
+        self.expire();
+        if !self
+            .lease
+            .as_ref()
+            .is_some_and(|old| old.same_incarnation(lease))
+        {
+            self.cursors.clear();
+            self.lease = Some(lease.clone());
+        }
+        self.execute(frame)
+    }
+
+    fn execute(&mut self, frame: &SearchFrame) -> String {
         let outcome = match frame.command.clone() {
             Some(SearchCommand::Start {
                 path,

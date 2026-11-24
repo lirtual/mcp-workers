@@ -405,7 +405,7 @@ fn execute_native_file(
         }
         let response = match command {
             NativeFileCommand::Read(read) => native_read::execute_read_frame(&read),
-            NativeFileCommand::Search(search) => searches.execute(&search),
+            NativeFileCommand::Search(search) => searches.execute_scoped(&search, request.lease()),
             NativeFileCommand::Mutation {
                 request_id,
                 operation_id,

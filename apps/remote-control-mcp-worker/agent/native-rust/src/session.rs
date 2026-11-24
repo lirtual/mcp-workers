@@ -134,7 +134,7 @@ impl ExecutionLease {
         self.live.store(false, Ordering::Release);
     }
 
-    fn same_incarnation(&self, other: &Self) -> bool {
+    pub(crate) fn same_incarnation(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.live, &other.live)
     }
 }

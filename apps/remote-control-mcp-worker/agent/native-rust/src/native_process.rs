@@ -382,7 +382,7 @@ impl NativeProcessEngine {
         match &mutation {
             ProcessMutation::Input { session_id, .. }
             | ProcessMutation::Terminate { session_id }
-                if receipts.get(operation_id)?.is_none()
+                if receipts.query_runtime(operation_id)?.is_none()
                     && self.sessions.get(session_id).is_none() =>
             {
                 return Ok(ProcessOutcome {
