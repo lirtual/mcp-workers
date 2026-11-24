@@ -183,14 +183,16 @@ def verify_initial_install():
     # Use the same package, identity, launcher and receipt contracts as an
     # upgrade, but no previously installed service or approved identity.
     for case in ("approved", "pair-denied", "no-proof", "foreign-service", "interrupted",
-                 "temporary-launcher-approved", "temporary-launcher-no-proof"):
+                 "temporary-launcher-approved", "temporary-launcher-no-proof",
+                 "temporary-launcher-older-approved", "temporary-launcher-older-no-proof"):
         ctx, home, old, new, unit, launcher, key, receipts = fixture()
         try:
             unit.unlink()
             launcher.unlink()
             preexisting_launcher = case.startswith("temporary-launcher-")
+            prior = make_version(home, "v0.1.55", True) if "older" in case else new
             if preexisting_launcher:
-                launcher.symlink_to(new / APP / "scripts/rca.sh")
+                launcher.symlink_to(prior / APP / "scripts/rca.sh")
             key.unlink()
             id_path = Path(str(key) + ".device-id")
             id_path.unlink()
@@ -233,7 +235,7 @@ def verify_initial_install():
                 assert record["operation_id"] == operation and record["device_id"] == ID
                 assert record["target_version"] == new.name and record["initial_endpoint"] == ENDPOINT
                 assert device_id == ID and target == new.name and pid == 200
-                if case in ("no-proof", "interrupted", "temporary-launcher-no-proof"):
+                if case in ("no-proof", "interrupted") or case.endswith("no-proof"):
                     return False
                 owned_file(path, json.dumps({"operation_id":operation,"device_id":ID,
                     "target_version":target,"pid":pid,"status":"authenticated_wss"}))
@@ -242,7 +244,7 @@ def verify_initial_install():
                 "native_process_executable":lambda pid: new / APP / ".build/rca-standard-linux-candidate",
                 "native_consent":lambda key, action: "ready"}
             with patch.multiple(bootstrap, **mocks):
-                if case in ("approved", "temporary-launcher-approved"):
+                if case.endswith("approved"):
                     result = bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
                         verify=verify, process_check=lambda versions: not state["pid"])
                     assert result["signed_wss"] is True
@@ -260,11 +262,13 @@ def verify_initial_install():
                     except (ValueError, KeyboardInterrupt):
                         pass
                     assert launcher.exists() == preexisting_launcher
-                    if case in ("no-proof", "interrupted", "temporary-launcher-no-proof"):
+                    if case in ("no-proof", "interrupted") or case.endswith("no-proof"):
                         assert intent.exists() and unit.exists()
                         assert bootstrap.native_recover(home, process_check=lambda versions: not state["pid"])["status"] == "initial_service_removed"
                         assert not intent.exists() and not unit.exists() and not proof.exists()
                         assert launcher.exists() == preexisting_launcher
+                        if preexisting_launcher:
+                            assert launcher.readlink() == prior / APP / "scripts/rca.sh"
                         assert key.read_text() == "disposable-approved-key"
                         assert id_path.read_text().strip() == ID
                     else:
