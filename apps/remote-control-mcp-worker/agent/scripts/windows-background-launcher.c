@@ -60,12 +60,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR unused, int sh
             L"%ls..\\apps\\remote-control-agent\\src\\windows-v2.js", executable) < 0)
         goto done;
     DWORD length = GetFullPathNameW(resolved, PATH_CAP, entry, NULL);
-    if (!length || length >= PATH_CAP || !regular_file(node) || !regular_file(entry)) goto done;
+    if (!length || length >= PATH_CAP) goto done;
 
     const wchar_t *child_exe = node;
     if (argc == 5 && wcscmp(argv[2], L"run") == 0 &&
         wcscmp(argv[3], L"--endpoint") == 0 && acceptable_endpoint(argv[4]) &&
         CompareStringOrdinal(argv[1], -1, entry, -1, TRUE) == CSTR_EQUAL) {
+        if (!regular_file(node) || !regular_file(entry)) goto done;
         if (swprintf_s(command, PATH_CAP, L"\"%ls\" \"%ls\" run --endpoint \"%ls\"",
                        node, entry, argv[4]) < 0) goto done;
     } else if (argc == 7 && wcscmp(argv[2], L"--service") == 0 &&
