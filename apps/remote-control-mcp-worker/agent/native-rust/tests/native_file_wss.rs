@@ -962,6 +962,7 @@ fn receipt_runtime_active_ledger_is_not_an_ordinary_file_and_remains_exclusive()
         ));
         assert_eq!(result["result"]["status"], "completed");
         assert_sqlite_busy(&db);
+        _stop.0.store(true, Ordering::Release);
     });
     let result = run_native_file_session(
         &endpoint,
@@ -1099,6 +1100,7 @@ fn receipt_runtime_storage_faults_keep_signed_reads_and_deny_new_effects() {
             // A corrupt database would itself cause open to fail; demand
             // SQLITE_BUSY from a genuinely separate SQLite process instead.
             assert_sqlite_busy(&directory.join("operation-receipts.sqlite"));
+            _stop.0.store(true, Ordering::Release);
         });
         let result = run_native_file_session(
             &endpoint,
@@ -1389,6 +1391,7 @@ fn receipt_runtime_degraded_connection_does_not_authorize_upgrade() {
             BufReader::new(client).read_line(&mut reply).unwrap();
             assert_eq!(reply, "busy\n");
         }
+        _stop.0.store(true, Ordering::Release);
     });
     let result = run_native_managed_session_with_upgrade(
         &endpoint,
