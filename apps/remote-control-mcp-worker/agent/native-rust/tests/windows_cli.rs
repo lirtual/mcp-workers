@@ -242,6 +242,7 @@ fn real_windows_cli_managed_wss_revoke_stops_job_and_persists_receipt() {
     let listener = TcpListener::bind("127.0.0.1:8777").unwrap();
     let server = thread::spawn(move || {
         let mut socket = signed_socket(&listener);
+        common::receive_device_info(&mut socket, true);
         let started = exchange(
             &mut socket,
             json!({
