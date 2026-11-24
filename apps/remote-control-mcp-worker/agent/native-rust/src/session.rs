@@ -198,10 +198,22 @@ impl AuthenticatedSocket {
     }
 
     fn configure_read_poll(&mut self) -> Result<(), SessionError> {
+        self.configure_response_poll(false)
+    }
+
+    fn configure_response_poll(&mut self, pending: bool) -> Result<(), SessionError> {
+        // An idle connection can sleep for one second, but an admitted
+        // request may finish while the socket is waiting for another frame.
+        // Poll promptly only while a response is outstanding.
+        let maximum = if pending {
+            Duration::from_millis(20)
+        } else {
+            Duration::from_secs(1)
+        };
         let timeout = self
             .timing
             .timeout
-            .min(Duration::from_secs(1))
+            .min(maximum)
             .max(Duration::from_millis(20));
         // A successful TLS/WS handshake has a 10s dial timeout; persistent
         // sockets instead poll for liveness without treating idle as failure.
@@ -428,11 +440,19 @@ impl AuthenticatedSocket {
         cleanup: F,
         policy: FramePolicy,
     ) -> Result<(), SessionError> {
+        // Each successfully admitted request has exactly one response on
+        // this incarnation, or its lease is invalidated when the pump exits.
+        // Stale replies must not alter this connection's outstanding count.
+        let mut pending = 0usize;
         while !stop.load(Ordering::Acquire) {
             for _ in 0..4 {
                 match outgoing.try_recv() {
                     Ok(reply) if reply.lease.same_incarnation(lease) && reply.lease.is_active() => {
                         self.send_text(&reply.frame)?;
+                        pending = pending.checked_sub(1).ok_or(SessionError::Protocol)?;
+                        if pending == 0 {
+                            self.configure_response_poll(false)?;
+                        }
                     }
                     Ok(_) => {} // Discard results from a prior socket incarnation.
                     Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -487,6 +507,10 @@ impl AuthenticatedSocket {
                         lease: lease.clone(),
                     })
                     .map_err(|_| SessionError::Queue)?;
+                if pending == 0 {
+                    self.configure_response_poll(true)?;
+                }
+                pending += 1;
             }
         }
         Ok(())
