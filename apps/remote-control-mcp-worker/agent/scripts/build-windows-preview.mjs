@@ -43,6 +43,8 @@ export function parseWindowsPreviewBuildArgs(argv) {
     out[key] = argv[i + 1];
   }
   const hasSession = Boolean(out.rustSessionBin || out.rustSessionSha256);
+  if (out.rustAgentBin && out.artifactProfile !== "rust-native-only-v1")
+    throw Error("Windows Rust packaging requires the native-only profile.");
   if ((hasSession && (out.artifactProfile !== "rust-native-only-v1" || !out.rustSessionBin ||
       !path.isAbsolute(out.rustSessionBin) || !/^[a-f0-9]{64}$/.test(out.rustSessionSha256))) ||
       (out.artifactProfile !== undefined && (out.artifactProfile !== "rust-native-only-v1" || !out.rustAgentBin)) ||
@@ -71,6 +73,8 @@ export function buildWindowsPreview(args) {
   if (process.platform !== "win32" || process.arch !== "x64")
     throw Error("Windows x64 native packaging is required.");
   const nativeOnly = args.artifactProfile === "rust-native-only-v1";
+  if (args.rustAgentBin && !nativeOnly)
+    throw Error("Windows Rust packaging requires the native-only profile.");
   if (nativeOnly && (!args.rustAgentBin || !rustBuildVersion(args.version, true)))
     throw Error("Native-only packaging requires a reviewed stable or Rust candidate label.");
   if (!statSync(args.nodeBin).isFile() ||

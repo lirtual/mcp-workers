@@ -371,7 +371,9 @@ test("#914 Windows stable label requires explicit native-only Rust packaging",()
     "ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32",
     "--out","/tmp/release","--background-bin","/opt/rca-background.exe",
     "--rust-agent-bin","/opt/rca-standard.exe","--rust-agent-sha256","c".repeat(64)];
-  assert.throws(()=>parseWindowsPreviewBuildArgs(args));
+  assert.throws(()=>parseWindowsPreviewBuildArgs(args), /native-only profile/);
+  const oldHybrid=args.map((x,i)=>i===1?"v0.1.58-rust-candidate.1":x);
+  assert.throws(()=>parseWindowsPreviewBuildArgs(oldHybrid), /native-only profile/);
   const native=[...args,"--artifact-profile","rust-native-only-v1"];
   assert.equal(parseWindowsPreviewBuildArgs(native).version,"v0.1.58");
   const session=[...native,"--rust-session-bin","/opt/rca-session.exe","--rust-session-sha256","d".repeat(64)];
