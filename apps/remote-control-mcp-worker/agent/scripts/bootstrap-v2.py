@@ -757,7 +757,9 @@ def native_initial_state(home, root, endpoint):
         raise ValueError("Conflicting or unresolved Agent lifecycle state")
     record = json.loads(native_owned_file(intent, 512)) if os.path.lexists(intent) else None
     if os.path.lexists(intent) and (not isinstance(record, dict)
-            or set(record) != {"operation_id", "device_id", "target_version", "initial_endpoint"}
+            or set(record) not in ({"operation_id", "device_id", "target_version", "initial_endpoint"},
+                                   {"operation_id", "device_id", "target_version", "initial_endpoint", "initial_launcher"})
+            or ("initial_launcher" in record and not isinstance(record["initial_launcher"], str))
             or not isinstance(record["operation_id"], str)
             or not re.fullmatch(r"[0-9a-f]{32}", record["operation_id"])
             or not ids.get("permanent") or record["device_id"] != ids["permanent"]
@@ -768,8 +770,26 @@ def native_initial_state(home, root, endpoint):
         raise ValueError("Existing or unresolved service requires its own lifecycle action")
     launcher = owned_manager_launcher(home, versions)
     target = str(root / APP / "scripts/rca.sh")
-    if launcher is not None and (os.readlink(launcher) != target or current is None):
-        raise ValueError("Existing launcher requires its own lifecycle action")
+    # A temporary installation may already have published the owner-local
+    # command. It is not evidence of permanent service activation.
+    previous_launcher = record.get("initial_launcher") if record else None
+    if previous_launcher is not None:
+        previous_root = next((v for v in versions if v.name == previous_launcher), None)
+        if previous_root is None or launcher is None:
+            raise ValueError("Prior temporary launcher is not established")
+        validated_owned_version(previous_root)
+        if json.loads((previous_root / "bundle.json").read_text("utf8")).get("artifact_profile") != "rust-native-only-v1":
+            raise ValueError("Prior temporary launcher is not native-only")
+        previous_target = str(previous_root / APP / "scripts/rca.sh")
+        if os.readlink(launcher) not in (previous_target, target):
+            raise ValueError("Prior temporary launcher changed")
+    elif launcher is not None:
+        if current is not None or record is not None:
+            if os.readlink(launcher) != target or current is None:
+                raise ValueError("Existing launcher requires its own lifecycle action")
+        elif not any(os.readlink(launcher) == str(v / APP / "scripts/rca.sh")
+                     for v in versions if json.loads((v / "bundle.json").read_text("utf8")).get("artifact_profile") == "rust-native-only-v1"):
+            raise ValueError("Existing launcher requires its own lifecycle action")
     # Do not adopt a unit from another systemd search path or drop-in.
     output = native_systemctl("show", UNIT, "-p", "LoadState", "-p", "ActiveState",
                               "-p", "MainPID", "-p", "FragmentPath", "-p", "DropInPaths")
@@ -880,12 +900,15 @@ def native_first_install(home, root, endpoint, name=None,
             raise ValueError("Pairing has not recovered an approved identity")
         key_digest = hashlib.sha256(native_owned_file(key, 8192)).hexdigest()
         if record is None:
-            if current is not None or launcher is not None or not process_check(versions):
+            if current is not None or not process_check(versions):
                 raise ValueError("Agent state changed during pairing")
             record = {"operation_id": secrets.token_hex(16), "device_id": device_id,
                       "target_version": root.name, "initial_endpoint": endpoint}
+            if launcher is not None:
+                prior = next(v for v in versions if os.readlink(launcher) == str(v / APP / "scripts/rca.sh"))
+                record["initial_launcher"] = prior.name
             native_atomic_file(intent, json.dumps(record, separators=(",", ":")).encode())
-        if launcher is not None and not os.path.lexists(proof):
+        if launcher is not None and "initial_launcher" not in record and not os.path.lexists(proof):
             # Launcher publication follows a verified proof. Interrupted
             # cleanup can leave the initial intent alone. No new WSS claim.
             intent.unlink()
@@ -919,6 +942,15 @@ def native_first_install(home, root, endpoint, name=None,
             target.parent.mkdir(mode=0o700, exist_ok=True)
             os.symlink(str(root / APP / "scripts/rca.sh"), target)
             native_sync_parent(target)
+        if "initial_launcher" in record:
+            prior = next(v for v in versions if v.name == record["initial_launcher"])
+            if os.readlink(home / ".local/bin/rca") != str(root / APP / "scripts/rca.sh"):
+                native_launcher(home, prior, root)
+            native_launcher(home, root)
+            # The existing intent is the commit boundary, not the preexisting
+            # command. Only after verified activation retire this distinction.
+            del record["initial_launcher"]
+            native_atomic_file(intent, json.dumps(record, separators=(",", ":")).encode())
         native_launcher(home, root)
         for item in (proof, intent):
             item.unlink()
@@ -937,7 +969,7 @@ def native_recover_initial(home, versions, record, process_check):
         raise ValueError("Unknown initial activation endpoint")
     versions, unit, current, ids, key, intent, proof, _, launcher, rendered, pid = (
         native_initial_state(home, root, endpoint))
-    if launcher is not None:
+    if launcher is not None and "initial_launcher" not in record:
         # The first install already passed its signed activation and published
         # the CLI. Recovery must not stop this committed service.
         raise ValueError("Initial launcher committed; repeat the same pinned native install")
@@ -965,6 +997,10 @@ def native_recover_initial(home, versions, record, process_check):
         unit.unlink()
         native_sync_parent(unit)
     native_systemctl("daemon-reload")
+    if "initial_launcher" in record:
+        prior = next(v for v in versions if v.name == record["initial_launcher"])
+        if prior != root:
+            native_restore_launcher(home, prior, root)
     for item in (proof, intent):
         if os.path.lexists(item):
             item.unlink()
