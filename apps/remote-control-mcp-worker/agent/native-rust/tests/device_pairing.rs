@@ -1,0 +1,77 @@
+//! Independent Node reference: no Worker, live identity or actual pairing.
+use rca_native_agent::device_pairing::{
+    generate_private_pem, new_pending_enrollment, PairingClient,
+};
+use serde_json::{json, Value};
+use std::io::Write;
+use std::process::{Command, Stdio};
+
+#[test]
+fn pending_material_matches_node_for_both_grant_modes_and_retries() {
+    let pem = generate_private_pem().unwrap();
+    let a = new_pending_enrollment("节点 🧪", &pem, false).unwrap();
+    let b = new_pending_enrollment("节点 🧪", &pem, true).unwrap();
+    assert_eq!(a.request["public_key"], b.request["public_key"]);
+    assert_eq!(a.fingerprint, b.fingerprint);
+    assert!(a.request.get("grant_type").is_none());
+    assert_eq!(b.request["grant_type"], "temporary");
+    let agent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap();
+    let mut child = Command::new("node")
+        .args(["--experimental-strip-types", "--input-type=module", "-e", r#"
+          import {createPrivateKey,createPublicKey,createHash,sign} from 'node:crypto';
+          import {pairingVerifier,ENROLLMENT_DOMAIN} from './src/v2-enrollment.ts';
+          let raw=''; for await(const x of process.stdin) raw+=x;
+          const {pem,rows}=JSON.parse(raw);
+          const key=createPrivateKey(pem);
+          const der=createPublicKey(key).export({type:'spki',format:'der'});
+          for(const {code,fingerprint,request:r} of rows){
+            if(r.code_verifier!==pairingVerifier(code) ||
+               r.public_key!==der.toString('base64') ||
+               fingerprint!==createHash('sha256').update(der).digest('hex').slice(0,24) ||
+               r.pairing_protocol!=='single-code-v1' ||
+               r.proof!==sign(null,Buffer.from(ENROLLMENT_DOMAIN+r.code_verifier+':'+r.public_key+':'+r.name+':'+r.issued_at+(r.grant_type==='temporary'?':temporary':'')+':single-code-v1'),key).toString('base64'))
+              process.exit(1);
+            if('code' in r || 'private_key' in r)process.exit(2);
+          }
+          console.log(JSON.stringify({verified:true}));
+        "#])
+        .current_dir(agent).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            json!({"pem":pem,"rows":[
+                {"code":a.code,"fingerprint":a.fingerprint,"request":a.request},
+                {"code":b.code,"fingerprint":b.fingerprint,"request":b.request}
+            ]})
+            .to_string()
+            .as_bytes(),
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["verified"],
+        true
+    );
+}
+
+#[test]
+fn bad_name_key_and_non_https_origin_are_rejected() {
+    let pem = generate_private_pem().unwrap();
+    for name in ["", "a\nb", &"🧪".repeat(33)] {
+        assert!(new_pending_enrollment(name, &pem, false).is_err());
+    }
+    assert!(new_pending_enrollment("valid", "not a key", false).is_err());
+    for endpoint in [
+        "http://127.0.0.1:9/",
+        "https://user@example.org/",
+        "https://example.org/path",
+        "https://example.org/?secret=x",
+    ] {
+        assert!(PairingClient::new(endpoint).is_err());
+    }
+}
