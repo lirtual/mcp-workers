@@ -70,7 +70,11 @@ approve.onclick=async()=>{
     const data=await r.json();
     if(r.ok&&data.status==="approved"&&data.grant_type===reviewed.grant_type){
       finish("Device approved. Check the Agent for connection status.");
-    }else if([400,401,403,405,415,429].includes(r.status)){
+    }else if(r.status===401||r.status===403){
+      finish("Owner authentication rejected. No approval confirmed. Check the installer.");
+    }else if(r.status===429){
+      finish("Too many approval requests. No approval confirmed. Check the installer.");
+    }else if([400,405,415].includes(r.status)){
       finish("Approval rejected. Check the installer.");
     }else{
       finish("Approval not confirmed. Check the Agent status before trying again.");
@@ -83,7 +87,13 @@ if(!stopped){
     await Clerk.load();if(stopped)return;
     if(!Clerk.isSignedIn){status.textContent="Sign in to review the pending device.";login.hidden=false;login.onclick=()=>location.assign(config.login);return;}
     const r=await post(config.lookup,{code:pending.code});if(stopped)return;
-    if(!r.ok){finish("Pending device unavailable or expired. Check the installer.");return;}
+    if(!r.ok){
+      if(r.status===401||r.status===403)finish("Owner authentication rejected. Sign in with the correct Clerk account; check the installer before reopening the authorization link.");
+      else if(r.status===404)finish("Pending device not found or expired. Check the installer.");
+      else if(r.status===429)finish("Too many pairing requests. Wait briefly and reopen the installer link if it is still valid.");
+      else finish("Device lookup unavailable. Check the installer before retrying.");
+      return;
+    }
     reviewed=await r.json();if(stopped)return;
     if(Date.now()>=reviewed.expires_at){finish("Request expired. Check the installer.");return;}
     el("name").textContent=reviewed.name;el("fingerprint").textContent=reviewed.fingerprint;
