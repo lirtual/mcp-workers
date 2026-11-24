@@ -83,3 +83,46 @@ windows("Windows same-user private pipe freezes all admissions; native PowerShel
     await rm(dir,{recursive:true,force:true});
   }
 });
+
+// Use the actual controller's process-exit filter, with an independently
+// supplied live-process snapshot. No Windows task or process is terminated.
+windows("legacy switch excludes only its exact management caller, not an Agent or reused PID",async()=>{
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Wait-VersionExited\([\s\S]*?^\})/m)?.[0];
+  assert(fn);
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+$root='C:\Users\fixture\programs\v0.0.1-ci-windows-x64'
+$program=[pscustomobject]@{Root=$root}
+$sid='fixture-owner'
+$caller=[pscustomobject]@{ProcessId=100;CreationDate=1;ExecutablePath=($root+'\bin\node.exe')}
+function Get-CimInstance { $script:rows }
+function Start-Sleep {}
+$script:rows=@($caller)
+Wait-VersionExited $program $caller
+function Assert-Blocked {
+  param($candidate)
+  $script:rows=@($caller,$candidate)
+  try { Wait-VersionExited $program $caller; throw 'Unexpected success' }
+  catch { if ($_.Exception.Message -ne 'Previous Agent process exit not confirmed') {throw} }
+}
+Assert-Blocked ([pscustomobject]@{ProcessId=101;CreationDate=1;ExecutablePath=$caller.ExecutablePath})
+Assert-Blocked ([pscustomobject]@{ProcessId=100;CreationDate=2;ExecutablePath=$caller.ExecutablePath})
+Assert-Blocked ([pscustomobject]@{ProcessId=102;CreationDate=1;ExecutablePath=($root+'\bin\rca-background.exe')})
+$script:rows=@($caller)
+try { Wait-VersionExited $program; throw 'Unexpected strict success' }
+catch { if ($_.Exception.Message -ne 'Previous Agent process exit not confirmed') {throw} }
+Write-Output 'exit-filter-pass'
+`;
+  const shell="powershell.exe";
+  const result=await new Promise((resolve,reject)=>{
+    const child=spawn(shell,["-NoProfile","-NonInteractive","-Command",command],{windowsHide:true});
+    let stdout="",stderr="";
+    child.stdout.on("data",x=>stdout+=x);
+    child.stderr.on("data",x=>stderr+=x);
+    child.on("error",reject);
+    child.on("close",code=>resolve({code,stdout,stderr}));
+  });
+  assert.equal(result.code,0,result.stderr);
+  assert.equal(result.stdout.trim(),"exit-filter-pass");
+});

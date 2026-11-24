@@ -323,12 +323,36 @@ function Get-OwnedAgentProcess($program) {
       (Invoke-CimMethod -InputObject $parent -MethodName GetOwnerSid).Sid -cne $sid) { throw 'Owner Agent launcher not confirmed' }
   $matches[0]
 }
-function Wait-VersionExited($program) {
+# The legacy rca.cmd version switch invokes this controller from the same
+# packaged node.exe. Exclude only that exact, identified management caller,
+# not arbitrary Node processes, foreground Agents or unknown paths.
+function Get-LocalSwitchCaller([string]$directionValue,[string]$versionTag) {
+  $controller = Get-CimInstance Win32_Process -Filter ("ProcessId = " + $PID) -ErrorAction Stop
+  $caller = Get-CimInstance Win32_Process -Filter ("ProcessId = " + [uint32]$controller.ParentProcessId) -ErrorAction Stop
+  if (-not $caller -or -not $caller.ExecutablePath -or -not $caller.CommandLine -or
+      $caller.CreationDate -gt $controller.CreationDate) { return }
+  $exe = [string]$caller.ExecutablePath
+  $prefix = $root.TrimEnd('\') + '\'
+  if (-not $exe.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase) -or
+      $exe.Substring($prefix.Length) -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-windows-x64\\bin\\node\.exe$') { return }
+  $entry = Join-Path (Split-Path -Parent (Split-Path -Parent $exe)) 'apps/remote-control-agent/src/windows-v2.js'
+  $entry = [IO.Path]::GetFullPath($entry)
+  $expected = '^"?' + [regex]::Escape($exe) + '"?\s+"?' + [regex]::Escape($entry) +
+    '"?\s+' + $directionValue.ToLowerInvariant() + '\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+  if ($caller.CommandLine -notmatch $expected -or
+      (Invoke-CimMethod -InputObject $caller -MethodName GetOwnerSid -ErrorAction Stop).Sid -cne $sid) { return }
+  $caller
+}
+function Wait-VersionExited($program,$managementCaller=$null) {
   $prefix = $program.Root.TrimEnd('\') + '\'
   for ($i=0; $i -lt 40; $i++) {
     $live = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe' OR Name = 'rca-background.exe' OR Name = 'rca-standard-windows-candidate.exe'" -ErrorAction Stop |
       Where-Object {
-        if ($_.ExecutablePath) {
+        if ($managementCaller -and $_.ProcessId -eq $managementCaller.ProcessId -and
+            $_.CreationDate -eq $managementCaller.CreationDate -and
+            [string]::Equals($_.ExecutablePath,$managementCaller.ExecutablePath,[StringComparison]::OrdinalIgnoreCase)) {
+          $false
+        } elseif ($_.ExecutablePath) {
           ([string]$_.ExecutablePath).StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase)
         } else {
           # A relevant process with unknown owner/path cannot prove exit.
@@ -732,12 +756,13 @@ if ($Action -eq 'Switch') {
       'mcp-workers','remote-control','v2-identity.pem')
     Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
   }
+  $managementCaller = Get-LocalSwitchCaller $Direction $Version
   $changed = $false
   $stage = 'stop original'
   try {
     if ($wasRunning) {
       Stop-ScheduledTask -TaskName $name -ErrorAction Stop
-      Wait-VersionExited ([pscustomobject]@{Root=(Join-Path $root $oldDir)})
+      Wait-VersionExited ([pscustomobject]@{Root=(Join-Path $root $oldDir)}) $managementCaller
     }
     $stage = 'switch task'
     Set-ScheduledTask -TaskName $name -Action $newAction -ErrorAction Stop | Out-Null
@@ -771,7 +796,7 @@ if ($Action -eq 'Switch') {
       if ($changed) {
         $current = Get-ScheduledTask -TaskName $name -ErrorAction Stop
         if ($current.State -eq 'Running') { Stop-ScheduledTask -TaskName $name -ErrorAction Stop }
-        Wait-VersionExited ([pscustomobject]@{Root=$candidate})
+        Wait-VersionExited ([pscustomobject]@{Root=$candidate}) $managementCaller
         Set-ScheduledTask -TaskName $name -Action $oldAction -ErrorAction Stop | Out-Null
       }
       $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
