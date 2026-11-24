@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { beginDeviceEnrollment } from "./pair-device.ts";
+import { beginDeviceEnrollment, approvalInstruction } from "./pair-device.ts";
 import { requireNativeMac, privateDirectory, privateFileIfPresent,
   awaitTemporaryApproval, parseTemporaryMacArgs } from "./macos-temporary.ts";
 import { selectDeviceLabel } from "./v2-enrollment.ts";
@@ -64,9 +64,7 @@ export async function runPermanentMac(argv=process.argv.slice(2)):Promise<void>{
       if(!hasKey&&retryPairing)throw Error("No pending permanent key to retry.");
       const enrolled=await beginDeviceEnrollment(selectDeviceLabel(name??"",os.hostname()),
         endpoint,key,fetch,retryPairing,"permanent");
-      process.stdout.write("Permanent pairing code (10 min): "+enrolled.code+"\n");
-      process.stdout.write("Fingerprint: "+enrolled.fingerprint+"\n");
-      process.stdout.write("Approve this exact permanent identity in authenticated MCP.\n");
+      process.stdout.write(approvalInstruction(endpoint,enrolled,"permanent"));
       await awaitTemporaryApproval(endpoint,key,controller.signal,enrolled.expiresAt);
       if(!await privateFileIfPresent(key+".device-id"))throw Error("Approval not persisted.");
       return;

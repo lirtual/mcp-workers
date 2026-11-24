@@ -331,11 +331,11 @@ mod linux {
             permanent_repair,
         )?;
         let resolve = |pem: &str, existing: Option<&str>| {
-            client.pair(pem, existing, name, temporary, |pending| {
-                println!("Pairing code (10 min): {}", pending.code);
-                println!("Local public key fingerprint: {}", pending.fingerprint);
-                println!("Use MCP pairing_lookup, then explicitly pairing_approve for the exact key and {mode} mode.");
-            }).map_err(|_| ())
+            client
+                .pair(pem, existing, name, temporary, |pending| {
+                    println!("{}", client.approval_instruction(pending, mode));
+                })
+                .map_err(|_| ())
         };
         if let Some((_, prepare)) = permanent_repair {
             let transitioning = exists_owned_path(&sidecar(&key, ".re-pair-transition"))?;

@@ -20,6 +20,17 @@ export interface PendingEnrollmentResult {
   keyPath: string;
 }
 
+/** Enrollment data belongs only to its original endpoint. */
+export function approvalInstruction(endpoint: string, pending: Pick<PendingEnrollmentResult,"code"|"fingerprint">, mode: "permanent"|"temporary"): string {
+  const canonical=new URL(endpoint).href==="https://rca.lirtual.dpdns.org/";
+  return (canonical
+    ? "Authorize device (10 min): https://rca.lirtual.dpdns.org/pair#"+pending.code
+    : "Pairing code (10 min): "+pending.code)
+    +"\nLocal public key fingerprint: "+pending.fingerprint+"\n"
+    +(canonical ? "Confirm the fingerprint and "+mode+" mode in your browser."
+      : "Browser approval is unavailable on this endpoint; use the existing authenticated owner approval for "+mode+" mode.")+"\n";
+}
+
 export class PendingIdentityConflictError extends Error {
   constructor() { super("An approved or revoked identity cannot be enrolled again."); }
 }
@@ -91,9 +102,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   } else {
     try {
       const device = await beginDeviceEnrollment(process.argv[2] || os.hostname(), endpoint);
-      process.stdout.write(
-        `Pending device. Pairing code: ${device.code}\nPublic key fingerprint: ${device.fingerprint}\nExpires after 10 minutes. Compare the fingerprint shown by your authenticated Remote Control MCP.\n`,
-      );
+      process.stdout.write(approvalInstruction(endpoint,device,"permanent"));
     } catch {
       process.stderr.write("Pending device enrollment failed. Check the endpoint and local key path.\n");
       process.exitCode = 1;
