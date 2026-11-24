@@ -112,7 +112,7 @@ def pair(root, bootstrap, arguments, native_only=False):
             return bootstrap.native_temporary(Path.home(), root, endpoint)
         if input("Type NATIVE-INSTALL for permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
             raise ValueError("Native installation not confirmed")
-        print(json.dumps(bootstrap.native_first_install(Path.home(), root, endpoint), indent=2))
+        print(json.dumps(bootstrap.native_pair_or_install(Path.home(), root, endpoint), indent=2))
         return 0
     node = root / "bin/node"
     installer = root / APP / "scripts/install-v2.mjs"
@@ -166,7 +166,7 @@ def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
         if native_only:
             print("Usage: rca [status|pair|logs|upgrade|recover|uninstall]")
-            print("First permanent pairing and pair --temporary (including revoked/expired temporary re-pair) are supported; permanent re-pair is not yet available.")
+            print("Permanent pairing / re-pair and pair --temporary (including revoked/expired temporary re-pair) are supported.")
         else:
             print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
@@ -213,7 +213,7 @@ def main():
         raise ValueError("Interactive menu needs a local TTY; use 'status' for scripted checks.")
     while True:
         print("\nRemote Control Agent " + info["version"])
-        print("1. Status   2. " + ("Pair (permanent)" if native_only else "Pair / repair") + "   3. Logs")
+        print("1. Status   2. " + "Pair / repair" + "   3. Logs")
         print("4. Upgrade  5. Uninstall       6. Exit")
         if native_only:
             print("7. Recover interrupted installation/upgrade")
