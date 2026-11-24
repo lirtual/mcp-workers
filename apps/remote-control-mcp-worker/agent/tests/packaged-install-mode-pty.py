@@ -25,7 +25,9 @@ cases = {
     'escape-cancel': (b'\x1b', 'CANCELLED', 5),
 }
 for name, (keys, expected, status) in cases.items():
+    print("PACKAGED_TTY_START:", name, flush=True)
     master, slave = pty.openpty()
+    os.set_blocking(master, False)
     initial = termios.tcgetattr(slave)
 
     def attach_terminal():
@@ -42,33 +44,48 @@ for name, (keys, expected, status) in cases.items():
         while b'2. ' not in output and time.monotonic() < deadline:
             if select.select([master], [], [], 0.1)[0]:
                 try:
-                    output += os.read(master, 4096)
+                    chunk = os.read(master, 4096)
+                except BlockingIOError:
+                    continue
                 except OSError:
                     break
+                if not chunk:
+                    break
+                output += chunk
         assert b'2. ' in output, f'{name}: menu not rendered: {output[-300:]!r}'
         time.sleep(0.08)  # UI visible; allow the keypress listener to attach.
         os.write(master, keys)
         while proc.poll() is None and time.monotonic() < deadline:
             if select.select([master], [], [], 0.1)[0]:
                 try:
-                    output += os.read(master, 4096)
+                    chunk = os.read(master, 4096)
+                except BlockingIOError:
+                    continue
                 except OSError:
                     break
+                if not chunk:
+                    break
+                output += chunk
         if proc.poll() is None:
             raise AssertionError(f'{name}: packaged Node TTY did not exit after selection')
-        while select.select([master], [], [], 0)[0]:
+        # A PTY may report readable at EOF. Do not spin on empty
+        # reads or wait indefinitely for inherited terminal descriptors.
+        while time.monotonic() < deadline and select.select([master], [], [], 0)[0]:
             try:
-                output += os.read(master, 4096)
+                chunk = os.read(master, 4096)
             except OSError:
                 break
+            if not chunk:
+                break
+            output += chunk
         assert proc.returncode == status and expected.encode() in output, (
             name, proc.returncode, output[-450:])
         assert termios.tcgetattr(slave) == initial, f'{name}: raw TTY left enabled'
-        print('PACKAGED_TTY_PASS:', name)
+        print('PACKAGED_TTY_PASS:', name, flush=True)
     finally:
         if proc.poll() is None:
             proc.kill()
-            proc.wait()
+            proc.wait(timeout=5)
         os.close(master)
         os.close(slave)
 print('PACKAGED_TTY_TOTAL:', len(cases))
