@@ -2,11 +2,10 @@
 # Does not create an elevated service, use a password or touch cloud grants.
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('Enable','Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative','EnableNative','ConfirmStopped')][string]$Action,
-  [string]$Endpoint, [string]$Entry, [string]$Node,
-  [string]$Version, [ValidateSet('Upgrade','Rollback')][string]$Direction,
-  [string]$Generation,
-  [switch]$CIInjectFailure
+  [Parameter(Mandatory=$true)][ValidateSet('Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative','EnableNative','ConfirmStopped')][string]$Action,
+  [string]$Endpoint,
+  [string]$Version, [ValidateSet('Upgrade')][string]$Direction,
+  [string]$Generation
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -24,25 +23,20 @@ $name = 'RCA-Remote-Control-v2-' + $sid.Replace('-', '_')
 $root = [IO.Path]::GetFullPath([IO.Path]::Combine(
   $env:LOCALAPPDATA,'mcp-workers','remote-control','programs'))
 $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-function Check-Program([string]$nodePath, [string]$entryPath) {
-  if ($nodePath -match '[";]' -or $entryPath -match '[";]') { throw 'Invalid program path' }
-  $n = [IO.Path]::GetFullPath($nodePath)
+function Check-Program([string]$launcherPath, [string]$entryPath) {
+  if ($launcherPath -match '[";]' -or $entryPath -match '[";]') { throw 'Invalid program path' }
+  $n = [IO.Path]::GetFullPath($launcherPath)
   $e = [IO.Path]::GetFullPath($entryPath)
   if (-not $n.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase) -or
       -not $e.StartsWith($root + '\',[StringComparison]::OrdinalIgnoreCase)) {
     throw 'Only private versioned program directories are allowed'
   }
-  $relNode = $n.Substring($root.Length + 1)
-  $relEntry = $e.Substring($root.Length + 1)
-  $version = ($relNode -split '\\')[0]
-  $entryPaths = @(
-    ($version + '\apps\remote-control-agent\src\windows-v2.js'),
-    ($version + '\apps\remote-control-agent\.build\rca-standard-windows-candidate.exe')
-  )
-  if ($version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-windows-x64$' -or
-      $relNode -notin @(($version + '\bin\node.exe'), ($version + '\bin\rca-background.exe')) -or
-      $relEntry -notin $entryPaths) {
-    throw 'Untrusted Agent version or entrypoint'
+  $relative = $n.Substring($root.Length + 1)
+  $version = ($relative -split '\\')[0]
+  if ($version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?-windows-x64$' -or
+      $relative -ine ($version + '\bin\rca-background.exe') -or
+      $e.Substring($root.Length + 1) -ine ($version + '\apps\remote-control-agent\.build\rca-standard-windows-candidate.exe')) {
+    throw 'Untrusted native Agent version or entrypoint; reinstall retired Node Agents'
   }
   foreach ($file in @($n,$e)) {
     $item = Get-Item -LiteralPath $file -Force
@@ -54,17 +48,12 @@ function Check-Program([string]$nodePath, [string]$entryPath) {
 }
 function Read-TaskLaunch([object]$actionInfo) {
   $arguments = [string]$actionInfo.Arguments
-  if ($arguments -cmatch '^"([^"]+)" run --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)"$') {
-    $entryPath = $Matches[1]
-    $endpointValue = $Matches[2]
-    $generationValue = $null
-  } elseif ($arguments -cmatch '^"([^"]+)" --service --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)" --generation "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})"$') {
-    $entryPath = $Matches[1]
-    $endpointValue = $Matches[2]
-    $generationValue = $Matches[3]
-  } else {
-    throw 'Untrusted scheduled task arguments'
+  if ($arguments -cnotmatch '^"([^"]+)" --service --endpoint "(https://[A-Za-z0-9.-]+(?::[0-9]+)?/)" --generation "([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})"$') {
+    throw 'Untrusted native scheduled task arguments; reinstall retired Node Agents'
   }
+  $entryPath = $Matches[1]
+  $endpointValue = $Matches[2]
+  $generationValue = $Matches[3]
   Check-Program ([string]$actionInfo.Execute) $entryPath
   return [pscustomobject]@{ Entry = $entryPath; Endpoint = $endpointValue; Generation = $generationValue }
 }
@@ -155,7 +144,7 @@ function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   return $true
 }
 if ($Action -eq 'VerifyActivation') {
-  if ($Direction -or $Endpoint -or $Node -or $Entry -or $CIInjectFailure) { throw 'Unexpected activation arguments' }
+  if ($Direction -or $Endpoint) { throw 'Unexpected activation arguments' }
   $null = Confirm-NativeActivation $Version $Generation
   'authenticated-activation-observed'
   exit 0
@@ -181,29 +170,6 @@ function Register-OwnedTask($scheduledAction) {
   $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName $name -Action $scheduledAction -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
 }
-if ($Action -eq 'Enable') {
-  if (Test-Path -LiteralPath ([IO.Path]::Combine([IO.Path]::GetDirectoryName($root),'windows-native-upgrade.json'))) {
-    throw 'Unreconciled native upgrade'
-  }
-  if ($task) { throw 'Cannot overwrite an existing scheduled task' }
-  if (-not $Node -or -not $Entry -or -not $Endpoint) {
-    throw 'Explicit native entrypoint and endpoint required'
-  }
-  if ($Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$') {
-    throw 'Untrusted HTTPS endpoint'
-  }
-  Check-Program $Node $Entry
-  # Use a reviewed no-window launcher; Windows Job Object owns child Node.
-  $background = [IO.Path]::Combine([IO.Path]::GetDirectoryName($Node),'rca-background.exe')
-  Check-Program $background $Entry
-  $arguments = '"' + $Entry + '" run --endpoint "' + $Endpoint + '"'
-  $scheduledAction = New-ScheduledTaskAction -Execute $background -Argument $arguments -WorkingDirectory ([IO.Path]::GetDirectoryName($Entry))
-  Register-OwnedTask $scheduledAction
-  'enabled'
-  exit 0
-}
-
-
 function Invoke-AgentUpgradeFreeze([string]$keyPath,[string]$action) {
   if ($action -cnotin @('freeze','verify-frozen','release')) { throw 'Invalid upgrade action' }
   $canonical = $keyPath.Replace('/','\').ToLowerInvariant()
@@ -270,38 +236,21 @@ function Get-ReviewedProgram([string]$versionTag) {
     throw 'Unreviewed installed version'
   }
   $profile = $manifest.PSObject.Properties['artifact_profile']
-  $native = $null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1'
   $runtime = $manifest.PSObject.Properties['agent_runtime']
-  $isRust = $null -ne $runtime -and $runtime.Value -ceq 'rust-standard-windows-v1'
-  if ($null -ne $runtime -and $runtime.Value -cnotin @('node-standard-windows-v2','rust-standard-windows-v1')) {
-    throw 'Unreviewed installed runtime'
-  }
+  if ($null -eq $profile -or $profile.Value -cne 'rust-native-only-v1' -or
+      $null -eq $runtime -or $runtime.Value -cne 'rust-standard-windows-v1') { throw 'Unreviewed installed native runtime' }
   $launcher = [IO.Path]::Combine($directory,'bin','rca-background.exe')
-  $nodeExe = [IO.Path]::Combine($directory,'bin','node.exe')
   $scripts = [IO.Path]::Combine($directory,'apps','remote-control-agent','scripts')
-  $entry = if ($isRust) {
-    [IO.Path]::Combine($directory,'apps','remote-control-agent','.build','rca-standard-windows-candidate.exe')
-  } else { [IO.Path]::Combine($directory,'apps','remote-control-agent','src','windows-v2.js') }
+  $entry = [IO.Path]::Combine($directory,'apps','remote-control-agent','.build','rca-standard-windows-candidate.exe')
   Check-Program $launcher $entry
-  if ($native) {
-    & (Join-Path $scripts 'verify-windows-native.ps1') -Root $directory -Version $versionTag | Out-Null
-  } else {
-    & $nodeExe (Join-Path $scripts 'verify-windows-preview.mjs') $directory | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Original installed version verification failed' }
-  }
-  [pscustomobject]@{ Root=$directory; Tag=$versionTag; Native=$native; Rust=$isRust;
-    Launcher=$launcher; Entry=$entry; Process=$(if ($isRust) {$entry} else {$nodeExe}); Scripts=$scripts }
+  & (Join-Path $scripts 'verify-windows-native.ps1') -Root $directory -Version $versionTag | Out-Null
+  [pscustomobject]@{ Root=$directory; Tag=$versionTag; Launcher=$launcher; Entry=$entry; Process=$entry; Scripts=$scripts }
 }
 
 function New-ReviewedAction($program,[string]$endpointValue,[string]$generationValue) {
   if ($endpointValue -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$') { throw 'Invalid saved endpoint' }
-  if ($program.Rust) {
-    if ($generationValue -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$') { throw 'Invalid saved generation' }
-    $arguments = '"' + $program.Entry + '" --service --endpoint "' + $endpointValue + '" --generation "' + $generationValue + '"'
-  } else {
-    if ($generationValue) { throw 'Unexpected Node generation' }
-    $arguments = '"' + $program.Entry + '" run --endpoint "' + $endpointValue + '"'
-  }
+  if ($generationValue -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$') { throw 'Invalid saved generation' }
+  $arguments = '"' + $program.Entry + '" --service --endpoint "' + $endpointValue + '" --generation "' + $generationValue + '"'
   New-ScheduledTaskAction -Execute $program.Launcher -Argument $arguments -WorkingDirectory ([IO.Path]::GetDirectoryName($program.Entry))
 }
 function Test-SameAction($a,$b) {
@@ -339,11 +288,7 @@ function Get-LocalSwitchCaller([string]$directionValue,[string]$versionTag) {
   $relative = $exe.Substring($prefix.Length)
   $versionPrefix = '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-windows-x64'
   $expected = '^"?' + [regex]::Escape($exe) + '"?\s+'
-  if ($relative -match ($versionPrefix + '\\bin\\node\.exe$') -and $directionValue -in @('Upgrade','Rollback')) {
-    $entry = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent (Split-Path -Parent $exe)) 'apps/remote-control-agent/src/windows-v2.js'))
-    $expected += '"?' + [regex]::Escape($entry) + '"?\s+' + $directionValue.ToLowerInvariant() +
-      '\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
-  } elseif ($relative -match ($versionPrefix + '\\apps\\remote-control-agent\\\.build\\rca-standard-windows-candidate\.exe$')) {
+  if ($relative -match ($versionPrefix + '\\apps\\remote-control-agent\\\.build\\rca-standard-windows-candidate\.exe$')) {
     if ($directionValue -eq 'Upgrade') {
       $expected += '--cli\s+upgrade\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
     } elseif ($directionValue -eq 'Recover') {
@@ -360,7 +305,7 @@ function Get-LocalSwitchCaller([string]$directionValue,[string]$versionTag) {
 function Wait-VersionExited($program,$managementCaller=$null) {
   $prefix = $program.Root.TrimEnd('\') + '\'
   for ($i=0; $i -lt 40; $i++) {
-    $live = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe' OR Name = 'rca-background.exe' OR Name = 'rca-standard-windows-candidate.exe'" -ErrorAction Stop |
+    $live = @(Get-CimInstance Win32_Process -Filter "Name = 'rca-background.exe' OR Name = 'rca-standard-windows-candidate.exe'" -ErrorAction Stop |
       Where-Object {
         if ($managementCaller -and $_.ProcessId -eq $managementCaller.ProcessId -and
             $_.CreationDate -eq $managementCaller.CreationDate -and
@@ -495,7 +440,6 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   Check-UpgradeStore
   $original = Get-ReviewedProgram $oldVersion
   $target = Get-ReviewedProgram $newVersion
-  if (-not $target.Native -or -not $target.Rust) { throw 'Reviewed Node-free Rust candidate required' }
   $oldAction = New-ReviewedAction $original $launch.Endpoint $launch.Generation
   $generationValue = [guid]::NewGuid().ToString('D')
   $newAction = New-ReviewedAction $target $launch.Endpoint $generationValue
@@ -584,7 +528,6 @@ function Invoke-NativeRecovery {
     $record = Read-NativeJournal $stream
     $original = Get-ReviewedProgram $record.original
     $target = Get-ReviewedProgram $record.target
-    if (-not $target.Native -or -not $target.Rust) { throw 'Unreviewed recovery target' }
     $oldAction = New-ReviewedAction $original $record.endpoint $record.original_generation
     $newAction = New-ReviewedAction $target $record.endpoint $record.target_generation
     Restore-NativeOriginal $record $original $target $oldAction $newAction $managementCaller
@@ -596,14 +539,14 @@ function Invoke-NativeRecovery {
   'previous-task-restored'
 }
 if ($Action -eq 'RecoverNativeUpgrade') {
-  if ($Version -or $Direction -or $Endpoint -or $Node -or $Entry -or $CIInjectFailure) { throw 'Unexpected recovery arguments' }
+  if ($Version -or $Direction -or $Endpoint) { throw 'Unexpected recovery arguments' }
   Invoke-NativeRecovery
   exit 0
 }
 if (Test-Path -LiteralPath $nativeJournal) { throw 'Unreconciled native upgrade; preserve versions and recover explicitly' }
 
 if ($Action -eq 'ConfirmStopped') {
-  if ($Version -or $Direction -or $Node -or $Entry -or $CIInjectFailure -or
+  if ($Version -or $Direction -or
       $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$') { throw 'Unexpected stopped-check arguments' }
   Check-Existing
   $launch = Read-TaskLaunch $task.Actions[0]
@@ -619,7 +562,7 @@ if ($Action -eq 'ConfirmStopped') {
 }
 
 if ($Action -eq 'EnableNative') {
-  if ($Direction -or $Node -or $Entry -or $CIInjectFailure -or
+  if ($Direction -or
       $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$' -or
       $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$') { throw 'Unreviewed native enable' }
   Check-UpgradeStore
@@ -627,7 +570,6 @@ if ($Action -eq 'EnableNative') {
   $modeGuard = [IO.File]::Open(($identityFile + '.install-mode'),[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
   try {
     $program = Get-ReviewedProgram $Version
-    if (-not $program.Native -or -not $program.Rust) { throw 'Node-free candidate required' }
     $record = [pscustomobject]@{
       key_hash=(Get-FileHash -LiteralPath $identityFile -Algorithm SHA256).Hash
       id_hash=(Get-FileHash -LiteralPath ($identityFile + '.device-id') -Algorithm SHA256).Hash
@@ -649,14 +591,13 @@ if ($Action -eq 'EnableNative') {
 }
 
 if ($Action -eq 'ActivateNative') {
-  if ($Direction -or $Node -or $Entry -or $CIInjectFailure -or
+  if ($Direction -or
       $Endpoint -cnotmatch '^https://[A-Za-z0-9.-]+(?::[0-9]+)?/$' -or
       $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$') {
     throw 'Unreviewed native initial activation'
   }
   Check-UpgradeStore
   $program = Get-ReviewedProgram $Version
-  if (-not $program.Native -or -not $program.Rust) { throw 'Node-free candidate required' }
   $pending = $identityFile + '.activation-pending'
   # The existing activation intent doubles as the exclusive activation lock.
   # Read-only observers can inspect it; another installer cannot consume it.
@@ -739,153 +680,19 @@ if ($Action -eq 'ActivateNative') {
 }
 
 if ($Action -eq 'Switch') {
-  # Transactional local program switch. Both versions are installed and
-  # verified before touching the sole same-owner logon task.
   Check-Existing
-  if ($Endpoint -or $Node -or $Entry -or
-      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$' -or
-      $Direction -notin @('Upgrade','Rollback')) { throw 'Untrusted switch arguments' }
+  if ($Endpoint -or $Direction -cne 'Upgrade' -or
+      $Version -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$') { throw 'Untrusted native switch arguments' }
   $marker = [IO.Path]::Combine($env:LOCALAPPDATA,'mcp-workers','remote-control','v2-identity.pem.owner-stopped')
-  $ownerStopped = Test-Path -LiteralPath $marker
-  if ($Direction -eq 'Rollback' -and $ownerStopped) {
-    throw 'Owner-stopped identity cannot roll back to an unchecked runtime'
-  }
+  if (Test-Path -LiteralPath $marker) { throw 'Native-only cutover requires owner-ON upgrade' }
   $oldAction = $task.Actions[0]
-  $oldArguments = [string]$oldAction.Arguments
   $oldLaunch = Read-TaskLaunch $oldAction
-  $oldEntry = $oldLaunch.Entry
-  $originalEndpoint = $oldLaunch.Endpoint
-  $oldNode = [IO.Path]::GetFullPath([string]$oldAction.Execute)
-  Check-Program $oldNode $oldEntry
-  $oldRelative = $oldNode.Substring($root.Length + 1)
-  $oldDir = ($oldRelative -split '\\')[0]
-  $oldVersion = $oldDir.Substring(0, $oldDir.Length - '-windows-x64'.Length)
-  $oldNumber = [version](($oldVersion.Substring(1) -split '-')[0])
-  $newNumber = [version](($Version.Substring(1) -split '-')[0])
-  $stablePromotion = $Direction -eq 'Upgrade' -and $newNumber -eq $oldNumber -and
-    (Test-NativeForwardVersion $oldVersion $Version)
-  if (($Direction -eq 'Upgrade' -and $newNumber -le $oldNumber -and -not $stablePromotion) -or
-      ($Direction -eq 'Rollback' -and $newNumber -ge $oldNumber)) {
-    throw 'Invalid version upgrade/rollback direction'
-  }
-  $candidate = [IO.Path]::Combine($root,($Version + '-windows-x64'))
-  $nextNode = [IO.Path]::Combine($candidate,'bin','node.exe')
-  $nextBackground = [IO.Path]::Combine($candidate,'bin','rca-background.exe')
-  # Legacy RC1/RC2 remains available for explicit rollback only.
-  $nextActionExe = if (Test-Path -LiteralPath $nextBackground -PathType Leaf) { $nextBackground } else { $nextNode }
-  if ($Direction -eq 'Upgrade' -and $nextActionExe -ne $nextBackground) { throw 'Background launcher required for new version' }
-  $nextEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','src','windows-v2.js')
-  Assert-PrivateVersion $candidate
-  # No global PATH dependency; verify the exact newly installed package.
-  $manifestPath = [IO.Path]::Combine($candidate,'bundle.json')
-  $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-  if ($manifest.version -cne $Version -or
-      $manifest.upgrade_profile -cnotin @('read-only-no-shell-v1', 'paired-full-v1') -or
-      ($Direction -eq 'Upgrade' -and $manifest.upgrade_profile -cne 'paired-full-v1')) {
-    throw 'Unreviewed Windows package version or capability profile'
-  }
-  # Published Node bundles predate agent_runtime; under StrictMode, inspect the JSON property collection before reading it.
-  $runtimeProperty = $manifest.PSObject.Properties['agent_runtime']
-  $runtime = if ($null -ne $runtimeProperty -and -not [string]::IsNullOrWhiteSpace([string]$runtimeProperty.Value)) {
-    [string]$runtimeProperty.Value
-  } else { 'node-standard-windows-v2' }
-  if ($runtime -ceq 'rust-standard-windows-v1') {
-    $nextEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','.build','rca-standard-windows-candidate.exe')
-  } elseif ($runtime -ceq 'node-standard-windows-v2') {
-    $nextEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','src','windows-v2.js')
-  } else { throw 'Unreviewed Windows runtime profile' }
-  Check-Program $nextActionExe $nextEntry
-  $profile = $manifest.PSObject.Properties['artifact_profile']
-  if ($stablePromotion -and ($null -eq $profile -or $profile.Value -cne 'rust-native-only-v1')) {
-    throw 'Same-number Stable promotion requires verified native-only bundle'
-  }
-  if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
-    if ($Direction -cne 'Upgrade' -or $ownerStopped -or $CIInjectFailure -or -not (Test-NativeForwardVersion $oldVersion $Version)) { throw 'Native-only cutover requires owner-ON upgrade' }
-    Invoke-NativeUpgrade $oldVersion $Version $oldLaunch
-    exit 0
-  }
-  $oldManifest = Get-Content -LiteralPath (Join-Path (Join-Path $root $oldDir) 'bundle.json') -Raw | ConvertFrom-Json
-  $oldProfile = $oldManifest.PSObject.Properties['artifact_profile']
-  if ($null -ne $oldProfile -and $oldProfile.Value -ceq 'rust-native-only-v1') {
-    throw 'Native Agent requires guarded upgrade or attended recovery'
-  }
-  $validator = [IO.Path]::Combine($candidate,'apps','remote-control-agent','scripts','verify-windows-preview.mjs')
-  & $nextNode $validator $candidate | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Candidate package manifest verification failed' }
-  # Validate the existing paired identity with the reviewed Node CLI; this
-  # is a local read-only check and does not launch either runtime or call cloud.
-  $statusEntry = [IO.Path]::Combine($candidate,'apps','remote-control-agent','src','windows-v2.js')
-  & $nextNode $statusEntry status | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Candidate local identity validation failed' }
-  if ($runtime -ceq 'rust-standard-windows-v1') {
-    $generation = [guid]::NewGuid().ToString('D')
-    $newArgs = '"' + $nextEntry + '" --service --endpoint "' + $originalEndpoint + '" --generation "' + $generation + '"'
-  } else {
-    $newArgs = '"' + $nextEntry + '" run --endpoint "' + $originalEndpoint + '"'
-  }
-  $newAction = New-ScheduledTaskAction -Execute $nextActionExe -Argument $newArgs -WorkingDirectory ([IO.Path]::GetDirectoryName($nextEntry))
-  $wasRunning = ($task.State -eq 'Running')
-  if ($Direction -eq 'Upgrade' -and
-      $env:RCA_UNATTENDED_UPGRADE -ceq 'owner-approved-task-v1') {
-    $identityFile = [IO.Path]::Combine($env:LOCALAPPDATA,
-      'mcp-workers','remote-control','v2-identity.pem')
-    Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
-  }
-  $managementCaller = Get-LocalSwitchCaller $Direction $Version
-  $changed = $false
-  $stage = 'stop original'
-  try {
-    if ($wasRunning) {
-      Stop-ScheduledTask -TaskName $name -ErrorAction Stop
-      Wait-VersionExited ([pscustomobject]@{Root=(Join-Path $root $oldDir)}) $managementCaller
-    }
-    $stage = 'switch task'
-    Set-ScheduledTask -TaskName $name -Action $newAction -ErrorAction Stop | Out-Null
-    $changed = $true
-    if ($CIInjectFailure) {
-      if ($env:GITHUB_ACTIONS -ne 'true') { throw 'Failure injection unavailable outside CI' }
-      throw 'Isolated CI switch failure injection'
-    }
-    $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
-    Check-Existing
-    if (-not [string]::Equals([string]$task.Actions[0].Execute,$nextActionExe,[StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals([string]$task.Actions[0].Arguments,$newArgs,[StringComparison]::Ordinal)) {
-      throw 'Task switch was not persisted'
-    }
-    if ($wasRunning -and -not $ownerStopped) {
-      $stage = 'start target'
-      Start-ScheduledTask -TaskName $name -ErrorAction Stop
-      Start-Sleep -Seconds 2
-      $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
-      if ($task.State -ne 'Running') { throw 'Updated Agent exited immediately' }
-    }
-    # This proves only local version switching, NOT signed WSS liveness.
-    Write-Output ('switched-local-' + $Direction.ToLowerInvariant())
-    exit 0
-  } catch {
-    Write-Verbose ('Local version switch failed at ' + $stage + ': ' + $_.Exception.Message)
-    $rollbackOkay = $false
-    try {
-      # Restore the saved original action only after the target has exited.
-      # Never overlap two receipt owners or change principal, endpoint or keys.
-      if ($changed) {
-        $current = Get-ScheduledTask -TaskName $name -ErrorAction Stop
-        if ($current.State -eq 'Running') { Stop-ScheduledTask -TaskName $name -ErrorAction Stop }
-        Wait-VersionExited ([pscustomobject]@{Root=$candidate}) $managementCaller
-        Set-ScheduledTask -TaskName $name -Action $oldAction -ErrorAction Stop | Out-Null
-      }
-      $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
-      Check-Existing
-      if (-not [string]::Equals([string]$task.Actions[0].Execute,$oldNode,[StringComparison]::OrdinalIgnoreCase) -or
-          -not [string]::Equals([string]$task.Actions[0].Arguments,$oldArguments,[StringComparison]::Ordinal)) {
-        throw 'Previous task action not restored'
-      }
-      if ($wasRunning -and -not $ownerStopped) { Start-ScheduledTask -TaskName $name -ErrorAction Stop }
-      $rollbackOkay = $true
-    } catch { $rollbackOkay = $false }
-    if ($rollbackOkay) { throw 'Local version switch refused; previous task restored' }
-    throw 'Local version switch failed and task restore is uncertain; manual check required'
-  }
+  $relative = [IO.Path]::GetFullPath([string]$oldAction.Execute).Substring($root.Length + 1)
+  $oldDir = ($relative -split '\\')[0]
+  $oldVersion = $oldDir.Substring(0,$oldDir.Length - '-windows-x64'.Length)
+  if (-not (Test-NativeForwardVersion $oldVersion $Version)) { throw 'Invalid native upgrade direction' }
+  Invoke-NativeUpgrade $oldVersion $Version $oldLaunch
+  exit 0
 }
 
 Check-Existing

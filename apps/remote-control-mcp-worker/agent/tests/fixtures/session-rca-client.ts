@@ -1,6 +1,6 @@
+// Independent legacy protocol reference for tests only; never packaged or launched.
 /** No installer/pairing prompt: registration request for a reviewed physical Runner only. */
 import {randomBytes} from 'node:crypto';
-import {spawn} from 'node:child_process';
 import {signSessionEnrollmentNonce, validateSessionDeviceIdentity,
   type SessionDeviceIdentity} from './session-device-identity.ts';
 
@@ -80,23 +80,4 @@ export function sessionTransportEnvironment(source:NodeJS.ProcessEnv):NodeJS.Pro
     clean.BASH_ENV=source.BASH_ENV;
   }
   return clean;
-}
-
-export async function spawnSessionTransport(
- entry:string,deviceId:string,expiresAt:number,source:NodeJS.ProcessEnv,
-):Promise<void>{
- if(!entry||!UUID.test(deviceId)||!Number.isSafeInteger(expiresAt)||
-   expiresAt<=Date.now()||expiresAt>Date.now()+300*60_000)
-   throw Error('Invalid credential-free transport launch.');
- const child=spawn(process.execPath,[entry,'--session-transport',deviceId,String(expiresAt)],{
-   cwd:process.cwd(),env:sessionTransportEnvironment(source),
-   // Windows needs an independent process group after one-shot OIDC parent exits.
-   // RUNNER_TRACKING_ID remains inherited so job cleanup still owns this child.
-   detached:true,stdio:'ignore',windowsHide:true,
- });
- await new Promise<void>((resolve,reject)=>{
-   child.once('spawn',()=>resolve());
-   child.once('error',reject);
- });
- child.unref();
 }

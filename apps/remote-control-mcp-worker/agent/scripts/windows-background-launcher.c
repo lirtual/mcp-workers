@@ -1,5 +1,5 @@
 // Windowless Windows Task Scheduler entrypoint. No shell, no command interpreter.
-// A private job owns the native Node Agent and kills it when the task is stopped.
+// A private job owns the native Rust Agent and kills it when the task is stopped.
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
@@ -8,9 +8,7 @@
 
 #define PATH_CAP 32768
 static wchar_t executable[PATH_CAP];
-static wchar_t node[PATH_CAP];
 static wchar_t rust_agent[PATH_CAP];
-static wchar_t entry[PATH_CAP];
 static wchar_t resolved[PATH_CAP];
 static wchar_t command[PATH_CAP];
 
@@ -55,34 +53,19 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR unused, int sh
     wchar_t *slash = wcsrchr(executable, L'\\');
     if (!slash) goto done;
     slash[1] = L'\0';
-    if (swprintf_s(node, PATH_CAP, L"%lsnode.exe", executable) < 0 ||
-        swprintf_s(resolved, PATH_CAP,
-            L"%ls..\\apps\\remote-control-agent\\src\\windows-v2.js", executable) < 0)
+    if (argc != 7 || wcscmp(argv[2], L"--service") != 0 ||
+        wcscmp(argv[3], L"--endpoint") != 0 || !acceptable_endpoint(argv[4]) ||
+        wcscmp(argv[5], L"--generation") != 0 || !acceptable_generation(argv[6])) goto done;
+    if (swprintf_s(resolved, PATH_CAP,
+        L"%ls..\\apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe", executable) < 0)
         goto done;
-    DWORD length = GetFullPathNameW(resolved, PATH_CAP, entry, NULL);
-    if (!length || length >= PATH_CAP) goto done;
+    DWORD length = GetFullPathNameW(resolved, PATH_CAP, rust_agent, NULL);
+    if (!length || length >= PATH_CAP || !regular_file(rust_agent) ||
+        CompareStringOrdinal(argv[1], -1, rust_agent, -1, TRUE) != CSTR_EQUAL) goto done;
+    if (swprintf_s(command, PATH_CAP,
+        L"\"%ls\" --service --endpoint \"%ls\" --generation \"%ls\"",
+        rust_agent, argv[4], argv[6]) < 0) goto done;
 
-    const wchar_t *child_exe = node;
-    if (argc == 5 && wcscmp(argv[2], L"run") == 0 &&
-        wcscmp(argv[3], L"--endpoint") == 0 && acceptable_endpoint(argv[4]) &&
-        CompareStringOrdinal(argv[1], -1, entry, -1, TRUE) == CSTR_EQUAL) {
-        if (!regular_file(node) || !regular_file(entry)) goto done;
-        if (swprintf_s(command, PATH_CAP, L"\"%ls\" \"%ls\" run --endpoint \"%ls\"",
-                       node, entry, argv[4]) < 0) goto done;
-    } else if (argc == 7 && wcscmp(argv[2], L"--service") == 0 &&
-        wcscmp(argv[3], L"--endpoint") == 0 && acceptable_endpoint(argv[4]) &&
-        wcscmp(argv[5], L"--generation") == 0 && acceptable_generation(argv[6])) {
-        if (swprintf_s(resolved, PATH_CAP,
-            L"%ls..\\apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe", executable) < 0)
-            goto done;
-        length = GetFullPathNameW(resolved, PATH_CAP, rust_agent, NULL);
-        if (!length || length >= PATH_CAP || !regular_file(rust_agent) ||
-            CompareStringOrdinal(argv[1], -1, rust_agent, -1, TRUE) != CSTR_EQUAL) goto done;
-        child_exe = rust_agent;
-        if (swprintf_s(command, PATH_CAP,
-            L"\"%ls\" --service --endpoint \"%ls\" --generation \"%ls\"",
-            rust_agent, argv[4], argv[6]) < 0) goto done;
-    } else goto done;
 
     job = CreateJobObjectW(NULL, NULL);
     if (!job) goto done;
@@ -92,7 +75,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previous, PWSTR unused, int sh
                                  &limits, sizeof(limits))) goto done;
     STARTUPINFOW startup = {0};
     startup.cb = sizeof(startup);
-    if (!CreateProcessW(child_exe, command, NULL, NULL, FALSE,
+    if (!CreateProcessW(rust_agent, command, NULL, NULL, FALSE,
                         CREATE_NO_WINDOW | CREATE_SUSPENDED,
                         NULL, executable, &startup, &child)) goto done;
     if (!AssignProcessToJobObject(job, child.hProcess)) goto done;

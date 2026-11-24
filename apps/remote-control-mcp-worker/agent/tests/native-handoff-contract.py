@@ -24,30 +24,24 @@ def owned_file(path, data=b"x", mode=0o600):
     path.chmod(mode)
 
 
-def make_version(home, version, native):
+def make_version(home, version):
     root = home / ".local/share/mcp-workers/remote-control/programs" / (version + "-linux-x64-glibc")
     root.mkdir(parents=True)
     manifest = {
         "name": "remote-control-agent", "artifact_schema": 1,
         "version": version, "target": "linux-x64-glibc", "device_protocol": 2,
         "receipt_schema": 1, "upgrade_profile": "paired-full-v1",
-        "agent_runtime": "rust-standard-linux-v1" if native else "node-v2"
+        "agent_runtime": "rust-standard-linux-v1"
     }
-    if native:
-        manifest.update({"artifact_profile": "rust-native-only-v1",
-                         "candidate_profile": "standard-linux-rust-runtime-v1",
-                         "modules": []})
+    manifest.update({"artifact_profile": "rust-native-only-v1",
+                     "candidate_profile": "standard-linux-rust-runtime-v1",
+                     "modules": []})
     owned_file(root / "bundle.json", json.dumps(manifest))
     owned_file(root / APP / ".build/session-supervisor", mode=0o700)
     owned_file(root / APP / "scripts/rca.sh", "#!/bin/sh\nexit 0\n", mode=0o700)
-    if native:
-        owned_file(root / APP / ".build/rca-standard-linux-candidate", mode=0o700)
-        for script in ("bootstrap-v2.py", "manage-v2.py"):
-            owned_file(root / APP / "scripts" / script)
-    else:
-        owned_file(root / "bin/node", mode=0o700)
-        owned_file(root / APP / "src/v2-main.js",
-                   'const V2_RUNTIME_PROFILE = "paired-full-v1";\n')
+    owned_file(root / APP / ".build/rca-standard-linux-candidate", mode=0o700)
+    for script in ("bootstrap-v2.py", "manage-v2.py"):
+        owned_file(root / APP / "scripts" / script)
     bootstrap.validated_owned_version(root)
     return root
 
@@ -61,8 +55,8 @@ def fixture():
     key = base / "v2-identity.pem"
     owned_file(key, "disposable-not-a-live-private-key")
     owned_file(Path(str(key) + ".device-id"), ID + "\n")
-    old = make_version(home, "v0.1.56", False)
-    new = make_version(home, "v0.1.57", True)
+    old = make_version(home, "v0.1.56")
+    new = make_version(home, "v0.1.57")
     unit = home / ".config/systemd/user/remote-control-agent.service"
     owned_file(unit, bootstrap.native_render_unit(old, ENDPOINT, key))
     launcher = home / ".local/bin/rca"
@@ -81,8 +75,8 @@ def fixture():
 
 
 def native_pair_fixture():
-    ctx, home, node, old, unit, launcher, key, receipts = fixture()
-    new = make_version(home, "v0.1.58", True)
+    ctx, home, previous, old, unit, launcher, key, receipts = fixture()
+    new = make_version(home, "v0.1.58")
     unit.write_text(bootstrap.native_render_unit(old, ENDPOINT, key))
     launcher.unlink()
     launcher.symlink_to(old / APP / "scripts/rca.sh")
@@ -97,10 +91,7 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
         return 100 if state["active"] == "old" else 200 + state["pid_generation"]
 
     def expected_executable(root):
-        info = json.loads((root / "bundle.json").read_text())
-        return (root / APP / ".build/rca-standard-linux-candidate"
-                if info.get("artifact_profile") == "rust-native-only-v1"
-                else root / "bin/node")
+        return root / APP / ".build/rca-standard-linux-candidate"
 
     def executable(pid):
         if pid == 100:
@@ -190,7 +181,7 @@ def verify_initial_install():
             unit.unlink()
             launcher.unlink()
             preexisting_launcher = case.startswith("temporary-launcher-")
-            prior = make_version(home, "v0.1.55", True) if "older" in case else new
+            prior = make_version(home, "v0.1.55") if "older" in case else new
             if preexisting_launcher:
                 launcher.symlink_to(prior / APP / "scripts/rca.sh")
             key.unlink()
@@ -533,7 +524,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # Native-to-native: reuse the SAME signed WSS commit and owner-local
-    # rollback transaction. A verified prior Rust service is no longer Node.
+    # rollback transaction. A verified prior Rust service remains recoverable.
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
         old_unit = unit.read_text()
@@ -557,7 +548,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # Missing WSS proof MUST restore the previously active Rust executable,
-    # not the historical Node version still present among managed programs.
+    # not the earlier version still present among managed programs.
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
         original_unit, original_receipts = unit.read_text(), receipts.read_bytes()
@@ -578,7 +569,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # An interrupted Rust-to-Rust switch must be recoverable using the
-    # exact same attended recovery command; the oldest Node stays untouched.
+    # exact same attended recovery command; the oldest installed Rust stays untouched.
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
         original_unit = unit.read_text()
@@ -738,7 +729,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # A valid proof from an earlier Rust PID must not approve its replacement.
-    # The original Node process must be recovered instead.
+    # The original Rust process must be recovered instead.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
         state, mocks, verify = fake_services(home, old, new, restart_after_proof=True)
@@ -755,7 +746,7 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
-    # Missing signed proof rolls back to original Node process & launcher,
+    # Missing signed proof rolls back to original Rust process & launcher,
     # preserving the same identity/receipts and clearing only resolved state.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
@@ -828,9 +819,8 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
-    # The published v0.1.56 Node recovery script cannot recognize the
-    # new native systemd unit. The verified native Python bootstrap restores
-    # the original unit and CLI with the same identity and receipt history.
+    # The native recovery restores the original unit and CLI with the
+    # same identity and receipt history.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
         old_unit = unit.read_text("utf8")
@@ -965,7 +955,7 @@ def verify_public_native_archive():
         source = root / "source"
         source.mkdir(mode=0o700)
         tag = "v0.1.58"
-        packed_root = make_version(source, tag, True)
+        packed_root = make_version(source, tag)
         manifest = packed_root / "bundle.json"
         meta = json.loads(manifest.read_text())
         meta["glibc_min"] = "2.28"

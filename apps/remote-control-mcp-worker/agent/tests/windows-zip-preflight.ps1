@@ -63,7 +63,7 @@ try {
     'apps/remote-control-agent/scripts/windows-stage-install.ps1',
     'apps/remote-control-agent/scripts/verify-windows-native.ps1')
   $session='apps/remote-control-agent/.build/rca-session-windows-candidate.exe'
-  foreach ($case in @('old','new','unknown','duplicate','traversal')) {
+  foreach ($case in @('old','new','unknown','duplicate','traversal','node')) {
     $zipPath=Join-Path $root ($case+'.zip')
     $zip=[IO.Compression.ZipFile]::Open($zipPath,[IO.Compression.ZipArchiveMode]::Create)
     try {
@@ -73,6 +73,7 @@ try {
         unknown {$entries+='apps/remote-control-agent/.build/extra.exe'}
         duplicate {$entries+=@($session,$session.ToUpperInvariant())}
         traversal {$entries+='apps/../extra.exe'}
+        node {$entries+='bin/node.exe'}
       }
       foreach ($name in $entries) {
         $entry=$zip.CreateEntry($name); $stream=$entry.Open()

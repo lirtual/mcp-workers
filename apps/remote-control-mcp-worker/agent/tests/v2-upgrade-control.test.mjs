@@ -6,7 +6,25 @@ import path from "node:path";
 import test from "node:test";
 import { createAgentExecutionEngine } from "../src/execution.ts";
 import { startUpgradeControl, upgradeSocketPath } from "../src/upgrade-control.ts";
-import { requestUpgradeConsent } from "../scripts/install-v2.mjs";
+import { createConnection } from "node:net";
+
+// Test client for the active macOS shared control protocol, not an old installer.
+function requestUpgradeConsent(keyPath, action) {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(upgradeSocketPath(keyPath));
+    let reply = "";
+    socket.setTimeout(5000, () => socket.destroy(Error("Missing control reply")));
+    socket.on("error", reject);
+    socket.on("connect", () => socket.write(action + "\n"));
+    socket.on("data", chunk => {
+      reply += chunk.toString();
+      if (reply.includes("\n")) { socket.end(); resolve(reply.trim()); }
+    });
+    socket.on("end", () => {
+      if (!reply.includes("\n")) reject(Error("Incomplete control reply"));
+    });
+  });
+}
 
 test("owner-local upgrade socket freezes operation admission atomically and releases on installer failure",async()=>{
   const dir=await mkdtemp(path.join(os.tmpdir(),"rc-upgrade-freeze-"));

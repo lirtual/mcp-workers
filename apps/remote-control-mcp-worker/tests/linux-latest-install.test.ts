@@ -42,7 +42,7 @@ test("first-install Linux script is static, no Worker GitHub API or old reposito
   assert.ok(script.indexOf("Invalid immutable Agent Release manifest") <
             script.indexOf("Downloading Remote Control Agent"));
   assert.ok(script.indexOf("sha256sum -c -") < script.indexOf("tar -xOzf"));
-  assert.ok(script.indexOf("tar -xOzf") < script.indexOf("bootstrap-node.mjs >"));
+  assert.ok(script.indexOf("tar -xOzf") < script.indexOf("bootstrap-v2.py >"));
   assert.equal(spawnSync("sh", ["-n"], { input: script, encoding: "utf8", timeout: 3000 }).status, 0);
   assert.ok(Buffer.byteLength(script) < 16384);
 });
@@ -80,7 +80,7 @@ test("public Linux Shell requires owner terminal before contacting GitHub", asyn
   assert.equal(counter.calls, 0);
 });
 
-test("verified public Linux archive dispatch selects one runtime and preserves action", async () => {
+test("verified public Linux archive dispatch rejects retired runtimes and preserves action", async () => {
   const response = await worker.fetch(new Request(origin + "/install.sh"), approvedEnv({calls:0}));
   const script = await response.text();
   assert.ok(script.indexOf("sha256sum -c -") < script.indexOf('tar -tzf'));
@@ -114,15 +114,15 @@ test("verified public Linux archive dispatch selects one runtime and preserves a
       const result=spawnSync("sh",["-ec",dispatch,"fixture","--upgrade"],{
         env:{...process.env,archive,stage,tag:"v0.1.58",expected:"a".repeat(64)},encoding:"utf8",timeout:5000,
       });
-      if (kind === "invalid") {
+      if (kind !== "native") {
         assert.notEqual(result.status,0);
         assert.match(result.stderr,/Unsupported verified Agent archive/);
       } else {
         assert.equal(result.status,0,result.stderr);
-        assert.match(result.stdout,kind==="node"?/NODE:.*--archive /:/NATIVE:--latest-archive /);
+        assert.match(result.stdout,/NATIVE:--latest-archive /);
         assert.match(result.stdout,/--tag v0\.1\.58/);
         assert.match(result.stdout,/--endpoint https:\/\/rca\.lirtual\.dpdns\.org\/ --upgrade/);
-        assert.doesNotMatch(result.stdout,kind==="node"?/NATIVE:/:/NODE:/);
+        assert.doesNotMatch(result.stdout,/NODE:/);
       }
     }
   } finally { rmSync(root,{recursive:true,force:true}); }

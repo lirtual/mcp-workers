@@ -21,7 +21,9 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   assert.doesNotMatch(release, /\bgh release create\b|agent-native-candidates|release-pins/);
   assert.doesNotMatch(candidates, /^  push:/m);
   assert.match(candidates, /rust_agent="\$SPEC914_TEMP\/build\/rca-standard-linux-candidate"/);
-  assert.match(candidates, /--out "\$SPEC914_TEMP\/package"/);
+  assert.match(candidates, /--out "\$SPEC914_TEMP\/native-only"/);
+  assert.doesNotMatch(candidates, /SPEC914_TEMP\/package|linux-systemd-upgrade-recovery\.integration\.mjs/);
+  assert.match(candidates, /linux-native-only-systemd\.integration\.mjs/);
   assert.doesNotMatch(candidates, /\bgh release (?:create|edit|upload|delete)\b|wrangler deploy|uses: \.\/\.github\/workflows\/release\.yml|release-pins/);
   assert.match(candidates, /^  workflow_dispatch:$/m);
   assert.match(candidates, /Manual native candidates are built from main only/);
@@ -39,6 +41,8 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   const windowsReview=candidates.slice(candidates.indexOf('      - name: Assemble verifiable Windows release candidate'));
   assert.match(windowsReview,/'--artifact-profile','rust-native-only-v1'/);
   assert.doesNotMatch(windowsReview,/\$nativeOnly = \$tag/);
+  assert.doesNotMatch(candidates,/candidate-rust-version\.zip|windows-rust-candidate-reopened/);
+  assert.match(candidates, /WINDOWS_RUNNING_WITHOUT_SIGNED_WSS_REJECTED/);
   for (const name of ['Save reviewed native candidate for manual Release promotion','Save unpublished macOS candidate for owner-native E2E']) {
     assert.ok(candidates.includes(name + "\n        if: github.event_name == 'workflow_dispatch' && !contains(inputs.candidate_tag, '-rust-candidate.')"));
   }

@@ -11,16 +11,17 @@ with tempfile.TemporaryDirectory(prefix="issue69-t09-") as home:
     root=pathlib.Path(home)
     programs=root/".local/share/mcp-workers/remote-control/programs"
     ver=programs/"v0.2.0-linux-x64-glibc"
-    entry=ver/"apps/remote-control-agent/src/v2-main.js"
-    entry.parent.mkdir(parents=True,mode=0o700)
-    entry.write_text("readOnly: true, writeFile: false, shell: false,")
-    mf=ver/"bundle.json"
-    mf.write_text(json.dumps({"version":"v0.2.0","target":"linux-x64-glibc","artifact_schema":1,
-      "device_protocol":2,"receipt_schema":1,"upgrade_profile":"read-only-no-shell-v1"}))
-    for p in (programs.parent,programs,ver,ver/"apps",ver/"apps/remote-control-agent",
-              ver/"apps/remote-control-agent/src"):
-        p.chmod(0o700)
-    entry.chmod(0o600);mf.chmod(0o600)
+    os.umask(0o077)
+    app=ver/b.APP
+    manifest={"name":"remote-control-agent","version":"v0.2.0","target":"linux-x64-glibc",
+      "artifact_schema":1,"device_protocol":2,"receipt_schema":1,"upgrade_profile":"paired-full-v1",
+      "artifact_profile":"rust-native-only-v1","agent_runtime":"rust-standard-linux-v1",
+      "candidate_profile":"standard-linux-rust-runtime-v1","modules":[]}
+    for name in b.native_program_files(manifest,manifest["target"]):
+        file=ver/name
+        file.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
+        file.write_text(json.dumps(manifest) if name=="bundle.json" else "fixture")
+        file.chmod(0o700 if "/.build/" in name or name.endswith("rca.sh") else 0o600)
     state=root/".local/state/mcp-workers/remote-control-agent"
     state.mkdir(parents=True); receipts=state/"operation-receipts.sqlite"
     receipts.write_text("untouched receipts")
@@ -42,8 +43,8 @@ with tempfile.TemporaryDirectory(prefix="issue69-t09-") as home:
     # Simulated owned permanent unit must be matched exactly, no real systemctl.
     unit=root/".config/systemd/user/remote-control-agent.service"
     unit.parent.mkdir(parents=True)
-    unit.write_text(b.MARKER+"\n[Unit]\n[Service]\nWorkingDirectory="+str(ver/"apps/remote-control-agent")+
-      "\nExecStart="+str(ver/"bin/node")+" "+str(ver/"apps/remote-control-agent/src/v2-main.js")+"\n")
+    unit.write_text(b.native_render_unit(ver,"https://example.invalid/",keys))
+    unit.chmod(0o600)
     systemcalls=[]
     result=b.local_uninstall(home,True,systemctl=lambda args:systemcalls.append(args),
       process_check=lambda _:True)
@@ -114,6 +115,37 @@ print("PROCESS_OWNER_FAIL_CLOSED_OK")
  const r=spawnSync("python3",["-B","-c",code,script],{encoding:"utf8",timeout:15000});
  assert.equal(r.status,0,r.stderr);
  assert.match(r.stdout,/PROCESS_OWNER_FAIL_CLOSED_OK/);
+});
+
+test("#914 identity purge blocks live Rust executable even with altered argv",()=>{
+ if(process.platform!=="linux")return;
+ const code=String.raw`import importlib.util,sys,tempfile,pathlib
+spec=importlib.util.spec_from_file_location("b",sys.argv[1])
+b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
+with tempfile.TemporaryDirectory() as root:
+    proc=pathlib.Path(root)/"999999999";proc.mkdir()
+    status=proc/"status";status.write_text("Name:\tfixture\nState:\tS (sleeping)\n")
+    cmd=proc/"cmdline";exe=proc/"exe"
+    for binary,args in [
+        ("/tmp/rca-standard-linux-candidate",b"hidden-name"),
+        ("/tmp/rca-standard-linux-candidate (deleted)",b"hidden-name"),
+        ("/usr/bin/python3",b"/tmp/remote-control-agent/scripts/bootstrap-v2.py"),
+        ("/usr/bin/node",b"/tmp/remote-control-agent/src/v2-main.js"),
+        ("/usr/bin/python3",b"/tmp/rca-standard-linux-candidate"),
+    ]:
+        if exe.is_symlink():exe.unlink()
+        exe.symlink_to(binary);cmd.write_bytes(args+b"\0")
+        assert not b.no_live_v2_identity_processes(pathlib.Path(root)),binary
+    exe.unlink();exe.symlink_to("/usr/bin/python3")
+    cmd.write_bytes(b"/usr/bin/python3\0")
+    assert b.no_live_v2_identity_processes(pathlib.Path(root))
+    exe.unlink()
+    assert not b.no_live_v2_identity_processes(pathlib.Path(root))
+print("NATIVE_PURGE_PROCESS_GUARD_PASS")
+`;
+ const result=spawnSync("python3",["-B","-c",code,script],{encoding:"utf8",timeout:15000});
+ assert.equal(result.status,0,result.stderr);
+ assert.match(result.stdout,/NATIVE_PURGE_PROCESS_GUARD_PASS/);
 });
 
 test("#78 optional v2-only identity purge needs separate consent; shared receipts and foreign files survive",()=>{

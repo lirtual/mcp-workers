@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Pinned, public-GitHub-only bootstrap for the standalone v2 Agent.
 
-Reviewed source MUST be fetched from an immutable commit URL, not 'main' or
-'latest'. Python 3 stdlib is the initial bootstrap dependency; no local Node,
-git, pnpm or compiler is required on the target host. This entrypoint is not
-advertised until a real immutable Release is explicitly approved.
+Install or upgrade only a verified immutable native Rust Release.
+Python 3 stdlib is the management dependency; no target-host Node, Git,
+pnpm or compiler is required.
 """
 import argparse
 import fcntl
@@ -39,33 +38,13 @@ ALLOWED_HOSTS = frozenset((
     "api.github.com", "github.com",
     "release-assets.githubusercontent.com", "objects.githubusercontent.com"
 ))
-ALLOWED_DIRS = frozenset((
-    "bin", "apps", APP, APP + "/src",
-    APP + "/scripts", APP + "/.build"
-))
-ALLOWED_FILES = frozenset((
-    "bin/node", "bundle.json", APP + "/package.json",
-    APP + "/.build/rca-standard-linux-candidate",
-    APP + "/.build/rca-session-linux-candidate",
-    APP + "/scripts/install-v2.mjs", APP + "/scripts/bootstrap-v2.py",
-    APP + "/scripts/manage-v2.py", APP + "/.build/session-supervisor",
-    APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
-    APP + "/scripts/lifecycle-v2.mjs", APP + "/scripts/upgrade-v2.mjs",
-    APP + "/scripts/upgrade-existing-service.mjs",
-    APP + "/scripts/linux-upgrade-detached.mjs",
-    APP + "/scripts/linux-upgrade-watchdog.mjs",
-    APP + "/scripts/verify-v2-release.mjs", APP + "/scripts/rca.sh",
-))
-ELF_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor",
-                        APP + "/.build/rca-standard-linux-candidate", APP + "/.build/rca-session-linux-candidate"))
-EXEC_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor"))
-NODE_REQUIRED = frozenset((
-    APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
-    APP + "/scripts/lifecycle-v2.mjs", APP + "/scripts/upgrade-v2.mjs",
-    APP + "/scripts/verify-v2-release.mjs", APP + "/scripts/rca.sh",
-))
-LEGACY_REQUIRED = frozenset((
-    APP + "/scripts/bootstrap-v2.py", APP + "/scripts/manage-v2.py",
+ALLOWED_DIRS = frozenset(("apps", APP, APP + "/scripts", APP + "/.build"))
+ELF_FILES = frozenset((APP + "/.build/session-supervisor",
+                        APP + "/.build/rca-standard-linux-candidate",
+                        APP + "/.build/rca-session-linux-candidate"))
+ALLOWED_FILES = ELF_FILES | frozenset((
+    "bundle.json", APP + "/scripts/bootstrap-v2.py",
+    APP + "/scripts/manage-v2.py", APP + "/scripts/rca.sh",
 ))
 TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -214,8 +193,7 @@ def safe_member(name, directory):
     if directory:
         if name not in ALLOWED_DIRS:
             raise ValueError("Unexpected archive directory")
-    elif name not in ALLOWED_FILES and not re.fullmatch(
-            re.escape(APP) + r"/src/[a-z0-9-]+\.js", name):
+    elif name not in ALLOWED_FILES:
         raise ValueError("Unexpected archive file")
     return name
 
@@ -252,56 +230,23 @@ def inspect_archive(archive, tag, target):
         if "bundle.json" not in names:
             raise ValueError("Incomplete Agent Release archive")
         manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
-        agent_runtime = manifest.get("agent_runtime", "node-v2")
-        rust_candidate = agent_runtime == "rust-standard-linux-v1"
-        native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
-        session_entry = APP + "/.build/rca-session-linux-candidate"
-        if not native_only and ("session_runtime" in manifest or session_entry in names):
-            raise ValueError("Unreviewed packaged Session runtime")
-        if native_only:
-            files = {name for name, member in records if member.isfile()}
-            if files != native_program_files(manifest, target):
-                raise ValueError("Native-only archive must contain only reviewed Rust files")
-        else:
-            if not EXEC_FILES.issubset(names) or APP + "/src/v2-main.js" not in names \
-                    or APP + "/scripts/install-v2.mjs" not in names:
-                raise ValueError("Incomplete Agent Release archive")
-            # Historical reviewed Node and mixed Rust-Node migration layouts.
-            node_profile = bool(names & NODE_REQUIRED)
-            required = NODE_REQUIRED if node_profile else LEGACY_REQUIRED
-            if not required.issubset(names):
-                raise ValueError("Missing reviewed Agent manager/bootstrap files")
-        if (manifest.get("artifact_schema") != 1 or manifest.get("name") != "remote-control-agent"
+        if (manifest.get("artifact_schema") != 1
+                or manifest.get("name") != "remote-control-agent"
                 or manifest.get("version") != tag or manifest.get("target") != target
-                or (native_only and (not rust_candidate
-                    or manifest.get("node") is not None
-                    or manifest.get("modules") != []
-                    or "upgrade_protocol" in manifest))
-                or (not native_only and (
-                    not re.fullmatch(r"v24\.[0-9]+\.[0-9]+", str(manifest.get("node", "")))
-                    or "artifact_profile" in manifest))
-                or agent_runtime not in ("node-v2", "rust-standard-linux-v1")
-                or (rust_candidate and (
-                    manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
-                    or (not native_only and not re.search(r"-rust-candidate(?:\.|$)", tag))
-                    or not target.startswith("linux-")
-                    or APP + "/.build/rca-standard-linux-candidate" not in names
-                    or APP + "/scripts/manage-v2.py" not in names))
-                or (not rust_candidate and (
-                    manifest.get("candidate_profile") == "standard-linux-rust-runtime-v1"
-                    or APP + "/.build/rca-standard-linux-candidate" in names))):
-            raise ValueError("Bundle version, runtime profile, or architecture mismatch")
-        # A remote-capable archive must contain the complete packaged
-        # stage/rollback implementation; old local-only Releases still work.
-        if "upgrade_protocol" in manifest:
-            required_one_shot = {APP + "/scripts/" + item for item in (
-                "bootstrap-v2.py", "linux-upgrade-detached.mjs",
-                "linux-upgrade-watchdog.mjs")}
-            if (manifest["upgrade_protocol"] != "owner-one-shot-v1"
-                    or not required_one_shot.issubset(names)):
-                raise ValueError("Incomplete reviewed Linux one-shot Release")
+                or target not in ("linux-x64-glibc", "linux-arm64-glibc")
+                or manifest.get("artifact_profile") != "rust-native-only-v1"
+                or manifest.get("agent_runtime") != "rust-standard-linux-v1"
+                or manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
+                or manifest.get("upgrade_profile") != "paired-full-v1"
+                or manifest.get("device_protocol") != 2 or manifest.get("receipt_schema") != 1
+                or manifest.get("modules") != [] or "node" in manifest
+                or "upgrade_protocol" in manifest):
+            raise ValueError("Unreviewed Linux Rust bundle version or runtime profile")
+        files = {name for name, member in records if member.isfile()}
+        if files != native_program_files(manifest, target):
+            raise ValueError("Native-only archive must contain only reviewed Rust files")
         # The official manifest is covered by the GitHub asset SHA-256.
-        # Refuse ABI-incompatible binaries before unpacking OR executing Node.
+        # Refuse ABI-incompatible binaries before unpacking or executing the native Agent.
         minimum = str(manifest.get("glibc_min", ""))
         if not re.fullmatch(r"[0-9]+\.[0-9]+", minimum):
             raise ValueError("Missing or invalid Release glibc ABI requirement")
@@ -603,14 +548,13 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         raise ValueError("Detached native upgrade requires the reviewed stable worker")
     if temporary and not native_install:
         raise ValueError("Temporary mode requires --native-install")
-    if stage_only or native_upgrade or native_install:
-        if ((name is not None and not native_install) or upgrade or
-                not isinstance(asset_sha256, str) or
-                not re.fullmatch(r"[0-9a-f]{64}", asset_sha256)):
-            scope = "Stage-only" if stage_only else "Native install" if native_install else "Native upgrade"
-            raise ValueError(scope + " requires a reviewed SHA-256 and no Node install action")
-    elif asset_sha256 is not None:
-        raise ValueError("An asset SHA-256 is only accepted for native staging, install or upgrade")
+    if sum(bool(action) for action in (stage_only, native_upgrade, native_install)) != 1:
+        raise ValueError("Linux requires exactly one native staging, install or upgrade action")
+    if ((name is not None and not native_install) or upgrade or
+            not isinstance(asset_sha256, str) or
+            not re.fullmatch(r"[0-9a-f]{64}", asset_sha256)):
+        scope = "Stage-only" if stage_only else "Native install" if native_install else "Native upgrade"
+        raise ValueError(scope + " requires a reviewed SHA-256 and no legacy install action")
     if latest_archive is not None and (stage_only or not (native_upgrade or native_install)):
         raise ValueError("Public archive requires an attended native install or upgrade")
     target = preflight(tag, commit, endpoint, stage_only=stage_only,
@@ -659,19 +603,6 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 os.fsync(f.fileno())
             print("==> SHA-256 verified; inspecting archive and system ABI", flush=True)
             records = inspect_archive(archive_path, tag, target)
-            with tarfile.open(archive_path, "r:gz") as tf:
-                manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
-            native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
-            if native_only and not (stage_only or native_upgrade or native_install):
-                raise ValueError("Native-only Rust requires explicit trusted handoff")
-            if (native_upgrade or native_install) and not native_only:
-                raise ValueError("Native handoff requires a Node-free Rust archive")
-            if stage_only and (manifest.get("upgrade_profile") != "paired-full-v1" or
-                    manifest.get("device_protocol") != 2 or
-                    manifest.get("receipt_schema") != 1 or
-                    (not native_only and
-                     manifest.get("upgrade_protocol") != "owner-one-shot-v1")):
-                raise ValueError("Linux release lacks reviewed protocol readiness for staging")
             if version.exists() or version.is_symlink():
                 verify_existing_program(archive_path, version, records)
             else:
@@ -681,7 +612,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 archive_path.unlink(missing_ok=True)
         print("==> Verified runtime staged: " + str(version), flush=True)
         if stage_only:
-            # No install-v2, systemctl, identity mutation, approval or pairing.
+            # No systemctl, identity mutation, approval or pairing.
             return
         if native_install:
             if latest_archive is not None:
@@ -718,23 +649,8 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             result = native_cutover(pathlib.Path.home(), version, endpoint)
             print(json.dumps(result, indent=2))
             return
-        binary = version / "bin/node"
-        command = [str(binary), str(version / APP / "scripts/install-v2.mjs"),
-                   "--endpoint", endpoint]
-        if name:
-            command += ["--name", name]
-        if upgrade:
-            command += ["--upgrade"]
-        print("Verified GitHub Release " + tag + " for " + target
-              + ". Local permanent/temporary pairing requires independent MCP approval.",
-              flush=True)
-        # Only the cryptographically checked, safe-unpacked program runs.
-        os.execv(str(binary), command)
 
 
-
-# One owner-approved Linux service transaction, reused for later Node-free
-# upgrades. There is no second Agent runtime, receipt ledger, or daemon.
 def native_render_unit(root, endpoint, key):
     if not all(re.fullmatch(r"/[A-Za-z0-9_./-]+", str(p))
                for p in (root, key)):
@@ -742,13 +658,9 @@ def native_render_unit(root, endpoint, key):
     if not re.fullmatch(r"https://[a-zA-Z0-9.-]+(?::[0-9]{1,5})?/", endpoint):
         raise ValueError("Untrusted canonical service endpoint")
     manifest = json.loads((root / "bundle.json").read_text("utf8"))
-    native = manifest.get("artifact_profile") == "rust-native-only-v1"
-    if native:
-        program = root / APP / ".build/rca-standard-linux-candidate"
-    elif manifest.get("agent_runtime", "node-v2") == "node-v2":
-        program = str(root / "bin/node") + " " + str(root / APP / "src/v2-main.js")
-    else:
-        raise ValueError("Only an installed Node or native-only Agent can transition")
+    if manifest.get("artifact_profile") != "rust-native-only-v1":
+        raise ValueError("Only a native Rust installation is supported")
+    program = root / APP / ".build/rca-standard-linux-candidate"
     return "\n".join((
         MARKER, "[Unit]",
         "Description=Remote Control Agent (signed outbound WSS)",
@@ -1507,10 +1419,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
         pid = native_main_pid()
         # The service entrypoint must be the version whose socket we freeze.
-        expected_binary = old_root / ("apps/remote-control-agent/.build/rca-standard-linux-candidate"
-                                     if "rust-native-only-v1" ==
-                                     json.loads((old_root / "bundle.json").read_text("utf8")).get("artifact_profile")
-                                     else "bin/node")
+        expected_binary = old_root / APP / ".build/rca-standard-linux-candidate"
         if native_process_executable(pid) != expected_binary:
             raise ValueError("Service process differs from frozen Agent")
         switched = False
@@ -1716,13 +1625,8 @@ def native_recover(home, process_check=None):
                         or (has_intent and record["target_version"] == new.name)):
             raise ValueError("Incomplete recovery records do not match the active launcher")
         pid = native_main_pid()
-        current_exe = (new / APP / ".build/rca-standard-linux-candidate"
-                       if new_info.get("artifact_profile") == "rust-native-only-v1"
-                       else new / "bin/node")
-        old_info = json.loads((old / "bundle.json").read_text("utf8"))
-        old_exe = (old / APP / ".build/rca-standard-linux-candidate"
-                   if old_info.get("artifact_profile") == "rust-native-only-v1"
-                   else old / "bin/node")
+        current_exe = new / APP / ".build/rca-standard-linux-candidate"
+        old_exe = old / APP / ".build/rca-standard-linux-candidate"
         target_exe = target / APP / ".build/rca-standard-linux-candidate"
         active_exe = native_process_executable(pid)
         # The unit and the actual service can be one step apart if killed
@@ -1868,48 +1772,31 @@ def local_status(home):
 
 def validated_owned_version(p):
     f = p / "bundle.json"
-    source = p / APP / "src/v2-main.js"
     if f.is_symlink() or not f.is_file():
         raise ValueError("Missing/linked runtime manifest")
     manifest = json.loads(f.read_text("utf8"))
-    agent_runtime = manifest.get("agent_runtime", "node-v2")
-    native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
-    if native_only:
-        if (agent_runtime != "rust-standard-linux-v1" or source.exists() or source.is_symlink()
-                or manifest.get("modules") != [] or manifest.get("node") is not None
-                or manifest.get("upgrade_protocol") is not None):
-            raise ValueError("Untrusted native-only Rust program")
-    elif source.is_symlink() or not source.is_file():
-        raise ValueError("Missing/linked runtime source")
-    if agent_runtime == "rust-standard-linux-v1":
-        candidate = p / APP / ".build/rca-standard-linux-candidate"
-        try:
-            candidate_info = candidate.lstat()
-        except OSError:
-            raise ValueError("Untrusted Rust Agent candidate")
-        if (manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
-                or not stat.S_ISREG(candidate_info.st_mode)
-                or candidate_info.st_uid != os.getuid()
-                or candidate_info.st_nlink != 1
-                or candidate_info.st_mode & 0o077
-                or not candidate_info.st_mode & 0o111):
-            raise ValueError("Untrusted Rust Agent candidate")
-    elif agent_runtime != "node-v2":
-        raise ValueError("Unknown installed Agent runtime")
-    if (manifest.get("artifact_schema") != 1 or manifest.get("device_protocol") != 2
+    if (manifest.get("name") != "remote-control-agent"
+            or manifest.get("artifact_schema") != 1 or manifest.get("device_protocol") != 2
             or manifest.get("receipt_schema") != 1
-            or p.name != manifest.get("version") + "-" + manifest.get("target")
-            or not (
-                (native_only and manifest.get("upgrade_profile") == "paired-full-v1") or
-                (manifest.get("upgrade_profile") == "read-only-no-shell-v1" and
-                 re.search(r"readOnly:\s*true,\s*writeFile:\s*false,\s*shell:\s*false,",
-                           source.read_text("utf8"))) or
-                (not native_only and manifest.get("upgrade_profile") == "paired-full-v1" and
-                 re.search(r'V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"',
-                           source.read_text("utf8")) and
-                 not re.search(r"(?:readOnly|writeFile|shell)\s*:",
-                               source.read_text("utf8"))))):
-        raise ValueError("Unverified or Shell-enabled Agent; cannot uninstall")
+            or manifest.get("artifact_profile") != "rust-native-only-v1"
+            or manifest.get("agent_runtime") != "rust-standard-linux-v1"
+            or manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
+            or manifest.get("target") not in ("linux-x64-glibc", "linux-arm64-glibc")
+            or manifest.get("modules") != [] or "node" in manifest
+            or "upgrade_protocol" in manifest
+            or manifest.get("upgrade_profile") != "paired-full-v1"
+            or p.name != manifest.get("version", "") + "-" + manifest.get("target", "")):
+        raise ValueError("Unsupported installed Linux Agent; reinstall native Rust")
+    candidate = p / APP / ".build/rca-standard-linux-candidate"
+    try:
+        candidate_info = candidate.lstat()
+    except OSError:
+        raise ValueError("Untrusted Rust Agent candidate")
+    if (not stat.S_ISREG(candidate_info.st_mode)
+            or candidate_info.st_uid != os.getuid()
+            or candidate_info.st_nlink != 1 or candidate_info.st_mode & 0o077
+            or not candidate_info.st_mode & 0o111):
+        raise ValueError("Untrusted Rust Agent candidate")
     observed = set()
     for parent, dirs, files in os.walk(p, followlinks=False):
         for name in dirs + files:
@@ -1920,16 +1807,13 @@ def validated_owned_version(p):
                 raise ValueError("Untrusted file in v2 program")
             if stat.S_ISREG(st.st_mode):
                 observed.add(file.relative_to(p).as_posix())
-    if native_only:
-        expected = native_program_files(manifest, manifest.get("target"))
-        if observed != expected:
-            raise ValueError("Native-only program contains missing or unexpected files")
-        if "session_runtime" in manifest:
-            st = (p / APP / ".build/rca-session-linux-candidate").lstat()
-            if st.st_nlink != 1 or not st.st_mode & 0o111:
-                raise ValueError("Untrusted installed Session entry")
-    elif "session_runtime" in manifest or APP + "/.build/rca-session-linux-candidate" in observed:
-        raise ValueError("Unreviewed installed Session runtime")
+    expected = native_program_files(manifest, manifest.get("target"))
+    if observed != expected:
+        raise ValueError("Native-only program contains missing or unexpected files")
+    if "session_runtime" in manifest:
+        st = (p / APP / ".build/rca-session-linux-candidate").lstat()
+        if st.st_nlink != 1 or not st.st_mode & 0o111:
+            raise ValueError("Untrusted installed Session entry")
     return True
 
 
@@ -1948,48 +1832,23 @@ def owned_unit_root(unit, versions):
         manifest = json.loads((root / "bundle.json").read_text("utf8"))
     except (OSError, ValueError):
         raise ValueError("Current v2 service manifest is unavailable")
-    agent_runtime = manifest.get("agent_runtime", "node-v2")
-    expected = (str(root / APP / ".build/rca-standard-linux-candidate")
-                if agent_runtime == "rust-standard-linux-v1"
-                else str(root / "bin/node") + " " + str(root / APP / "src/v2-main.js"))
+    if manifest.get("artifact_profile") != "rust-native-only-v1":
+        raise ValueError("Unsupported installed Linux Agent; reinstall native Rust")
+    expected = str(root / APP / ".build/rca-standard-linux-candidate")
     if start[0] != expected:
         raise ValueError("Current v2 service runtime does not match its manifest")
-    if manifest.get("artifact_profile") == "rust-native-only-v1":
-        # The Rust service must match the reviewed Node installer systemd
-        # template byte-for-byte. No unknown ExecStopPost, drop-ins, etc.
-        endpoint_lines = [line for line in lines
-                          if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
-        if len(endpoint_lines) != 1:
-            raise ValueError("Ambiguous Rust service endpoint")
-        endpoint = endpoint_lines[0].removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
-        parsed = urllib.parse.urlsplit(endpoint)
-        if (parsed.scheme != "https" or not parsed.hostname or parsed.username
-                or parsed.password or parsed.query or parsed.fragment
-                or parsed.path != "/" or "\n" in endpoint):
-            raise ValueError("Untrusted Rust service endpoint")
-        home = pathlib.Path(root).parents[5]
-        key = home / STORE / "v2-identity.pem"
-        app = root / APP
-        expected_unit = "\n".join([
-            MARKER, "[Unit]",
-            "Description=Remote Control Agent (signed outbound WSS)",
-            "StartLimitIntervalSec=0", "", "[Service]", "Type=simple",
-            "WorkingDirectory=" + str(app),
-            "Environment=REMOTE_CONTROL_AGENT_ENDPOINT=" + endpoint,
-            "Environment=REMOTE_CONTROL_AGENT_KEY_PATH=" + str(key),
-            "UMask=0077",
-            "ExecStartPre=/usr/bin/test -r " + str(key),
-            "ExecStartPre=/usr/bin/test -r " + str(key) + ".device-id",
-            "ExecStartPre=/usr/bin/test -x " + str(app / ".build/session-supervisor"),
-            "ExecStart=" + expected,
-            "Restart=on-failure", "RestartSec=15s", "TimeoutStopSec=15s",
-            "", "[Install]", "WantedBy=default.target", ""
-        ])
-        if unit != expected_unit:
-            raise ValueError("Modified or foreign Rust service directives; refuse uninstall")
-        dropins = home / ".config/systemd/user" / (UNIT + ".d")
-        if dropins.exists() or dropins.is_symlink():
-            raise ValueError("Rust service drop-ins must be reviewed before uninstall")
+    endpoint_lines = [line for line in lines
+                      if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
+    if len(endpoint_lines) != 1:
+        raise ValueError("Ambiguous Rust service endpoint")
+    endpoint = endpoint_lines[0].removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
+    home = pathlib.Path(root).parents[5]
+    key = home / STORE / "v2-identity.pem"
+    if unit != native_render_unit(root, endpoint, key):
+        raise ValueError("Modified or foreign Rust service directives")
+    dropins = home / ".config/systemd/user" / (UNIT + ".d")
+    if dropins.exists() or dropins.is_symlink():
+        raise ValueError("Rust service drop-ins must be reviewed")
     return root
 
 
@@ -2048,11 +1907,7 @@ def owned_manager_launcher(home, versions):
     launcher = directory / "rca"
     if launcher.is_symlink():
         info = launcher.lstat()
-        expected = [str(v / APP / "scripts/manage-v2.py") for v in versions]
-        for version in versions:
-            manifest = json.loads((version / "bundle.json").read_text("utf8"))
-            if manifest.get("artifact_profile") == "rust-native-only-v1":
-                expected.append(str(version / APP / "scripts/rca.sh"))
+        expected = [str(v / APP / "scripts/rca.sh") for v in versions]
         if info.st_uid != os.getuid() or os.readlink(launcher) not in expected:
             raise ValueError("Foreign Agent manager launcher: refuse uninstall")
         return launcher
@@ -2181,18 +2036,37 @@ def local_identity_purge(home, confirm, process_check=None):
 
 
 def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
-    # No portable way to certify no copied key is in use. Refuse known local
-    # CLI or Agent processes, including an active temporary foreground v2.
+    # Purge is destructive even after uninstall: a detached or manually
+    # started process can outlive its installed directory. Check the actual
+    # executable as well as argv, and refuse uncertain same-user processes.
+    # Old executable names remain negative safety checks, not upgrade support.
+    def agent_path(value):
+        value = value.removesuffix(b" (deleted)")
+        return (value.rsplit(b"/", 1)[-1] == b"rca-standard-linux-candidate"
+                or b"/remote-control-agent/scripts/bootstrap-v2.py" in value
+                or b"/remote-control-agent/src/v2-main." in value
+                or b"/remote-control-agent/scripts/install-v2.mjs" in value
+                or b"/remote-control-agent/src/pair-device." in value)
+
     for process in proc_root.iterdir():
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
         try:
             if process.stat().st_uid != os.getuid():
                 continue
-            argv = (process / "cmdline").read_bytes()
-            if (b"/remote-control-agent/src/v2-main." in argv
-                    or b"/remote-control-agent/scripts/install-v2.mjs" in argv
-                    or b"/remote-control-agent/src/pair-device." in argv):
+            status = (process / "status").read_text("ascii")
+            if re.search(r"^State:\s*Z\b", status, re.MULTILINE):
+                continue
+            argv = (process / "cmdline").read_bytes().split(b"\0")
+            if any(agent_path(arg) for arg in argv):
+                return False
+            # Same exact systemd user-manager exception as no_running_programs.
+            proc_name = re.search(r"^Name:\s*([^\n]+)", status, re.MULTILINE)
+            if proc_name and argv and (proc_name.group(1).strip(), argv[0]) in (
+                    ("systemd", b"/usr/lib/systemd/systemd"),
+                    ("(sd-pam)", b"(sd-pam)")):
+                continue
+            if agent_path(os.fsencode(os.readlink(process / "exe"))):
                 return False
         except (FileNotFoundError, ProcessLookupError):
             if process.exists():
@@ -2222,7 +2096,7 @@ def main():
     actions.add_argument("--native-install", action="store_true",
                          help="owner-local Node-free Rust first install (permanent unless --temporary)")
     actions.add_argument("--native-upgrade", action="store_true",
-                         help="owner-local Node/native to Node-free Rust signed WSS cutover")
+                         help="owner-local native Rust signed WSS cutover")
     actions.add_argument("--uninstall", action="store_true")
     actions.add_argument("--recover-native", action="store_true",
                          help="owner-confirmed recovery of one interrupted native upgrade")

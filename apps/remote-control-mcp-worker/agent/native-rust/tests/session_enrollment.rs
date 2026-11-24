@@ -55,7 +55,7 @@ fn node(script: &str, input: &Value) -> Value {
 fn node_generated_attempt_identity_and_enrollment_proof_match_rust() {
     let reference = node(
         r#"
-        import {newSessionDeviceIdentity,signSessionEnrollmentNonce} from './src/session-device-identity.ts';
+        import {newSessionDeviceIdentity,signSessionEnrollmentNonce} from './tests/fixtures/session-device-identity.ts';
         let data=''; for await (const chunk of process.stdin) data+=chunk;
         const {attempt,nonce}=JSON.parse(data);
         const identity=newSessionDeviceIdentity(attempt);
@@ -79,7 +79,7 @@ fn rust_generated_identity_and_proof_match_node_and_are_attempt_scoped() {
     let proof = sign_session_enrollment_nonce(&identity, NONCE).unwrap();
     let result = node(
         r#"
-        import {validateSessionDeviceIdentity,signSessionEnrollmentNonce} from './src/session-device-identity.ts';
+        import {validateSessionDeviceIdentity,signSessionEnrollmentNonce} from './tests/fixtures/session-device-identity.ts';
         let data=''; for await (const chunk of process.stdin) data+=chunk;
         const {identity,nonce}=JSON.parse(data);
         validateSessionDeviceIdentity(identity,identity.attempt);
@@ -126,44 +126,6 @@ fn malformed_attempt_cross_attempt_or_mismatched_identity_fail_closed() {
     ] {
         assert!(sign_session_enrollment_nonce(&identity, nonce).is_err());
     }
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn linux_runner_store_recovers_node_identity_and_node_recovers_rust_identity() {
-    use rca_native_agent::session_enrollment::load_or_create_linux_session_identity;
-    let node_root = tempfile::tempdir().unwrap();
-    let reference = node(
-        r#"
-        import {loadOrCreateLinuxSessionIdentity} from './src/session-identity-store.ts';
-        let data=''; for await (const chunk of process.stdin) data+=chunk;
-        const {root,attempt}=JSON.parse(data);
-        const result=await loadOrCreateLinuxSessionIdentity(root,attempt);
-        console.log(JSON.stringify(result.identity));
-        "#,
-        &json!({"root":node_root.path(),"attempt":attempt()}),
-    );
-    let (_, rust_read) =
-        load_or_create_linux_session_identity(node_root.path(), &attempt()).unwrap();
-    assert_eq!(
-        rust_read.public_key,
-        reference["public_key"].as_str().unwrap()
-    );
-
-    let rust_root = tempfile::tempdir().unwrap();
-    let (_, rust_created) =
-        load_or_create_linux_session_identity(rust_root.path(), &attempt()).unwrap();
-    let read_by_node = node(
-        r#"
-        import {loadOrCreateLinuxSessionIdentity} from './src/session-identity-store.ts';
-        let data=''; for await (const chunk of process.stdin) data+=chunk;
-        const {root,attempt}=JSON.parse(data);
-        const result=await loadOrCreateLinuxSessionIdentity(root,attempt);
-        console.log(JSON.stringify({public_key:result.identity.public_key}));
-        "#,
-        &json!({"root":rust_root.path(),"attempt":attempt()}),
-    );
-    assert_eq!(read_by_node["public_key"], rust_created.public_key);
 }
 
 #[cfg(target_os = "linux")]

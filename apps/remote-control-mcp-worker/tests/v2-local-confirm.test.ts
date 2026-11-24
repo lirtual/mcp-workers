@@ -4,11 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
-import { assertRemoteRevocation } from "../agent/src/v2-repair.ts";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../agent/src/pair-device.ts";
 import { recoverDeviceId } from "../agent/src/v2-session-client.ts";
-// @ts-expect-error JS installer intentionally exports a test helper without a TS declaration
-import { promoteRevokedIdentity } from "../agent/scripts/install-v2.mjs";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
 interface StorageFixture {
@@ -101,10 +98,9 @@ test("#97 revoked ID can only be replaced after distinct explicit MCP approval a
     const first=await beginDeviceEnrollment("office-linux",site,oldKey,send);
     const oldGrant=await approve(first.code);
     assert.equal(await recoverDeviceId(site,oldKey,send),oldGrant);
-    await assert.rejects(assertRemoteRevocation(site,oldKey,oldGrant,send),
-      /Revocation cannot be verified/);
+    assert.equal(await recoverDeviceId(site,oldKey,send),oldGrant);
     assert.equal(value(await rpc("revoke_device",{device_id:oldGrant})).status,"revoked");
-    await assertRemoteRevocation(site,oldKey,oldGrant,send);
+    assert.equal(rows.has("device:"+oldGrant),false);
     assert.equal(rows.has("device:"+oldGrant),false);
     const stale=await beginDeviceEnrollment("office-linux",site,oldKey,send,true);
     assert.match(stale.code,/^[A-Z2-7]{10}$/);
@@ -133,14 +129,11 @@ test("#97 revoked ID can only be replaced after distinct explicit MCP approval a
     assert.equal((await readFile(oldKey+".device-id","utf8")).trim(),oldGrant);
     assert.equal(await recoverDeviceId(site,stage,send),newGrant);
     assert.notEqual(newGrant,oldGrant);
-    const archive=await promoteRevokedIdentity(oldKey,oldGrant);
-    assert.equal((await readFile(oldKey+".device-id","utf8")).trim(),newGrant);
-    assert.equal(await readFile(oldKey,"utf8"),stagedPem);
-    assert.equal((await readFile(path.join(archive,"identity.pem.device-id"),"utf8")).trim(),oldGrant);
+    assert.equal((await readFile(oldKey+".device-id","utf8")).trim(),oldGrant);
+    assert.equal((await readFile(stage+".device-id","utf8")).trim(),newGrant);
+    assert.equal(await readFile(stage,"utf8"),stagedPem);
     assert.equal(rows.has("device:"+oldGrant),false);
     assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,1);
-    await assert.rejects(assertRemoteRevocation(site,oldKey,newGrant,send),
-      /Revocation cannot be verified/);
   } finally {await rm(dir,{recursive:true,force:true});}
 });
 

@@ -1,14 +1,8 @@
 /**
- * Offline, reviewed native-host packaging for #73.
- * Produces an UNPUBLISHED deterministic tar.gz asset; never downloads or publishes.
- * Run this separately on verified x64 and arm64 glibc build hosts.
- *
- * node scripts/build-v2-release.mjs --version v0.1.0 --target linux-x64-glibc
- *   --node-bin /trusted/node-24 --native /trusted/session-supervisor --out /tmp/stage
- *
- * An unpublished Linux Rust candidate uses the same archive format:
- *   --version v0.1.1-rust-candidate.1 --rust-agent-bin /trusted/rca-standard-linux-candidate
- *   --rust-agent-sha256 <sha256>
+ * Offline reviewed native-host packaging. Linux emits only the Rust-native
+ * profile; Darwin retains Node v2 and its opt-in Rust prototype.
+ * Produces deterministic unpublished archives, never downloads or publishes.
+ * Linux uses the existing glibc 2.34 support boundary; only Darwin bundles Node.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -34,7 +28,7 @@ export function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 2) {
     if (!["--version", "--target", "--node-bin", "--native", "--out", "--node-sha256", "--native-sha256",
       "--rust-agent-bin", "--rust-agent-sha256", "--artifact-profile", "--rust-session-bin", "--rust-session-sha256"].includes(argv[i]) ||
-      !argv[i+1] || params[argv[i]]) throw new Error("Invalid packaging parameters.");
+      !argv[i+1] || argv.slice(0,i).filter((_,j)=>j%2===0).includes(argv[i])) throw new Error("Invalid packaging parameters.");
     params[{"--node-bin":"nodeBin","--node-sha256":"nodeSha256","--native-sha256":"nativeSha256",
       "--rust-agent-bin":"rustAgentBin","--rust-agent-sha256":"rustAgentSha256",
       "--artifact-profile":"artifactProfile", "--rust-session-bin":"rustSessionBin", "--rust-session-sha256":"rustSessionSha256"}[argv[i]] ?? argv[i].slice(2)] = argv[i+1];
@@ -42,24 +36,25 @@ export function parseArgs(argv) {
   const hasRustCandidate = Boolean(params.rustAgentBin || params.rustAgentSha256);
   const nativeOnly = params.artifactProfile === "rust-native-only-v1";
   const hasSession = Boolean(params.rustSessionBin || params.rustSessionSha256);
-  if ((hasSession && (!nativeOnly || params.target !== "linux-x64-glibc" ||
-      !params.rustSessionBin || !path.isAbsolute(params.rustSessionBin) ||
-      !/^[a-f0-9]{64}$/.test(params.rustSessionSha256))) ||
-      (params.artifactProfile !== undefined && !nativeOnly) ||
-      (nativeOnly && (!hasRustCandidate || !params.target?.startsWith("linux-"))) ||
-      (hasRustCandidate && (!params.rustAgentBin || !params.rustAgentSha256 ||
-      (!params.version?.includes("-rust-candidate") &&
-        !(nativeOnly && /^v0\.[1-9][0-9]*\.[0-9]+$/.test(params.version))) ||
-      !["linux-x64-glibc","linux-arm64-glibc","darwin-arm64","darwin-x64"].includes(params.target))) ||
-      Object.keys(params).length !== (hasRustCandidate ? (nativeOnly ? 10 : 9) : 7) + (hasSession ? 2 : 0) ||
+  const linux = params.target?.startsWith("linux-");
+  if (linux && !nativeOnly)
+    throw new Error("Linux packaging requires the Rust native-only profile.");
+  const absolute = value => typeof value === "string" && path.isAbsolute(value);
+  if (!ALLOWED.has(params.target) ||
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(params.version) ||
-      !ALLOWED.has(params.target) ||
-      !/^[a-f0-9]{64}$/.test(params.nodeSha256) ||
+      !absolute(params.native) || !absolute(params.out) ||
       !/^[a-f0-9]{64}$/.test(params.nativeSha256) ||
-      (hasRustCandidate && !/^[a-f0-9]{64}$/.test(params.rustAgentSha256)) ||
-      ![params.nodeBin, params.native, params.out, ...(hasRustCandidate ? [params.rustAgentBin] : [])]
-        .every(x => path.isAbsolute(x))) {
-    throw new Error("Specify a pinned version, supported target, absolute Node24/native paths and output; Rust builds need a reviewed version, platform target, binary and SHA-256; only native-only Linux permits a stable Rust label.");
+      (linux && (params.nodeBin !== undefined || params.nodeSha256 !== undefined)) ||
+      (!linux && (!absolute(params.nodeBin) || !/^[a-f0-9]{64}$/.test(params.nodeSha256))) ||
+      (params.artifactProfile !== undefined && (!nativeOnly || !linux)) ||
+      (nativeOnly && !hasRustCandidate) ||
+      (hasRustCandidate && (!absolute(params.rustAgentBin) ||
+        !/^[a-f0-9]{64}$/.test(params.rustAgentSha256) ||
+        !(/^v0\.[1-9][0-9]*\.[0-9]+-rust-candidate\.[1-9][0-9]*$/.test(params.version) ||
+          (nativeOnly && /^v0\.[1-9][0-9]*\.[0-9]+$/.test(params.version))))) ||
+      (hasSession && (!nativeOnly || params.target !== "linux-x64-glibc" ||
+        !absolute(params.rustSessionBin) || !/^[a-f0-9]{64}$/.test(params.rustSessionSha256)))) {
+    throw new Error("Specify a pinned version, supported target, absolute native paths and digests; Node input is Darwin-only.");
   }
   return params;
 }
@@ -168,27 +163,25 @@ export function ensureNativeTarget({ target, nodeBin, native, nodeSha256, native
       !process.report.getReport().header.glibcVersionRuntime) {
     throw new Error("Release must be assembled and tested on its native glibc Linux architecture.");
   }
-  for (const [binary,digest] of [[nodeBin,nodeSha256],[native,nativeSha256]]) {
-    if (!statSync(binary).isFile() || (statSync(binary).mode & 0o111)===0) {
-      throw new Error("Required executable is not a regular file.");
-    }
-    if (machine(binary) !== id) throw new Error("ELF architecture mismatch.");
-    if (!/^[a-f0-9]{64}$/.test(digest) ||
-        createHash("sha256").update(readFileSync(binary)).digest("hex")!==digest)
-      throw new Error("Pinned native binary checksum mismatch.");
-  }
-  const version = spawnSync(nodeBin, ["--version"], { encoding:"utf8", timeout:5000 });
-  if (version.error || version.status !== 0 || !/^v24\.[0-9]+\.[0-9]+\s*$/.test(version.stdout)) {
-    throw new Error("Bundle requires a real Node 24 executable.");
-  }
+  if (nodeBin !== undefined || nodeSha256 !== undefined)
+    throw new Error("Linux packaging must not depend on Node.");
+  const st = lstatSync(native);
+  if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o111) === 0)
+    throw new Error("Required executable is not a regular file.");
+  if (machine(native) !== id) throw new Error("ELF architecture mismatch.");
+  if (!/^[a-f0-9]{64}$/.test(nativeSha256) ||
+      createHash("sha256").update(readFileSync(native)).digest("hex") !== nativeSha256)
+    throw new Error("Pinned native binary checksum mismatch.");
   // Actual native group-pidfd probe: no command or separate process signaled.
   const probe = spawnSync(native, ["--probe"], { detached:true, stdio:"ignore", timeout:5000 });
   if (probe.error || probe.status !== 0) throw new Error("Native Supervisor pidfd ABI is unavailable.");
-  const requires = [requiredGlibcVersion(nodeBin), requiredGlibcVersion(native)]
-    .map(version => version.split(".").map(Number))
-    .sort((a,b) => a[0] - b[0] || a[1] - b[1]);
-  return { arch, nodeVersion: version.stdout.trim(), glibcMin: requires.at(-1).join("."),
-    libc: process.report.getReport().header.glibcVersionRuntime };
+  // Preserve the actual published native ABI support boundary independently
+  // of a retired Node executable. The manifest reports the actual max below.
+  const [major, minor] = requiredGlibcVersion(native).split(".").map(Number);
+  if (major > 2 || (major === 2 && minor > 34))
+    throw Error("Native supervisor exceeds the supported glibc 2.34 ABI.");
+  return { arch, glibcMin: "2.34", libc: process.report.getReport().header.glibcVersionRuntime };
+
 }
 
 function rewriteExtensions(text) {
@@ -196,7 +189,7 @@ function rewriteExtensions(text) {
 }
 
 /** Follow static source dependency graph, no tests, checkout or node_modules copied. */
-export function runtimeSources(entries = ["v2-main.ts", "pair-device.ts", "v2-repair.ts", "install-mode.ts", "session-rca-main.ts"]) {
+export function runtimeSources(entries) {
   const visited = new Set();
   function walk(name) {
     if (!/^[a-z0-9-]+\.ts$/.test(name)) throw new Error("Unreviewed runtime import: " + name);
@@ -279,7 +272,8 @@ export function build(args) {
     ? ensureRustCandidate({...args,maxGlibcMin:glibcMin}) : null;
   const darwin = args.target === "darwin-arm64" || args.target === "darwin-x64";
   const nativeOnly = args.artifactProfile === "rust-native-only-v1";
-  if (nativeOnly && (!rustCandidate || darwin)) throw Error("Native-only staging requires reviewed Linux Rust.");
+  if ((!darwin && !nativeOnly) || (nativeOnly && (!rustCandidate || darwin)))
+    throw Error("Linux packaging requires reviewed native-only Rust.");
   const hasSession = Boolean(args.rustSessionBin || args.rustSessionSha256);
   if (hasSession && (!nativeOnly || args.target !== "linux-x64-glibc"))
     throw Error("Packaged Session entry requires reviewed Linux x64 native-only archive.");
@@ -324,21 +318,16 @@ export function build(args) {
         (darwin ? "rca-standard-darwin-candidate" : "rca-standard-linux-candidate")] : [])]) {
     chmodSync(path.join(work,relative),0o700);
   }
-  // Both full-tools operation routing and the owner-local admission freeze
-  // must be present in a future reviewed Release. No unsafe promotion.
-  const entrySource=readFileSync(path.join(source,"v2-main.ts"),"utf8");
-  const lifecycleSource=readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8");
-  if(!nativeOnly && (!/V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(entrySource) ||
-     /(?:readOnly|writeFile|shell)\s*:/.test(entrySource) ||
-     !/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
+  // Retain the actual shared macOS full-tool and freeze gate, without depending on the retired Linux entry.
+  const lifecycleSource=darwin ? readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8") : "";
+  if(darwin && (!/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
      !/receiptDirectory:\s*options\.receiptDirectory/.test(lifecycleSource) ||
      !/startUpgradeControl\(execution(?:!)?, keyPath\)/.test(lifecycleSource) ||
      !/executeV2FileOperation\(execution,/.test(lifecycleSource) ||
      !/executeV2SessionRead\(execution,/.test(lifecycleSource))) {
     throw new Error("Reviewed paired full-tools release profile is not proven.");
   }
-  const modules=nativeOnly ? [] : runtimeSources(darwin
-    ? ["macos-temporary.ts","macos-permanent.ts"] : undefined);
+  const modules = nativeOnly ? [] : runtimeSources(["macos-temporary.ts", "macos-permanent.ts"]);
   for(const file of modules){
     const src=readFileSync(path.join(source,file),"utf8");
     const compiled=ts.transpileModule(src,{fileName:file,reportDiagnostics:true,
@@ -358,21 +347,11 @@ export function build(args) {
     chmodSync(remoteDest,0o600);
   }
   if (!darwin) {
-  if (!nativeOnly) {
-    const installer=readFileSync(path.join(root,"scripts/install-v2.mjs"),"utf8");
-    writeFileSync(path.join(work,"apps/remote-control-agent/scripts/install-v2.mjs"),
-      rewriteExtensions(installer),{mode:0o600});
-  }
-  for (const name of nativeOnly ? ["bootstrap-v2.py","manage-v2.py","rca.sh"] : [
-      "bootstrap-node.mjs","manage-v2.mjs",
-      "lifecycle-v2.mjs","upgrade-v2.mjs","upgrade-existing-service.mjs",
-      "bootstrap-v2.py","verify-v2-release.mjs","rca.sh",
-      ...(rustCandidate && !darwin ? ["manage-v2.py"] : [])]) {
-    const sourceFile=path.join(root,"scripts",name);
-    const dest=path.join(work,"apps/remote-control-agent/scripts",name);
-    copyFileSync(sourceFile,dest);
-    chmodSync(dest,["rca.sh","manage-v2.py"].includes(name) ? 0o700 : 0o600);
-  }
+    for (const name of ["bootstrap-v2.py", "manage-v2.py", "rca.sh"]) {
+      const dest = path.join(work, "apps/remote-control-agent/scripts", name);
+      copyFileSync(path.join(root, "scripts", name), dest);
+      chmodSync(dest, ["rca.sh", "manage-v2.py"].includes(name) ? 0o700 : 0o600);
+    }
   }
   if (!nativeOnly) writeFileSync(path.join(work,"apps/remote-control-agent/package.json"),
     JSON.stringify({type:"module"})+"\n",{mode:0o600});

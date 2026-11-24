@@ -1,3 +1,4 @@
+// Independent legacy protocol reference for tests only; never packaged or launched.
 /** Disposable Session identity: never reuse personal enrollment or 24h grants. */
 import { createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
 
