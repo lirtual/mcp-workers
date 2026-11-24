@@ -197,3 +197,27 @@ fn node_reference_bom_and_chunk_boundary_utf8_crlf_match() {
         "Ω😀\nlast"
     );
 }
+
+#[test]
+fn skipped_line_with_utf8_character_split_at_pending_limit() {
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(&vec![b'a'; 137_857]).unwrap();
+    file.write_all("é".repeat(62_144).as_bytes()).unwrap();
+    file.write_all(b"\nnext\n").unwrap();
+    let got = response(&frame(
+        json!({"path":file.path().to_str().unwrap(),"offset":1,"length":1}),
+    ));
+    assert_eq!(got["text"], "next");
+}
+
+#[test]
+fn incomplete_utf8_at_eof_still_counts_towards_pending_limit() {
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(&vec![b'a'; 137_857]).unwrap();
+    file.write_all("é".repeat(62_143).as_bytes()).unwrap();
+    file.write_all(&[0xc3]).unwrap();
+    let got = response(&frame(
+        json!({"path":file.path().to_str().unwrap(),"offset":1,"length":1}),
+    ));
+    assert_eq!(got["status"], "failed");
+}
