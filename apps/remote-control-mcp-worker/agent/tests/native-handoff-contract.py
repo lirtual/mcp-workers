@@ -148,6 +148,37 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
                    "native_consent": consent}, verify
 
 
+def verify_temporary_install():
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        snapshot = (key.read_bytes(), unit.read_bytes(), launcher.readlink(), receipts.read_bytes())
+        calls = []
+        with (patch.object(bootstrap.sys.stdin, "isatty", return_value=True),
+              patch.object(bootstrap.sys.stdout, "isatty", return_value=True),
+              patch("builtins.input", return_value="TEMPORARY"),
+              patch.object(bootstrap, "native_pair_local", side_effect=lambda *a, **kw: calls.append((a,kw)))):
+            # Worker origins must not be checked against GitHub download hosts.
+            assert bootstrap.native_temporary(home,new,ENDPOINT,"test",
+                process_check=lambda versions:True) == 0
+            assert calls == [((new,ENDPOINT,"test"),{"temporary":True})]
+            try:
+                bootstrap.native_temporary(home,new,ENDPOINT,
+                    process_check=lambda versions:False)
+                raise AssertionError("Active receipt owner allowed temporary pairing")
+            except ValueError as e:
+                assert "Running or uncertain Agent" in str(e)
+            try:
+                bootstrap.native_temporary(home,new,"https://user@example.org/",
+                    process_check=lambda versions:True)
+                raise AssertionError("Credential-bearing Worker URL accepted")
+            except ValueError as e:
+                assert "HTTPS Worker origin" in str(e)
+        assert len(calls)==1
+        assert (key.read_bytes(), unit.read_bytes(), launcher.readlink(), receipts.read_bytes()) == snapshot
+    finally:
+        ctx.cleanup()
+
+
 def verify_initial_install():
     # Use the same package, identity, launcher and receipt contracts as an
     # upgrade, but no previously installed service or approved identity.
@@ -243,6 +274,7 @@ def verify_initial_install():
 
 def verify_isolated():
     verify_initial_install()
+    verify_temporary_install()
     # Preserve the canonical systemd unit exactly across the language boundary.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:

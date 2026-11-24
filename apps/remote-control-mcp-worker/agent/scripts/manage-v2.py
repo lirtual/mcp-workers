@@ -93,18 +93,23 @@ def logs(bootstrap):
 def pair(root, bootstrap, arguments, native_only=False):
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Pairing/repair requires a real local terminal.")
+    temporary = native_only and bool(arguments) and arguments[0] == "--temporary"
+    if temporary:
+        arguments = arguments[1:]
     if len(arguments) > 1:
-        raise ValueError("Usage: rca pair [https://approved-worker-origin/]")
+        raise ValueError("Usage: rca pair " + ("[--temporary] " if native_only else "") + "[https://approved-worker-origin/]")
     endpoint = installed_endpoint(bootstrap)
     if arguments:
         if not arguments[0].startswith("https://") or arguments[0].count("/") > 3:
             raise ValueError("Supply a clean HTTPS endpoint.")
-        if endpoint and arguments[0] != endpoint:
+        if endpoint and arguments[0] != endpoint and not temporary:
             raise ValueError("Existing device endpoint cannot be silently changed.")
         endpoint = arguments[0]
     if not endpoint:
         raise ValueError("Supply an approved HTTPS origin: pair https://example.org/")
     if native_only:
+        if temporary:
+            return bootstrap.native_temporary(Path.home(), root, endpoint)
         if input("Type NATIVE-INSTALL for permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
             raise ValueError("Native installation not confirmed")
         print(json.dumps(bootstrap.native_first_install(Path.home(), root, endpoint), indent=2))
@@ -161,7 +166,7 @@ def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
         if native_only:
             print("Usage: rca [status|pair|logs|upgrade|recover|uninstall]")
-            print("First permanent pairing is supported; temporary mode and re-pair are not yet available.")
+            print("First permanent pairing and pair --temporary are supported; re-pair is not yet available.")
         else:
             print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")

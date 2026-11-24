@@ -1,5 +1,5 @@
 //! Unshipped Standard Linux RCA entrypoint. No installed Agent path uses it.
-//! The only supported state input is an existing owner-paired Node v2 identity.
+//! Shares the existing owner-reviewed permanent and temporary v2 identities.
 #[cfg(target_os = "linux")]
 mod linux {
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
@@ -238,9 +238,9 @@ mod linux {
         Ok(())
     }
 
-    // First pairing only. Bootstrap owns activation; this entry never
-    // starts a service or changes an approved/revoked device's key.
-    fn pair_local(endpoint: &str, name: &str) -> Result<(), ()> {
+    // Bootstrap owns permanent service activation. Temporary mode runs the
+    // same runtime in this terminal, retaining the existing installer lock.
+    fn pair_local(endpoint: &str, name: &str, temporary: bool) -> Result<(), ()> {
         use rca_native_agent::device_pairing::PairingClient;
         use std::io::IsTerminal;
         if !std::io::stdin().is_terminal()
@@ -253,33 +253,51 @@ mod linux {
         }
         let client = PairingClient::new(endpoint).map_err(|_| ())?;
         let _supervisor = checked_supervisor()?;
-        pair_local_identity(&home()?, |pem, existing| {
-            client.pair(pem, existing, name, false, |pending| {
+        let home = home()?;
+        let mode = if temporary { "temporary" } else { "permanent" };
+        let _lock = pair_local_identity(&home, temporary, |pem, existing| {
+            client.pair(pem, existing, name, temporary, |pending| {
                 println!("Pairing code (10 min): {}", pending.code);
                 println!("Local public key fingerprint: {}", pending.fingerprint);
-                println!("Use MCP pairing_lookup, then explicitly pairing_approve for the exact key and permanent mode.");
+                println!("Use MCP pairing_lookup, then explicitly pairing_approve for the exact key and {mode} mode.");
             }).map_err(|_| ())
         })?;
+        if temporary {
+            println!("Starting temporary foreground Agent; the Worker enforces the original 24h grant. Terminal exit disconnects, not revokes.");
+            return run_agent(endpoint, &home, &pairing_key(&home, true));
+        }
         println!("Approved identity recovered; service has not been started.");
         Ok(())
     }
 
+    fn pairing_key(home: &Path, temporary: bool) -> PathBuf {
+        let base = home.join(".local/share/mcp-workers/remote-control");
+        if temporary {
+            base.join("temporary/v2-identity.pem")
+        } else {
+            base.join("v2-identity.pem")
+        }
+    }
+
     fn pair_local_identity(
         home: &Path,
+        temporary: bool,
         resolve: impl FnOnce(&str, Option<&str>) -> Result<String, ()>,
-    ) -> Result<(), ()> {
+    ) -> Result<fs::File, ()> {
         use rca_native_agent::device_pairing::generate_private_pem;
         use std::io::Read;
         use std::os::fd::AsRawFd;
         use std::os::unix::ffi::OsStrExt;
-        let key = home.join(".local/share/mcp-workers/remote-control/v2-identity.pem");
+        let permanent = pairing_key(home, false);
+        let base = permanent.parent().ok_or(())?;
+        let key = pairing_key(home, temporary);
         let directory = key.parent().ok_or(())?;
         if fs::canonicalize(home).ok().as_deref() != Some(home)
-            || fs::canonicalize(directory).ok().as_deref() != Some(directory)
+            || fs::canonicalize(base).ok().as_deref() != Some(base)
         {
             return Err(());
         }
-        for path in directory.ancestors().take_while(|p| p.starts_with(home)) {
+        for path in base.ancestors().take_while(|p| p.starts_with(home)) {
             let info = fs::symlink_metadata(path).map_err(|_| ())?;
             if !info.is_dir()
                 || info.uid() != unsafe { libc::geteuid() }
@@ -288,7 +306,7 @@ mod linux {
                 return Err(());
             }
         }
-        rca_native_agent::upgrade_control::verify_upgrade_directory(&key).map_err(|_| ())?;
+        rca_native_agent::upgrade_control::verify_upgrade_directory(&permanent).map_err(|_| ())?;
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -296,7 +314,7 @@ mod linux {
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(directory.join("v2-installer.lock"))
+            .open(base.join("v2-installer.lock"))
             .map_err(|_| ())?;
         let info = lock.metadata().map_err(|_| ())?;
         if !info.is_file()
@@ -307,9 +325,27 @@ mod linux {
         {
             return Err(());
         }
+        // A permanent service may exist when selecting a temporary identity.
+        // It may not share the exclusive receipt writer; the same runtime
+        // still fails closed before connecting when receipts are occupied.
+        if !temporary {
+            for path in [
+                home.join(".config/systemd/user/remote-control-agent.service"),
+                home.join(".config/systemd/user/remote-control-v2-agent.service"),
+            ] {
+                if !matches!(fs::symlink_metadata(path), Err(e) if e.kind() == ErrorKind::NotFound)
+                {
+                    return Err(());
+                }
+            }
+        }
+        // Never admit another identity lifecycle while a permanent switch
+        // or first activation is unresolved, even in temporary mode.
         for path in [
-            home.join(".config/systemd/user/remote-control-agent.service"),
-            home.join(".config/systemd/user/remote-control-v2-agent.service"),
+            sidecar(&permanent, ".native-upgrade-intent"),
+            sidecar(&permanent, ".native-upgrade-proof"),
+            sidecar(&permanent, ".activation-pending"),
+            sidecar(&permanent, ".re-pair-transition"),
             sidecar(&key, ".owner-stopped"),
             sidecar(&key, ".re-pair-transition"),
             sidecar(&key, ".re-pair-new"),
@@ -320,6 +356,18 @@ mod linux {
                 return Err(());
             }
         }
+        if temporary {
+            use std::os::unix::fs::DirBuilderExt;
+            match fs::DirBuilder::new().mode(0o700).create(directory) {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(()),
+            }
+        }
+        if fs::canonicalize(directory).ok().as_deref() != Some(directory) {
+            return Err(());
+        }
+        rca_native_agent::upgrade_control::verify_upgrade_directory(&key).map_err(|_| ())?;
         let read_private = |path: &Path, limit: u64| -> Result<Option<String>, ()> {
             let file = match fs::OpenOptions::new()
                 .read(true)
@@ -412,7 +460,7 @@ mod linux {
         if existing.is_none() {
             write_new(&id_path, format!("{id}\n").as_bytes())?;
         }
-        Ok(())
+        Ok(lock)
     }
 
     pub fn run() -> Result<(), ()> {
@@ -421,8 +469,10 @@ mod linux {
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
         if let [command, endpoint, name] = args.as_slice() {
-            if command == "--pair-local" {
-                return pair_local(endpoint, name);
+            match command.as_str() {
+                "--pair-local" => return pair_local(endpoint, name, false),
+                "--temporary-local" => return pair_local(endpoint, name, true),
+                _ => return Err(()),
             }
         }
         if !args.is_empty() {
@@ -434,28 +484,32 @@ mod linux {
         }
         let home = home()?;
         let key = key_path(&home)?;
-        private_regular(&key, 8192)?;
-        private_regular(&sidecar(&key, ".device-id"), 128)?;
-        if owner_stopped(&key)? {
+        run_agent(&endpoint, &home, &key)
+    }
+
+    fn run_agent(endpoint: &str, home: &Path, key: &Path) -> Result<(), ()> {
+        private_regular(key, 8192)?;
+        private_regular(&sidecar(key, ".device-id"), 128)?;
+        if owner_stopped(key)? {
             eprintln!(r#"{{"service":"remote-control-agent","event":"owner_stopped"}}"#);
             return Ok(());
         }
-        let device_id = fs::read_to_string(sidecar(&key, ".device-id")).map_err(|_| ())?;
+        let device_id = fs::read_to_string(sidecar(key, ".device-id")).map_err(|_| ())?;
         let device_id = device_id.trim();
         if !valid_device_id(device_id) {
             return Err(());
         }
-        let private_pem = fs::read_to_string(&key).map_err(|_| ())?;
+        let private_pem = fs::read_to_string(key).map_err(|_| ())?;
         // Local PEM validation before any receipt ownership or network I/O.
         signed_session_proof(&private_pem, device_id, "ABCDEFGHIJKLMNOPQRSTUVWX")
             .map_err(|_| ())?;
         let managed = checked_supervisor()?;
         // Fail closed before creating Node's existing SQLite receipt directory.
-        rca_native_agent::upgrade_control::verify_upgrade_directory(&key).map_err(|_| ())?;
+        rca_native_agent::upgrade_control::verify_upgrade_directory(key).map_err(|_| ())?;
         unsafe {
             libc::umask(0o077);
         }
-        let receipts = standard_receipts(&home)?;
+        let receipts = standard_receipts(home)?;
         install_stop_signals()?;
         let stop = Arc::new(AtomicBool::new(false));
         let watch_stop = Arc::clone(&stop);
@@ -470,19 +524,19 @@ mod linux {
         });
         // Exactly the existing Node default receipt location; never create a
         // parallel receipt ledger when switching the runtime.
-        let proof_key = key.clone();
+        let proof_key = key.to_owned();
         let proof_id = device_id.to_owned();
         let proof_exe = std::env::current_exe().map_err(|_| ())?;
-        let proof_endpoint = endpoint.clone();
+        let proof_endpoint = endpoint.to_owned();
         let result = run_native_managed_session_with_upgrade(
-            &endpoint,
+            endpoint,
             &private_pem,
             device_id,
             &receipts,
             managed,
             &stop,
             UpgradeRuntimeOptions {
-                key_path: &key,
+                key_path: key,
                 on_connected: Some(Arc::new(move || {
                     // Missing/invalid intent never becomes a success receipt.
                     let _ = write_upgrade_proof(&proof_key, &proof_id, &proof_exe, &proof_endpoint);
@@ -502,6 +556,60 @@ mod linux {
         const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
 
         #[test]
+        fn temporary_identity_is_separate_and_holds_the_shared_installer_lock() {
+            let root = tempfile::tempdir().unwrap();
+            let permanent = pairing_key(root.path(), false);
+            let temporary = pairing_key(root.path(), true);
+            let base = permanent.parent().unwrap();
+            fs::create_dir_all(base).unwrap();
+            fs::set_permissions(base, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::write(&permanent, b"permanent-key-must-not-be-read-or-changed").unwrap();
+            let unit = root
+                .path()
+                .join(".config/systemd/user/remote-control-agent.service");
+            fs::create_dir_all(unit.parent().unwrap()).unwrap();
+            fs::write(&unit, b"existing unit").unwrap();
+            let lock = pair_local_identity(root.path(), true, |pem, existing| {
+                assert!(existing.is_none());
+                assert_ne!(pem, "permanent-key-must-not-be-read-or-changed");
+                Ok(ID.to_owned())
+            })
+            .unwrap();
+            assert_eq!(
+                fs::read_to_string(sidecar(&temporary, ".device-id"))
+                    .unwrap()
+                    .trim(),
+                ID
+            );
+            assert_eq!(fs::metadata(&temporary).unwrap().mode() & 0o777, 0o600);
+            assert!(
+                pair_local_identity(root.path(), true, |_, _| panic!("lock bypassed")).is_err()
+            );
+            drop(lock);
+            assert!(pair_local_identity(root.path(), false, |_, _| panic!(
+                "permanent unit bypassed"
+            ))
+            .is_err());
+            let pem = fs::read(&temporary).unwrap();
+            pair_local_identity(root.path(), true, |same, existing| {
+                assert_eq!(same.as_bytes(), pem);
+                assert_eq!(existing, Some(ID));
+                Ok(ID.to_owned())
+            })
+            .unwrap();
+            assert_eq!(
+                fs::read(&permanent).unwrap(),
+                b"permanent-key-must-not-be-read-or-changed"
+            );
+            assert_eq!(fs::read(&unit).unwrap(), b"existing unit");
+            fs::write(sidecar(&permanent, ".native-upgrade-intent"), b"unresolved").unwrap();
+            assert!(pair_local_identity(root.path(), true, |_, _| panic!(
+                "upgrade conflict bypassed"
+            ))
+            .is_err());
+        }
+
+        #[test]
         fn pending_key_survives_failure_and_signed_identity_is_not_replaced() {
             let root = tempfile::tempdir().unwrap();
             fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -510,7 +618,7 @@ mod linux {
             fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
             let key = store.join("v2-identity.pem");
             let id = sidecar(&key, ".device-id");
-            assert!(pair_local_identity(root.path(), |_, existing| {
+            assert!(pair_local_identity(root.path(), false, |_, existing| {
                 assert!(existing.is_none());
                 Err(())
             })
@@ -518,7 +626,7 @@ mod linux {
             let original = fs::read_to_string(&key).unwrap();
             assert!(!id.exists());
             assert_eq!(fs::metadata(&key).unwrap().mode() & 0o777, 0o600);
-            pair_local_identity(root.path(), |pem, existing| {
+            pair_local_identity(root.path(), false, |pem, existing| {
                 assert_eq!(pem, original);
                 assert!(existing.is_none());
                 Ok(ID.to_owned())
@@ -526,7 +634,7 @@ mod linux {
             .unwrap();
             assert_eq!(fs::read_to_string(&id).unwrap().trim(), ID);
             assert_eq!(fs::metadata(&id).unwrap().mode() & 0o777, 0o600);
-            assert!(pair_local_identity(root.path(), |pem, existing| {
+            assert!(pair_local_identity(root.path(), false, |pem, existing| {
                 assert_eq!(pem, original);
                 assert_eq!(existing, Some(ID));
                 Ok("123e4567-e89b-42d3-a456-426614174002".to_owned())
@@ -535,11 +643,15 @@ mod linux {
             assert_eq!(fs::read_to_string(&key).unwrap(), original);
             assert_eq!(fs::read_to_string(&id).unwrap().trim(), ID);
             fs::remove_file(&key).unwrap();
-            assert!(pair_local_identity(root.path(), |_, _| panic!("orphan ID admitted")).is_err());
+            assert!(
+                pair_local_identity(root.path(), false, |_, _| panic!("orphan ID admitted"))
+                    .is_err()
+            );
             assert!(!key.exists());
             std::os::unix::fs::symlink(&id, &key).unwrap();
             assert!(
-                pair_local_identity(root.path(), |_, _| panic!("linked key admitted")).is_err()
+                pair_local_identity(root.path(), false, |_, _| panic!("linked key admitted"))
+                    .is_err()
             );
         }
     }
