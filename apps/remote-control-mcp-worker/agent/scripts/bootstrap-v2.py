@@ -159,6 +159,52 @@ def resolve_pinned(tag, commit, target):
     return {"download": download, "size": asset["size"], "digest": digest.group(1)}
 
 
+def resolve_latest_native(target):
+    """One stable five-platform snapshot; select only the installed Linux target."""
+    release = json_api("/releases/latest")
+    if not isinstance(release, dict):
+        raise ValueError("Invalid stable Agent Release")
+    tag = release.get("tag_name")
+    if (not isinstance(tag, str)
+            or not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag)
+            or release.get("immutable") is not True
+            or release.get("draft") is not False
+            or release.get("prerelease") is not False
+            or release.get("html_url", "https://github.com/" + OWNER + "/releases/tag/" + tag)
+            != "https://github.com/" + OWNER + "/releases/tag/" + tag
+            or not isinstance(release.get("assets"), list)):
+        raise ValueError("Invalid stable Agent Release")
+    targets = ("linux-x64-glibc", "linux-arm64-glibc", "windows-x64",
+               "darwin-arm64", "darwin-x64")
+    expected = {"remote-control-agent-" + tag + "-" + item +
+                (".zip" if item == "windows-x64" else ".tar.gz"): item
+                for item in targets}
+    selected = {}
+    for asset in release["assets"]:
+        if not isinstance(asset, dict) or not isinstance(asset.get("name"), str):
+            raise ValueError("Invalid stable Agent asset")
+        name = asset["name"]
+        platform_target = expected.get(name)
+        if platform_target is None:
+            if re.fullmatch(r"remote-control-agent-v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?-"
+                            r"(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)"
+                            r"\.(?:tar\.gz|zip)", name):
+                raise ValueError("Unexpected stable Agent platform asset")
+            continue
+        url = "https://github.com/" + OWNER + "/releases/download/" + tag + "/" + name
+        digest = HASH.fullmatch(str(asset.get("digest", "")))
+        size = asset.get("size")
+        if (platform_target in selected or asset.get("state") != "uploaded"
+                or asset.get("browser_download_url") != url
+                or type(size) is not int or not 1 <= size <= 180_000_000 or not digest):
+            raise ValueError("Invalid or duplicate stable Agent asset")
+        selected[platform_target] = {"tag": tag, "download": url, "size": size,
+                                     "digest": digest.group(1)}
+    if set(selected) != set(targets) or target not in ("linux-x64-glibc", "linux-arm64-glibc"):
+        raise ValueError("Incomplete stable Agent Release")
+    return selected[target]
+
+
 def safe_member(name, directory):
     name = name[:-1] if directory and name.endswith("/") else name
     if (not name or len(name) > 160 or name.startswith("/")
@@ -441,6 +487,43 @@ def public_forward_version(installed, target):
     return new_number > old_number or (new_number == old_number and installed != target)
 
 
+def native_upgrade_latest(endpoint):
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Upgrade requires local interactive confirmation")
+    home = pathlib.Path.home()
+    _, versions, _, unit, ids = local_inventory(home)
+    root = owned_unit_root(unit, versions)
+    if root is None or "permanent" not in ids:
+        raise ValueError("No existing paired managed Linux Agent")
+    validated_owned_version(root)
+    info = json.loads((root / "bundle.json").read_text("utf8"))
+    if info.get("artifact_profile") != "rust-native-only-v1":
+        raise ValueError("Latest native upgrade requires the installed native-only manager")
+    if unit != native_render_unit(root, endpoint, home / STORE / "v2-identity.pem"):
+        raise ValueError("Untrusted installed Worker origin")
+    selected = resolve_latest_native(info["target"])
+    tag = selected["tag"]
+    if tag == info["version"]:
+        print("Already up to date with the reviewed Release (" + tag + ").")
+        return 0
+    if not public_forward_version(info["version"], tag):
+        raise ValueError("Silent downgrade or same-version replacement refused")
+    if preflight(tag, None, endpoint, latest_archive=True) != info["target"]:
+        raise ValueError("Installed Agent target does not match host")
+    data = fetch(selected["download"], "application/octet-stream", selected["size"])
+    if len(data) != selected["size"] or hashlib.sha256(data).hexdigest() != selected["digest"]:
+        raise ValueError("Official GitHub asset length or SHA-256 mismatch")
+    # Use the existing verified local archive and signed cutover path. No
+    # second Latest lookup, no executable metadata, and no persistent pin.
+    with tempfile.TemporaryDirectory(prefix="rca-latest-") as directory:
+        archive = pathlib.Path(directory) / "agent.tar.gz"
+        fd = os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+        return install(tag, None, endpoint, asset_sha256=selected["digest"],
+                       native_upgrade=True, latest_archive=archive)
+
+
 def install(tag, commit, endpoint, name=None, upgrade=False,
             stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False,
             latest_archive=None):
@@ -646,6 +729,103 @@ def native_systemctl(*args):
     if completed.returncode:
         raise ValueError("Agent systemd action failed; inspect the preserved upgrade backup")
     return completed.stdout.decode("ascii", errors="strict")
+
+
+def native_signed_owner_intent(root, endpoint, action, lock):
+    entry = root / APP / ".build/rca-standard-linux-candidate"
+    result = subprocess.run([str(entry), "--owner-intent", endpoint, action,
+                             str(lock.fileno())], pass_fds=(lock.fileno(),),
+                            timeout=45, check=False)
+    if result.returncode != 0:
+        raise ValueError("Signed owner intent not confirmed")
+
+
+def native_verify_stopped():
+    output = native_systemctl("show", UNIT, "-p", "ActiveState", "-p", "MainPID")
+    rows = dict(line.split("=", 1) for line in output.strip().splitlines()
+                if "=" in line)
+    if (set(rows) != {"ActiveState", "MainPID"}
+            or rows["ActiveState"] not in ("inactive", "failed") or rows["MainPID"] != "0"):
+        raise ValueError("Managed systemd stop unconfirmed")
+
+
+def native_owner_lifecycle(home, action):
+    """Retain the signed owner STOP/Resume and systemd lifecycle contract."""
+    if action not in ("stop", "start") or os.getuid() == 0 or not (
+            sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Owner-local Stop/Start requires a real terminal")
+    home = pathlib.Path(home)
+    _, _, _, unit, ids = local_inventory(home)
+    if not unit or "permanent" not in ids:
+        raise ValueError("Existing managed permanent service required")
+    base = private_dir(home / STORE)
+    fd = os.open(base / "v2-installer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted v2 installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        _, versions, unit_file, unit, ids = local_inventory(home)
+        root = owned_unit_root(unit, versions)
+        if root is None or "permanent" not in ids:
+            raise ValueError("Existing managed permanent service required")
+        validated_owned_version(root)
+        manifest = json.loads((root / "bundle.json").read_text("utf8"))
+        if manifest.get("artifact_profile") != "rust-native-only-v1":
+            raise ValueError("Native lifecycle requires the current native-only service")
+        key = base / "v2-identity.pem"
+        native_owned_file(key, 8192)
+        if native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]:
+            raise ValueError("Existing device identity has changed")
+        endpoint = next(line.partition("=")[2] for line in unit.splitlines()
+                        if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
+        pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
+        pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
+            ".native-upgrade-intent", ".native-upgrade-proof", ".activation-pending",
+            ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+        if any(os.path.lexists(path) for path in pending):
+            raise ValueError("Unreconciled identity or activation; recover before Stop/Start")
+        marker = pathlib.Path(str(key) + ".owner-stopped")
+        saved = native_owned_file(marker, 32) if os.path.lexists(marker) else None
+        if saved is not None and saved != b"stopped\n":
+            raise ValueError("Unexpected owner STOP intent")
+        if action == "stop":
+            if saved is None:
+                native_atomic_file(marker, b"stopped\n")
+            cloud = "unconfirmed"
+            try:
+                native_signed_owner_intent(root, endpoint, "stop", lock)
+                cloud = "confirmed"
+            except (OSError, ValueError, subprocess.SubprocessError):
+                pass  # Local OFF remains authoritative if the network fails.
+            native_systemctl("stop", UNIT)
+            native_verify_stopped()
+            return {"local": "stopped", "cloud": cloud}
+        if saved is None:
+            raise ValueError("Local owner STOP is not recorded; Start cannot bypass pairing")
+        native_verify_stopped()
+        # Reconcile an earlier offline Stop; Resume never removes the
+        # durable marker until both exact signed responses are confirmed.
+        native_signed_owner_intent(root, endpoint, "stop", lock)
+        native_signed_owner_intent(root, endpoint, "resume", lock)
+        try:
+            marker.unlink()
+            native_sync_parent(marker)
+            native_systemctl("start", UNIT)
+            native_wait_started(root / APP / ".build/rca-standard-linux-candidate")
+        except (OSError, ValueError, subprocess.SubprocessError):
+            if not os.path.lexists(marker):
+                native_atomic_file(marker, b"stopped\n")
+            # A timed-out start may have had an effect. Keep local STOP and
+            # confirm the same managed service has stopped before returning.
+            native_systemctl("stop", UNIT)
+            native_verify_stopped()
+            raise
+        return {"local": "started", "cloud": "resume_pending_signed_WSS"}
 
 
 def native_main_pid():

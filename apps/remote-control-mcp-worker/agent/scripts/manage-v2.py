@@ -131,6 +131,13 @@ def bootstrap_action(bootstrap, arguments):
 
 
 def upgrade(bootstrap, arguments, native_only=False):
+    if native_only and not arguments:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise ValueError("Upgrade requires local interactive confirmation.")
+        endpoint = installed_endpoint(bootstrap)
+        if not endpoint:
+            raise ValueError("No installer-owned permanent service available to upgrade.")
+        return bootstrap.native_upgrade_latest(endpoint)
     required = 3 if native_only else 2
     if (len(arguments) != required or not VERSION.fullmatch(arguments[0])
             or not SHA.fullmatch(arguments[1])
@@ -165,12 +172,14 @@ def dispatch(command, args, root, info, bootstrap):
         raise ValueError("Rust Python lifecycle operation is not yet reviewed.")
     if command in ("--help", "-h", "help"):
         if native_only:
-            print("Usage: rca [status|pair|logs|upgrade|recover|uninstall]")
+            print("Usage: rca [status|pair|logs|stop|start|upgrade|recover|uninstall]")
             print("Permanent pairing / re-pair and pair --temporary (including revoked/expired temporary re-pair) are supported.")
         else:
             print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
-        print("Upgrade requires: upgrade <immutable-tag> <reviewed-40-char-commit>"
+        if native_only:
+            print("Upgrade from the reviewed stable Latest: rca upgrade.")
+        print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit>"
               + (" <reviewed-64-char-asset-sha256>" if native_only else "") + ".")
         return 0
     if command in ("--version", "version"):
@@ -188,6 +197,11 @@ def dispatch(command, args, root, info, bootstrap):
         return 0
     if command == "pair":
         return pair(root, bootstrap, args, native_only)
+    if command in ("stop", "start") and native_only:
+        if args:
+            raise ValueError("Stop/Start takes no arguments")
+        print(json.dumps(bootstrap.native_owner_lifecycle(Path.home(), command)))
+        return 0
     if command == "upgrade":
         return upgrade(bootstrap, args,
                        info.get("artifact_profile") == "rust-native-only-v1")
@@ -228,7 +242,7 @@ def main():
             print("Choose 1–7." if native_only else "Choose 1–6.")
             continue
         action = mapping[choice]
-        if action == "upgrade":
+        if action == "upgrade" and not native_only:
             print("Provide the reviewed immutable Release tag and its 40-character commit"
                   + (", and asset SHA-256." if native_only else "."))
             args = input("tag commit" + (" asset-sha256" if native_only else "") + ": ").split()

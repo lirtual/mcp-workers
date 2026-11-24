@@ -382,13 +382,74 @@ mod linux {
         Ok(lock)
     }
 
+    fn inherited_installer_lock(fd: i32, lock_path: &Path) -> Result<fs::File, ()> {
+        use std::os::fd::FromRawFd;
+        if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+            return Err(());
+        }
+        let file = unsafe { fs::File::from_raw_fd(fd) };
+        let actual = file.metadata().map_err(|_| ())?;
+        let expected = fs::symlink_metadata(lock_path).map_err(|_| ())?;
+        if !expected.is_file() || (actual.dev(), actual.ino()) != (expected.dev(), expected.ino()) {
+            return Err(());
+        }
+        Ok(file)
+    }
+
+    fn validate_installer_lock(lock: &fs::File) -> Result<(), ()> {
+        use std::os::fd::AsRawFd;
+        let info = lock.metadata().map_err(|_| ())?;
+        if !info.is_file()
+            || info.uid() != unsafe { libc::geteuid() }
+            || info.nlink() != 1
+            || info.mode() & 0o777 != 0o600
+            || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+        {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn owner_intent_local(endpoint: &str, action: &str, fd: i32) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::PairingClient;
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+            || !matches!(action, "stop" | "resume")
+        {
+            return Err(());
+        }
+        let home = home()?;
+        let key = pairing_key(&home, false);
+        let base = key.parent().ok_or(())?;
+        if fs::canonicalize(&home).ok().as_deref() != Some(home.as_path())
+            || fs::canonicalize(base).ok().as_deref() != Some(base)
+        {
+            return Err(());
+        }
+        rca_native_agent::upgrade_control::verify_upgrade_directory(&key).map_err(|_| ())?;
+        let lock = inherited_installer_lock(fd, &base.join("v2-installer.lock"))?;
+        validate_installer_lock(&lock)?;
+        if read_private(&sidecar(&key, ".owner-stopped"), 32)?.as_deref() != Some("stopped\n") {
+            return Err(());
+        }
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        if !valid_device_id(id.trim()) {
+            return Err(());
+        }
+        PairingClient::new(endpoint)
+            .map_err(|_| ())?
+            .owner_intent(&pem, id.trim(), action)
+            .map_err(|_| ())
+    }
+
     fn lock_pairing_store(
         home: &Path,
         temporary: bool,
         repair: bool,
         permanent_repair: Option<(i32, bool)>,
     ) -> Result<(PathBuf, fs::File), ()> {
-        use std::os::fd::{AsRawFd, FromRawFd};
         let permanent = pairing_key(home, false);
         let base = permanent.parent().ok_or(())?;
         let key = pairing_key(home, temporary);
@@ -412,18 +473,7 @@ mod linux {
         let lock = if let Some((fd, _)) = permanent_repair {
             // The Python service controller retains this same open-file-description
             // lock across preparation, service stop and identity promotion.
-            if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
-                return Err(());
-            }
-            let file = unsafe { fs::File::from_raw_fd(fd) };
-            let actual = file.metadata().map_err(|_| ())?;
-            let expected = fs::symlink_metadata(&lock_path).map_err(|_| ())?;
-            if !expected.is_file()
-                || (actual.dev(), actual.ino()) != (expected.dev(), expected.ino())
-            {
-                return Err(());
-            }
-            file
+            inherited_installer_lock(fd, &lock_path)?
         } else {
             fs::OpenOptions::new()
                 .read(true)
@@ -435,15 +485,7 @@ mod linux {
                 .open(&lock_path)
                 .map_err(|_| ())?
         };
-        let info = lock.metadata().map_err(|_| ())?;
-        if !info.is_file()
-            || info.uid() != unsafe { libc::geteuid() }
-            || info.nlink() != 1
-            || info.mode() & 0o777 != 0o600
-            || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
-        {
-            return Err(());
-        }
+        validate_installer_lock(&lock)?;
         // A permanent service may exist when selecting a temporary identity.
         // It may not share the exclusive receipt writer; the same runtime
         // still fails closed before connecting when receipts are occupied.
@@ -811,6 +853,9 @@ mod linux {
             }
         }
         if let [command, endpoint, name, fd] = args.as_slice() {
+            if command == "--owner-intent" {
+                return owner_intent_local(endpoint, name, fd.parse().map_err(|_| ())?);
+            }
             let prepare = match command.as_str() {
                 "--prepare-permanent-repair" => true,
                 "--promote-permanent-repair" => false,

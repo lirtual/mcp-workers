@@ -75,6 +75,18 @@ mod linux {
     }
 
     #[test]
+    fn signed_owner_intent_refuses_noninteractive_invocation() {
+        let root = tempfile::tempdir().unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"))
+            .env_clear()
+            .env("HOME", root.path())
+            .args(["--owner-intent", "https://example.invalid/", "stop", "3"])
+            .output()
+            .unwrap();
+        refused(&output, root.path());
+    }
+
+    #[test]
     fn unsafe_owner_stop_never_becomes_an_implicit_restart() {
         let root = tempfile::tempdir().unwrap();
         let key = identity(root.path());
