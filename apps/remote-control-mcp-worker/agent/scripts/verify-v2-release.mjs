@@ -350,7 +350,8 @@ export function inspectTarGzip(gzip,{tag,target}) {
       !Array.isArray(manifest.modules) ||
       !["node-v2","rust-standard-linux-v1"].includes(agentRuntime) ||
       (rustCandidate && (manifest.candidate_profile!=="standard-linux-rust-runtime-v1" ||
-        !/-rust-candidate(?:\.|$)/.test(tag) ||
+        (!/-rust-candidate(?:\.|$)/.test(tag) &&
+          !(nativeOnly && /^v0\.[1-9][0-9]*\.[0-9]+$/.test(tag))) ||
         !/^linux-(?:x64|arm64)-glibc$/.test(target) ||
         (!entries.has("apps/remote-control-agent/.build/rca-standard-linux-candidate") ||
         !entries.has("apps/remote-control-agent/scripts/manage-v2.py")))) ||

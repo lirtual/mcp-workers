@@ -9,6 +9,7 @@ import { gzipSync } from "node:zlib";
 import test from "node:test";
 import { parseArgs, runtimeSources, ensureNativeTarget, ensureRustCandidate,
   requiredGlibcVersion } from "../scripts/build-v2-release.mjs";
+import { parseWindowsPreviewBuildArgs } from "../scripts/build-windows-preview.mjs";
 import { resolvePinnedRelease, downloadPinnedAsset, inspectTarGzip, extractVerifiedAsset, releaseAssetName } from "../scripts/verify-v2-release.mjs";
 
 const tag="v0.1.0",target="linux-x64-glibc",commit="1".repeat(40);
@@ -329,7 +330,14 @@ test("#914 native-only Rust archive excludes bundled Node and every JS runtime f
     await extractVerifiedAsset({tag:candidateTag,target,digest:sha(sessionBytes)},sessionBytes,dest);
     assert.equal((await stat(path.join(dest,sessionName))).mode&0o777,0o700);
   } finally {await rm(sessionRoot,{recursive:true,force:true});}
-  assert.throws(()=>inspectTarGzip(bytes,{tag:"v0.1.57",target}),/version|profile/i);
+  const stableTag="v0.1.57";
+  const stableFiles=declared.map(f=>f.name==="bundle.json" ?
+    {...f,data:Buffer.from(JSON.stringify({...nativeManifest,version:stableTag,session_runtime:"rust-session-v1"}))}:f);
+  const stableBytes=tar([...stableFiles,{name:sessionName,data:elf(62)}]);
+  assert.ok(inspectTarGzip(stableBytes,{tag:stableTag,target}).has(sessionName));
+  assert.throws(()=>inspectTarGzip(bytes,{tag:stableTag,target}),/version|profile/i);
+  assert.throws(()=>inspectTarGzip(tar([...stableFiles,{name:sessionName,data:elf(62)},
+    {name:"bin/node",data:elf(62)}]),{tag:stableTag,target}),/unreviewed runtime file/);
 });
 
 test("#914 native-only packaging is explicit and cannot target Node or Darwin",()=>{
@@ -340,6 +348,9 @@ test("#914 native-only packaging is explicit and cannot target Node or Darwin",(
     "--artifact-profile","rust-native-only-v1"];
   const selected=parseArgs(args);
   assert.equal(selected.artifactProfile,"rust-native-only-v1");
+  const stableArgs=args.map((x,i)=>i===1?"v0.1.57":x);
+  assert.equal(parseArgs(stableArgs).version,"v0.1.57");
+  assert.throws(()=>parseArgs(stableArgs.slice(0,-2)),/pinned version/);
   const sessionArgs=["--rust-session-bin","/opt/rca-session","--rust-session-sha256","d".repeat(64)];
   assert.equal(parseArgs([...args,...sessionArgs]).rustSessionBin,"/opt/rca-session");
   assert.throws(()=>parseArgs([...args,...sessionArgs.slice(0,2)]));
@@ -350,4 +361,17 @@ test("#914 native-only packaging is explicit and cannot target Node or Darwin",(
   assert.throws(()=>parseArgs(args.slice(0,-2).concat("--artifact-profile","anything")));
   assert.throws(()=>parseArgs(args.filter((_,i)=>i<args.length-4 ||
     i>=args.length-2)),"missing Rust signature must not pass");
+});
+
+test("#914 Windows stable label requires explicit native-only Rust packaging",()=>{
+  const args=["--version","v0.1.58","--node-bin","/opt/node.exe","--node-sha256",
+    "ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32",
+    "--out","/tmp/release","--background-bin","/opt/rca-background.exe",
+    "--rust-agent-bin","/opt/rca-standard.exe","--rust-agent-sha256","c".repeat(64)];
+  assert.throws(()=>parseWindowsPreviewBuildArgs(args));
+  const native=[...args,"--artifact-profile","rust-native-only-v1"];
+  assert.equal(parseWindowsPreviewBuildArgs(native).version,"v0.1.58");
+  const session=[...native,"--rust-session-bin","/opt/rca-session.exe","--rust-session-sha256","d".repeat(64)];
+  assert.equal(parseWindowsPreviewBuildArgs(session).rustSessionBin,"/opt/rca-session.exe");
+  assert.throws(()=>parseWindowsPreviewBuildArgs(session.map((x,i)=>i===1?"v0.1.58-other.1":x)));
 });

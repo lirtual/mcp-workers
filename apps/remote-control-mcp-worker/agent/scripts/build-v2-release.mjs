@@ -48,7 +48,8 @@ export function parseArgs(argv) {
       (params.artifactProfile !== undefined && !nativeOnly) ||
       (nativeOnly && (!hasRustCandidate || !params.target?.startsWith("linux-"))) ||
       (hasRustCandidate && (!params.rustAgentBin || !params.rustAgentSha256 ||
-      !params.version?.includes("-rust-candidate") ||
+      (!params.version?.includes("-rust-candidate") &&
+        !(nativeOnly && /^v0\.[1-9][0-9]*\.[0-9]+$/.test(params.version))) ||
       !["linux-x64-glibc","linux-arm64-glibc","darwin-arm64","darwin-x64"].includes(params.target))) ||
       Object.keys(params).length !== (hasRustCandidate ? (nativeOnly ? 10 : 9) : 7) + (hasSession ? 2 : 0) ||
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(params.version) ||
@@ -58,7 +59,7 @@ export function parseArgs(argv) {
       (hasRustCandidate && !/^[a-f0-9]{64}$/.test(params.rustAgentSha256)) ||
       ![params.nodeBin, params.native, params.out, ...(hasRustCandidate ? [params.rustAgentBin] : [])]
         .every(x => path.isAbsolute(x))) {
-    throw new Error("Specify a pinned version, supported target, absolute Node24/native paths and output; Rust candidates also need a prerelease tag, platform target, binary and SHA-256.");
+    throw new Error("Specify a pinned version, supported target, absolute Node24/native paths and output; Rust builds need a reviewed version, platform target, binary and SHA-256; only native-only Linux permits a stable Rust label.");
   }
   return params;
 }
