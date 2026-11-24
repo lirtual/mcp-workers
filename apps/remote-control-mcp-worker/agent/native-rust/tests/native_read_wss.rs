@@ -102,9 +102,9 @@ fn signed_wss_read_file_matches_node_reference_with_real_file_and_bounded_queue(
         assert_eq!(result["text"], "line-one\nline-two");
         // A sequential caller waits for each reply before sending the next
         // request. No unrelated inbound frame should be needed to flush a
-        // completed response. Four reads must not incur four idle polls.
+        // completed response. Thirty reads must not incur a fixed 20ms per-request poll.
         let started = std::time::Instant::now();
-        for _ in 0..4 {
+        for _ in 0..30 {
             socket
                 .send(Message::Text(read_request(file.to_str().unwrap()).into()))
                 .unwrap();
@@ -114,8 +114,8 @@ fn signed_wss_read_file_matches_node_reference_with_real_file_and_bounded_queue(
             assert_eq!(result["text"], "line-one\nline-two");
         }
         assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "completed responses were held until the idle read timeout: {:?}",
+            started.elapsed() < Duration::from_millis(300),
+            "completed responses were held by fixed transport polling: {:?}",
             started.elapsed()
         );
         worker_stop.store(true, Ordering::Release);

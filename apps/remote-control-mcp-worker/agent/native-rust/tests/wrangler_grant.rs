@@ -37,7 +37,7 @@ fn real_worker_authorizes_periodic_probe_then_rejects_revoked_identity() {
         })
         .unwrap();
     let (requests_tx, requests_rx) = mpsc::sync_channel(2);
-    let (_answers_tx, answers_rx) = mpsc::channel();
+    let (_answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let stop = Arc::new(AtomicBool::new(false));
     let running = Arc::new(AtomicBool::new(true));
     let notifier = Arc::clone(&running);
@@ -49,7 +49,7 @@ fn real_worker_authorizes_periodic_probe_then_rejects_revoked_identity() {
             println!("AUTH_PROBE_PASSED: request local Owner revoke now");
         }
     });
-    let result = socket.pump(&stop, &requests_tx, &answers_rx);
+    let result = socket.pump(&stop, &requests_tx, &mut answers_rx);
     running.store(false, Ordering::Release);
     assert!(
         matches!(result, Err(SessionError::Policy)),

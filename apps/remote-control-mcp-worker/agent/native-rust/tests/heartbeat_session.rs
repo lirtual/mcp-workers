@@ -231,7 +231,7 @@ fn transport_heartbeat_and_grant_probe_run_while_an_operation_is_busy() {
         }
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
-    let (answers_tx, answers_rx) = mpsc::channel();
+    let (answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let worker = thread::spawn(move || {
         let request = requests_rx.recv_timeout(Duration::from_secs(3)).unwrap();
         assert_eq!(
@@ -241,7 +241,7 @@ fn transport_heartbeat_and_grant_probe_run_while_an_operation_is_busy() {
         );
         thread::sleep(Duration::from_millis(700));
         assert!(request.lease().is_active());
-        answers_tx.send(request.response(json!({"kind":"operation_result","request_id":"33333333-3333-3333-3333-333333333333","result":{"operation_id":"test-long-operation","status":"completed"}}).to_string())).unwrap();
+        answers_tx.try_send(request.response(json!({"kind":"operation_result","request_id":"33333333-3333-3333-3333-333333333333","result":{"operation_id":"test-long-operation","status":"completed"}}).to_string())).unwrap();
     });
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     agent
@@ -251,7 +251,7 @@ fn transport_heartbeat_and_grant_probe_run_while_an_operation_is_busy() {
             auth_interval: Duration::from_millis(350),
         })
         .unwrap();
-    agent.pump(&stop, &requests_tx, &answers_rx).unwrap();
+    agent.pump(&stop, &requests_tx, &mut answers_rx).unwrap();
     worker.join().unwrap();
     server.join().unwrap();
 }
@@ -274,11 +274,11 @@ fn policy_close_revokes_queued_write_before_executor_starts() {
             .unwrap();
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
-    let (_answers_tx, answers_rx) = mpsc::channel();
+    let (_answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     assert!(matches!(
-        agent.pump(&stop, &requests_tx, &answers_rx),
+        agent.pump(&stop, &requests_tx, &mut answers_rx),
         Err(SessionError::Policy)
     ));
     let queued = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -331,16 +331,16 @@ fn stale_result_from_revoked_socket_is_not_sent_on_replacement_connection() {
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
     // Intentionally reuse the outgoing channel across sessions to test isolation.
-    let (answers_tx, answers_rx) = mpsc::channel();
+    let (answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let mut first = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     assert!(matches!(
-        first.pump(&stop, &requests_tx, &answers_rx),
+        first.pump(&stop, &requests_tx, &mut answers_rx),
         Err(SessionError::Policy)
     ));
     let stale = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     assert!(stale.frame_if_active().is_none());
     answers_tx
-        .send(
+        .try_send(
             stale
                 .response(json!({"request_id":"55555555-5555-5555-5555-555555555555"}).to_string()),
         )
@@ -351,13 +351,13 @@ fn stale_result_from_revoked_socket_is_not_sent_on_replacement_connection() {
             let fresh = requests_rx.recv_timeout(Duration::from_secs(3)).unwrap();
             assert!(fresh.frame_if_active().is_some());
             answers_tx
-                .send(fresh.response(
+                .try_send(fresh.response(
                     json!({"request_id":"66666666-6666-6666-6666-666666666666"}).to_string(),
                 ))
                 .unwrap();
         });
     let mut second = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
-    second.pump(&stop, &requests_tx, &answers_rx).unwrap();
+    second.pump(&stop, &requests_tx, &mut answers_rx).unwrap();
     worker.join().unwrap();
     server.join().unwrap();
 }
@@ -384,11 +384,11 @@ fn worker_revoke_cleanup_revokes_queued_work_and_defaults_to_unconfirmed() {
             .unwrap();
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(4);
-    let (_answers_tx, answers_rx) = mpsc::channel();
+    let (_answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     assert!(matches!(
-        agent.pump(&stop, &requests_tx, &answers_rx),
+        agent.pump(&stop, &requests_tx, &mut answers_rx),
         Err(SessionError::Policy)
     ));
     let queued = requests_rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -415,12 +415,12 @@ fn explicit_cleanup_callback_controls_synthetic_confirmed_ack_only() {
         assert_eq!(receipt["status"], "confirmed");
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
-    let (_answers_tx, answers_rx) = mpsc::channel();
+    let (_answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
     let stop = Arc::new(AtomicBool::new(false));
     let callback = || rca_native_agent::session::CleanupStatus::Confirmed;
     assert!(matches!(
-        agent.pump_with_cleanup(&stop, &requests_tx, &answers_rx, callback),
+        agent.pump_with_cleanup(&stop, &requests_tx, &mut answers_rx, callback),
         Err(SessionError::Policy)
     ));
     assert!(requests_rx.try_recv().is_err());
@@ -513,9 +513,9 @@ fn local_stop_arriving_during_blocking_read_does_not_enqueue_following_operation
             .unwrap();
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
-    let (_answers_tx, answers_rx) = mpsc::channel();
+    let (_answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
-    assert!(agent.pump(&stop, &requests_tx, &answers_rx).is_ok());
+    assert!(agent.pump(&stop, &requests_tx, &mut answers_rx).is_ok());
     assert!(
         requests_rx.try_recv().is_err(),
         "an operation after local Stop must not queue"
@@ -539,11 +539,11 @@ fn stop_atomically_invalidates_previously_queued_request_even_before_pump_notice
         thread::sleep(Duration::from_millis(500));
     });
     let (requests_tx, requests_rx) = mpsc::sync_channel::<ExecutionRequest>(2);
-    let (_answers_tx, answers_rx) = mpsc::channel();
+    let (_answers_tx, mut answers_rx) = tokio::sync::mpsc::channel(4);
     let stop = Arc::new(AtomicBool::new(false));
     let pump_stop = Arc::clone(&stop);
     let mut agent = connect_authenticated(&endpoint, &common::test_pem(), DEVICE_ID).unwrap();
-    let pump = thread::spawn(move || agent.pump(&pump_stop, &requests_tx, &answers_rx));
+    let pump = thread::spawn(move || agent.pump(&pump_stop, &requests_tx, &mut answers_rx));
     let queued = requests_rx.recv_timeout(Duration::from_secs(2)).unwrap();
     assert!(queued.frame_if_active().is_some());
     stop.store(true, Ordering::Release);

@@ -5,10 +5,11 @@ use crate::gate0_probe::{Gate0Probe, ProbeError};
 use crate::session::{self, ExecutionRequest, ExecutionResponse, HeartbeatTiming, SessionError};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::mpsc::{error::TrySendError, Sender};
 
 #[derive(Debug, Error)]
 pub enum DisposableFileError {
@@ -26,7 +27,7 @@ fn execute(
     mut probe: Gate0Probe,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
-    replies: &SyncSender<ExecutionResponse>,
+    replies: &Sender<ExecutionResponse>,
 ) -> Result<(), DisposableFileError> {
     while !stop.load(Ordering::Acquire) {
         let request = match requests.recv_timeout(Duration::from_millis(100)) {
@@ -61,7 +62,7 @@ fn execute(
                 stop.store(true, Ordering::Release);
                 return Err(DisposableFileError::Queue);
             }
-            Err(TrySendError::Disconnected(_)) => break,
+            Err(TrySendError::Closed(_)) => break,
         }
     }
     Ok(())
@@ -80,7 +81,7 @@ pub fn run_disposable_file_session(
 ) -> Result<(), DisposableFileError> {
     let probe = Gate0Probe::new(probe_root)?;
     let (request_sender, requests) = sync_channel(4);
-    let (reply_sender, replies) = sync_channel(4);
+    let (reply_sender, mut replies) = tokio::sync::mpsc::channel(4);
     let worker_stop = Arc::clone(stop);
     let worker = std::thread::spawn(move || execute(probe, &worker_stop, &requests, &reply_sender));
     let session = session::maintain_authenticated_transport(
@@ -89,7 +90,7 @@ pub fn run_disposable_file_session(
         device_id,
         stop,
         &request_sender,
-        &replies,
+        &mut replies,
         timing,
     );
     stop.store(true, Ordering::Release);
@@ -306,7 +307,7 @@ fn execute_native_file(
     #[cfg(any(unix, windows))] upgrade_requests: Option<Receiver<UpgradeRequest>>,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
-    replies: &SyncSender<ExecutionResponse>,
+    replies: &Sender<ExecutionResponse>,
 ) -> Result<(), NativeFileError> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     let mut processes = managed.map(NativeProcessEngine::new);
@@ -502,7 +503,7 @@ fn execute_native_file(
                 stop.store(true, Ordering::Release);
                 return Err(NativeFileError::Queue);
             }
-            Err(TrySendError::Disconnected(_)) => break,
+            Err(TrySendError::Closed(_)) => break,
         }
     }
     // Do not close the one SQLite receipt owner until native group cleanup has
@@ -534,7 +535,7 @@ pub fn run_native_file_session(
 ) -> Result<(), NativeFileError> {
     let writes = NativeWriteExecutor::open(receipt_directory)?;
     let (request_sender, requests) = sync_channel(4);
-    let (reply_sender, replies) = sync_channel(4);
+    let (reply_sender, mut replies) = tokio::sync::mpsc::channel(4);
     let worker_stop = Arc::clone(stop);
     let worker = std::thread::spawn(move || {
         let result = execute_native_file(
@@ -560,7 +561,7 @@ pub fn run_native_file_session(
         device_id,
         stop,
         &request_sender,
-        &replies,
+        &mut replies,
         timing,
     );
     stop.store(true, Ordering::Release);
@@ -662,7 +663,7 @@ fn run_native_managed_session_inner(
         (None, None)
     };
     let (request_sender, requests) = sync_channel(4);
-    let (reply_sender, replies) = sync_channel(4);
+    let (reply_sender, mut replies) = tokio::sync::mpsc::channel(4);
     let worker_stop = Arc::clone(stop);
     let worker_managed = Arc::clone(&managed);
     // A one-shot barrier orders final receipt reconciliation strictly after
@@ -690,7 +691,7 @@ fn run_native_managed_session_inner(
         device_id,
         stop,
         &request_sender,
-        &replies,
+        &mut replies,
         session::ManagedTransportConfig {
             timing: options.timing,
             managed: Arc::clone(&managed),
