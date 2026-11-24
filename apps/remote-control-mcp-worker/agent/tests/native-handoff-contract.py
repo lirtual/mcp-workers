@@ -61,7 +61,7 @@ def fixture():
     key = base / "v2-identity.pem"
     owned_file(key, "disposable-not-a-live-private-key")
     owned_file(Path(str(key) + ".device-id"), ID + "\n")
-    old = make_version(home, "v0.1.56", False)
+    old = make_version(home, "v0.1.56", True)
     new = make_version(home, "v0.1.57", True)
     unit = home / ".config/systemd/user/remote-control-agent.service"
     owned_file(unit, bootstrap.native_render_unit(old, ENDPOINT, key))
@@ -81,7 +81,7 @@ def fixture():
 
 
 def native_pair_fixture():
-    ctx, home, node, old, unit, launcher, key, receipts = fixture()
+    ctx, home, previous, old, unit, launcher, key, receipts = fixture()
     new = make_version(home, "v0.1.58", True)
     unit.write_text(bootstrap.native_render_unit(old, ENDPOINT, key))
     launcher.unlink()
@@ -533,7 +533,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # Native-to-native: reuse the SAME signed WSS commit and owner-local
-    # rollback transaction. A verified prior Rust service is no longer Node.
+    # rollback transaction. A verified prior Rust service remains recoverable.
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
         old_unit = unit.read_text()
@@ -557,7 +557,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # Missing WSS proof MUST restore the previously active Rust executable,
-    # not the historical Node version still present among managed programs.
+    # not the earlier version still present among managed programs.
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
         original_unit, original_receipts = unit.read_text(), receipts.read_bytes()
@@ -578,7 +578,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # An interrupted Rust-to-Rust switch must be recoverable using the
-    # exact same attended recovery command; the oldest Node stays untouched.
+    # exact same attended recovery command; the oldest installed Rust stays untouched.
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
         original_unit = unit.read_text()
@@ -738,7 +738,7 @@ def verify_isolated():
         ctx.cleanup()
 
     # A valid proof from an earlier Rust PID must not approve its replacement.
-    # The original Node process must be recovered instead.
+    # The original Rust process must be recovered instead.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
         state, mocks, verify = fake_services(home, old, new, restart_after_proof=True)
@@ -755,7 +755,7 @@ def verify_isolated():
     finally:
         ctx.cleanup()
 
-    # Missing signed proof rolls back to original Node process & launcher,
+    # Missing signed proof rolls back to original Rust process & launcher,
     # preserving the same identity/receipts and clearing only resolved state.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:

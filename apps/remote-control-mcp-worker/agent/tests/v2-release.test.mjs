@@ -100,8 +100,8 @@ test("#73 release package build rejects unverified architectures and unpinned ta
     assert.ok(!darwinModules.includes(retired), retired);
   const candidateTag="v0.1.1-rust-candidate.1";
   const candidateArgs=parseArgs(["--version",candidateTag,"--target",target,
-    "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
-    "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64),
+    "--native","/opt/supervisor","--out","/tmp/archive",
+    "--native-sha256","e".repeat(64),
     "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64),
     "--artifact-profile","rust-native-only-v1"]);
   assert.equal(candidateArgs.rustAgentBin,"/opt/rca-agent");
@@ -345,8 +345,8 @@ test("#914 native-only Rust archive excludes bundled Node and every JS runtime f
 
 test("#914 native-only packaging is explicit and cannot target Node or Darwin",()=>{
   const args=["--version","v0.1.57-rust-candidate.1","--target",target,
-    "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/release",
-    "--node-sha256","a".repeat(64),"--native-sha256","b".repeat(64),
+    "--native","/opt/supervisor","--out","/tmp/release",
+    "--native-sha256","b".repeat(64),
     "--rust-agent-bin","/opt/rca-native","--rust-agent-sha256","c".repeat(64),
     "--artifact-profile","rust-native-only-v1"];
   const selected=parseArgs(args);

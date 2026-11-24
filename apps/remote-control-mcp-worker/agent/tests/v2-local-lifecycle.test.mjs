@@ -11,16 +11,17 @@ with tempfile.TemporaryDirectory(prefix="issue69-t09-") as home:
     root=pathlib.Path(home)
     programs=root/".local/share/mcp-workers/remote-control/programs"
     ver=programs/"v0.2.0-linux-x64-glibc"
-    entry=ver/"apps/remote-control-agent/src/v2-main.js"
-    entry.parent.mkdir(parents=True,mode=0o700)
-    entry.write_text("readOnly: true, writeFile: false, shell: false,")
-    mf=ver/"bundle.json"
-    mf.write_text(json.dumps({"version":"v0.2.0","target":"linux-x64-glibc","artifact_schema":1,
-      "device_protocol":2,"receipt_schema":1,"upgrade_profile":"read-only-no-shell-v1"}))
-    for p in (programs.parent,programs,ver,ver/"apps",ver/"apps/remote-control-agent",
-              ver/"apps/remote-control-agent/src"):
-        p.chmod(0o700)
-    entry.chmod(0o600);mf.chmod(0o600)
+    os.umask(0o077)
+    app=ver/b.APP
+    manifest={"name":"remote-control-agent","version":"v0.2.0","target":"linux-x64-glibc",
+      "artifact_schema":1,"device_protocol":2,"receipt_schema":1,"upgrade_profile":"paired-full-v1",
+      "artifact_profile":"rust-native-only-v1","agent_runtime":"rust-standard-linux-v1",
+      "candidate_profile":"standard-linux-rust-runtime-v1","modules":[]}
+    for name in b.native_program_files(manifest,manifest["target"]):
+        file=ver/name
+        file.parent.mkdir(parents=True,mode=0o700,exist_ok=True)
+        file.write_text(json.dumps(manifest) if name=="bundle.json" else "fixture")
+        file.chmod(0o700 if "/.build/" in name or name.endswith("rca.sh") else 0o600)
     state=root/".local/state/mcp-workers/remote-control-agent"
     state.mkdir(parents=True); receipts=state/"operation-receipts.sqlite"
     receipts.write_text("untouched receipts")
@@ -42,8 +43,8 @@ with tempfile.TemporaryDirectory(prefix="issue69-t09-") as home:
     # Simulated owned permanent unit must be matched exactly, no real systemctl.
     unit=root/".config/systemd/user/remote-control-agent.service"
     unit.parent.mkdir(parents=True)
-    unit.write_text(b.MARKER+"\n[Unit]\n[Service]\nWorkingDirectory="+str(ver/"apps/remote-control-agent")+
-      "\nExecStart="+str(ver/"bin/node")+" "+str(ver/"apps/remote-control-agent/src/v2-main.js")+"\n")
+    unit.write_text(b.native_render_unit(ver,"https://example.invalid/",keys))
+    unit.chmod(0o600)
     systemcalls=[]
     result=b.local_uninstall(home,True,systemctl=lambda args:systemcalls.append(args),
       process_check=lambda _:True)

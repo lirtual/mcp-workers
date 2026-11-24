@@ -1,12 +1,11 @@
-// Real systemd safety seam for unshipped Node-free Linux upgrade (no Worker grants).
+// Real systemd safety seam for native Rust upgrade (no Worker grants).
 // Runs only as a disposable user created by agent-native-candidates.yml.
 import assert from "node:assert/strict";
 import {spawn,spawnSync} from "node:child_process";
 import {generateKeyPairSync,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
-import {chmodSync,cpSync,existsSync,mkdirSync,readFileSync,readlinkSync,rmSync,symlinkSync,writeFileSync} from "node:fs";
+import {chmodSync,existsSync,mkdirSync,readFileSync,readlinkSync,rmSync,symlinkSync,writeFileSync} from "node:fs";
 import path from "node:path";
-import {pathToFileURL} from "node:url";
 import {ReceiptStore} from "../src/operations.ts";
 
 const source=process.env.RCA914_AGENT_SOURCE;
@@ -16,17 +15,16 @@ if(!source||!oldArchive||!nativeArchive)throw Error("Missing isolated native sys
 if(process.getuid()===0||!process.env.DBUS_SESSION_BUS_ADDRESS||!process.env.XDG_RUNTIME_DIR)
   throw Error("Disposable unprivileged systemd user bus is required");
 
-const {installUnit,renderV2Service,UNIT}=await import(
-  pathToFileURL(path.join(source,"scripts/install-v2.mjs")));
+const UNIT="remote-control-agent.service";
 const home=process.env.HOME;
 const target=process.arch==="arm64"?"linux-arm64-glibc":"linux-x64-glibc";
 const base=path.join(home,".local/share/mcp-workers/remote-control");
 const key=path.join(base,"v2-identity.pem");
 const deviceId=key+".device-id";
-const oldRoot=path.join(base,"programs/v0.1.56-"+target);
-const nativeRoot=path.join(base,"programs/v0.1.57-rust-candidate.1-"+target);
+const oldRoot=path.join(base,"programs/v0.1.58-"+target);
+const nativeRoot=path.join(base,"programs/v0.1.59-rust-candidate.1-"+target);
 const rustExe=path.join(nativeRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
-const nodeExe=path.join(oldRoot,"bin/node");
+const priorExe=path.join(oldRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
 const unitFile=path.join(home,".config/systemd/user",UNIT);
 const backupFile=unitFile+".upgrade-backup";
 const cli=path.join(home,".local/bin/rca");
@@ -71,8 +69,17 @@ await receiptsStore.admit("914-prior-unknown","read_file","a".repeat(64));
 await receiptsStore.update("914-prior-unknown","unknown","unresolved before cutover");
 await receiptsStore.close();
 
-const oldUnit=renderV2Service({node:nodeExe,home,repoRoot:oldRoot,
-  keyPath:key,endpoint,entryExt:"js"});
+const renderCode=[
+  "import importlib.util,pathlib,sys",
+  "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
+  "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
+  "print(b.native_render_unit(pathlib.Path(sys.argv[2]),sys.argv[3],pathlib.Path(sys.argv[4])),end='')",
+].join("\n");
+const rendered=spawnSync("/usr/bin/python3",["-I","-B","-c",renderCode,
+  path.join(source,"scripts/bootstrap-v2.py"),oldRoot,endpoint,key],
+  {env,encoding:"utf8",timeout:10000});
+assert.equal(rendered.status,0,rendered.stderr);
+const oldUnit=rendered.stdout;
 let installed=false;
 try {
   // Actual first activation of the Node-free binary. Pairing is represented
@@ -121,13 +128,15 @@ try {
   firstDb.close();
   console.log("NATIVE_FIRST_INSTALL_REAL_SYSTEMD_UNCONFIRMED_RECOVERY_PASS");
   installed=false;
-  await installUnit(unitFile,oldUnit);
+  writeFileSync(unitFile,oldUnit,{mode:0o600});
+  systemctl("daemon-reload");
+  systemctl("enable","--now",UNIT);
   installed=true;
   symlinkSync(path.join(oldRoot,"apps/remote-control-agent/scripts/rca.sh"),cli);
-  assert.equal(liveExecutable(),nodeExe,"real published Node is active before handoff");
+  assert.equal(liveExecutable(),priorExe,"real published Rust is active before handoff");
 
   // Run the reviewed switch against actual systemd, with a deliberately
-  // missing signed Worker WSS proof. This must restore the ORIGINAL Node.
+  // missing signed Worker WSS proof. This must restore the ORIGINAL Rust.
   // It is not a simulation of successful authenticated upgrade.
   const code=[
     "import importlib.util,pathlib,sys",
@@ -145,7 +154,7 @@ try {
   });
   assert.equal(run.status,9,run.stdout+"\n"+run.stderr);
   assert.match(run.stdout,/rolled back/);
-  assert.equal(liveExecutable(),nodeExe,"rollback MUST restore real Node service");
+  assert.equal(liveExecutable(),priorExe,"rollback MUST restore real Rust service");
   assert.equal(readFileSync(unitFile,"utf8"),oldUnit,"original managed unit restored");
   assert.equal(readlinkSync(cli),path.join(oldRoot,"apps/remote-control-agent/scripts/rca.sh"));
   assert.equal(readFileSync(key,"utf8"),privateKey);
@@ -162,16 +171,16 @@ try {
   assert.equal(state.state,"unknown","previous uncertain effect cannot be replayed");
   db.close();
 
-  // Crash after the actual Node -> Rust systemd switch, before signed WSS
+  // Crash after the actual Rust -> Rust systemd switch, before signed WSS
   // acceptance. Killing the Python owner cannot make an unverified upgrade
   // disappear: the original unit, old launcher, identity and Unknown remain.
   systemctl("start",UNIT);
-  assert.equal(liveExecutable(),nodeExe);
+  assert.equal(liveExecutable(),priorExe);
   const socketDeadline=Date.now()+10000;
   const upgradeSocket=path.join(base,"upgrade.sock");
   while(!existsSync(upgradeSocket)&&Date.now()<socketDeadline)
     await new Promise(resolve=>setTimeout(resolve,50));
-  assert.ok(existsSync(upgradeSocket),"old Node upgrade consent socket was not ready");
+  assert.ok(existsSync(upgradeSocket),"old Rust upgrade consent socket was not ready");
   const marker=path.join(base,"native-upgrade-crash-marker");
   const script=[
     "import importlib.util,pathlib,sys,time,os",
@@ -202,7 +211,7 @@ try {
     assert.ok(existsSync(marker),"upgrader never reached live native switch: "+childOutput);
     assert.equal(liveExecutable(),rustExe,"real native Rust process was not active");
     assert.equal(readFileSync(backupFile,"utf8"),oldUnit,
-      "original Node service backup lost before commit");
+      "original Rust service backup lost before commit");
     assert.ok(existsSync(key+".native-upgrade-intent"),
       "durable attempt identity missing after Rust activation");
     assert.equal(readlinkSync(cli),path.join(oldRoot,
@@ -229,9 +238,7 @@ try {
     const refusal=spawnSync("/usr/bin/python3",["-I","-B","-c",blocked,
       path.join(source,"scripts/bootstrap-v2.py"),home],{env,encoding:"utf8",timeout:8000});
     assert.equal(refusal.status,0,refusal.stderr);
-    // The published Node v0.1.56 recovery script cannot validate a native
-    // unit. The reviewed Python bootstrap, already in the native package,
-    // performs attended rollback using the original immutable unit backup.
+    // Restore the actual prior Rust service using the durable original unit.
     const recoverCode=[
       "import importlib.util,json,pathlib,sys",
       "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
@@ -245,7 +252,7 @@ try {
     const outcome=JSON.parse(recovery.stdout);
     assert.equal(outcome.status,"previous_service_restored");
     assert.equal(outcome.signed_wss,"unconfirmed");
-    assert.equal(liveExecutable(),nodeExe,"original Node must be restored");
+    assert.equal(liveExecutable(),priorExe,"original Rust must be restored");
     assert.equal(readFileSync(unitFile,"utf8"),oldUnit);
     assert.equal(readlinkSync(cli),path.join(oldRoot,
       "apps/remote-control-agent/scripts/rca.sh"));
@@ -261,79 +268,6 @@ try {
       "unknown");
     intact.close();
 
-    // Prove that a later Rust -> Rust upgrade restores the PREVIOUS Rust,
-    // not the historical Node runtime. Both roots use the same reviewed ELF:
-    // the renamed target is deliberately a local lifecycle fixture, NOT a
-    // second signed Release or evidence of a new binary's functionality.
-    const nextRoot=path.join(base,"programs/v0.1.58-rust-candidate.2-"+target);
-    cpSync(nativeRoot,nextRoot,{recursive:true});
-    const nextManifest=path.join(nextRoot,"bundle.json");
-    const nextInfo=JSON.parse(readFileSync(nextManifest,"utf8"));
-    nextInfo.version="v0.1.58-rust-candidate.2";
-    writeFileSync(nextManifest,JSON.stringify(nextInfo),{mode:0o600});
-    // fs.cpSync does not guarantee owner-private modes for freshly created
-    // directories. A real installer would apply these at verified unpack.
-    // Fix only this synthetic test fixture; keep the product fail-closed.
-    const privateCopy=spawnSync("/usr/bin/chmod",["-R","go-rwx",nextRoot],{
-      env,encoding:"utf8",timeout:10000
-    });
-    assert.equal(privateCopy.status,0,privateCopy.stderr);
-    const nativeUnitCode=[
-      "import importlib.util,pathlib,sys",
-      "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
-      "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
-      "print(b.native_render_unit(pathlib.Path(sys.argv[2]),sys.argv[3],pathlib.Path(sys.argv[4])),end='')",
-    ].join("\n");
-    const rendered=spawnSync("/usr/bin/python3",["-I","-B","-c",nativeUnitCode,
-      path.join(source,"scripts/bootstrap-v2.py"),nativeRoot,endpoint,key],{
-      env,encoding:"utf8",timeout:10000
-    });
-    assert.equal(rendered.status,0,rendered.stderr);
-    const oldRustUnit=rendered.stdout;
-    writeFileSync(unitFile,oldRustUnit,{mode:0o600});
-    rmSync(cli);
-    symlinkSync(path.join(nativeRoot,"apps/remote-control-agent/scripts/rca.sh"),cli);
-    systemctl("daemon-reload");
-    systemctl("start",UNIT);
-    assert.equal(liveExecutable(),rustExe,"previous Rust service must really run");
-    const rustSocketDeadline=Date.now()+10000;
-    while(!existsSync(upgradeSocket)&&Date.now()<rustSocketDeadline)
-      await new Promise(resolve=>setTimeout(resolve,50));
-    assert.ok(existsSync(upgradeSocket),"previous Rust must expose upgrade consent");
-    const missingProofCode=[
-      "import importlib.util,pathlib,sys",
-      "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
-      "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
-      "try:",
-      " b.native_cutover(pathlib.Path(sys.argv[2]),pathlib.Path(sys.argv[3]),sys.argv[4],verify=lambda *args:False)",
-      "except ValueError as e:",
-      " assert 'rolled back' in str(e),str(e)",
-      " print('RUST_TO_RUST_REAL_SYSTEMD_ROLLBACK_PASS')",
-      " sys.exit(0)",
-      "raise AssertionError('Rust-to-Rust cutover committed without signed WSS')",
-    ].join("\n");
-    const rolledBack=spawnSync("/usr/bin/python3",["-I","-B","-c",missingProofCode,
-      path.join(source,"scripts/bootstrap-v2.py"),home,nextRoot,endpoint],{
-      env,encoding:"utf8",timeout:30000
-    });
-    assert.equal(rolledBack.status,0,rolledBack.stdout+"\n"+rolledBack.stderr);
-    assert.match(rolledBack.stdout,/RUST_TO_RUST_REAL_SYSTEMD_ROLLBACK_PASS/);
-    assert.equal(liveExecutable(),rustExe,"prior Rust must run after rejected next version");
-    assert.equal(readFileSync(unitFile,"utf8"),oldRustUnit);
-    assert.equal(readlinkSync(cli),path.join(nativeRoot,
-      "apps/remote-control-agent/scripts/rca.sh"));
-    assert.equal(readFileSync(key,"utf8"),privateKey);
-    assert.equal(readFileSync(deviceId,"utf8"),id+"\n");
-    assert.ok(!existsSync(backupFile));
-    assert.ok(!existsSync(key+".native-upgrade-intent"));
-    assert.ok(!existsSync(key+".native-upgrade-proof"));
-    systemctl("stop",UNIT);
-    const rustIntact=new DatabaseSync(receipts,{readOnly:true});
-    assert.equal(rustIntact.prepare("PRAGMA quick_check").get().quick_check,"ok");
-    assert.equal(rustIntact.prepare(
-      "SELECT state FROM receipts WHERE operation_id='914-prior-unknown'").get().state,
-      "unknown","native-to-native rollback must not replay historical Unknown");
-    rustIntact.close();
   } finally {
     if(child.exitCode===null&&child.signalCode===null) {
       child.kill("SIGKILL");
@@ -341,13 +275,13 @@ try {
     }
   }
   console.log(JSON.stringify({
-    real_systemd:true,real_published_node_baseline:true,
+    real_systemd:true,real_published_rust_baseline:true,
     native_executable_activated_then_rejected_without_wss:true,
-    rollback_node_active_verified:true,identity_preserved:true,
+    rollback_rust_active_verified:true,identity_preserved:true,
     unknown_receipt_preserved:true,
     native_upgrader_sigkill_recovery_evidence_preserved:true,
     pending_upgrade_uninstall_refused:true,
-    verified_native_recovery_restored_published_node:true,
+    verified_native_recovery_restored_published_rust:true,
     real_rust_to_rust_rejected_without_wss:true,
     original_rust_service_and_unknown_restored:true
   }));
