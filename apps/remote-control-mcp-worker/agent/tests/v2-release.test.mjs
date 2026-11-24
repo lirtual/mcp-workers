@@ -366,17 +366,15 @@ test("#914 native-only packaging is explicit and cannot target Node or Darwin",(
     i>=args.length-2)),"missing Rust signature must not pass");
 });
 
-test("#914 Windows stable label requires explicit native-only Rust packaging",()=>{
-  const args=["--version","v0.1.58","--node-bin","/opt/node.exe","--node-sha256",
-    "ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32",
-    "--out","/tmp/release","--background-bin","/opt/rca-background.exe",
+test("#914 Windows packaging accepts only reviewed native Rust inputs",()=>{
+  const args=["--version","v0.1.58","--out","/tmp/release","--background-bin","/opt/rca-background.exe",
     "--rust-agent-bin","/opt/rca-standard.exe","--rust-agent-sha256","c".repeat(64)];
-  assert.throws(()=>parseWindowsPreviewBuildArgs(args), /native-only profile/);
-  const oldHybrid=args.map((x,i)=>i===1?"v0.1.58-rust-candidate.1":x);
-  assert.throws(()=>parseWindowsPreviewBuildArgs(oldHybrid), /native-only profile/);
+  assert.throws(()=>parseWindowsPreviewBuildArgs(args), /native-only/);
   const native=[...args,"--artifact-profile","rust-native-only-v1"];
   assert.equal(parseWindowsPreviewBuildArgs(native).version,"v0.1.58");
   const session=[...native,"--rust-session-bin","/opt/rca-session.exe","--rust-session-sha256","d".repeat(64)];
   assert.equal(parseWindowsPreviewBuildArgs(session).rustSessionBin,"/opt/rca-session.exe");
   assert.throws(()=>parseWindowsPreviewBuildArgs(session.map((x,i)=>i===1?"v0.1.58-other.1":x)));
+  assert.throws(()=>parseWindowsPreviewBuildArgs([...native,"--node-bin","/opt/node.exe","--node-sha256","f".repeat(64)]));
+  assert.throws(()=>parseWindowsPreviewBuildArgs(native.map(x=>x==="c".repeat(64)?"wrong":x)));
 });

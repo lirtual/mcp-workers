@@ -1,3 +1,4 @@
+// Independent legacy protocol reference for tests only; never packaged or launched.
 /** Existing GitHub Actions OIDC request contract, bounded and nonredirecting. */
 export async function runnerOidcToken(url:string,bearer:string,audience:string,
  http:(request:Request)=>Promise<Response>=fetch):Promise<string>{

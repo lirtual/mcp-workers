@@ -4,8 +4,8 @@ import {mkdtempSync,mkdirSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {newSessionDeviceIdentity} from '../src/session-device-identity.ts';
-import {registerSessionRcaDevice,sessionTransportEnvironment} from '../src/session-rca-client.ts';
+import {newSessionDeviceIdentity} from './fixtures/session-device-identity.ts';
+import {registerSessionRcaDevice,sessionTransportEnvironment} from './fixtures/session-rca-client.ts';
 const attempt={attempt_id:'123e4567-e89b-42d3-a456-426614174004',github_run_id:123,
   github_run_attempt:2,workflow_name:'ubuntu' as const};
 const fakeJwt='header.body.signature0123456789abcdefghijklmnop';
@@ -44,7 +44,7 @@ test('no OIDC and forged response never yield apparent Session device authority'
 });
 
 test('Session transport subprocess inherits only job tracking and safe runtime context',async()=>{
- const {sessionTransportEnvironment}=await import('../src/session-rca-client.ts');
+ const {sessionTransportEnvironment}=await import('./fixtures/session-rca-client.ts');
  const environment=sessionTransportEnvironment({
    PATH:'/usr/bin',HOME:'/home/runner',RUNNER_TEMP:'/tmp/runner',
    RUNNER_TRACKING_ID:'run-tracking',GITHUB_ACTIONS:'true',

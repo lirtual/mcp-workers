@@ -3,7 +3,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import "./register-ps1-text.mjs";
 import { acceptAgentReleaseReadback, reviewAgentPublication } from "../agent/scripts/agent-release-guard.mjs";
-import { planInstalledWindowsTakeover } from "../agent/src/windows-installed-takeover.ts";
 import { selectLatestAgentRelease } from "../src/github-latest-agent-release.ts";
 
 
@@ -143,7 +142,7 @@ export async function reviewInstallerLookup(lookup) {
   };
 }
 
-function reviewDevices(devices, releaseTag) {
+function reviewDevices(devices) {
   const records = Array.isArray(devices) ? devices : [];
   if (!records.some((device) => Object.hasOwn(device, "blocked"))) {
     return records.map((device) => ({ ...device }));
@@ -152,25 +151,15 @@ function reviewDevices(devices, releaseTag) {
     if (device.blocked !== true) {
       return { ...device, action: "unchanged", replayUnknownOperationId: null, reset: false };
     }
-    const plan = planInstalledWindowsTakeover({
-      version: device.version,
-      deviceId: device.deviceId,
-      privateKeyPresent: device.privateKeyPresent,
-      grant: device.grant,
-      ownerStopped: device.ownerStopped,
-      unknownOperationId: device.unknownOperationId,
-      upgradeResult: device.upgradeResult,
-    }, releaseTag);
+    // A blocked device is an observed isolation boundary, not an upgrade plan.
+    // This read-only report must never authorize replay, start or replacement.
     return {
       ...device,
-      action: plan.action,
-      deviceId: plan.deviceId,
-      grant: plan.grant,
-      ownerStopped: plan.ownerStopped,
-      privateKeyPreserved: plan.privateKeyPreserved,
-      startAgent: plan.startAgent,
-      rePair: plan.rePair,
-      replayUnknownOperationId: plan.replayUnknownOperationId,
+      action: "isolate",
+      privateKeyPreserved: true,
+      startAgent: false,
+      rePair: false,
+      replayUnknownOperationId: null,
       reset: false,
     };
   });
@@ -222,10 +211,7 @@ export async function evaluateCutover(input) {
     workerCutover: worker.workerCutover,
     physicalAcceptance,
     installer,
-    devices: reviewDevices(
-      fixture.devices,
-      fixture.releaseReadback?.releaseTag ?? fixture.candidates?.releaseTag ?? "v0.0.0",
-    ),
+    devices: reviewDevices(fixture.devices),
     deviceMutation: false,
     production,
     performed: [],

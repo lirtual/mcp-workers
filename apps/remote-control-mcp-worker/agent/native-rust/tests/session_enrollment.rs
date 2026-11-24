@@ -55,7 +55,7 @@ fn node(script: &str, input: &Value) -> Value {
 fn node_generated_attempt_identity_and_enrollment_proof_match_rust() {
     let reference = node(
         r#"
-        import {newSessionDeviceIdentity,signSessionEnrollmentNonce} from './src/session-device-identity.ts';
+        import {newSessionDeviceIdentity,signSessionEnrollmentNonce} from './tests/fixtures/session-device-identity.ts';
         let data=''; for await (const chunk of process.stdin) data+=chunk;
         const {attempt,nonce}=JSON.parse(data);
         const identity=newSessionDeviceIdentity(attempt);
@@ -79,7 +79,7 @@ fn rust_generated_identity_and_proof_match_node_and_are_attempt_scoped() {
     let proof = sign_session_enrollment_nonce(&identity, NONCE).unwrap();
     let result = node(
         r#"
-        import {validateSessionDeviceIdentity,signSessionEnrollmentNonce} from './src/session-device-identity.ts';
+        import {validateSessionDeviceIdentity,signSessionEnrollmentNonce} from './tests/fixtures/session-device-identity.ts';
         let data=''; for await (const chunk of process.stdin) data+=chunk;
         const {identity,nonce}=JSON.parse(data);
         validateSessionDeviceIdentity(identity,identity.attempt);

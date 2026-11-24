@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPublicKey, verify } from 'node:crypto';
 import { newSessionDeviceIdentity, signSessionEnrollmentNonce, validateSessionDeviceIdentity,
-  type SessionPhysicalAttempt } from '../src/session-device-identity.ts';
+  type SessionPhysicalAttempt } from './fixtures/session-device-identity.ts';
 
 const attempt:SessionPhysicalAttempt={attempt_id:'123e4567-e89b-42d3-a456-426614174004',
   github_run_id:1234,github_run_attempt:2,workflow_name:'ubuntu'};

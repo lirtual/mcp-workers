@@ -13,7 +13,7 @@ fn node_reference(source: &BTreeMap<String, String>) -> BTreeMap<String, String>
         .parent()
         .unwrap();
     let script = r#"
-        import {sessionTransportEnvironment} from './src/session-rca-client.ts';
+        import {sessionTransportEnvironment} from './tests/fixtures/session-rca-client.ts';
         let input=''; for await (const chunk of process.stdin) input+=chunk;
         console.log(JSON.stringify(sessionTransportEnvironment(JSON.parse(input))));
     "#;

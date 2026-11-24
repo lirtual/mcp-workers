@@ -71,14 +71,12 @@ if ($task) {
   }
 }
 # Avoid unlinking a still-running runtime. A Get-Cim failure is uncertain, not safe.
-$node = [IO.Path]::Combine($target, 'bin', 'node.exe')
 $background = [IO.Path]::Combine($target, 'bin', 'rca-background.exe')
 $rust = [IO.Path]::Combine($target,'apps','remote-control-agent','.build','rca-standard-windows-candidate.exe')
-foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe' OR Name = 'rca-background.exe' OR Name = 'rca-standard-windows-candidate.exe'" -ErrorAction Stop)) {
+foreach ($process in @(Get-CimInstance Win32_Process -Filter "Name = 'rca-background.exe' OR Name = 'rca-standard-windows-candidate.exe'" -ErrorAction Stop)) {
   $executable = [string]$process.ExecutablePath
   if ($executable -and
-      ($executable.Equals($node, [StringComparison]::OrdinalIgnoreCase) -or
-       $executable.Equals($background, [StringComparison]::OrdinalIgnoreCase) -or
+      ($executable.Equals($background, [StringComparison]::OrdinalIgnoreCase) -or
        $executable.Equals($rust, [StringComparison]::OrdinalIgnoreCase))) {
     throw 'Version still running; stop it before uninstall'
   }
@@ -93,19 +91,9 @@ foreach ($file in @(Get-ChildItem -LiteralPath $target -Recurse -Force -ErrorAct
 $manifest = Get-Content -LiteralPath ([IO.Path]::Combine($target, 'bundle.json')) -Raw | ConvertFrom-Json
 if ($manifest.version -cne $Version) { throw 'Installed version manifest mismatch' }
 $profile = $manifest.PSObject.Properties['artifact_profile']
-if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
-  $verifier = Join-Path $target 'apps/remote-control-agent/scripts/verify-windows-native.ps1'
-  & $verifier -Root $target -Version $Version | Out-Null
-} else {
-  $nodeSha = (Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant()
-  if ($nodeSha -cne 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32') {
-    throw 'Untrusted native runtime executable'
-  }
-  $verifier = [IO.Path]::Combine($target, 'apps', 'remote-control-agent',
-    'scripts', 'verify-windows-preview.mjs')
-  & $node $verifier $target
-  if ($LASTEXITCODE -ne 0) { throw 'Untrusted native runtime files; no deletion attempted' }
-}
+if ($null -eq $profile -or $profile.Value -cne 'rust-native-only-v1') { throw 'Only verified native Rust versions may be removed' }
+$verifier = Join-Path $target 'apps/remote-control-agent/scripts/verify-windows-native.ps1'
+& $verifier -Root $target -Version $Version | Out-Null
 
 # Only this verified, explicit version path is removed. Never remove the
 # programs parent, identity PEM, device ID, diagnostics, SQLite or cloud grant.

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {runnerOidcToken} from '../src/session-runner-oidc.ts';
+import {runnerOidcToken} from './fixtures/session-runner-oidc.ts';
 
 const base={GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_WORKFLOW:'ubuntu',
   GITHUB_RUN_ID:'1234',GITHUB_RUN_ATTEMPT:'2',ATTEMPT_ID:'123e4567-e89b-42d3-a456-426614174004',
