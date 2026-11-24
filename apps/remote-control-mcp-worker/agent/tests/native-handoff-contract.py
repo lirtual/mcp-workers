@@ -1204,6 +1204,101 @@ def verify_latest_selection():
     print("NATIVE_LATEST_SELECTION_CONTRACT_PASS")
 
 
+def verify_owner_stop_at_cutover_lock():
+    # Reproduce STOP committed by the other owner operation immediately
+    # before the upgrade obtains the shared lock. An uncertain systemd stop
+    # can leave the old process alive: the durable OFF intent is authoritative.
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        state, mocks, verify = fake_services(home, old, new)
+        marker = Path(str(key) + ".owner-stopped")
+        before = unit.read_bytes()
+        original_flock = bootstrap.fcntl.flock
+        def acquire(fd, flags):
+            result = original_flock(fd, flags)
+            owned_file(marker, b"stopped\n")
+            return result
+        with patch.multiple(bootstrap, **mocks), patch.object(
+                bootstrap.fcntl, "flock", side_effect=acquire):
+            try:
+                bootstrap.native_cutover(home, new, ENDPOINT, verify)
+            except ValueError as error:
+                assert "Owner Stop" in str(error), str(error)
+            else:
+                raise AssertionError("Cutover ignored an Owner STOP committed at lock acquisition")
+        assert marker.read_bytes() == b"stopped\n"
+        assert state["active"] == "old" and not state["commands"] and not state["consents"]
+        assert unit.read_bytes() == before
+        assert launcher.readlink() == old / APP / "scripts/rca.sh"
+        assert not Path(str(key) + ".native-upgrade-intent").exists()
+        assert b"disposable-receipt-history" in receipts.read_bytes()
+    finally:
+        ctx.cleanup()
+    print("NATIVE_OWNER_STOP_LOCK_CONTRACT_PASS")
+
+
+def verify_native_detached_upgrade():
+    import re
+    from unittest.mock import Mock
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        marker = Path(str(key) + ".owner-stopped")
+        command = Mock(return_value=type("Result", (), {"returncode": 0})())
+        upgrade = Mock(return_value=0)
+
+        def refused(action):
+            try:
+                action()
+            except ValueError:
+                return
+            raise AssertionError("Unsafe detached native upgrade admitted")
+
+        with patch.dict(os.environ, {"HOME": str(home)}), patch.multiple(
+                bootstrap, native_main_pid=Mock(return_value=42),
+                native_process_executable=Mock(return_value=old / APP / ".build/rca-standard-linux-candidate"),
+                native_upgrade_latest=upgrade), patch.object(bootstrap.subprocess, "run", command):
+            with patch.object(bootstrap, "approved_native_detached_worker", return_value=False):
+                refused(lambda: bootstrap.native_unattended_upgrade(old, worker=True))
+                refused(lambda: bootstrap.install("v0.1.58", None, ENDPOINT,
+                        native_upgrade=True, latest_archive=old / "bundle.json",
+                        asset_sha256="a"*64, detached_upgrade=True))
+            refused(lambda: bootstrap.native_unattended_upgrade(new))
+            owned_file(marker, b"stopped\n")
+            refused(lambda: bootstrap.native_unattended_upgrade(old))
+            marker.unlink()
+            pending = Path(str(key) + ".native-upgrade-intent")
+            owned_file(pending)
+            refused(lambda: bootstrap.native_unattended_upgrade(old))
+            pending.unlink()
+            assert not command.called and not upgrade.called
+            assert bootstrap.native_unattended_upgrade(old) == 0
+            argv = command.call_args.args[0]
+            assert argv[0] == "/usr/bin/systemd-run"
+            assert "--user" in argv and "--no-block" in argv
+            assert "--property=RuntimeMaxSec=600" in argv
+            assert "--property=NoNewPrivileges=yes" in argv
+            assert any(re.fullmatch(r"--unit=rca-upgrade-[a-f0-9]{32}", a) for a in argv)
+            assert argv[-6:] == ["/usr/bin/python3", "-I", "-B",
+                                str(old / APP / "scripts/manage-v2.py"), "upgrade", "--unattended-worker"]
+            assert not upgrade.called
+            with patch.object(bootstrap, "approved_native_detached_worker", return_value=True):
+                assert bootstrap.native_unattended_upgrade(old, worker=True) == 0
+            upgrade.assert_called_once_with(ENDPOINT, detached_upgrade=True, expected_root=old)
+            assert command.call_count == 1
+            assert not marker.exists() and b"disposable-receipt-history" in receipts.read_bytes()
+    finally:
+        ctx.cleanup()
+    # A caller-supplied env flag and invocation ID are not sufficient.
+    with patch.dict(os.environ, {"RCA_UNATTENDED_UPGRADE": "owner-approved-task-v1",
+                                 "INVOCATION_ID": "a"*32}):
+        with patch.object(bootstrap.pathlib.Path, "read_text", return_value="0::/user.slice/other.service\n"):
+            assert not bootstrap.approved_native_detached_worker()
+        with patch.object(bootstrap.pathlib.Path, "read_text",
+                          return_value="0::/user.slice/rca-upgrade-" + "a"*32 + ".service\n"):
+            assert bootstrap.approved_native_detached_worker()
+    print("NATIVE_DETACHED_UPGRADE_CONTRACT_PASS")
+
+
 if __name__ == "__main__":
     os.umask(0o077)  # Exactly the installed Agent's private program directories.
     if sys.argv[1:] == ["--units"]:
@@ -1220,4 +1315,6 @@ if __name__ == "__main__":
         verify_public_native_archive()
         verify_native_owner_lifecycle()
         verify_latest_selection()
+        verify_owner_stop_at_cutover_lock()
+        verify_native_detached_upgrade()
         verify_isolated()
