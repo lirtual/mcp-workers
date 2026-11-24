@@ -815,6 +815,8 @@ jobs:
           node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $nativeTag --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --artifact-profile rust-native-only-v1 --rust-session-bin $sessionBin --rust-session-sha256 (Get-FileHash -LiteralPath $sessionBin -Algorithm SHA256).Hash.ToLowerInvariant() --out $nativeOut
           if ($LASTEXITCODE -ne 0) { throw 'Native-only Windows candidate build failed' }
           $nativeStage = Join-Path $nativeOut ('remote-control-agent-' + $nativeTag + '-windows-x64')
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/tests/windows-zip-preflight.ps1 -Installer (Join-Path $PWD 'apps/remote-control-mcp-worker/agent/install.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer archive preflight contract failed' }
           $nativeVerifier = 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1'
           & $nativeVerifier -Root $nativeStage -Version $nativeTag
           # The packaged native CLI must remain offline and read-only even
