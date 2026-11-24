@@ -39,14 +39,22 @@ function bundleFor(target) {
     return {
       ...bundle,
       receipt_schema: 1,
+      agent_runtime: 'node-v2',
+      node: 'v24.21.0',
       candidate_profile: 'darwin-permanent-local-v1',
       native_supervisor: 'darwin-owned-group-v1',
       source_commit: SOURCE,
       upgrade_profile: null,
     };
   }
-  if (target === 'windows-x64') return { ...bundle, upgrade_profile: 'paired-full-v1' };
-  return { ...bundle, receipt_schema: 1, upgrade_profile: 'paired-full-v1' };
+  const native = { ...bundle, upgrade_profile: 'paired-full-v1',
+    artifact_profile: 'rust-native-only-v1', modules: [] };
+  if (target === 'windows-x64') return { ...native, preview: true,
+    agent_runtime: 'rust-standard-windows-v1', runtime_profile: 'standard-windows-rust-runtime-v1',
+    session_runtime: 'rust-session-v1' };
+  return { ...native, receipt_schema: 1, agent_runtime: 'rust-standard-linux-v1',
+    candidate_profile: 'standard-linux-rust-runtime-v1',
+    ...(target === 'linux-x64-glibc' ? {session_runtime:'rust-session-v1'} : {}) };
 }
 
 function candidateFor([target, artifact, extension, digestByte]) {
@@ -182,12 +190,34 @@ test('push, an incomplete set, a duplicate, an unreviewed run, drift, damage, an
     /unreviewed native candidate/);
 });
 
-test('unaccepted native-only candidates cannot enter a stable Release', () => {
-  for (const platform of ['linux-x64-glibc','linux-arm64-glibc','windows-x64']) {
+test('stable accepts exactly the phased runtime and Session profiles; rejects prerelease labels', () => {
+  assert.deepEqual(reviewAgentPublication(reviewed()), {ok:true});
+  const cases = [
+    ['linux-x64-glibc', {artifact_profile:null}],
+    ['linux-x64-glibc', {agent_runtime:'node-v2'}],
+    ['linux-x64-glibc', {candidate_profile:'wrong'}],
+    ['linux-x64-glibc', {session_runtime:null}],
+    ['linux-x64-glibc', {receipt_schema:0}],
+    ['linux-arm64-glibc', {session_runtime:'rust-session-v1'}],
+    ['linux-arm64-glibc', {node:'v24.21.0'}],
+    ['windows-x64', {artifact_profile:null}],
+    ['windows-x64', {agent_runtime:'node-standard-windows-v2'}],
+    ['windows-x64', {runtime_profile:'wrong'}],
+    ['windows-x64', {session_runtime:null}],
+    ['windows-x64', {preview:false}],
+    ['windows-x64', {modules:['v2-main.js']}],
+    ['windows-x64', {browser_runtime:'node'}],
+    ['darwin-x64', {agent_runtime:'rust-standard-darwin-v1'}],
+    ['darwin-arm64', {artifact_profile:'rust-native-only-v1'}],
+    ['darwin-arm64', {session_runtime:'rust-session-v1'}],
+    ['darwin-x64', {source_commit:'f'.repeat(40)}],
+  ];
+  for (const [target, patch] of cases) {
     const input = reviewed();
-    const candidate = input.candidates.find(({target}) => target === platform);
-    candidate.bundle.artifact_profile = 'rust-native-only-v1';
-    assert.throws(() => reviewAgentPublication(input), /damaged native candidate/);
+    const item = input.candidates.find(c => c.target === target);
+    Object.assign(item.bundle, patch);
+    assert.throws(() => reviewAgentPublication(input), /damaged native candidate/,
+      target + ': ' + JSON.stringify(patch));
   }
   assert.throws(() => reviewAgentPublication({...reviewed(), releaseTag:'v0.1.58-rust-candidate.1'}),
     /unreviewed native candidate/);

@@ -33,19 +33,37 @@ function bundleMatches(spec, bundle, input) {
     || bundle.artifact_schema !== 1
     || bundle.device_protocol !== 2
     || !absent(bundle.upgrade_protocol)) return false;
+  // Phased #914 delivery retains one complete same-source five-target Release.
+  // Darwin remains the supported Node runtime until native migration acceptance.
   if (spec.kind === 'darwin') {
     return bundle.receipt_schema === 1
+      && bundle.agent_runtime === 'node-v2'
+      && absent(bundle.artifact_profile)
+      && absent(bundle.runtime_profile)
+      && absent(bundle.session_runtime)
       && bundle.candidate_profile === 'darwin-permanent-local-v1'
       && bundle.native_supervisor === 'darwin-owned-group-v1'
       && absent(bundle.upgrade_profile)
       && bundle.source_commit === input.sourceSha;
   }
-  if (bundle.upgrade_profile !== 'paired-full-v1') return false;
-  // Native-only Linux and Windows profiles remain prerelease-only until
-  // Standard acceptance. Keep stable publication independent of review artifacts.
-  if (!absent(bundle.artifact_profile)) return false;
-  if (spec.kind === 'linux' && bundle.receipt_schema !== 1) return false;
-  return true;
+  if (bundle.upgrade_profile !== 'paired-full-v1'
+    || bundle.artifact_profile !== 'rust-native-only-v1'
+    || !absent(bundle.node)
+    || !absent(bundle.browser_runtime)
+    || !Array.isArray(bundle.modules)
+    || bundle.modules.length !== 0) return false;
+  if (spec.kind === 'linux') {
+    return bundle.receipt_schema === 1
+      && bundle.agent_runtime === 'rust-standard-linux-v1'
+      && bundle.candidate_profile === 'standard-linux-rust-runtime-v1'
+      && (spec.target === 'linux-x64-glibc'
+        ? bundle.session_runtime === 'rust-session-v1'
+        : absent(bundle.session_runtime));
+  }
+  return bundle.agent_runtime === 'rust-standard-windows-v1'
+    && bundle.runtime_profile === 'standard-windows-rust-runtime-v1'
+    && bundle.preview === true
+    && bundle.session_runtime === 'rust-session-v1';
 }
 
 export function reviewAgentPublication(input) {
