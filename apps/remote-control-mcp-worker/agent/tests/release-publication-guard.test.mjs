@@ -182,11 +182,15 @@ test('push, an incomplete set, a duplicate, an unreviewed run, drift, damage, an
     /unreviewed native candidate/);
 });
 
-test('an unaccepted Windows native-only candidate cannot enter a stable Release', () => {
-  const input = reviewed();
-  const windows = input.candidates.find(({target}) => target === 'windows-x64');
-  windows.bundle.artifact_profile = 'rust-native-only-v1';
-  assert.throws(() => reviewAgentPublication(input), /damaged native candidate/);
+test('unaccepted native-only candidates cannot enter a stable Release', () => {
+  for (const platform of ['linux-x64-glibc','linux-arm64-glibc','windows-x64']) {
+    const input = reviewed();
+    const candidate = input.candidates.find(({target}) => target === platform);
+    candidate.bundle.artifact_profile = 'rust-native-only-v1';
+    assert.throws(() => reviewAgentPublication(input), /damaged native candidate/);
+  }
+  assert.throws(() => reviewAgentPublication({...reviewed(), releaseTag:'v0.1.58-rust-candidate.1'}),
+    /unreviewed native candidate/);
 });
 
 test('readback stops unless the release is a complete immutable stable Latest', () => {

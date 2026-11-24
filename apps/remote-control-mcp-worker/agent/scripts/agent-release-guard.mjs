@@ -41,8 +41,9 @@ function bundleMatches(spec, bundle, input) {
       && bundle.source_commit === input.sourceSha;
   }
   if (bundle.upgrade_profile !== 'paired-full-v1') return false;
-  // Windows native-only candidates currently support staging, not activation.
-  if (spec.kind === 'windows' && !absent(bundle.artifact_profile)) return false;
+  // Native-only Linux and Windows profiles remain prerelease-only until
+  // Standard acceptance. Keep stable publication independent of review artifacts.
+  if (!absent(bundle.artifact_profile)) return false;
   if (spec.kind === 'linux' && bundle.receipt_schema !== 1) return false;
   return true;
 }
