@@ -81,6 +81,15 @@ export function windowsAgentStore(localAppData: string | undefined): string {
   return path.win32.join(localAppData, "mcp-workers", "remote-control");
 }
 
+// Report only fixed local phase/result categories. Never expose the
+// PowerShell diagnostic body, profile path, account name or identity.
+class LocalWindowsFailure extends Error {}
+function localWindowsFailure(phase: string, result: {error?: Error; signal?: string | null}): LocalWindowsFailure {
+  const cause = (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT"
+    ? "timeout" : result.error ? "spawn-failed" : result.signal ? "terminated" : "refused";
+  return new LocalWindowsFailure("Windows local " + phase + ": " + cause);
+}
+
 function assertPrivateStore(action: "Init" | "Check" | "Seal", directory: string, fileName?: "v2-identity.pem" | "v2-identity.pem.device-id" | "v2-identity.pem.device-id.pending" | "v2-identity.pem.install-mode" | "v2-identity.pem.activation-pending" | "desktop-grant.json" | "desktop-stop.json" | "v2-identity.pem.owner-stopped" | "receipts"): void {
   if (process.platform !== "win32") throw Error("Native Windows required.");
   const systemRoot = process.env.SystemRoot;
@@ -91,7 +100,7 @@ function assertPrivateStore(action: "Init" | "Check" | "Seal", directory: string
     "-Action", action, "-Directory", directory, ...(fileName ? ["-FileName", fileName] : []),
   ], { encoding: "utf8", windowsHide: true, timeout: 12_000, stdio: "pipe" });
   // Do not echo ACL output (which can expose account names or profile paths).
-  if (result.error || result.status !== 0) throw Error("Windows private identity ACL check refused.");
+  if (result.error || result.status !== 0) throw localWindowsFailure("private-store " + action, result);
 }
 
 async function hasFile(filename: string): Promise<boolean> {
@@ -116,7 +125,7 @@ function runUserTask(action: "Enable" | "Start" | "Stop" | "Disable" | "Status" 
       "-Entry", fileURLToPath(import.meta.url), "-Endpoint", endpoint!] : []),
     ...(action === "Switch" ? ["-Version", targetVersion!, "-Direction", direction!] : []),
   ], { encoding: "utf8", windowsHide: true, timeout: 20_000 });
-  if (result.error || result.status !== 0) throw Error("Native Windows user task refused.");
+  if (result.error || result.status !== 0) throw localWindowsFailure("Task " + action, result);
   return result.stdout.trim();
 }
 
@@ -606,7 +615,8 @@ export async function runWindowsAgent(argv: string[]): Promise<void> {
 }
 
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
-  runWindowsAgent(process.argv.slice(2)).catch(() => {
+  runWindowsAgent(process.argv.slice(2)).catch(error => {
+    if (error instanceof LocalWindowsFailure) process.stderr.write(error.message + "\n");
     process.stderr.write("Windows Agent unavailable; existing identity was preserved.\n");
     process.exitCode = 1;
   });

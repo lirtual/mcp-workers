@@ -356,6 +356,9 @@ try {
   }
   Ensure-PrivateFolder ([IO.Path]::Combine($env:LOCALAPPDATA, 'mcp-workers'))
   Ensure-PrivateFolder $root
+  if (Test-Path -LiteralPath ([IO.Path]::Combine($root,'windows-native-upgrade.json'))) {
+    throw 'Unreconciled native upgrade; recover before changing installed programs'
+  }
   $programs = [IO.Path]::Combine($root, 'programs')
   Ensure-PrivateFolder $programs
   $target = [IO.Path]::Combine($programs, "$Version-windows-x64")
