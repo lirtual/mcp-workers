@@ -1,5 +1,3 @@
-import { handleClerkProbe, isClerkProbePath } from "./clerk-gate0-probe.ts";
-import type { ClerkProbeConfig } from "./clerk-gate0-probe.ts";
 import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { handleAgentInstallerRequest, renderLinuxLatestInstallShell } from "./install-bootstrap.ts";
 import { handleLatestMacInstallRequest, rejectLatestInstallRequest } from "./install-macos-latest.ts";
@@ -1129,7 +1127,6 @@ export default {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
-    if (isClerkProbePath(url.pathname)) return handleClerkProbe(request, env as Env & ClerkProbeConfig);
 
     if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1" || url.pathname === "/install-macos.sh") {
       // Serve public installers only from the existing, configured
