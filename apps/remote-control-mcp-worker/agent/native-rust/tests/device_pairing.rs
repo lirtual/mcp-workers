@@ -97,3 +97,19 @@ fn real_native_pair_entry_refuses_non_interactive_invocation_without_identity() 
         assert!(std::fs::read_dir(&identity).unwrap().next().is_none());
     }
 }
+
+#[cfg(windows)]
+#[test]
+fn windows_native_pair_entry_refuses_non_interactive_invocation() {
+    let home = tempfile::tempdir().unwrap();
+    for mode in ["permanent", "temporary"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-windows-candidate"))
+            .args(["--pair-local", "https://127.0.0.1:9/", "fixture", mode])
+            .env("LOCALAPPDATA", home.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    }
+}

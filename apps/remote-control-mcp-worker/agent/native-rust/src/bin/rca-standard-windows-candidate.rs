@@ -1,5 +1,5 @@
-//! Unshipped Standard Windows RCA entrypoint. It accepts only an existing
-//! owner-paired identity and an explicit same-owner service launch contract.
+//! Unshipped Standard Windows RCA entrypoint: owner-local pairing, existing
+//! private identity, and explicit same-owner service launch contract.
 #[cfg(windows)]
 mod windows {
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
@@ -211,6 +211,33 @@ mod windows {
         Ok(())
     }
 
+    fn pair_local(endpoint: &str, name: &str, mode: &str) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::{pair_windows_identity, PairingClient};
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+            || name.is_empty()
+            || name.encode_utf16().count() > 64
+            || name.chars().any(|c| c < '\u{20}')
+        {
+            return Err(());
+        }
+        let temporary = match mode {
+            "permanent" => false,
+            "temporary" => true,
+            _ => return Err(()),
+        };
+        let client = PairingClient::new(endpoint).map_err(|_| ())?;
+        let root = store_root()?;
+        pair_windows_identity(&root, &client, name, temporary, |pending| {
+            println!("Pairing code (10 min): {}", pending.code);
+            println!("Local public key fingerprint: {}", pending.fingerprint);
+            println!("Use MCP pairing_lookup, then explicitly pairing_approve for the exact key and {mode} mode.");
+        }).map_err(|_| ())?;
+        println!("Approved identity recovered; foreground and Task activation are separate.");
+        Ok(())
+    }
+
     pub fn run() -> Result<(), ()> {
         if !cfg!(target_arch = "x86_64")
             || rca_native_agent::is_windows_system_identity().map_err(|_| ())?
@@ -218,6 +245,11 @@ mod windows {
             return Err(());
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
+        if let [command, endpoint, name, mode] = args.as_slice() {
+            if command == "--pair-local" {
+                return pair_local(endpoint, name, mode);
+            }
+        }
         if args.as_slice() == ["--verify-upgrade-state"] {
             return verify_upgrade_state();
         }
