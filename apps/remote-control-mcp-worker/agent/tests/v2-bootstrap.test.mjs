@@ -304,9 +304,15 @@ with tempfile.TemporaryDirectory(prefix="rca-native-only-") as t:
     reviewed=pathlib.Path(t)/"native-session.tar.gz"
     archive(reviewed,{**declared,session:bytes(elf)})
     records=b.inspect_archive(reviewed,tag,target)
-    second=programs/"session-bundle"
+    other=programs/"isolated";other.mkdir(mode=0o700)
+    second=other/(tag+"-"+target)
     b.unpack_verified(reviewed,second,records,tag,target)
     assert stat.S_IMODE((second/session).stat().st_mode)==0o700
+    assert b.validated_owned_version(second)
+    (second/session).unlink()
+    try:b.validated_owned_version(second);raise AssertionError("missing installed Session entry accepted")
+    except ValueError:pass
+    assert b.validated_owned_version(dest)
 print("NATIVE_ONLY_STAGING_AND_STATUS_PASS")`;
   const result=python(["-c",body,script]);
   assert.equal(result.status,0,result.stderr);
