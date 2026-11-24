@@ -224,16 +224,7 @@ jobs:
           node_bin="$old/bin/node"
           supervisor="$old/apps/remote-control-agent/.build/session-supervisor"
           rust_agent="$SPEC914_TEMP/build/rca-standard-linux-candidate"
-          node "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs" \
-            --version "$version" --target "$SPEC914_TARGET" \
-            --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
-            --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
-            --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
-            --out "$SPEC914_TEMP/package"
-          archive="$SPEC914_TEMP/package/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
-          python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
-            "$archive" "$version" "$SPEC914_TARGET"
-          # Stage-only, unpublished native Rust package with no Node or JS.
+          # Build the actual released Node-free profile; the immutable Node archive is the rollback baseline.
           session_args=()
           if [[ "$SPEC914_TARGET" == linux-x64-glibc ]]; then
             session_bin="$SPEC914_TEMP/build/rca-session-linux-candidate"
@@ -254,8 +245,8 @@ jobs:
             echo 'Node/JavaScript slipped into native-only archive' >&2
             exit 1
           fi
-          test "$(stat -c %s "$pure")" -lt "$(stat -c %s "$archive")"
-          chmod 0644 "$archive" "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
+          test "$(stat -c %s "$pure")" -lt "$(stat -c %s "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz")"
+          chmod 0644 "$pure" "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
       - name: Kill installer after candidate activation and verify real systemd recovery
         shell: bash
         run: |
@@ -292,19 +283,12 @@ jobs:
           chmod 0755 "$source_dir"
           sudo cp -a apps/remote-control-mcp-worker/agent/. "$source_dir/"
           sudo chown -R "$test_user:$test_user" "$source_dir"
-          sudo -u "$test_user" test -r "$source_dir/tests/linux-systemd-upgrade-recovery.integration.mjs"
+          sudo -u "$test_user" test -r "$source_dir/tests/linux-native-only-systemd.integration.mjs"
           fixture_dir="$(mktemp -d /tmp/spec914-fixtures.XXXXXX)"
           chmod 0755 "$fixture_dir"
           old_archive="$fixture_dir/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
-          rust_archive="$fixture_dir/remote-control-agent-v0.1.57-rust-candidate.1-$SPEC914_TARGET.tar.gz"
           install -m 0644 "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz" "$old_archive"
-          install -m 0644 "$SPEC914_TEMP/package/remote-control-agent-v0.1.57-rust-candidate.1-$SPEC914_TARGET.tar.gz" "$rust_archive"
           sudo -u "$test_user" test -r "$old_archive"
-          sudo -u "$test_user" test -r "$rust_archive"
-          sudo -u "$test_user" "${user_env[@]}" \
-            RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_RUST_ARCHIVE="$rust_archive" \
-            "$(node -p 'process.execPath')" --experimental-strip-types \
-            "$source_dir/tests/linux-systemd-upgrade-recovery.integration.mjs"
           # Real old Node systemd service -> Node-free Rust attempt with NO signed
           # Worker WSS. The real old service must be restored without replaying
           # existing Unknown receipts; no production endpoint or grant involved.
