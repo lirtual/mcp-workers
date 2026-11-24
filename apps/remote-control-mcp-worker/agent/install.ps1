@@ -186,18 +186,22 @@ function Resolve-LatestAgentRelease {
   if (-not $windows) { throw 'Windows x64 Agent asset is missing' }
   return @{ Tag = $tag; Sha = $windows.digest.Substring(7); Url = [string]$windows.browser_download_url; Size = [long]$windows.size }
 }
-function Resolve-ReviewedNativeRelease([string]$tag,[string]$sha) {
-  # Explicit owner pin: one official tag lookup, no mutable tag or fallback.
-  if ($tag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -or
-      $sha -cnotmatch '^[a-f0-9]{64}$') { throw 'Reviewed native candidate tag and SHA-256 required' }
+function Resolve-ReviewedNativeRelease([string]$tag,[string]$sha,[bool]$stable = $false) {
+  # Candidate pin or a stable tag selected by the independent upgrade launcher.
+  # Never look up Latest a second time or accept an arbitrary URL.
+  $tagPattern = if ($stable) { '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$' }
+    else { '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' }
+  if ($tag -cnotmatch $tagPattern -or $sha -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'Reviewed native Release tag and SHA-256 required'
+  }
   $uri = "https://api.github.com/repos/lirtual/mcp-workers/releases/tags/$tag"
   $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'rca-windows-reviewed-installer' }
   $response = Invoke-WebRequest -Uri $uri -Headers $headers -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 30
   if ([int]$response.StatusCode -ne 200) { throw 'Reviewed native Release lookup failed' }
   $release = $response.Content | ConvertFrom-Json
   if ($release.immutable -ne $true -or $release.draft -ne $false -or
-      $release.prerelease -ne $true -or $release.tag_name -cne $tag) {
-    throw 'Selected native Release is not the reviewed immutable prerelease'
+      $release.prerelease -ne (-not $stable) -or $release.tag_name -cne $tag) {
+    throw 'Selected native Release does not match the reviewed immutable tag'
   }
   $name = "remote-control-agent-$tag-windows-x64.zip"
   $expected = "https://github.com/lirtual/mcp-workers/releases/download/$tag/$name"
@@ -320,28 +324,34 @@ function Complete-ApprovedOnboarding([string]$launcher) {
     throw 'Authorization incomplete. Identity kept.'
   }
 }
-# Attended verified native install. Detached production upgrade stays on
-# its existing separate path; a console is mandatory for native activation.
+# Native first activation requires the owner console. An admitted detached
+# stable upgrade may only invoke the existing transactional Task switch.
 function Complete-NativeInstall([string]$directory) {
   $scripts = Join-Path $directory 'apps/remote-control-agent/scripts'
   $entry = Join-Path $directory 'apps/remote-control-agent/.build/rca-standard-windows-candidate.exe'
   $controller = Join-Path $scripts 'windows-user-task.ps1'
   $ps = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
   $origin = 'https://rca.lirtual.dpdns.org/'
-  if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+  if ($detachedUpgrade -and -not $nativeDetachedUpgrade) {
+    throw 'Detached native activation requires an existing running approved Task'
+  }
+  if (-not $nativeDetachedUpgrade -and ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected)) {
     throw 'Real owner console required for reviewed native install'
   }
   & (Join-Path $scripts 'verify-windows-native.ps1') -Root $directory -Version $Version | Out-Null
   & (Join-Path $scripts 'windows-private-store.ps1') -Action Check -Directory $root
   if (Test-Path -LiteralPath ($identityFile + '.owner-stopped')) {
+    if ($detachedUpgrade) { throw 'Owner STOP blocks detached native upgrade' }
     Write-Output 'Owner STOP preserved. Agent was not started.'
     return
   }
   if ($upgradeExisting) {
     & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
     if ($LASTEXITCODE -ne 0) { throw 'Native upgrade refused or uncertain; review retained state' }
+    if ($detachedUpgrade) { Write-Output 'Local switch returned; independent signed-WSS verification required.' }
     return
   }
+  if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }
   $raw = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Status
   if ($LASTEXITCODE -ne 0) { throw 'Existing Task status uncertain' }
   $state = $raw | ConvertFrom-Json
@@ -448,6 +458,12 @@ $releaseUrl = $null
 $releaseSha = $null
 $releaseSize = [long]0
 try {
+  if ($detachedUpgrade -and ($OfflineArchive -or -not $SelectedTag -or -not $SelectedReleaseSha256 -or $StageOnly)) {
+    throw 'Detached upgrade requires a selected immutable stable Release'
+  }
+  if ($detachedRequest -and ($SelectedTag -or $OfflineArchive -or $StageOnly)) {
+    throw 'Detached launcher must select the official Latest itself'
+  }
   if ($OfflineArchive) {
     if ($env:GITHUB_ACTIONS -ne 'true' -or -not $Version -or -not $ExpectedSha256) {
       throw 'Offline input is allowed only by explicit CI fixture'
@@ -458,7 +474,11 @@ try {
     $Version = $SelectedTag
     $releaseSha = $SelectedReleaseSha256
     $releaseUrl = "https://github.com/lirtual/mcp-workers/releases/download/$Version/remote-control-agent-$Version-windows-x64.zip"
-    if ($Version -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -and
+    if ($detachedUpgrade) {
+      $reviewed = Resolve-ReviewedNativeRelease $Version $releaseSha $true
+      $releaseUrl = $reviewed.Url
+      $releaseSize = $reviewed.Size
+    } elseif ($Version -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -and
         -not $StageOnly -and -not $detachedUpgrade -and -not $detachedRequest) {
       $reviewed = Resolve-ReviewedNativeRelease $Version $releaseSha
       $releaseUrl = $reviewed.Url
@@ -582,6 +602,9 @@ try {
       throw 'Unreviewed existing user-logon Task'
     }
     $oldVersion = if ($task) { Get-ExistingAgentVersion $programs ([string]$task.Actions[0].Execute) } else { $Version }
+    if ($detachedUpgrade -and $oldVersion -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+      throw 'Detached candidate promotion refused; use attended upgrade'
+    }
     if ($oldVersion -cne $Version) {
       $oldNumber = [version](($oldVersion.Substring(1) -split '-')[0])
       $newNumber = [version](($Version.Substring(1) -split '-')[0])
@@ -602,6 +625,10 @@ try {
   } elseif ($task) {
     throw 'Existing user-logon task without an approved local identity; refusing new pairing'
   }
+  # The independent Task path admits only a strictly newer reviewed stable
+  # archive for an already-running permanent installation, never onboarding.
+  $nativeDetachedUpgrade = $detachedUpgrade -and $upgradeExisting -and $alreadyPaired -and
+    $task -and $task.State -eq 'Running' -and -not (Test-Path -LiteralPath ($identityFile + '.owner-stopped'))
   if ($StageOnly -and -not $upgradeExisting) {
     throw 'Staging requires an existing paired device with a strictly newer target version'
   }
@@ -612,7 +639,9 @@ try {
     $installedManifest = Get-Content -LiteralPath (Join-Path $target 'bundle.json') -Raw | ConvertFrom-Json
     $installedProfile = $installedManifest.PSObject.Properties['artifact_profile']
     if ($null -ne $installedProfile -and $installedProfile.Value -ceq 'rust-native-only-v1') {
-      if (-not $nativeOnboarding) { throw 'Native-only bundle requires reviewed attended onboarding' }
+      if (-not ($nativeOnboarding -or $nativeDetachedUpgrade)) {
+        throw 'Native-only bundle requires reviewed attended onboarding or detached upgrade'
+      }
       $temp = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('rca-' + [guid]::NewGuid().ToString('N') + '.zip'))
       Download-ApprovedAsset $releaseUrl $temp $releaseSize
       Assert-ArchiveDigest $temp $releaseSha
@@ -691,8 +720,8 @@ try {
   if ($manifest.version -cne $Version) { throw 'Manifest version mismatch' }
   $profile = $manifest.PSObject.Properties['artifact_profile']
   if ($null -ne $profile -and $profile.Value -ceq 'rust-native-only-v1') {
-    if (-not $StageOnly -and -not $nativeOnboarding) {
-      throw 'Native-only Windows bundle requires reviewed attended onboarding'
+    if (-not $StageOnly -and -not ($nativeOnboarding -or $nativeDetachedUpgrade)) {
+      throw 'Native-only Windows bundle requires reviewed attended onboarding or detached upgrade'
     }
     # The outer reviewed ZIP SHA256 was checked before extraction.
     $verifier = Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1'
