@@ -2,6 +2,7 @@
 //! A verified WSS lease must be checked before any operation admission or file effect.
 //! Receipt admission precedes effects, and an uncertain effect is never retried.
 use crate::native_read::permitted_path;
+use crate::receipt_boundary::ReceiptBoundary;
 use crate::receipts::{Admission, Receipt, ReceiptError, ReceiptStore};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
@@ -31,6 +32,7 @@ pub struct WriteOutcome {
 
 pub struct NativeWriteExecutor {
     receipts: ReceiptStore,
+    boundary: ReceiptBoundary,
 }
 
 struct WriteArgs {
@@ -552,9 +554,13 @@ impl NativeWriteExecutor {
     /// Requires an exclusive, private receipt directory and stopped old Agent.
     /// This library intentionally does not connect to WSS or grant itself.
     pub fn open(receipt_directory: &Path) -> Result<Self, NativeWriteError> {
-        Ok(Self {
-            receipts: ReceiptStore::open(receipt_directory)?,
-        })
+        let receipts = ReceiptStore::open(receipt_directory)?;
+        let boundary = ReceiptBoundary::new(receipt_directory)?;
+        Ok(Self { receipts, boundary })
+    }
+
+    pub(crate) fn boundary(&self) -> &ReceiptBoundary {
+        &self.boundary
     }
 
     pub fn get_receipt(&self, id: &str) -> Result<Option<Receipt>, NativeWriteError> {
@@ -579,7 +585,11 @@ impl NativeWriteExecutor {
             return Err(NativeWriteError::LeaseRevoked);
         }
         let args = parse_write_args(arguments)?;
+        let boundary = self.boundary.clone();
         self.mutate_with_receipt(id, "write_file", &args.normalized, lease_active, || {
+            if boundary.blocks(&args.target) {
+                return Err(EffectFailure::NoTargetEffect);
+            }
             effect(&args)
         })
     }
@@ -612,7 +622,11 @@ impl NativeWriteExecutor {
             return Err(NativeWriteError::LeaseRevoked);
         }
         let args = parse_edit_args(arguments)?;
+        let boundary = self.boundary.clone();
         self.mutate_with_receipt(id, "edit_block", &args.normalized, lease_active, || {
+            if boundary.blocks(&args.target) {
+                return Err(EffectFailure::NoTargetEffect);
+            }
             edit_effect(&args)
         })
     }
@@ -627,7 +641,11 @@ impl NativeWriteExecutor {
             return Err(NativeWriteError::LeaseRevoked);
         }
         let args = parse_move_args(arguments)?;
+        let boundary = self.boundary.clone();
         self.mutate_with_receipt(id, "move_file", &args.normalized, lease_active, || {
+            if boundary.blocks(&args.source) || boundary.blocks(&args.destination) {
+                return Err(EffectFailure::NoTargetEffect);
+            }
             move_effect(&args)
         })
     }
@@ -643,12 +661,18 @@ impl NativeWriteExecutor {
             return Err(NativeWriteError::LeaseRevoked);
         }
         let args = parse_path_args(arguments)?;
+        let boundary = self.boundary.clone();
         self.mutate_with_receipt(
             id,
             mutation.tool_name(),
             &args.normalized,
             lease_active,
-            || path_effect(mutation, &args.target),
+            || {
+                if boundary.blocks(&args.target) {
+                    return Err(EffectFailure::NoTargetEffect);
+                }
+                path_effect(mutation, &args.target)
+            },
         )
     }
 

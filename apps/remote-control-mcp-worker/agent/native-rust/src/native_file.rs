@@ -313,7 +313,7 @@ fn execute_native_file(
     let mut processes = managed.map(NativeProcessEngine::new);
     #[cfg(any(unix, windows))]
     let mut upgrade_frozen = false;
-    let mut searches = SearchSessions::default();
+    let mut searches = SearchSessions::with_boundary(writes.boundary().clone());
     while !stop.load(Ordering::Acquire) {
         // Expire idle cursors even if the Owner never sends another request.
         searches.expire();
@@ -404,7 +404,9 @@ fn execute_native_file(
             continue;
         }
         let response = match command {
-            NativeFileCommand::Read(read) => native_read::execute_read_frame(&read),
+            NativeFileCommand::Read(read) => {
+                native_read::execute_read_frame_guarded(&read, Some(writes.boundary()))
+            }
             NativeFileCommand::Search(search) => {
                 searches.execute_scoped(&search, request.lease(), request.reply_deadline())
             }

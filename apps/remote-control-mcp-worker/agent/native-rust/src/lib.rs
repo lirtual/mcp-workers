@@ -29,6 +29,7 @@ pub mod native_process;
 pub mod native_read;
 mod native_search;
 pub mod native_write;
+mod receipt_boundary;
 pub mod receipts;
 pub mod session;
 pub mod session_enrollment;

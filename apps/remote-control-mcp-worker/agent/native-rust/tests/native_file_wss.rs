@@ -816,3 +816,136 @@ fn search_cursors_do_not_survive_signed_transport_reconnect() {
     server.join().unwrap();
     assert!(result.is_ok(), "{result:?}");
 }
+
+#[test]
+fn active_ledger_is_not_an_ordinary_file_and_remains_exclusive() {
+    let root = tempfile::tempdir().unwrap();
+    #[cfg(windows)]
+    common::seal_windows_dir(root.path());
+    let directory = root.path().join("receipts");
+    drop(ReceiptStore::open(&directory).unwrap());
+    let db = directory.join("operation-receipts.sqlite");
+    let alias = root.path().join("alias");
+    std::fs::hard_link(&db, &alias).unwrap();
+    #[cfg(unix)]
+    let symlink = {
+        let path = root.path().join("symlink");
+        std::os::unix::fs::symlink(&db, &path).unwrap();
+        path
+    };
+    let normal = root.path().join("ordinary.txt");
+    std::fs::write(&normal, "visible").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let end = Arc::clone(&stop);
+    let ledger = directory.clone();
+    let parent = root.path().to_owned();
+    let server = thread::spawn(move || {
+        struct Stop(Arc<AtomicBool>);
+        impl Drop for Stop {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _stop = Stop(end);
+        let mut socket = signed_socket(listener);
+        let mut exchange = |body: String| -> Value {
+            socket.send(Message::Text(body.into())).unwrap();
+            serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap()
+        };
+        let read = |path: &std::path::Path| {
+            json!({"kind":"read","request_id":"11111111-1111-1111-1111-111111111111","tool":"read_file","arguments":{"path":path}}).to_string()
+        };
+        assert_eq!(exchange(read(&db))["status"], "failed");
+        assert_eq!(exchange(read(&alias))["status"], "failed");
+        #[cfg(unix)]
+        assert_eq!(exchange(read(&symlink))["status"], "failed");
+        assert_eq!(exchange(read(&normal))["text"], "visible");
+        let multiple = exchange(json!({"kind":"read","request_id":"55555555-5555-5555-5555-555555555555","tool":"read_multiple_files","arguments":{"paths":[alias,normal]}}).to_string());
+        assert_eq!(multiple["status"], "completed");
+        let text = multiple["text"].as_str().unwrap();
+        assert!(text.contains("# file 1\nstatus: failed"));
+        assert!(text.contains("# file 2\nstatus: ok\nvisible"));
+
+        let search = exchange(json!({"kind":"read","request_id":"22222222-2222-2222-2222-222222222222","tool":"start_search","arguments":{"path":parent,"search_type":"content","pattern":"SQLite format 3"}}).to_string());
+        assert_eq!(search["status"], "completed");
+        let page: Value = serde_json::from_str(search["text"].as_str().unwrap()).unwrap();
+        assert_eq!(page["results"].as_array().unwrap().len(), 0);
+        for (n, tool, args) in [
+            (
+                1,
+                "write_file",
+                json!({"path":alias,"content":"must-not-write","mode":"append"}),
+            ),
+            (
+                2,
+                "edit_block",
+                json!({"file_path":db,"old_string":"SQLite","new_string":"denied","expected_replacements":1}),
+            ),
+            (3, "delete_file", json!({"path":db})),
+            (
+                4,
+                "move_file",
+                json!({"source":alias,"destination":parent.join("moved")}),
+            ),
+            (
+                5,
+                "move_file",
+                json!({"source":normal,"destination":ledger.join("new-file")}),
+            ),
+            (
+                6,
+                "create_directory",
+                json!({"path":ledger.join("new-dir")}),
+            ),
+        ] {
+            let result = exchange(request(
+                "33333333-3333-3333-3333-333333333333",
+                tool,
+                &format!("deny-{n}"),
+                args,
+            ));
+            assert!(
+                matches!(
+                    result["result"]["status"].as_str(),
+                    Some("failed" | "unavailable")
+                ),
+                "{tool}: {result:?}"
+            );
+        }
+        let result = exchange(request(
+            "44444444-4444-4444-4444-444444444444",
+            "write_file",
+            "ordinary",
+            json!({"path":normal,"content":"!","mode":"append"}),
+        ));
+        assert_eq!(result["result"]["status"], "completed");
+        let contender = std::process::Command::new("node")
+            .args(["--input-type=module", "-e", r#"
+                import {DatabaseSync} from 'node:sqlite';
+                const db=new DatabaseSync(process.argv[1]);
+                db.exec('PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE');
+                try { db.exec('BEGIN EXCLUSIVE'); }
+                catch(e) { if (e.errcode===5 || /database is locked/i.test(String(e))) process.exit(0); throw e; }
+                throw Error('exclusive lock escaped');
+            "#]).arg(&db).output().unwrap();
+        assert!(
+            contender.status.success(),
+            "{}",
+            String::from_utf8_lossy(&contender.stderr)
+        );
+    });
+    let result = run_native_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &directory,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    let store = ReceiptStore::open(&directory).unwrap();
+    assert_eq!(store.get("ordinary").unwrap().unwrap().state, "completed");
+}

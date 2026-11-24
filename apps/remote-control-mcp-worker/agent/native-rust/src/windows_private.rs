@@ -115,6 +115,35 @@ fn open_with_access(path: &Path, access: u32) -> Result<OwnedHandle, ReceiptErro
     Ok(unsafe { OwnedHandle::from_raw_handle(handle) })
 }
 
+// Attribute-only handle; closing it never releases another Windows handle's
+// byte-range locks. No read-data or write access is requested.
+pub(crate) fn file_identity(path: &Path) -> std::io::Result<(u64, u64)> {
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS,
+            null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(std::io::Error::last_os_error());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut info) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((
+        u64::from(info.dwVolumeSerialNumber),
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    ))
+}
+
 fn open_read_control(path: &Path) -> Result<OwnedHandle, ReceiptError> {
     open_with_access(path, READ_CONTROL | FILE_READ_ATTRIBUTES)
 }
