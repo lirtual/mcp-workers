@@ -392,7 +392,7 @@ def worker_origin(endpoint):
             and uri.path in ("", "/"))
 
 
-def preflight(tag, commit, endpoint, stage_only=False):
+def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False):
     # Remote staging is data-only; the existing manual installer still demands
     # a real console, and no noninteractive path may pair or switch systemd.
     if (sys.platform != "linux" or os.getuid() == 0
@@ -411,13 +411,27 @@ def preflight(tag, commit, endpoint, stage_only=False):
         raise ValueError("glibc 2.28+ required; musl is unsupported")
     if not worker_origin(endpoint):
         raise ValueError("Supply the reviewed HTTPS Worker origin, without credentials")
-    if not TAG.fullmatch(tag) or not SHA.fullmatch(commit):
+    if latest_archive:
+        if commit is not None or not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+            raise ValueError("Public archive requires the stable Release tag, not a source pin")
+    elif not TAG.fullmatch(tag) or not SHA.fullmatch(commit):
         raise ValueError("Pinned Release tag and commit are required")
     return "linux-" + ("x64" if cpu == "x86_64" else "arm64") + "-glibc"
 
 
+def public_forward_version(installed, target):
+    stable = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    old = re.fullmatch(stable + r"(?:-rust-candidate\.[1-9][0-9]*)?", installed)
+    new = re.fullmatch(stable, target)
+    if not old or not new:
+        return False
+    old_number, new_number = tuple(map(int, old.groups())), tuple(map(int, new.groups()))
+    return new_number > old_number or (new_number == old_number and installed != target)
+
+
 def install(tag, commit, endpoint, name=None, upgrade=False,
-            stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False):
+            stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False,
+            latest_archive=None):
     if temporary and not native_install:
         raise ValueError("Temporary mode requires --native-install")
     if stage_only or native_upgrade or native_install:
@@ -428,7 +442,9 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             raise ValueError(scope + " requires a reviewed SHA-256 and no Node install action")
     elif asset_sha256 is not None:
         raise ValueError("An asset SHA-256 is only accepted for native staging, install or upgrade")
-    target = preflight(tag, commit, endpoint, stage_only=stage_only)
+    if latest_archive is not None and (stage_only or not (native_upgrade or native_install)):
+        raise ValueError("Public archive requires an attended native install or upgrade")
+    target = preflight(tag, commit, endpoint, stage_only=stage_only, latest_archive=latest_archive is not None)
     # The owned service template uses a canonical origin with a trailing slash.
     if not endpoint.endswith("/"):
         endpoint += "/"
@@ -443,21 +459,31 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         except BlockingIOError:
             raise ValueError("Another v2 standalone installer is already running")
         clean_orphaned_staging(location)
-        print("==> Resolving immutable GitHub Release and exact source commit", flush=True)
-        pinned = resolve_pinned(tag, commit, target)
-        # Release API metadata is insufficient by itself: independent owner
-        # review of the exact architecture's asset SHA-256 is mandatory.
-        if (stage_only or native_upgrade or native_install) and pinned["digest"] != asset_sha256:
-            raise ValueError("Reviewed SHA-256 differs from immutable GitHub Release metadata")
+        pinned = None
+        if latest_archive is None:
+            print("==> Resolving immutable GitHub Release and exact source commit", flush=True)
+            pinned = resolve_pinned(tag, commit, target)
+            if (stage_only or native_upgrade or native_install) and pinned["digest"] != asset_sha256:
+                raise ValueError("Reviewed SHA-256 differs from immutable GitHub Release metadata")
         archive_path = None
         try:
             with tempfile.NamedTemporaryFile(prefix=".download-", dir=location, delete=False) as f:
                 archive_path = pathlib.Path(f.name)
                 os.chmod(archive_path, 0o600)
-                print("==> Downloading verified native Agent package", flush=True)
-                data = fetch(pinned["download"], "application/octet-stream", MAX_ARCHIVE)
-                if (len(data) != pinned["size"] or hashlib.sha256(data).hexdigest() != pinned["digest"]):
-                    raise ValueError("Official GitHub SHA-256 or byte length mismatch")
+                if latest_archive is not None:
+                    # Public shell has verified the immutable manifest's asset.
+                    # Copy the checked bytes once into the private installer lock
+                    # domain and reverify before any extraction or activation.
+                    data = native_owned_file(latest_archive, MAX_ARCHIVE)
+                    digest = asset_sha256
+                else:
+                    print("==> Downloading verified native Agent package", flush=True)
+                    data = fetch(pinned["download"], "application/octet-stream", MAX_ARCHIVE)
+                    if len(data) != pinned["size"]:
+                        raise ValueError("Official GitHub byte length mismatch")
+                    digest = pinned["digest"]
+                if hashlib.sha256(data).hexdigest() != digest:
+                    raise ValueError("Official GitHub SHA-256 mismatch")
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
@@ -488,6 +514,14 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             # No install-v2, systemctl, identity mutation, approval or pairing.
             return
         if native_install:
+            if latest_archive is not None:
+                home = pathlib.Path.home()
+                _, _, _, current, ids = local_inventory(home)
+                if not (current and "permanent" in ids):
+                    mode = input("Install mode [1] permanent / [2] temporary: ").strip()
+                    if mode not in ("1", "2"):
+                        raise ValueError("Installation not confirmed")
+                    temporary = mode == "2"
             if temporary:
                 return native_temporary(pathlib.Path.home(), version, endpoint, name)
             if input("Type NATIVE-INSTALL for owner-reviewed permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
@@ -495,6 +529,14 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             print(json.dumps(native_pair_or_install(pathlib.Path.home(), version, endpoint, name), indent=2))
             return
         if native_upgrade:
+            if latest_archive is not None:
+                _, versions, _, current, _ = local_inventory(pathlib.Path.home())
+                old_root = owned_unit_root(current, versions) if current else None
+                if old_root is None:
+                    raise ValueError("No existing paired managed Linux Agent")
+                installed = json.loads((old_root / "bundle.json").read_text("utf8"))["version"]
+                if not public_forward_version(installed, tag):
+                    raise ValueError("Silent downgrade or same-version replacement refused")
             print("Signed WSS must be proven after switch; identity and SQLite remain unchanged.")
             if input("Type NATIVE-UPGRADE for this owner-local service switch: ").strip() != "NATIVE-UPGRADE":
                 raise ValueError("Native service switch not confirmed")
@@ -1890,6 +1932,7 @@ def main():
     parser.add_argument("--commit")
     parser.add_argument("--endpoint")
     actions=parser.add_mutually_exclusive_group()
+    actions.add_argument("--latest-archive", help="stable native archive verified by the public installer")
     actions.add_argument("--status", action="store_true")
     actions.add_argument("--stage-only", action="store_true",
                          help="verify and stage a separately pinned immutable Linux upgrade; never switch")
@@ -1960,6 +2003,12 @@ def main():
                          ).strip() != "PURGE-V2-IDENTITY":
                     raise ValueError("Local identity purge not confirmed")
                 print(json.dumps(local_identity_purge(home, True), indent=2))
+        elif args.latest_archive is not None:
+            if not args.tag or not args.endpoint or args.commit or args.temporary or args.name:
+                raise ValueError("Public archive requires stable tag, origin and reviewed SHA-256")
+            install(args.tag, None, args.endpoint, asset_sha256=args.asset_sha256,
+                    native_upgrade=args.upgrade, native_install=not args.upgrade,
+                    latest_archive=args.latest_archive)
         else:
             if not args.tag or not args.commit or not args.endpoint:
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
