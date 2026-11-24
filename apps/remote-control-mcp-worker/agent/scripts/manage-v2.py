@@ -27,8 +27,8 @@ def local_runtime():
     if not manifest.is_file() or manifest.is_symlink():
         raise ValueError("Versioned Agent bundle is missing.")
     info = json.loads(manifest.read_text("utf8"))
-    # Native-only manager operations never launch Node. Pairing stays blocked,
-    # while upgrade uses the pinned Python bootstrap's guarded WSS cutover.
+    # Native-only management uses the Python bootstrap and Rust pairing;
+    # mixed candidates retain their reviewed restrictions.
     rust = (info.get("agent_runtime") == "rust-standard-linux-v1"
             and info.get("candidate_profile") == "standard-linux-rust-runtime-v1"
             and info.get("upgrade_profile") == "paired-full-v1")
@@ -90,7 +90,7 @@ def logs(bootstrap):
                     "--lines", "40", "--output", "short-iso"], check=False)
 
 
-def pair(root, bootstrap, arguments):
+def pair(root, bootstrap, arguments, native_only=False):
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Pairing/repair requires a real local terminal.")
     if len(arguments) > 1:
@@ -104,6 +104,11 @@ def pair(root, bootstrap, arguments):
         endpoint = arguments[0]
     if not endpoint:
         raise ValueError("Supply an approved HTTPS origin: pair https://example.org/")
+    if native_only:
+        if input("Type NATIVE-INSTALL for permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
+            raise ValueError("Native installation not confirmed")
+        print(json.dumps(bootstrap.native_first_install(Path.home(), root, endpoint), indent=2))
+        return 0
     node = root / "bin/node"
     installer = root / APP / "scripts/install-v2.mjs"
     environment = {**os.environ, "RC_AGENT_NO_POST_START": "1"}
@@ -147,17 +152,16 @@ def upgrade(bootstrap, arguments, native_only=False):
 
 
 def dispatch(command, args, root, info, bootstrap):
-    # Pairing and mixed-bundle upgrades remain blocked. Native-only upgrade
-    # and uninstall use the existing owner-TTY Python bootstrap protections.
+    # Mixed candidates remain blocked from lifecycle mutation. Native-only
+    # actions use the owner-TTY Python bootstrap and Rust pairing entry.
     native_only = info.get("artifact_profile") == "rust-native-only-v1"
     if (info.get("agent_runtime") == "rust-standard-linux-v1"
-            and (command == "pair" or
-                 (command in ("upgrade", "uninstall", "recover") and not native_only))):
+            and command in ("pair", "upgrade", "uninstall", "recover") and not native_only):
         raise ValueError("Rust Python lifecycle operation is not yet reviewed.")
     if command in ("--help", "-h", "help"):
         if native_only:
-            print("Usage: rca [status|logs|upgrade|recover|uninstall]")
-            print("Pairing/repair is not yet available for this candidate.")
+            print("Usage: rca [status|pair|logs|upgrade|recover|uninstall]")
+            print("First permanent pairing is supported; temporary mode and re-pair are not yet available.")
         else:
             print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
@@ -178,7 +182,7 @@ def dispatch(command, args, root, info, bootstrap):
         logs(bootstrap)
         return 0
     if command == "pair":
-        return pair(root, bootstrap, args)
+        return pair(root, bootstrap, args, native_only)
     if command == "upgrade":
         return upgrade(bootstrap, args,
                        info.get("artifact_profile") == "rust-native-only-v1")
@@ -204,21 +208,27 @@ def main():
         raise ValueError("Interactive menu needs a local TTY; use 'status' for scripted checks.")
     while True:
         print("\nRemote Control Agent " + info["version"])
-        print("1. Status   2. " + ("Recover interrupted upgrade" if native_only else "Pair / repair") + "   3. Logs")
+        print("1. Status   2. " + ("Pair (permanent)" if native_only else "Pair / repair") + "   3. Logs")
         print("4. Upgrade  5. Uninstall       6. Exit")
+        if native_only:
+            print("7. Recover interrupted installation/upgrade")
         choice = input("Choose an option: ").strip()
         if choice in ("6", "q", "Q"):
             return 0
-        mapping = {"1": "status", "2": "recover" if native_only else "pair", "3": "logs", "4": "upgrade",
+        mapping = {"1": "status", "2": "pair", "3": "logs", "4": "upgrade",
                    "5": "uninstall"}
+        if native_only:
+            mapping["7"] = "recover"
         if choice not in mapping:
-            print("Choose 1–6.")
+            print("Choose 1–7." if native_only else "Choose 1–6.")
             continue
         action = mapping[choice]
         if action == "upgrade":
             print("Provide the reviewed immutable Release tag and its 40-character commit"
                   + (", and asset SHA-256." if native_only else "."))
             args = input("tag commit" + (" asset-sha256" if native_only else "") + ": ").split()
+        elif action == "pair" and native_only and not installed_endpoint(bootstrap):
+            args = [input("Approved HTTPS Worker origin: ").strip()]
         else:
             args = []
         try:

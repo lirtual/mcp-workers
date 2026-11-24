@@ -148,7 +148,101 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
                    "native_consent": consent}, verify
 
 
+def verify_initial_install():
+    # Use the same package, identity, launcher and receipt contracts as an
+    # upgrade, but no previously installed service or approved identity.
+    for case in ("approved", "pair-denied", "no-proof", "foreign-service", "interrupted"):
+        ctx, home, old, new, unit, launcher, key, receipts = fixture()
+        try:
+            unit.unlink()
+            launcher.unlink()
+            key.unlink()
+            id_path = Path(str(key) + ".device-id")
+            id_path.unlink()
+            intent = Path(str(key) + ".native-upgrade-intent")
+            proof = Path(str(key) + ".native-upgrade-proof")
+            old_receipts = receipts.read_bytes()
+            state = {"pid": 0, "pairs": 0, "commands": []}
+            def control(*args):
+                if args[0] == "show":
+                    foreign = case == "foreign-service"
+                    loaded = unit.exists() or foreign
+                    return "\n".join((
+                        "LoadState=" + ("loaded" if loaded else "not-found"),
+                        "ActiveState=" + ("active" if state["pid"] else "inactive"),
+                        "MainPID=" + str(state["pid"]),
+                        "FragmentPath=" + ("/usr/lib/systemd/user/foreign.service" if foreign
+                            else str(unit) if loaded else ""),
+                        "DropInPaths="))
+                state["commands"].append(args)
+                if args[0] == "enable":
+                    assert id_path.read_text().strip() == ID
+                    assert intent.is_file() and not launcher.exists()
+                    state["pid"] = 200
+                    if case == "interrupted":
+                        raise KeyboardInterrupt("installer terminated after start")
+                if args[0] == "disable":
+                    state["pid"] = 0
+                return ""
+            def pair(root, endpoint, name):
+                state["pairs"] += 1
+                assert root == new and endpoint == ENDPOINT
+                assert not state["commands"] and not unit.exists()
+                owned_file(key, "disposable-approved-key")
+                if case == "pair-denied":
+                    raise ValueError("Pairing refused")
+                owned_file(id_path, ID + "\n")
+            def verify(path, operation, device_id, target, pid):
+                assert not launcher.exists()
+                assert json.loads(intent.read_text()) == {
+                    "operation_id": operation, "device_id": ID,
+                    "target_version": new.name, "initial_endpoint": ENDPOINT}
+                assert device_id == ID and target == new.name and pid == 200
+                if case in ("no-proof", "interrupted"):
+                    return False
+                owned_file(path, json.dumps({"operation_id":operation,"device_id":ID,
+                    "target_version":target,"pid":pid,"status":"authenticated_wss"}))
+                return bootstrap.native_wait_proof(path, operation, ID, target, pid, 1)
+            mocks = {"native_systemctl":control, "native_main_pid":lambda: state["pid"],
+                "native_process_executable":lambda pid: new / APP / ".build/rca-standard-linux-candidate",
+                "native_consent":lambda key, action: "ready"}
+            with patch.multiple(bootstrap, **mocks):
+                if case == "approved":
+                    result = bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
+                        verify=verify, process_check=lambda versions: not state["pid"])
+                    assert result["signed_wss"] is True
+                    assert launcher.readlink() == new / APP / "scripts/rca.sh"
+                    assert not intent.exists() and not proof.exists()
+                    commands = state["commands"].copy()
+                    assert bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
+                        verify=verify)["status"] == "already_installed"
+                    assert state["pairs"] == 1 and state["commands"] == commands
+                else:
+                    try:
+                        bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
+                            verify=verify, process_check=lambda versions: not state["pid"])
+                        raise AssertionError("Unsafe first activation accepted: " + case)
+                    except (ValueError, KeyboardInterrupt):
+                        pass
+                    assert not launcher.exists()
+                    if case in ("no-proof", "interrupted"):
+                        assert intent.exists() and unit.exists()
+                        assert bootstrap.native_recover(home, process_check=lambda versions: not state["pid"])["status"] == "initial_service_removed"
+                        assert not intent.exists() and not unit.exists() and not proof.exists()
+                        assert key.read_text() == "disposable-approved-key"
+                        assert id_path.read_text().strip() == ID
+                    else:
+                        assert not state["commands"] and not unit.exists()
+                        assert not id_path.exists() and not intent.exists()
+                        if case == "foreign-service":
+                            assert state["pairs"] == 0 and not key.exists()
+            assert receipts.read_bytes() == old_receipts
+        finally:
+            ctx.cleanup()
+
+
 def verify_isolated():
+    verify_initial_install()
     # Preserve the canonical systemd unit exactly across the language boundary.
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
