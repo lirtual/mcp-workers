@@ -96,7 +96,12 @@ mod linux {
             serde_json::from_slice(&fs::read(&intent_path).map_err(|_| ())?).map_err(|_| ())?;
         let fields = data.as_object().ok_or(())?;
         if fields.len() != 3
-            && !(fields.len() == 4
+            && !((fields.len() == 4
+                || (fields.len() == 5
+                    && fields
+                        .get("initial_launcher")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|v| !v.is_empty())))
                 && fields.get("initial_endpoint").and_then(|v| v.as_str()) == Some(endpoint))
         {
             return Err(());
@@ -238,6 +243,65 @@ mod linux {
         Ok(())
     }
 
+    // Publish the same owner-local command as the permanent installer, but
+    // never replace an existing command or imply service activation.
+    fn publish_temporary_launcher(home: &Path, exe: &Path) -> Result<(), ()> {
+        use std::os::unix::fs::{symlink, DirBuilderExt};
+        let root = exe.ancestors().nth(4).ok_or(())?;
+        let programs = home.join(".local/share/mcp-workers/remote-control/programs");
+        if root.parent() != Some(programs.as_path())
+            || exe != root.join("apps/remote-control-agent/.build/rca-standard-linux-candidate")
+        {
+            return Err(());
+        }
+        let target = root.join("apps/remote-control-agent/scripts/rca.sh");
+        private_regular(&target, 65536)?;
+        if fs::symlink_metadata(&target).map_err(|_| ())?.mode() & 0o111 == 0 {
+            return Err(());
+        }
+        for dir in target
+            .parent()
+            .ok_or(())?
+            .ancestors()
+            .take_while(|p| p.starts_with(home))
+        {
+            let info = fs::symlink_metadata(dir).map_err(|_| ())?;
+            if !info.is_dir()
+                || info.uid() != unsafe { libc::geteuid() }
+                || info.mode() & 0o022 != 0
+            {
+                return Err(());
+            }
+        }
+        let manifest = root.join("bundle.json");
+        private_regular(&manifest, 65536)?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(manifest).map_err(|_| ())?).map_err(|_| ())?;
+        if value["artifact_profile"] != "rust-native-only-v1"
+            || value["agent_runtime"] != "rust-standard-linux-v1"
+        {
+            return Err(());
+        }
+        let bin = home.join(".local/bin");
+        match fs::DirBuilder::new().mode(0o700).create(&bin) {
+            Ok(()) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+            Err(_) => return Err(()),
+        }
+        let info = fs::symlink_metadata(&bin).map_err(|_| ())?;
+        if !info.is_dir() || info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o022 != 0 {
+            return Err(());
+        }
+        match symlink(&target, bin.join("rca")) {
+            Ok(()) => fs::File::open(&bin)
+                .and_then(|f| f.sync_all())
+                .map_err(|_| ())?,
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+            Err(_) => return Err(()),
+        }
+        Ok(())
+    }
+
     // Bootstrap owns permanent service activation. Temporary mode runs the
     // same runtime in this terminal, retaining the existing installer lock.
     fn pair_local(endpoint: &str, name: &str, temporary: bool) -> Result<(), ()> {
@@ -269,6 +333,10 @@ mod linux {
             pair_identity_at(&key, resolve)?;
         }
         if temporary {
+            if publish_temporary_launcher(&home, &std::env::current_exe().map_err(|_| ())?).is_err()
+            {
+                eprintln!("Short command not published; use the reviewed local manager path.");
+            }
             println!("Starting temporary foreground Agent; the Worker enforces the original 24h grant. Terminal exit disconnects, not revokes.");
             return run_agent(endpoint, &home, &pairing_key(&home, true));
         }
@@ -771,6 +839,27 @@ mod linux {
         const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
 
         const NEW_ID: &str = "123e4567-e89b-42d3-a456-426614174002";
+
+        #[test]
+        fn temporary_launcher_is_owner_local_and_never_replaces_existing_command() {
+            let dir = tempfile::tempdir().unwrap();
+            let home = dir.path();
+            let root = home
+                .join(".local/share/mcp-workers/remote-control/programs/v0.1.57-linux-x64-glibc");
+            let exe = root.join("apps/remote-control-agent/.build/rca-standard-linux-candidate");
+            let target = root.join("apps/remote-control-agent/scripts/rca.sh");
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            write_new(&target, b"#!/bin/sh\n").unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o700)).unwrap();
+            write_new(&root.join("bundle.json"), br#"{"artifact_profile":"rust-native-only-v1","agent_runtime":"rust-standard-linux-v1"}"#).unwrap();
+            publish_temporary_launcher(home, &exe).unwrap();
+            let launcher = home.join(".local/bin/rca");
+            assert_eq!(fs::read_link(&launcher).unwrap(), target);
+            fs::remove_file(&launcher).unwrap();
+            write_new(&launcher, b"foreign").unwrap();
+            publish_temporary_launcher(home, &exe).unwrap();
+            assert_eq!(fs::read(&launcher).unwrap(), b"foreign");
+        }
 
         #[test]
         fn revoked_promotion_resumes_each_original_node_rename_prefix() {
