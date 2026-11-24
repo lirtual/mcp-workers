@@ -3,7 +3,7 @@ use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
     Engine,
 };
-use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePublicKey};
+use ed25519_dalek::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey};
 use ed25519_dalek::{Signer, SigningKey};
 use thiserror::Error;
 
@@ -18,6 +18,8 @@ pub enum IdentityError {
     InvalidPrivateKey,
     #[error("could not encode Ed25519 SPKI public key")]
     PublicKeyEncoding,
+    #[error("could not generate device identity")]
+    KeyGeneration,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -45,16 +47,26 @@ fn valid_nonce(nonce: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
-fn signing_key(pem: &str) -> Result<SigningKey, IdentityError> {
+pub(crate) fn signing_key(pem: &str) -> Result<SigningKey, IdentityError> {
     SigningKey::from_pkcs8_pem(pem).map_err(|_| IdentityError::InvalidPrivateKey)
 }
 
-fn public_key(sk: &SigningKey) -> Result<String, IdentityError> {
+pub(crate) fn public_key(sk: &SigningKey) -> Result<String, IdentityError> {
     let spki = sk
         .verifying_key()
         .to_public_key_der()
         .map_err(|_| IdentityError::PublicKeyEncoding)?;
     Ok(STANDARD.encode(spki.as_bytes()))
+}
+
+pub(crate) fn new_private_key_pem() -> Result<String, IdentityError> {
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed).map_err(|_| IdentityError::KeyGeneration)?;
+    let key = SigningKey::from_bytes(&seed);
+    seed.fill(0);
+    key.to_pkcs8_pem(pkcs8::LineEnding::LF)
+        .map(|pem| pem.to_string())
+        .map_err(|_| IdentityError::KeyGeneration)
 }
 
 pub fn signed_session_proof(

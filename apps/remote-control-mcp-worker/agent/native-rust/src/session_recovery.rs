@@ -24,13 +24,17 @@ pub enum SessionRecoveryError {
     Unavailable,
     #[error("signed Session identity was not confirmed by the Worker")]
     Rejected,
+    #[error("device approval is not yet available")]
+    Pending,
 }
 
-fn post_bounded(
+pub(crate) fn post_bounded(
     client: &Client,
     origin: &Url,
     route: &str,
     body: Value,
+    expected_status: u16,
+    allow_pending: bool,
 ) -> Result<Value, SessionRecoveryError> {
     let target = origin
         .join(route)
@@ -41,7 +45,10 @@ fn post_bounded(
         .json(&body)
         .send()
         .map_err(|_| SessionRecoveryError::Unavailable)?;
-    if response.status().as_u16() != 200
+    if allow_pending && response.status().as_u16() == 404 {
+        return Err(SessionRecoveryError::Pending);
+    }
+    if response.status().as_u16() != expected_status
         || response
             .content_length()
             .is_some_and(|len| len > BODY_LIMIT as u64)
@@ -98,44 +105,71 @@ fn verify_at_origin(
     {
         return Err(SessionRecoveryError::InvalidIdentity);
     }
-    let client = Client::builder()
+    let client = recovery_client()?;
+    recover_approved_key(
+        &client,
+        origin,
+        &identity.private_key_pem,
+        Some(&registered.device_id),
+    )
+    .map(|_| ())
+}
+
+pub(crate) fn recovery_client() -> Result<Client, SessionRecoveryError> {
+    Client::builder()
         .timeout(Duration::from_secs(10))
         .redirect(Policy::none())
         .no_proxy()
         .build()
-        .map_err(|_| SessionRecoveryError::Unavailable)?;
-    // The challenge is selected by THIS public key. A conflicting registered
-    // device ID must fail before the proof is sent.
+        .map_err(|_| SessionRecoveryError::Unavailable)
+}
+
+// Session callers must match the registered grant ID; only installed
+// first-pairing callers without a saved ID can observe a pending challenge.
+pub(crate) fn recover_approved_key(
+    client: &Client,
+    origin: &Url,
+    pem: &str,
+    expected_id: Option<&str>,
+) -> Result<String, SessionRecoveryError> {
+    let key =
+        crate::identity::signing_key(pem).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+    let public =
+        crate::identity::public_key(&key).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
     let challenge = post_bounded(
-        &client,
+        client,
         origin,
         "/agent/session/challenge",
-        json!({"public_key":identity.public_key}),
+        json!({"public_key":public}),
+        200,
+        expected_id.is_none(),
     )?;
-    if challenge.get("device_id").and_then(Value::as_str) != Some(&registered.device_id) {
+    let id = challenge
+        .get("device_id")
+        .and_then(Value::as_str)
+        .ok_or(SessionRecoveryError::Rejected)?;
+    if expected_id.is_some_and(|expected| expected != id) {
         return Err(SessionRecoveryError::Rejected);
     }
     let nonce = challenge
         .get("nonce")
         .and_then(Value::as_str)
         .ok_or(SessionRecoveryError::Rejected)?;
-    let proof = signed_session_proof(&identity.private_key_pem, &registered.device_id, nonce)
-        .map_err(|_| SessionRecoveryError::Rejected)?;
-    if proof.public_key != identity.public_key {
-        return Err(SessionRecoveryError::InvalidIdentity);
-    }
+    let proof = signed_session_proof(pem, id, nonce).map_err(|_| SessionRecoveryError::Rejected)?;
     let recovered = post_bounded(
-        &client,
+        client,
         origin,
         "/agent/session/recover",
-        json!({"device_id":registered.device_id,"nonce":nonce,"proof":proof.proof}),
+        json!({"device_id":id,"nonce":nonce,"proof":proof.proof}),
+        200,
+        false,
     )?;
     if recovered.get("status").and_then(Value::as_str) != Some("verified")
-        || recovered.get("device_id").and_then(Value::as_str) != Some(&registered.device_id)
+        || recovered.get("device_id").and_then(Value::as_str) != Some(id)
     {
         return Err(SessionRecoveryError::Rejected);
     }
-    Ok(())
+    Ok(id.to_owned())
 }
 
 /// Verify that a registered Session grant resolves to the exact Ed25519
@@ -191,7 +225,7 @@ pub fn verify_and_spawn_session_transport(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::session_enrollment::{new_session_identity, SessionPhysicalAttempt};
     use base64::{
@@ -228,7 +262,7 @@ mod tests {
         }
     }
 
-    fn recv_request(stream: &mut TcpStream) -> (String, Value) {
+    pub(crate) fn recv_request(stream: &mut TcpStream) -> (String, Value) {
         stream
             .set_read_timeout(Some(Duration::from_secs(4)))
             .unwrap();
@@ -263,7 +297,7 @@ mod tests {
         )
     }
 
-    fn reply(stream: &mut TcpStream, status: &str, body: Value) {
+    pub(crate) fn reply(stream: &mut TcpStream, status: &str, body: Value) {
         let raw = body.to_string();
         write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{raw}",raw.len()).unwrap();
     }

@@ -8,6 +8,7 @@ pub mod darwin_managed;
 pub mod darwin_output;
 #[cfg(target_os = "macos")]
 pub mod darwin_supervisor;
+pub mod device_pairing;
 pub mod digest;
 pub mod gate0_probe;
 pub mod identity;
