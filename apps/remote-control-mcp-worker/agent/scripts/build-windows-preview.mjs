@@ -22,6 +22,11 @@ const EXPECTED_NODE_VERSION = "v24.21.0";
 const EXPECTED_NODE_SHA256 =
   "ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32";
 
+function rustBuildVersion(version, nativeOnly) {
+  return /^v0\.[1-9][0-9]*\.[0-9]+-rust-candidate\.[1-9][0-9]*$/.test(version) ||
+    (nativeOnly && /^v0\.[1-9][0-9]*\.[0-9]+$/.test(version));
+}
+
 export function parseWindowsPreviewBuildArgs(argv) {
   const keys = new Map([
     ["--version", "version"], ["--node-bin", "nodeBin"], ["--node-sha256", "nodeSha256"],
@@ -48,7 +53,7 @@ export function parseWindowsPreviewBuildArgs(argv) {
       ((out.rustAgentBin === undefined) !== (out.rustAgentSha256 === undefined)) ||
       (out.rustAgentBin !== undefined && (!path.isAbsolute(out.rustAgentBin) ||
         !/^[a-f0-9]{64}$/.test(out.rustAgentSha256) ||
-        !/-rust-candidate\.[1-9][0-9]*$/.test(out.version)))) {
+        !rustBuildVersion(out.version, out.artifactProfile === "rust-native-only-v1")))) {
     throw Error("A reviewed version, paths and official pinned node.exe digest are required.");
   }
   return out;
@@ -66,8 +71,8 @@ export function buildWindowsPreview(args) {
   if (process.platform !== "win32" || process.arch !== "x64")
     throw Error("Windows x64 native packaging is required.");
   const nativeOnly = args.artifactProfile === "rust-native-only-v1";
-  if (nativeOnly && (!args.rustAgentBin || !/-rust-candidate\.[1-9][0-9]*$/.test(args.version)))
-    throw Error("Native-only packaging is restricted to reviewed Rust prerelease candidates.");
+  if (nativeOnly && (!args.rustAgentBin || !rustBuildVersion(args.version, true)))
+    throw Error("Native-only packaging requires a reviewed stable or Rust candidate label.");
   if (!statSync(args.nodeBin).isFile() ||
       digest(readFileSync(args.nodeBin)) !== EXPECTED_NODE_SHA256)
     throw Error("Official Node.js Windows x64 checksum mismatch.");
