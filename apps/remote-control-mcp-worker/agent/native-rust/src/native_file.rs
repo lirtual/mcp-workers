@@ -313,6 +313,11 @@ impl NativeFileError {
     }
 }
 
+struct LocalControl {
+    requests: Receiver<UpgradeRequest>,
+    idle_attempt: Option<crate::session_enrollment::SessionPhysicalAttempt>,
+}
+
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] managed: Option<
@@ -321,7 +326,7 @@ fn execute_native_file(
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] cleanup_ready: Option<
         Receiver<()>,
     >,
-    #[cfg(any(unix, windows))] upgrade_requests: Option<Receiver<UpgradeRequest>>,
+    #[cfg(any(unix, windows))] local_control: Option<LocalControl>,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
     replies: &Sender<ExecutionResponse>,
@@ -330,6 +335,16 @@ fn execute_native_file(
     let mut processes = managed.map(NativeProcessEngine::new);
     #[cfg(any(unix, windows))]
     let mut upgrade_frozen = false;
+    if local_control
+        .as_ref()
+        .is_some_and(|c| c.idle_attempt.is_some())
+    {
+        if let Err(error) = writes.receipt_store_mut().enable_session_activity() {
+            writes.isolate(&error)?;
+            writes.receipt_store_mut().session_activity =
+                Some(crate::session_idle::Activity::default());
+        }
+    }
     let mut searches = SearchSessions::with_boundary(writes.boundary().clone());
     let result = (|| -> Result<(), NativeFileError> {
         while !stop.load(Ordering::Acquire) {
@@ -343,42 +358,74 @@ fn execute_native_file(
                     }
                 }
             }
+            // For Session idle admission, inspect work already queued before
+            // deciding to freeze. The same executor owns the subsequent gate;
+            // newly arriving requests can never execute while it is frozen.
+            let pending = if local_control
+                .as_ref()
+                .is_some_and(|c| c.idle_attempt.is_some())
+            {
+                requests.try_recv().ok()
+            } else {
+                None
+            };
             #[cfg(any(unix, windows))]
-            if let Some(control) = upgrade_requests.as_ref() {
-                while let Ok(request) = control.try_recv() {
-                    let answer = match request.command {
+            if let Some(control) = local_control.as_ref() {
+                while let Ok(request) = control.requests.try_recv() {
+                    let healthy = writes.available() && !stop.load(Ordering::Acquire);
+                    let quiescent = processes
+                        .as_ref()
+                        .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade);
+                    let previously_frozen = upgrade_frozen;
+                    let answer: String = match request.command {
                         UpgradeCommand::Freeze
-                            if !upgrade_frozen
-                                && writes.available()
-                                && !stop.load(Ordering::Acquire)
-                                && processes
-                                    .as_ref()
-                                    .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
+                            if !upgrade_frozen && healthy && quiescent && pending.is_none() =>
                         {
                             upgrade_frozen = true;
-                            "ready\n"
+                            "ready\n".into()
                         }
-                        UpgradeCommand::Freeze => "busy\n",
-                        UpgradeCommand::VerifyFrozen
-                            if upgrade_frozen
-                                && writes.available()
-                                && !stop.load(Ordering::Acquire)
-                                && processes
-                                    .as_ref()
-                                    .is_some_and(NativeProcessEngine::is_quiescent_for_upgrade) =>
-                        {
-                            "ready\n"
+                        UpgradeCommand::Freeze => "busy\n".into(),
+                        UpgradeCommand::VerifyFrozen if upgrade_frozen && healthy && quiescent => {
+                            "ready\n".into()
                         }
-                        UpgradeCommand::VerifyFrozen => "busy\n",
+                        UpgradeCommand::VerifyFrozen => "busy\n".into(),
                         UpgradeCommand::Release => {
                             upgrade_frozen = false;
-                            "released\n"
+                            "released\n".into()
+                        }
+                        #[cfg(unix)]
+                        UpgradeCommand::IdleStatus | UpgradeCommand::IdleFreeze => {
+                            let snapshot = control.idle_attempt.as_ref().and_then(|attempt| {
+                                writes.receipt_store_mut().session_activity.as_mut().map(
+                                    |activity| {
+                                        activity.snapshot(
+                                            attempt,
+                                            healthy,
+                                            !quiescent || pending.is_some(),
+                                        )
+                                    },
+                                )
+                            });
+                            if request.command == UpgradeCommand::IdleStatus {
+                                snapshot.map(|(_, frame)| frame).unwrap_or_default()
+                            } else if !upgrade_frozen && snapshot.is_some_and(|(idle, _)| idle) {
+                                upgrade_frozen = true;
+                                "ready\n".into()
+                            } else {
+                                "busy\n".into()
+                            }
                         }
                     };
-                    let _ = request.reply.send(answer);
+                    // A timed-out caller must not leave an unacknowledged new freeze.
+                    if request.reply.send(answer).is_err() && !previously_frozen {
+                        upgrade_frozen = previously_frozen;
+                    }
                 }
             }
-            let request = match requests.recv_timeout(Duration::from_millis(100)) {
+            let request = match pending
+                .map(Ok)
+                .unwrap_or_else(|| requests.recv_timeout(Duration::from_millis(100)))
+            {
                 Ok(request) => request,
                 Err(RecvTimeoutError::Timeout) => continue,
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -555,6 +602,34 @@ fn execute_native_file(
                     .to_string()
                 }
             };
+            if let Some(activity) = writes.receipt_store_mut().session_activity.as_mut() {
+                // Read and search completion are activity; observation-only
+                // list_sessions, output and receipt queries are not.
+                let input: Value =
+                    serde_json::from_str(frame).map_err(|_| NativeFileError::Policy)?;
+                let result: Value =
+                    serde_json::from_str(&response).map_err(|_| NativeFileError::Policy)?;
+                if (result["status"] == "completed" || result["error"] == "result_too_large")
+                    && matches!(
+                        input["tool"].as_str(),
+                        Some(
+                            "read_file"
+                                | "read_multiple_files"
+                                | "list_directory"
+                                | "get_file_info"
+                                | "start_search"
+                                | "get_more_search_results"
+                        )
+                    )
+                {
+                    activity.touch();
+                }
+                if input["tool"] != "get_operation_status"
+                    && result["result"]["status"] == "unknown"
+                {
+                    activity.mark_unknown();
+                }
+            }
             if !request.lease().is_active() {
                 continue;
             }
@@ -663,6 +738,7 @@ pub fn run_native_managed_session(
         ManagedRunOptions {
             timing,
             upgrade_key: None,
+            idle_attempt: None,
             on_connected: None,
             on_disconnected: None,
             on_diagnostic: None,
@@ -691,9 +767,39 @@ pub fn run_native_managed_session_with_upgrade(
         ManagedRunOptions {
             timing: HeartbeatTiming::default(),
             upgrade_key: Some(upgrade.key_path),
+            idle_attempt: None,
             on_connected: upgrade.on_connected,
             on_disconnected: upgrade.on_disconnected,
             on_diagnostic: upgrade.on_diagnostic,
+        },
+    )
+}
+
+/// Verified GitHub Ubuntu Session: same owner-local IPC and execution owner.
+#[cfg(target_os = "linux")]
+pub fn run_native_session_with_idle(
+    endpoint: &str,
+    private_pem: &str,
+    device_id: &str,
+    receipt_directory: &Path,
+    managed: Arc<ManagedSessions>,
+    stop: &Arc<AtomicBool>,
+    identity: (&Path, crate::session_enrollment::SessionPhysicalAttempt),
+) -> Result<(), NativeFileError> {
+    run_native_managed_session_inner(
+        endpoint,
+        private_pem,
+        device_id,
+        receipt_directory,
+        managed,
+        stop,
+        ManagedRunOptions {
+            timing: HeartbeatTiming::default(),
+            upgrade_key: Some(identity.0),
+            idle_attempt: Some(identity.1),
+            on_connected: None,
+            on_disconnected: None,
+            on_diagnostic: None,
         },
     )
 }
@@ -710,6 +816,7 @@ pub struct UpgradeRuntimeOptions<'a> {
 struct ManagedRunOptions<'a> {
     timing: HeartbeatTiming,
     upgrade_key: Option<&'a Path>,
+    idle_attempt: Option<crate::session_enrollment::SessionPhysicalAttempt>,
     on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
     on_diagnostic: Option<session::DiagnosticSink>,
@@ -738,11 +845,17 @@ fn run_native_managed_session_inner(
     });
 
     #[cfg(any(unix, windows))]
-    let (_upgrade_server, upgrade_requests) = if let Some(key) = options.upgrade_key {
+    let (_upgrade_server, local_control) = if let Some(key) = options.upgrade_key {
         let (sender, requests) = sync_channel(4);
         let server =
             UpgradeServer::bind(key, sender).map_err(|_| NativeFileError::UpgradeUnavailable)?;
-        (Some(server), Some(requests))
+        (
+            Some(server),
+            Some(LocalControl {
+                requests,
+                idle_attempt: options.idle_attempt,
+            }),
+        )
     } else {
         (None, None)
     };
@@ -759,7 +872,7 @@ fn run_native_managed_session_inner(
             Some(worker_managed),
             Some(cleanup_ready),
             #[cfg(any(unix, windows))]
-            upgrade_requests,
+            local_control,
             &worker_stop,
             &requests,
             &reply_sender,

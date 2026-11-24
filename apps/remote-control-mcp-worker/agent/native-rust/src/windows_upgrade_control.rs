@@ -36,7 +36,7 @@ pub enum UpgradeCommand {
 }
 pub struct UpgradeRequest {
     pub command: UpgradeCommand,
-    pub reply: SyncSender<&'static str>,
+    pub reply: SyncSender<String>,
 }
 
 fn pipe_path(key: &Path) -> Result<Vec<u16>, io::Error> {
@@ -322,7 +322,7 @@ mod tests {
                 ] {
                     let request = requests.recv_timeout(Duration::from_secs(5)).unwrap();
                     assert_eq!(request.command, command);
-                    request.reply.send(answer).unwrap();
+                    request.reply.send(answer.to_owned()).unwrap();
                 }
             });
             for (request, answer) in [

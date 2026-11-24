@@ -44,8 +44,8 @@ fn owner_local_upgrade_protocol_matches_existing_node_installer() {
             request
                 .reply
                 .send(match expected {
-                    UpgradeCommand::Release => "released\n",
-                    _ => "ready\n",
+                    UpgradeCommand::Release => "released\n".into(),
+                    _ => "ready\n".into(),
                 })
                 .unwrap();
         }

@@ -93,6 +93,7 @@ pub struct ReceiptStore {
     connection: Connection,
     available: Arc<AtomicBool>,
     pub directory: PathBuf,
+    pub(crate) session_activity: Option<crate::session_idle::Activity>,
 }
 
 pub(crate) fn valid_id(id: &str) -> bool {
@@ -417,6 +418,7 @@ impl ReceiptStore {
                     connection,
                     available: Arc::new(AtomicBool::new(false)),
                     directory: directory.to_owned(),
+                    session_activity: None,
                 })
             }
             Err(error) => Err(error),
@@ -604,7 +606,27 @@ impl ReceiptStore {
             connection,
             available: Arc::new(AtomicBool::new(true)),
             directory: directory.to_owned(),
+            session_activity: None,
         })
+    }
+
+    /// Only ephemeral Sessions need idle evidence. A recovered interrupted
+    /// operation must not become proven idle just because the process restarted.
+    pub(crate) fn enable_session_activity(&mut self) -> Result<(), ReceiptError> {
+        let mut activity = crate::session_idle::Activity::default();
+        if self.available() {
+            let uncertain: bool = self.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM receipts WHERE state IN ('admitted','running','unknown'))",
+                [], |row| row.get(0),
+            )?;
+            if uncertain {
+                activity.mark_unknown();
+            }
+        } else {
+            activity.mark_unknown();
+        }
+        self.session_activity = Some(activity);
+        Ok(())
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Receipt>, ReceiptError> {
@@ -668,6 +690,9 @@ impl ReceiptStore {
             params![id, tool, digest, now],
         )?;
         tx.commit()?;
+        if let Some(activity) = self.session_activity.as_mut() {
+            activity.touch();
+        }
         Ok(Admission::New(self.get(id)?.ok_or(ReceiptError::NotFound)?))
     }
 
@@ -705,6 +730,17 @@ impl ReceiptStore {
             ],
         )?;
         tx.commit()?;
+        if let Some(activity) = self.session_activity.as_mut() {
+            if previous.tool_name == "start_process"
+                && previous.state != state
+                && matches!(state, "completed" | "failed" | "unknown")
+            {
+                activity.touch();
+            }
+            if state == "unknown" {
+                activity.mark_unknown();
+            }
+        }
         self.get(id)?.ok_or(ReceiptError::NotFound)
     }
 }
@@ -719,6 +755,35 @@ mod runtime_fault_tests {
         crate::seal_new_windows_private_directory(root.path()).unwrap();
         let store = ReceiptStore::open(&root.path().join("receipts")).unwrap();
         (root, store)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovered_interrupted_receipt_never_proves_session_idle() {
+        let (root, mut store) = temporary_store();
+        store
+            .admit("interrupted", "write_file", &serde_json::json!({}))
+            .unwrap();
+        drop(store);
+        let mut store = ReceiptStore::open(&root.path().join("receipts")).unwrap();
+        assert_eq!(store.get("interrupted").unwrap().unwrap().state, "unknown");
+        store.enable_session_activity().unwrap();
+        let attempt = crate::session_enrollment::SessionPhysicalAttempt {
+            attempt_id: "11111111-1111-4111-8111-111111111111".into(),
+            github_run_id: 1,
+            github_run_attempt: 1,
+            workflow_name: "ubuntu".into(),
+        };
+        let (idle, frame) = store
+            .session_activity
+            .as_mut()
+            .unwrap()
+            .snapshot(&attempt, true, false);
+        assert!(!idle);
+        assert_eq!(
+            serde_json::from_str::<Value>(&frame).unwrap()["state"],
+            "unknown"
+        );
     }
 
     #[test]

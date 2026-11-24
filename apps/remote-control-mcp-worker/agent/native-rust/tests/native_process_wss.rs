@@ -628,3 +628,146 @@ fn device_info_is_reported_once_per_authenticated_managed_connection() {
     ));
     server.join().unwrap();
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires disposable Linux runner and real C helper"]
+fn ubuntu_session_idle_protocol_preserves_activity_freeze_and_attempt() {
+    use rca_native_agent::native_file::run_native_session_with_idle;
+    use rca_native_agent::session_enrollment::SessionPhysicalAttempt;
+    use std::os::unix::{fs::PermissionsExt, net::UnixStream};
+    let root = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let key = root.path().join("identity.json");
+    let path = root.path().join("upgrade.sock");
+    let receipt_dir = root.path().join("receipts");
+    let target = root.path().join("ordinary.txt");
+    std::fs::write(&target, "idle-fixture").unwrap();
+    let attempt = SessionPhysicalAttempt {
+        attempt_id: "11111111-1111-4111-8111-111111111111".into(),
+        github_run_id: 123,
+        github_run_attempt: 2,
+        workflow_name: "ubuntu".into(),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let _stop = StopOnPanic(server_stop);
+        let mut ws = signed_socket(listener);
+        common::receive_device_info(&mut ws, true);
+        let ipc = |cmd: &str| {
+            let mut s = UnixStream::connect(&path).unwrap();
+            s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+            s.write_all(format!("{cmd}\n").as_bytes()).unwrap();
+            let mut text = String::new();
+            s.read_to_string(&mut text).unwrap();
+            text
+        };
+        let status = || serde_json::from_str::<Value>(&ipc("idle-status")).unwrap();
+        let initial = status();
+        assert_eq!(initial.as_object().unwrap().len(), 6);
+        assert_eq!(
+            initial["attempt_id"],
+            "11111111-1111-4111-8111-111111111111"
+        );
+        assert_eq!(initial["github_run_id"], 123);
+        assert_eq!(initial["github_run_attempt"], 2);
+        assert!(initial["observed_at_ms"].as_u64().unwrap() > 0);
+        assert!(initial["last_activity_ms"].is_null());
+        assert_eq!(initial["state"], "idle");
+        assert_eq!(
+            read(&mut ws, "list_sessions", json!({}))["status"],
+            "completed"
+        );
+        assert!(status()["last_activity_ms"].is_null());
+        assert_eq!(
+            read(&mut ws, "read_file", json!({"path":target}))["text"],
+            "idle-fixture"
+        );
+        let touched = status()["last_activity_ms"].as_u64().unwrap();
+        assert_eq!(status()["state"], "idle");
+        assert_eq!(ipc("idle-freeze"), "ready\n");
+        assert_eq!(
+            read(&mut ws, "read_file", json!({"path":target}))["status"],
+            "failed"
+        );
+        assert_eq!(
+            reply(
+                &mut ws,
+                operation(
+                    "idle-frozen-write",
+                    "write_file",
+                    json!({"path":target,"content":"forbidden","mode":"rewrite"})
+                )
+            )["result"]["status"],
+            "unavailable"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "idle-fixture");
+        assert_eq!(status()["last_activity_ms"], touched);
+        assert_eq!(ipc("release"), "released\n");
+        let started = reply(
+            &mut ws,
+            operation(
+                "idle-owned-process",
+                "start_process",
+                json!({"command":"sleep 1","timeout_ms":0}),
+            ),
+        );
+        assert_eq!(started["result"]["status"], "running");
+        assert_eq!(status()["state"], "busy");
+        assert_eq!(ipc("idle-freeze"), "busy\n");
+        let admitted = status()["last_activity_ms"].as_u64().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let current = status();
+            if current["state"] == "idle" {
+                assert!(current["last_activity_ms"].as_u64().unwrap() > admitted);
+                break;
+            }
+            assert!(Instant::now() < deadline, "{current}");
+            thread::sleep(Duration::from_millis(50));
+        }
+        let terminal = status()["last_activity_ms"].clone();
+        assert_eq!(
+            reply(
+                &mut ws,
+                operation(
+                    "idle-owned-process",
+                    "start_process",
+                    json!({"command":"sleep 1","timeout_ms":0})
+                )
+            )["result"]["status"],
+            "completed"
+        );
+        assert_eq!(status()["last_activity_ms"], terminal);
+        assert_eq!(ipc("idle-freeze"), "ready\n");
+        assert_eq!(ipc("release"), "released\n");
+        ws.close(Some(tungstenite::protocol::CloseFrame {
+            code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+            reason: "disposable test".into(),
+        }))
+        .unwrap();
+    });
+    let result = run_native_session_with_idle(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        managed(),
+        &stop,
+        (&key, attempt),
+    );
+    server.join().unwrap();
+    assert!(matches!(
+        result,
+        Err(NativeFileError::Session(SessionError::Policy))
+    ));
+    assert!(!root.path().join("upgrade.sock").exists());
+    assert!(ReceiptStore::open(&receipt_dir)
+        .unwrap()
+        .get("idle-frozen-write")
+        .unwrap()
+        .is_none());
+}
