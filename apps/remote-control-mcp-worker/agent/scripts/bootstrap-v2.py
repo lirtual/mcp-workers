@@ -1473,7 +1473,8 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
         raise ValueError("Unexpected systemd drop-ins")
     if (unit_file.parent / "remote-control-v2-agent.service").exists():
         raise ValueError("Conflicting historical Agent service")
-    if pathlib.Path(str(key) + ".owner-stopped").exists():
+    stopped = pathlib.Path(str(key) + ".owner-stopped")
+    if os.path.lexists(stopped):
         raise ValueError("Owner Stop cannot silently become online")
     native_launcher(home, old_root)
     backup = pathlib.Path(str(unit_file) + ".upgrade-backup")
@@ -1493,8 +1494,15 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("Another owner installer is active")
-        # Recheck after acquiring the shared installer lock. The two durable
-        # records are published atomically before the unit is changed.
+        # Owner Stop/Start and re-pair use this same lock. The durable OFF
+        # marker remains authoritative even if the old process is still alive.
+        if os.path.lexists(stopped):
+            raise ValueError("Owner Stop cannot silently become online")
+        if (unit_file.read_text("utf8") != current
+                or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before
+                or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
+            raise ValueError("Installed Agent or identity changed before upgrade lock")
+        # Recheck pending transaction after acquiring the shared installer lock.
         if any(os.path.lexists(item) for item in (backup, intent, proof)):
             raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
         pid = native_main_pid()

@@ -1204,6 +1204,39 @@ def verify_latest_selection():
     print("NATIVE_LATEST_SELECTION_CONTRACT_PASS")
 
 
+def verify_owner_stop_at_cutover_lock():
+    # Reproduce STOP committed by the other owner operation immediately
+    # before the upgrade obtains the shared lock. An uncertain systemd stop
+    # can leave the old process alive: the durable OFF intent is authoritative.
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        state, mocks, verify = fake_services(home, old, new)
+        marker = Path(str(key) + ".owner-stopped")
+        before = unit.read_bytes()
+        original_flock = bootstrap.fcntl.flock
+        def acquire(fd, flags):
+            result = original_flock(fd, flags)
+            owned_file(marker, b"stopped\n")
+            return result
+        with patch.multiple(bootstrap, **mocks), patch.object(
+                bootstrap.fcntl, "flock", side_effect=acquire):
+            try:
+                bootstrap.native_cutover(home, new, ENDPOINT, verify)
+            except ValueError as error:
+                assert "Owner Stop" in str(error), str(error)
+            else:
+                raise AssertionError("Cutover ignored an Owner STOP committed at lock acquisition")
+        assert marker.read_bytes() == b"stopped\n"
+        assert state["active"] == "old" and not state["commands"] and not state["consents"]
+        assert unit.read_bytes() == before
+        assert launcher.readlink() == old / APP / "scripts/rca.sh"
+        assert not Path(str(key) + ".native-upgrade-intent").exists()
+        assert b"disposable-receipt-history" in receipts.read_bytes()
+    finally:
+        ctx.cleanup()
+    print("NATIVE_OWNER_STOP_LOCK_CONTRACT_PASS")
+
+
 def verify_native_detached_upgrade():
     import re
     from unittest.mock import Mock
@@ -1282,5 +1315,6 @@ if __name__ == "__main__":
         verify_public_native_archive()
         verify_native_owner_lifecycle()
         verify_latest_selection()
+        verify_owner_stop_at_cutover_lock()
         verify_native_detached_upgrade()
         verify_isolated()
