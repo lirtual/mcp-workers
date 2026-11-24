@@ -488,7 +488,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 return native_temporary(pathlib.Path.home(), version, endpoint, name)
             if input("Type NATIVE-INSTALL for owner-reviewed permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
                 raise ValueError("Native installation not confirmed")
-            print(json.dumps(native_first_install(pathlib.Path.home(), version, endpoint, name), indent=2))
+            print(json.dumps(native_pair_or_install(pathlib.Path.home(), version, endpoint, name), indent=2))
             return
         if native_upgrade:
             print("Signed WSS must be proven after switch; identity and SQLite remain unchanged.")
@@ -729,7 +729,7 @@ def native_receipts_compatible(home):
         os.close(fd)
 
 
-def native_initial_state(home, root, endpoint):
+def native_initial_state(home, root, endpoint, allow_repair=False):
     """Validate exact owned initial-install state; never adopt a foreign unit."""
     _, versions, unit, current, ids = local_inventory(home)
     if root not in versions:
@@ -750,9 +750,10 @@ def native_initial_state(home, root, endpoint):
     forbidden = (pathlib.Path(str(unit) + ".upgrade-backup"),
                  unit.parent / (UNIT + ".d"), unit.parent / "remote-control-v2-agent.service",
                  pathlib.Path(str(key) + ".owner-stopped"),
-                 pathlib.Path(str(key) + ".activation-pending"),
-                 pathlib.Path(str(key) + ".re-pair-transition"),
-                 pathlib.Path(str(key) + ".re-pair-new"))
+                 pathlib.Path(str(key) + ".activation-pending"))
+    if not allow_repair:
+        forbidden += tuple(pathlib.Path(str(key) + suffix) for suffix in
+                           (".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
     if any(os.path.lexists(p) for p in forbidden):
         raise ValueError("Conflicting or unresolved Agent lifecycle state")
     record = json.loads(native_owned_file(intent, 512)) if os.path.lexists(intent) else None
@@ -798,7 +799,9 @@ def native_initial_state(home, root, endpoint):
             or state["DropInPaths"] or state["LoadState"] not in ("loaded", "not-found")
             or (state["LoadState"] == "loaded" and state["FragmentPath"] != str(unit))
             or (current is None and state["LoadState"] != "not-found"
-                and (record is None or state["ActiveState"] not in ("inactive", "failed")))
+                and ((record is None and not (allow_repair and
+                        os.path.lexists(pathlib.Path(str(key) + ".re-pair-transition"))))
+                     or state["ActiveState"] not in ("inactive", "failed")))
             or not state["MainPID"].isdigit()):
         raise ValueError("Foreign or uncertain systemd service")
     pid = int(state["MainPID"])
@@ -811,7 +814,7 @@ def native_initial_state(home, root, endpoint):
     return versions, unit, current, ids, key, intent, proof, record, launcher, rendered, pid
 
 
-def native_pair_local(root, endpoint, name, temporary=False):
+def native_pair_local(root, endpoint, name, temporary=False, repair_phase=None, lock_fd=None):
     import socket
     suggested = socket.gethostname()
     label = name if name is not None else input("Device name [" + suggested + "]: ").strip() or suggested
@@ -825,8 +828,15 @@ def native_pair_local(root, endpoint, name, temporary=False):
     if probe.returncode:
         raise ValueError("Required native supervisor safety probe failed")
     command = "--temporary-local" if temporary else "--pair-local"
-    if subprocess.run([str(binary), command, endpoint, label],
-                      check=False).returncode:
+    args = [str(binary), command, endpoint, label]
+    pass_fds = ()
+    if repair_phase is not None:
+        if temporary or repair_phase not in ("prepare", "promote") or lock_fd is None:
+            raise ValueError("Invalid permanent re-pair phase")
+        args[1] = "--" + repair_phase + "-permanent-repair"
+        args.append(str(lock_fd))
+        pass_fds = (lock_fd,)
+    if subprocess.run(args, check=False, pass_fds=pass_fds).returncode:
         raise ValueError("Native pairing or foreground session not completed; identity retained")
 
 
@@ -858,6 +868,93 @@ def native_temporary(home, root, endpoint, name=None, process_check=None):
     # the end of foreground execution; no additional process manager.
     native_pair_local(root, endpoint, name, temporary=True)
     return 0
+
+
+def native_pair_or_install(home, root, endpoint, name=None,
+                           pair=native_pair_local, verify=native_wait_proof, process_check=None):
+    """Use the existing identity transaction, then the signed activation path."""
+    if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Permanent pairing requires a real non-root local terminal")
+    home, root = pathlib.Path(home), pathlib.Path(root)
+    process_check = process_check or no_running_programs
+    _, _, current, ids, key, _, _, record, _, _, _ = native_initial_state(home, root, endpoint, allow_repair=True)
+    marker = pathlib.Path(str(key) + ".re-pair-transition")
+    pending = any(os.path.lexists(pathlib.Path(str(key) + suffix)) for suffix in
+                  (".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+    if record is not None and pending:
+        raise ValueError("Conflicting native activation and identity transaction")
+    repaired = False
+    if record is None and (current is not None or pending or ids.get("permanent")):
+        import socket
+        if name is None:
+            name = socket.gethostname()
+        fd = os.open(key.parent / "v2-installer.lock",
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+        with os.fdopen(fd, "r+b") as lock:
+            info = os.fstat(lock.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+                raise ValueError("Unsafe installer lock")
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise ValueError("Another owner installer is active")
+            versions, unit, current, ids, key, _, _, record, launcher, rendered, pid = (
+                native_initial_state(home, root, endpoint, allow_repair=True))
+            if record is not None:
+                raise ValueError("Native activation changed before re-pair")
+            if current is not None and not ids.get("permanent") and not marker.exists():
+                raise ValueError("Installed Agent identity missing; no automatic replacement")
+            native_receipts_compatible(home)
+            pair(root, endpoint, name, repair_phase="prepare", lock_fd=lock.fileno())
+            if not marker.exists():
+                _, _, current, _, _, _, _, _, launcher, _, pid = (
+                    native_initial_state(home, root, endpoint, allow_repair=True))
+                if current is not None:
+                    if launcher is None:
+                        raise ValueError("Existing service without confirmed launcher")
+                    return {"status": "already_installed", "signed_wss": "unconfirmed",
+                            "local_service": "active" if pid else "inactive"}
+            else:
+                # Signed old/new approval precedes service mutation.
+                versions, unit, current, ids, key, _, _, _, _, rendered, pid = (
+                    native_initial_state(home, root, endpoint, allow_repair=True))
+                if pid:
+                    if native_consent(key, "freeze") != "ready":
+                        raise ValueError("Running or uncertain operations block re-pair")
+                    try:
+                        if (native_consent(key, "verify-frozen") != "ready"
+                                or native_main_pid() != pid or unit.read_text("utf8") != rendered):
+                            raise ValueError("Agent changed during re-pair freeze")
+                        native_systemctl("disable", "--now", UNIT)
+                    except Exception:
+                        try:
+                            native_consent(key, "release")
+                        except Exception:
+                            pass
+                        raise
+                elif current is not None:
+                    native_systemctl("disable", "--now", UNIT)
+                if not process_check(versions):
+                    raise ValueError("Prior Agent exit not established; identity retained")
+                if current is not None:
+                    if unit.read_text("utf8") != rendered:
+                        raise ValueError("Agent unit changed during re-pair")
+                    unit.unlink()
+                    native_sync_parent(unit)
+                native_systemctl("daemon-reload")
+                after = native_initial_state(home, root, endpoint, allow_repair=True)
+                if after[2] is not None or after[-1] or not process_check(versions):
+                    raise ValueError("Uncertain prior service; identity retained")
+                pair(root, endpoint, name, repair_phase="promote", lock_fd=lock.fileno())
+                if os.path.lexists(marker):
+                    raise ValueError("Identity promotion incomplete; retry locally")
+                repaired = True
+    result = native_first_install(home, root, endpoint, name, pair=pair, verify=verify,
+                                  process_check=process_check)
+    if repaired:
+        result.update(identity_preserved=False, previous_identity_archived=True)
+    return result
 
 
 def native_first_install(home, root, endpoint, name=None,

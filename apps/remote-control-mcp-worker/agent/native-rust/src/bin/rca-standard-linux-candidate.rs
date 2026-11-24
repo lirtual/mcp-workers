@@ -304,7 +304,12 @@ mod linux {
 
     // Bootstrap owns permanent service activation. Temporary mode runs the
     // same runtime in this terminal, retaining the existing installer lock.
-    fn pair_local(endpoint: &str, name: &str, temporary: bool) -> Result<(), ()> {
+    fn pair_local(
+        endpoint: &str,
+        name: &str,
+        temporary: bool,
+        permanent_repair: Option<(i32, bool)>,
+    ) -> Result<(), ()> {
         use rca_native_agent::device_pairing::PairingClient;
         use std::io::IsTerminal;
         if !std::io::stdin().is_terminal()
@@ -319,7 +324,12 @@ mod linux {
         let _supervisor = checked_supervisor()?;
         let home = home()?;
         let mode = if temporary { "temporary" } else { "permanent" };
-        let (key, _lock) = lock_pairing_store(&home, temporary, temporary)?;
+        let (key, _lock) = lock_pairing_store(
+            &home,
+            temporary,
+            temporary || permanent_repair.is_some(),
+            permanent_repair,
+        )?;
         let resolve = |pem: &str, existing: Option<&str>| {
             client.pair(pem, existing, name, temporary, |pending| {
                 println!("Pairing code (10 min): {}", pending.code);
@@ -327,8 +337,16 @@ mod linux {
                 println!("Use MCP pairing_lookup, then explicitly pairing_approve for the exact key and {mode} mode.");
             }).map_err(|_| ())
         };
-        if temporary {
-            pair_or_repair_temporary(&key, &client, resolve)?;
+        if let Some((_, prepare)) = permanent_repair {
+            let transitioning = exists_owned_path(&sidecar(&key, ".re-pair-transition"))?;
+            if !transitioning
+                && (!prepare || read_private(&sidecar(&key, ".device-id"), 128)?.is_none())
+            {
+                return Err(());
+            }
+            pair_or_repair(&key, &client, resolve, prepare)?;
+        } else if temporary {
+            pair_or_repair(&key, &client, resolve, false)?;
         } else {
             pair_identity_at(&key, resolve)?;
         }
@@ -359,7 +377,7 @@ mod linux {
         temporary: bool,
         resolve: impl FnOnce(&str, Option<&str>) -> Result<String, ()>,
     ) -> Result<fs::File, ()> {
-        let (key, lock) = lock_pairing_store(home, temporary, false)?;
+        let (key, lock) = lock_pairing_store(home, temporary, false, None)?;
         pair_identity_at(&key, resolve)?;
         Ok(lock)
     }
@@ -368,8 +386,9 @@ mod linux {
         home: &Path,
         temporary: bool,
         repair: bool,
+        permanent_repair: Option<(i32, bool)>,
     ) -> Result<(PathBuf, fs::File), ()> {
-        use std::os::fd::AsRawFd;
+        use std::os::fd::{AsRawFd, FromRawFd};
         let permanent = pairing_key(home, false);
         let base = permanent.parent().ok_or(())?;
         let key = pairing_key(home, temporary);
@@ -389,15 +408,33 @@ mod linux {
             }
         }
         rca_native_agent::upgrade_control::verify_upgrade_directory(&permanent).map_err(|_| ())?;
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(base.join("v2-installer.lock"))
-            .map_err(|_| ())?;
+        let lock_path = base.join("v2-installer.lock");
+        let lock = if let Some((fd, _)) = permanent_repair {
+            // The Python service controller retains this same open-file-description
+            // lock across preparation, service stop and identity promotion.
+            if fd < 3 || unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
+                return Err(());
+            }
+            let file = unsafe { fs::File::from_raw_fd(fd) };
+            let actual = file.metadata().map_err(|_| ())?;
+            let expected = fs::symlink_metadata(&lock_path).map_err(|_| ())?;
+            if !expected.is_file()
+                || (actual.dev(), actual.ino()) != (expected.dev(), expected.ino())
+            {
+                return Err(());
+            }
+            file
+        } else {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(&lock_path)
+                .map_err(|_| ())?
+        };
         let info = lock.metadata().map_err(|_| ())?;
         if !info.is_file()
             || info.uid() != unsafe { libc::geteuid() }
@@ -415,6 +452,11 @@ mod linux {
                 home.join(".config/systemd/user/remote-control-agent.service"),
                 home.join(".config/systemd/user/remote-control-v2-agent.service"),
             ] {
+                if permanent_repair.is_some_and(|(_, prepare)| prepare)
+                    && path.ends_with("remote-control-agent.service")
+                {
+                    continue; // Python verifies the exact owned service before preparing.
+                }
                 if !matches!(fs::symlink_metadata(path), Err(e) if e.kind() == ErrorKind::NotFound)
                 {
                     return Err(());
@@ -427,7 +469,6 @@ mod linux {
             sidecar(&permanent, ".native-upgrade-intent"),
             sidecar(&permanent, ".native-upgrade-proof"),
             sidecar(&permanent, ".activation-pending"),
-            sidecar(&permanent, ".re-pair-transition"),
             sidecar(&key, ".owner-stopped"),
             sidecar(&key, ".native-upgrade-intent"),
             sidecar(&key, ".activation-pending"),
@@ -435,6 +476,11 @@ mod linux {
             if !matches!(fs::symlink_metadata(path), Err(e) if e.kind() == ErrorKind::NotFound) {
                 return Err(());
             }
+        }
+        if permanent_repair.is_none()
+            && exists_owned_path(&sidecar(&permanent, ".re-pair-transition"))?
+        {
+            return Err(());
         }
         if !repair && [".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"].iter().any(
             |suffix| !matches!(fs::symlink_metadata(sidecar(&key, suffix)), Err(e) if e.kind() == ErrorKind::NotFound)
@@ -574,10 +620,11 @@ mod linux {
         Ok(())
     }
 
-    fn pair_or_repair_temporary(
+    fn pair_or_repair(
         key: &Path,
         client: &rca_native_agent::device_pairing::PairingClient,
         resolve: impl Fn(&str, Option<&str>) -> Result<String, ()>,
+        prepare_only: bool,
     ) -> Result<(), ()> {
         if !exists_owned_path(&sidecar(key, ".re-pair-transition"))?
             && !exists_owned_path(&sidecar(key, ".re-pair-new"))?
@@ -602,6 +649,7 @@ mod linux {
         // independent signed negative-status response is mandatory.
         repair_identity(
             key,
+            prepare_only,
             |pem, id| client.assert_revoked(pem, id).map_err(|_| ()),
             &resolve,
             |pem, id| client.recover(pem, Some(id)).map(|_| ()).map_err(|_| ()),
@@ -613,6 +661,7 @@ mod linux {
     // and archive naming. No extra journal or credential format.
     fn repair_identity(
         key: &Path,
+        prepare_only: bool,
         revoked: impl Fn(&str, &str) -> Result<(), ()>,
         pair: impl FnOnce(&str, Option<&str>) -> Result<String, ()>,
         approved: impl Fn(&str, &str) -> Result<(), ()>,
@@ -717,6 +766,9 @@ mod linux {
         }
         revoked(&old_pem, old)?;
         approved(&new_pem, next)?;
+        if prepare_only {
+            return Ok(());
+        }
         if !exists_owned_path(&archive)? {
             fs::DirBuilder::new()
                 .mode(0o700)
@@ -735,9 +787,9 @@ mod linux {
         for (from, to) in steps.iter().skip(phase) {
             move_identity_file(from, to)?;
         }
-        // Temporary mode needs no service activation to retire the marker.
-        // If the process exits here, an ordinary install recovers the same
-        // already-approved new key.
+        // The previous service must be absent before permanent promotion.
+        // On interruption, the ordinary installer recovers the same approved
+        // replacement and establishes a separate signed activation intent.
         fs::remove_file(marker).map_err(|_| ())?;
         fs::File::open(parent)
             .and_then(|f| f.sync_all())
@@ -753,10 +805,23 @@ mod linux {
         let args: Vec<String> = std::env::args().skip(1).collect();
         if let [command, endpoint, name] = args.as_slice() {
             match command.as_str() {
-                "--pair-local" => return pair_local(endpoint, name, false),
-                "--temporary-local" => return pair_local(endpoint, name, true),
+                "--pair-local" => return pair_local(endpoint, name, false, None),
+                "--temporary-local" => return pair_local(endpoint, name, true, None),
                 _ => return Err(()),
             }
+        }
+        if let [command, endpoint, name, fd] = args.as_slice() {
+            let prepare = match command.as_str() {
+                "--prepare-permanent-repair" => true,
+                "--promote-permanent-repair" => false,
+                _ => return Err(()),
+            };
+            return pair_local(
+                endpoint,
+                name,
+                false,
+                Some((fd.parse().map_err(|_| ())?, prepare)),
+            );
         }
         if !args.is_empty() {
             return Err(());
@@ -891,6 +956,7 @@ mod linux {
                 .unwrap();
                 repair_identity(
                     &key,
+                    false,
                     |pem, device| {
                         assert_eq!((pem, device), ("old-pem", ID));
                         Ok(())
@@ -921,6 +987,7 @@ mod linux {
             write_new(&id, ID.as_bytes()).unwrap();
             assert!(repair_identity(
                 &key,
+                false,
                 |_, _| Err(()),
                 |_, _| panic!("unverified revoke"),
                 |_, _| panic!("not paired")
@@ -929,6 +996,7 @@ mod linux {
             assert!(!marker.exists() && !stage.exists());
             assert!(repair_identity(
                 &key,
+                false,
                 |_, _| Ok(()),
                 |_, _| Err(()),
                 |_, _| panic!("not approved")
@@ -938,6 +1006,7 @@ mod linux {
             let staged = fs::read_to_string(&stage).unwrap();
             assert!(repair_identity(
                 &key,
+                false,
                 |_, _| Ok(()),
                 |pem, existing| {
                     assert_eq!(pem, staged);
@@ -957,6 +1026,7 @@ mod linux {
             write_new(&archive.join("unrelated"), b"preserve").unwrap();
             assert!(repair_identity(
                 &key,
+                false,
                 |_, _| Ok(()),
                 |_, _| panic!("already paired"),
                 |_, _| Ok(())
@@ -965,6 +1035,80 @@ mod linux {
             assert_eq!(fs::read(archive.join("unrelated")).unwrap(), b"preserve");
             assert_eq!(fs::read(&key).unwrap(), b"old-pem");
             assert!(marker.exists());
+        }
+
+        #[test]
+        fn permanent_repair_prepares_without_moving_and_keeps_parent_lock() {
+            use std::os::fd::AsRawFd;
+            let root = tempfile::tempdir().unwrap();
+            let key = pairing_key(root.path(), false);
+            let base = key.parent().unwrap();
+            fs::create_dir_all(base).unwrap();
+            fs::set_permissions(base, fs::Permissions::from_mode(0o700)).unwrap();
+            let parent_lock =
+                pair_local_identity(root.path(), false, |_, _| Ok(ID.to_owned())).unwrap();
+            let old = fs::read(&key).unwrap();
+            let unit = root
+                .path()
+                .join(".config/systemd/user/remote-control-agent.service");
+            fs::create_dir_all(unit.parent().unwrap()).unwrap();
+            fs::write(&unit, b"existing service").unwrap();
+            let dup = || unsafe { libc::dup(parent_lock.as_raw_fd()) };
+            let (_, child_lock) =
+                lock_pairing_store(root.path(), false, true, Some((dup(), true))).unwrap();
+            let next = "123e4567-e89b-42d3-a456-426614174002";
+            repair_identity(
+                &key,
+                true,
+                |_, id| {
+                    assert_eq!(id, ID);
+                    Ok(())
+                },
+                |_, _| Ok(next.to_owned()),
+                |_, id| {
+                    assert_eq!(id, next);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(fs::read(&key).unwrap(), old);
+            assert_eq!(
+                fs::read_to_string(sidecar(&key, ".device-id"))
+                    .unwrap()
+                    .trim(),
+                ID
+            );
+            assert!(sidecar(&key, ".re-pair-transition").exists());
+            drop(child_lock);
+            assert!(
+                pair_local_identity(root.path(), true, |_, _| panic!("parent lock bypassed"))
+                    .is_err()
+            );
+            assert!(lock_pairing_store(root.path(), false, true, Some((dup(), false))).is_err());
+            fs::remove_file(unit).unwrap();
+            let (_, _child_lock) =
+                lock_pairing_store(root.path(), false, true, Some((dup(), false))).unwrap();
+            repair_identity(
+                &key,
+                false,
+                |_, id| {
+                    assert_eq!(id, ID);
+                    Ok(())
+                },
+                |_, _| panic!("prepared replacement must be retained"),
+                |_, id| {
+                    assert_eq!(id, next);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read_to_string(sidecar(&key, ".device-id"))
+                    .unwrap()
+                    .trim(),
+                next
+            );
+            assert!(!sidecar(&key, ".re-pair-transition").exists());
         }
 
         #[test]
