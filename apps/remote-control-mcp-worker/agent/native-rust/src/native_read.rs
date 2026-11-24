@@ -259,6 +259,32 @@ fn append_line(
     Ok(())
 }
 
+// TextDecoder's streaming mode holds an incomplete UTF-8 sequence until the
+// next chunk. Count only decoded UTF-16 units, including malformed sequences
+// that are already complete. At EOF the decoder instead flushes the suffix.
+fn pending_too_long(bytes: &[u8], first_line: bool, streaming: bool) -> bool {
+    let mut pending = if first_line {
+        bytes.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(bytes)
+    } else {
+        bytes
+    };
+    if pending.len() <= MAX_RESULT_CHARS {
+        return false;
+    }
+    if streaming {
+        for n in 1..=3.min(pending.len()) {
+            let split = pending.len() - n;
+            if std::str::from_utf8(&pending[split..])
+                .is_err_and(|error| error.valid_up_to() == 0 && error.error_len().is_none())
+            {
+                pending = &pending[..split];
+                break;
+            }
+        }
+    }
+    String::from_utf8_lossy(pending).encode_utf16().count() > MAX_RESULT_CHARS
+}
+
 fn read_forward(mut file: File, offset: usize, length: usize) -> Result<String, ()> {
     let mut bytes = Vec::new();
     let mut chunk = vec![0; CHUNK_BYTES];
@@ -274,6 +300,9 @@ fn read_forward(mut file: File, offset: usize, length: usize) -> Result<String, 
             // Like the reference streaming decoder, a final lone CR is
             // removed and an empty pending final line is not emitted.
             let pending = &bytes[start..];
+            if pending_too_long(pending, line == 0, false) {
+                return Err(());
+            }
             let pending = pending.strip_suffix(b"\r").unwrap_or(pending);
             if line >= offset && !pending.is_empty() {
                 append_line(&mut result, &mut chars, &mut selected, pending, line == 0)?;
@@ -314,15 +343,7 @@ fn read_forward(mut file: File, offset: usize, length: usize) -> Result<String, 
             start = scan;
         }
         // Keep the reference's pending-line limit even for skipped lines.
-        let pending = &bytes[start..];
-        let pending = if line == 0 {
-            pending.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(pending)
-        } else {
-            pending
-        };
-        if pending.len() > MAX_RESULT_CHARS
-            && String::from_utf8_lossy(pending).encode_utf16().count() > MAX_RESULT_CHARS
-        {
+        if pending_too_long(&bytes[start..], line == 0, true) {
             return Err(());
         }
     }
