@@ -210,3 +210,20 @@ Write-Output 'native-forward-pass'
   assert.equal(result.status,0,result.stderr);
   assert.equal(result.stdout.trim(),"native-forward-pass");
 });
+
+windows("activation proof polling rejects pending proof without a misleading runtime failure",async()=>{
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const probe=source.match(/^  try \{\r?\n(?:    #[^\r\n]*\r?\n)*    \$raw = & \$rustEntry --verify-activation-proof \$Generation[^\r\n]*\r?\n    if \(\$LASTEXITCODE[^\r\n]*\r?\n    \$proof = \$raw \| ConvertFrom-Json\r?\n  \} catch \{ throw 'Signed WSS activation not confirmed' \}/m)?.[0];
+  assert(probe);
+  const dir=await mkdtemp(path.join(os.tmpdir(),"rca-proof-probe-"));
+  try {
+    const {writeFile}=await import("node:fs/promises");
+    const fixture=path.join(dir,"probe.cmd");
+    await writeFile(fixture,'@echo off\r\nif "%2"=="ready" (\r\n echo {"state":"connected"}\r\n exit /b 0\r\n)\r\necho Windows Rust candidate refused or session failed. 1>&2\r\nexit /b 1\r\n');
+    const command="$ErrorActionPreference='Stop'\n$rustEntry='"+fixture.replaceAll("'","''")+"'\n$Generation='pending'\ntry {\n"+probe+"\nthrow 'Pending proof unexpectedly accepted'\n} catch { if ($_.Exception.Message -ne 'Signed WSS activation not confirmed') { throw } }\n$Generation='ready'\n"+probe+"\nif ($proof.state -cne 'connected') { throw 'Successful proof lost' }\nWrite-Output 'activation-probe-pass'";
+    const result=spawnSync("powershell.exe",["-NoProfile","-NonInteractive","-Command",command],{windowsHide:true,encoding:"utf8",timeout:10000});
+    assert.equal(result.status,0,result.stderr);
+    assert.equal(result.stdout.trim(),"activation-probe-pass");
+    assert.equal(result.stderr,"");
+  } finally { await rm(dir,{recursive:true,force:true}); }
+});

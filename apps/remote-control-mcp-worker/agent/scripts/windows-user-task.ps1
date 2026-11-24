@@ -116,7 +116,9 @@ function Confirm-NativeActivation([string]$Version,[string]$Generation) {
     throw 'Expected native Task is not running'
   }
   try {
-    $raw = & $rustEntry --verify-activation-proof $Generation
+    # A missing proof is normal during bounded startup polling. Keep the
+    # exit-code and proof validation authoritative; report only the contextual failure.
+    $raw = & $rustEntry --verify-activation-proof $Generation 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Native activation receipt unavailable' }
     $proof = $raw | ConvertFrom-Json
   } catch { throw 'Signed WSS activation not confirmed' }
