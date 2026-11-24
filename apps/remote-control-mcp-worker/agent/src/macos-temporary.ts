@@ -10,7 +10,7 @@ import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { beginDeviceEnrollment } from "./pair-device.ts";
+import { beginDeviceEnrollment, approvalInstruction } from "./pair-device.ts";
 import { promptInstallMode } from "./install-mode.ts";
 import { selectDeviceLabel } from "./v2-enrollment.ts";
 import { DeviceSessionRejectedError, recoverDeviceId } from "./v2-session-client.ts";
@@ -136,9 +136,7 @@ export async function runTemporaryMac(argv = process.argv.slice(2)): Promise<voi
         throw Error("Permanent macOS mode is not implemented by this candidate.");
       const enrollment=await beginDeviceEnrollment(
         selectDeviceLabel(name??"",os.hostname()),endpoint,key,fetch,retryPairing,"temporary");
-      process.stdout.write("Pairing code (10 min): "+enrollment.code+"\n");
-      process.stdout.write("Fingerprint: "+enrollment.fingerprint+"\n");
-      process.stdout.write("Approve this temporary key and code explicitly in authenticated MCP.\n");
+      process.stdout.write(approvalInstruction(endpoint,enrollment,"temporary"));
       await awaitTemporaryApproval(endpoint,key,controller.signal,enrollment.expiresAt);
     } else {
       if (!hasKey) throw Error("No previous temporary identity to resume.");

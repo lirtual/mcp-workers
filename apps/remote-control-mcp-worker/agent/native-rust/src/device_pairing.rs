@@ -87,6 +87,17 @@ impl PairingClient {
             client: recovery_client()?,
         })
     }
+    /// Print only the canonical browser link for enrollment on that origin.
+    /// Noncanonical endpoints retain the old owner flow during transition;
+    /// never send their pending code to a different origin.
+    pub fn approval_instruction(&self, pending: &PendingEnrollment, mode: &str) -> String {
+        let endpoint = self.origin.as_str();
+        if endpoint == "https://rca.lirtual.dpdns.org/" {
+            format!("Authorize device (10 min): https://rca.lirtual.dpdns.org/pair#{}\nLocal public key fingerprint: {}\nConfirm the fingerprint and {mode} mode in your browser.", pending.code, pending.fingerprint)
+        } else {
+            format!("Pairing code (10 min): {}\nLocal public key fingerprint: {}\nBrowser approval is unavailable on this endpoint; use the existing authenticated owner approval for {mode} mode.", pending.code, pending.fingerprint)
+        }
+    }
     fn start(&self, enrollment: &PendingEnrollment) -> Result<(), SessionRecoveryError> {
         let result = post_bounded(
             &self.client,
@@ -552,6 +563,30 @@ mod tests {
             },
             listener,
         )
+    }
+
+    #[test]
+    fn browser_approval_instruction_uses_exact_enrollment_origin_and_fragment() {
+        let pem = generate_private_pem().unwrap();
+        let pending = new_pending_enrollment("test", &pem, true).unwrap();
+        for (endpoint, canonical) in [
+            ("https://rca.lirtual.dpdns.org/", true),
+            ("https://other.example/", false),
+            ("https://rca.lirtual.dpdns.org:8443/", false),
+        ] {
+            let client = PairingClient::new(endpoint).unwrap();
+            let message = client.approval_instruction(&pending, "temporary");
+            assert!(message.contains(&pending.fingerprint));
+            assert!(message.contains("temporary"));
+            assert_eq!(
+                message.contains(&format!(
+                    "https://rca.lirtual.dpdns.org/pair#{}",
+                    pending.code
+                )),
+                canonical
+            );
+            assert!(!message.contains(&pem));
+        }
     }
 
     #[test]

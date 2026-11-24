@@ -16,7 +16,7 @@ Use the current **Remote Control** MCP tools as the authority for available oper
 | Change files | Read current path and content, then `write_file`, `replace_text`, `move_file`, `create_directory` or `delete_file` | The exact authorized change and its final receipt are independently checked |
 | Run or inspect a command | `run_command` → `read_session_output` / `list_sessions` | Command exit, bounded output, and intended resulting state are verified |
 | Diagnose uncertain work | `get_operation_status` with the original ID; inspect an existing session if present | The operation's confirmed state and remaining uncertainty are reported |
-| Pair or revoke | `pairing_lookup` / `list_devices`, then the explicitly authorized owner operation | Exact device key/ID, grant and resulting cloud state are verified |
+| Pair or revoke | For released browser-capable RCA, the Owner opens the Agent authorization link and explicitly confirms its fingerprint and grant; during transition, existing MCP pairing remains available. Use `list_devices` for existing grants/revocation. | Exact device key/ID, grant and resulting cloud state are verified |
 
 **Retired GUI boundary:** Spec #628 removed RCA-owned Browser/Computer MCP tools from production discovery and execution. Cached ChatGPT tool definitions are not evidence of current support; do not invoke them. For browser control use the independently authorized BrowserMCP Profile. RCA Shell still runs with the selected OS user's permissions; removing GUI-specific MCP tools does not sandbox Shell.
 

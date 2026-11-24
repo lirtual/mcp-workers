@@ -243,10 +243,9 @@ mod windows {
         let client = PairingClient::new(endpoint).map_err(|_| ())?;
         let root = store_root()?;
         pair_windows_identity(&root, &client, name, temporary, |pending| {
-            println!("Pairing code (10 min): {}", pending.code);
-            println!("Local public key fingerprint: {}", pending.fingerprint);
-            println!("Use MCP pairing_lookup, then explicitly pairing_approve for the exact key and {mode} mode.");
-        }).map_err(|_| ())?;
+            println!("{}", client.approval_instruction(pending, mode));
+        })
+        .map_err(|_| ())?;
         println!("Approved identity recovered; foreground and Task activation are separate.");
         Ok(())
     }
@@ -372,9 +371,7 @@ mod windows {
                 checked().map_err(|_| SessionRecoveryError::InvalidIdentity)
             },
             |pending| {
-                println!("Pairing code (10 min): {}", pending.code);
-                println!("Local public key fingerprint: {}", pending.fingerprint);
-                println!("Use MCP pairing_lookup and pairing_approve for the original key.");
+                println!("{}", client.approval_instruction(pending, "permanent"));
             },
         )
         .map_err(|_| ())?;
