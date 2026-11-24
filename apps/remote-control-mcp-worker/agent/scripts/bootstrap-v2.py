@@ -1197,12 +1197,14 @@ def native_recover(home, process_check=None):
         answer = native_consent(key, "freeze")
         if answer != "ready" and native_consent(key, "verify-frozen") != "ready":
             raise ValueError("Operations still active; recovery refused")
+        stage = "verify-frozen-state"
         try:
             if (native_main_pid() != pid or native_process_executable(pid) != active_exe
                     or unit.read_text("utf8") != current
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
                 raise ValueError("Recovery state changed while frozen")
             if partial:
+                stage = "reconcile-active-service"
                 if (native_process_executable(pid) != current_exe
                         or not launcher.is_symlink()
                         or os.readlink(launcher) != str(new / APP / "scripts/rca.sh")):
@@ -1216,17 +1218,25 @@ def native_recover(home, process_check=None):
                 return {"status": "active_service_reconciled", "version": new.name,
                         "identity_preserved": True, "signed_wss": "unconfirmed"}
             if current != previous or active_exe != old_exe:
+                stage = "restore-unit"
                 native_atomic_file(unit, previous.encode())
+                stage = "reload-unit"
                 native_systemctl("daemon-reload")
+                stage = "restart-previous-service"
                 native_systemctl("restart", UNIT)
             else:
+                stage = "release-freeze"
                 native_consent(key, "release")
+            stage = "verify-previous-process"
             if (native_process_executable(native_main_pid()) != old_exe
                     or unit.read_text("utf8") != previous
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
                 raise ValueError("Previous Agent was not restored")
+            stage = "restore-launcher"
             native_restore_launcher(home, old, target)
+            stage = "verify-receipts"
             native_receipts_compatible(home)
+            stage = "retire-evidence"
             for item in (proof, intent, backup):
                 if os.path.lexists(item):
                     item.unlink()
@@ -1234,7 +1244,7 @@ def native_recover(home, process_check=None):
             return {"status": "previous_service_restored", "version": old.name,
                     "identity_preserved": True, "signed_wss": "unconfirmed"}
         except Exception:
-            raise ValueError("Native recovery uncertain; original backup retained") from None
+            raise ValueError("Native recovery uncertain at " + stage + "; preserve remaining recovery evidence") from None
         finally:
             # Never release a Rust process if the on-disk systemd unit was
             # switched but restart failed. Keep it frozen for attended repair.
