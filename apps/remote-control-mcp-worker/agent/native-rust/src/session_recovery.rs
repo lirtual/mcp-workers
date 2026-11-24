@@ -26,6 +26,8 @@ pub enum SessionRecoveryError {
     Rejected,
     #[error("device approval is not yet available")]
     Pending,
+    #[error("signed Session identity was explicitly denied by the Worker")]
+    Denied,
 }
 
 pub(crate) fn post_bounded(
@@ -47,6 +49,14 @@ pub(crate) fn post_bounded(
         .map_err(|_| SessionRecoveryError::Unavailable)?;
     if allow_pending && response.status().as_u16() == 404 {
         return Err(SessionRecoveryError::Pending);
+    }
+    // Only these HTTP denials from signed recovery may prompt an
+    // independent negative approval check. Malformed success, mismatched
+    // identity, redirects, rate limits and outages must never do so.
+    if matches!(route, "/agent/session/challenge" | "/agent/session/recover")
+        && matches!(response.status().as_u16(), 401 | 403 | 404)
+    {
+        return Err(SessionRecoveryError::Denied);
     }
     if response.status().as_u16() != expected_status
         || response
@@ -113,6 +123,10 @@ fn verify_at_origin(
         Some(&registered.device_id),
     )
     .map(|_| ())
+    .map_err(|error| match error {
+        SessionRecoveryError::Denied => SessionRecoveryError::Rejected,
+        other => other,
+    })
 }
 
 pub(crate) fn recovery_client() -> Result<Client, SessionRecoveryError> {
