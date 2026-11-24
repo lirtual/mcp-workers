@@ -62,6 +62,17 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
     assert.equal(secretStage.split('          ' + name + ':').length - 1, 1,
       'Duplicate staged Secret ' + name);
   }
+  // Temporary #1018: exact dispatch option and existing protected deploy only.
+  assert.match(source, /      rca_clerk_probe:\n        required: false\n        description:[^\n]+\n        type: boolean\n        default: false/);
+  const validate = job(source, 'deploy').content.split('      - name: Validate current trusted main without deployment credentials')[1]?.split('      - uses: pnpm/action-setup')[0];
+  assert.ok(validate?.includes('if [[ "' + dollar + "{{ inputs.rca_clerk_probe }}\" == \"true\" && \"$SELECTED_WORKER\" != \"remote-control-mcp-worker\" ]]; then") && validate.includes('exit 1'), 'Spec 1018 probe must reject other Workers before credentials');
+  for (const name of ['workflow-actions-migration-prepare','workflow-actions-gate-reopen','workflow-uu-table-retirement','legacy-secret-cleanup','browser-access-readonly'])
+    assert.ok(job(source,name).gate.includes('inputs.rca_clerk_probe != true'), 'Spec 1018 probe must exclude other release modes: '+name);
+  const variableStage=source.slice(stageEnd,source.indexOf('      - name: Pin the reviewed unified Actions Worker',stageEnd));
+  assert.ok(variableStage.includes("RCA_CLERK_PROBE: " + dollar + "{{ inputs.worker == 'remote-control-mcp-worker' && inputs.rca_clerk_probe == true }}"), 'Spec 1018 staging must require exact target and explicit probe');
+  for (const name of ['CLERK_PILOT_PUBLISHABLE_KEY','CLERK_PILOT_OWNER_USER_ID','CLERK_PILOT_ISSUER'])
+    assert.ok(variableStage.includes(name+": "+dollar+"{{ (inputs.worker == 'mcp-gateway-worker' || (inputs.worker == 'remote-control-mcp-worker' && inputs.rca_clerk_probe == true)) && vars."+name+" || '' }}"), 'Spec 1018 public identity staging scope: '+name);
+  assert.ok(secretStage.includes("CLERK_SECRET_KEY: "+dollar+"{{ inputs.worker == 'mcp-gateway-worker' && secrets.CLERK_SECRET_KEY || '' }}"), 'Clerk management Secret must remain Gateway-only');
   assert.doesNotMatch(secretStage,/WORKFLOW_SESSION_RUNTIME_DATA_KEY:|secrets\.SESSION_RUNTIME_DATA_KEY/,
     'Retired UU Secret source must not be staged into new Worker versions');
 }
@@ -128,8 +139,8 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 18,
-  'Release workflow_dispatch must have exactly eighteen reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 19,
+  'Release workflow_dispatch must have exactly nineteen reviewed inputs (temporary Spec 1018 probe)');
 // Spec #804: this additional protected Runner entry is strictly GET-only.
 assert.match(release, /      browser_access_readonly:\n        description:[^\n]+\n        required: false\n        type: boolean\n        default: false/);
 assert.ok(deploy.gate.includes('inputs.browser_access_readonly != true'),
