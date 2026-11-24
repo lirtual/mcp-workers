@@ -76,7 +76,12 @@ mod linux {
     // The only success proof for a local Node -> native service cutover.
     // Called by the shared transport *after* a signed Worker WSS handshake,
     // never by systemd readiness or by a local upgrade command.
-    fn write_upgrade_proof(key: &Path, device_id: &str, executable: &Path) -> Result<(), ()> {
+    fn write_upgrade_proof(
+        key: &Path,
+        device_id: &str,
+        executable: &Path,
+        endpoint: &str,
+    ) -> Result<(), ()> {
         let intent_path = sidecar(key, ".native-upgrade-intent");
         let info = match fs::symlink_metadata(&intent_path) {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
@@ -90,7 +95,10 @@ mod linux {
         let data: serde_json::Value =
             serde_json::from_slice(&fs::read(&intent_path).map_err(|_| ())?).map_err(|_| ())?;
         let fields = data.as_object().ok_or(())?;
-        if fields.len() != 3 {
+        if fields.len() != 3
+            && !(fields.len() == 4
+                && fields.get("initial_endpoint").and_then(|v| v.as_str()) == Some(endpoint))
+        {
             return Err(());
         }
         let operation = fields
@@ -465,6 +473,7 @@ mod linux {
         let proof_key = key.clone();
         let proof_id = device_id.to_owned();
         let proof_exe = std::env::current_exe().map_err(|_| ())?;
+        let proof_endpoint = endpoint.clone();
         let result = run_native_managed_session_with_upgrade(
             &endpoint,
             &private_pem,
@@ -476,7 +485,7 @@ mod linux {
                 key_path: &key,
                 on_connected: Some(Arc::new(move || {
                     // Missing/invalid intent never becomes a success receipt.
-                    let _ = write_upgrade_proof(&proof_key, &proof_id, &proof_exe);
+                    let _ = write_upgrade_proof(&proof_key, &proof_id, &proof_exe, &proof_endpoint);
                 })),
             },
         );

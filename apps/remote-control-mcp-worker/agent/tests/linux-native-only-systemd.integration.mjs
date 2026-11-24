@@ -75,6 +75,52 @@ const oldUnit=renderV2Service({node:nodeExe,home,repoRoot:oldRoot,
   keyPath:key,endpoint,entryExt:"js"});
 let installed=false;
 try {
+  // Actual first activation of the Node-free binary. Pairing is represented
+  // ONLY by the disposable pre-approved key/ID fixture above; no real grant
+  // is created. The invalid loopback endpoint cannot supply a signed proof.
+  const firstCode=[
+    "import importlib.util,pathlib,sys",
+    "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
+    "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
+    "try:b.native_first_install(pathlib.Path(sys.argv[2]),pathlib.Path(sys.argv[3]),sys.argv[4],pair=lambda *args:None,verify=lambda *args:False)",
+    "except ValueError as e:",
+    " assert 'Signed activation unconfirmed' in str(e),str(e)",
+    " sys.exit(0)",
+    "raise AssertionError('First install accepted without signed proof')",
+  ].join("\n");
+  const first=spawnSync("/usr/bin/python3",["-I","-B","-c",firstCode,
+    path.join(source,"scripts/bootstrap-v2.py"),home,nativeRoot,endpoint],{
+    env,encoding:"utf8",timeout:30000});
+  assert.equal(first.status,0,first.stdout+"\n"+first.stderr);
+  installed=true; // ensure fixture cleanup if a later assertion fails
+  assert.equal(liveExecutable(),rustExe);
+  assert.ok(existsSync(key+".native-upgrade-intent"));
+  assert.ok(!existsSync(key+".native-upgrade-proof"));
+  assert.ok(!existsSync(cli));
+  const firstSocket=path.join(base,"upgrade.sock");
+  const firstDeadline=Date.now()+10000;
+  while(!existsSync(firstSocket)&&Date.now()<firstDeadline)
+    await new Promise(resolve=>setTimeout(resolve,50));
+  assert.ok(existsSync(firstSocket),"first activation must expose the local freeze socket");
+  const firstRecover=[
+    "import importlib.util,json,pathlib,sys",
+    "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
+    "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
+    "print(json.dumps(b.native_recover(pathlib.Path(sys.argv[2]))))",
+  ].join("\n");
+  const removed=spawnSync("/usr/bin/python3",["-I","-B","-c",firstRecover,
+    path.join(source,"scripts/bootstrap-v2.py"),home],{env,encoding:"utf8",timeout:30000});
+  assert.equal(removed.status,0,removed.stdout+"\n"+removed.stderr);
+  assert.equal(JSON.parse(removed.stdout).status,"initial_service_removed");
+  assert.ok(!existsSync(unitFile)&&!existsSync(cli));
+  assert.ok(!existsSync(key+".native-upgrade-intent"));
+  assert.equal(readFileSync(key,"utf8"),privateKey);
+  assert.equal(readFileSync(deviceId,"utf8"),id+"\n");
+  const firstDb=new DatabaseSync(receipts,{readOnly:true});
+  assert.equal(firstDb.prepare("SELECT state FROM receipts WHERE operation_id='914-prior-unknown'").get().state,"unknown");
+  firstDb.close();
+  console.log("NATIVE_FIRST_INSTALL_REAL_SYSTEMD_UNCONFIRMED_RECOVERY_PASS");
+  installed=false;
   await installUnit(unitFile,oldUnit);
   installed=true;
   symlinkSync(path.join(oldRoot,"apps/remote-control-agent/scripts/rca.sh"),cli);

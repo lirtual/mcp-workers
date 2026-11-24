@@ -149,6 +149,15 @@ mod linux {
 
     #[test]
     fn existing_identity_signed_wss_is_one_sqlite_owner_with_policy_shutdown() {
+        verify_signed_wss_activation(false);
+    }
+
+    #[test]
+    fn initial_identity_signed_wss_is_one_sqlite_owner_with_policy_shutdown() {
+        verify_signed_wss_activation(true);
+    }
+
+    fn verify_signed_wss_activation(initial: bool) {
         let root = tempfile::tempdir().unwrap();
         fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let key = root.path().join("v2-identity.pem");
@@ -177,12 +186,6 @@ mod linux {
             .to_string(),
         );
         let operation_id = "0123456789abcdef0123456789abcdef";
-        private_file(
-            &root.path().join("v2-identity.pem.native-upgrade-intent"),
-            &json!({"operation_id":operation_id,"device_id":ID,
-                "target_version":version})
-            .to_string(),
-        );
         // No Shell operation is sent; the disposable sibling is validated but
         // never executed. A physical C helper remains its own Gate 1 test.
         let helper = build.join("session-supervisor");
@@ -191,6 +194,15 @@ mod linux {
         let target = root.path().join("written.txt");
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let mut intent = json!({"operation_id":operation_id,"device_id":ID,
+            "target_version":version});
+        if initial {
+            intent["initial_endpoint"] = json!(&endpoint);
+        }
+        private_file(
+            &root.path().join("v2-identity.pem.native-upgrade-intent"),
+            &intent.to_string(),
+        );
         let server_target = target.clone();
         let upgrade_socket = root.path().join("upgrade.sock");
         let server = thread::spawn(move || {
