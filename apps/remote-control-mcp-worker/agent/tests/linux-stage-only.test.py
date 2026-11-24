@@ -111,10 +111,21 @@ class LinuxStageOnly(unittest.TestCase):
             {"stage_only": True, "asset_sha256": "F" * 64},
             {"stage_only": True, "asset_sha256": "a" * 64, "upgrade": True},
             {"stage_only": True, "asset_sha256": "a" * 64, "name": "wrong"},
-            {"stage_only": False, "asset_sha256": "a" * 64},
         ]:
             with mock.patch.object(bootstrap, "preflight") as preflight:
                 with self.assertRaisesRegex(ValueError, "Stage-only|stage-only"):
+                    bootstrap.install(TAG, COMMIT, ENDPOINT, **overrides)
+                preflight.assert_not_called()
+
+    def test_native_install_digest_and_action_boundaries(self):
+        for overrides, message in [
+            ({"asset_sha256": "a" * 64}, "only accepted for native staging, install or upgrade"),
+            ({"native_install": True}, "Native install requires a reviewed SHA-256"),
+            ({"native_install": True, "asset_sha256": "F" * 64}, "Native install requires a reviewed SHA-256"),
+            ({"native_install": True, "asset_sha256": "a" * 64, "upgrade": True}, "Native install requires a reviewed SHA-256"),
+        ]:
+            with mock.patch.object(bootstrap, "preflight") as preflight:
+                with self.assertRaisesRegex(ValueError, message):
                     bootstrap.install(TAG, COMMIT, ENDPOINT, **overrides)
                 preflight.assert_not_called()
 

@@ -411,15 +411,15 @@ def preflight(tag, commit, endpoint, stage_only=False):
 
 
 def install(tag, commit, endpoint, name=None, upgrade=False,
-            stage_only=False, asset_sha256=None, native_upgrade=False):
-    if stage_only or native_upgrade:
-        if (name is not None or upgrade or
+            stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False):
+    if stage_only or native_upgrade or native_install:
+        if ((name is not None and not native_install) or upgrade or
                 not isinstance(asset_sha256, str) or
                 not re.fullmatch(r"[0-9a-f]{64}", asset_sha256)):
-            scope = "Stage-only" if stage_only else "Native upgrade"
+            scope = "Stage-only" if stage_only else "Native install" if native_install else "Native upgrade"
             raise ValueError(scope + " requires a reviewed SHA-256 and no Node install action")
     elif asset_sha256 is not None:
-        raise ValueError("An asset SHA-256 is only accepted for stage-only or native upgrade")
+        raise ValueError("An asset SHA-256 is only accepted for native staging, install or upgrade")
     target = preflight(tag, commit, endpoint, stage_only=stage_only)
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
     location = program_home(os.path.expanduser("~"))
@@ -436,7 +436,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         pinned = resolve_pinned(tag, commit, target)
         # Release API metadata is insufficient by itself: independent owner
         # review of the exact architecture's asset SHA-256 is mandatory.
-        if (stage_only or native_upgrade) and pinned["digest"] != asset_sha256:
+        if (stage_only or native_upgrade or native_install) and pinned["digest"] != asset_sha256:
             raise ValueError("Reviewed SHA-256 differs from immutable GitHub Release metadata")
         archive_path = None
         try:
@@ -455,9 +455,9 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             with tarfile.open(archive_path, "r:gz") as tf:
                 manifest = json.load(tf.extractfile(tf.getmember("bundle.json")))
             native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
-            if native_only and not (stage_only or native_upgrade):
+            if native_only and not (stage_only or native_upgrade or native_install):
                 raise ValueError("Native-only Rust requires explicit trusted handoff")
-            if native_upgrade and not native_only:
+            if (native_upgrade or native_install) and not native_only:
                 raise ValueError("Native handoff requires a Node-free Rust archive")
             if stage_only and (manifest.get("upgrade_profile") != "paired-full-v1" or
                     manifest.get("device_protocol") != 2 or
@@ -475,6 +475,11 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         print("==> Verified runtime staged: " + str(version), flush=True)
         if stage_only:
             # No install-v2, systemctl, identity mutation, approval or pairing.
+            return
+        if native_install:
+            if input("Type NATIVE-INSTALL for owner-reviewed permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
+                raise ValueError("Native installation not confirmed")
+            print(json.dumps(native_first_install(pathlib.Path.home(), version, endpoint, name), indent=2))
             return
         if native_upgrade:
             print("Signed WSS must be proven after switch; identity and SQLite remain unchanged.")
@@ -715,6 +720,219 @@ def native_receipts_compatible(home):
         os.close(fd)
 
 
+def native_initial_state(home, root, endpoint):
+    """Validate exact owned initial-install state; never adopt a foreign unit."""
+    _, versions, unit, current, ids = local_inventory(home)
+    if root not in versions:
+        raise ValueError("Unknown staged Agent version")
+    validated_owned_version(root)
+    if json.loads((root / "bundle.json").read_text("utf8")).get("artifact_profile") != "rust-native-only-v1":
+        raise ValueError("First install needs a reviewed native-only bundle")
+    key = home / STORE / "v2-identity.pem"
+    for directory in (home, home / ".local", home / ".local/bin", home / ".config",
+                      unit.parent.parent, unit.parent):
+        if directory.is_symlink() or (directory.exists() and (
+                not directory.is_dir() or directory.stat().st_uid != os.getuid()
+                or directory.stat().st_mode & 0o022)):
+            raise ValueError("Unsafe initial service or launcher directory")
+    rendered = native_render_unit(root, endpoint, key)
+    intent = pathlib.Path(str(key) + ".native-upgrade-intent")
+    proof = pathlib.Path(str(key) + ".native-upgrade-proof")
+    forbidden = (pathlib.Path(str(unit) + ".upgrade-backup"),
+                 unit.parent / (UNIT + ".d"), unit.parent / "remote-control-v2-agent.service",
+                 pathlib.Path(str(key) + ".owner-stopped"),
+                 pathlib.Path(str(key) + ".activation-pending"),
+                 pathlib.Path(str(key) + ".re-pair-transition"),
+                 pathlib.Path(str(key) + ".re-pair-new"))
+    if any(os.path.lexists(p) for p in forbidden):
+        raise ValueError("Conflicting or unresolved Agent lifecycle state")
+    record = json.loads(native_owned_file(intent, 512)) if os.path.lexists(intent) else None
+    if os.path.lexists(intent) and (not isinstance(record, dict)
+            or set(record) != {"operation_id", "device_id", "target_version", "initial_endpoint"}
+            or not isinstance(record["operation_id"], str)
+            or not re.fullmatch(r"[0-9a-f]{32}", record["operation_id"])
+            or not ids.get("permanent") or record["device_id"] != ids["permanent"]
+            or record["target_version"] != root.name or record["initial_endpoint"] != endpoint):
+        raise ValueError("Unresolved or different initial activation")
+    if (current is not None and current != rendered
+            or (os.path.lexists(proof) and record is None)):
+        raise ValueError("Existing or unresolved service requires its own lifecycle action")
+    launcher = owned_manager_launcher(home, versions)
+    target = str(root / APP / "scripts/rca.sh")
+    if launcher is not None and (os.readlink(launcher) != target or current is None):
+        raise ValueError("Existing launcher requires its own lifecycle action")
+    # Do not adopt a unit from another systemd search path or drop-in.
+    output = native_systemctl("show", UNIT, "-p", "LoadState", "-p", "ActiveState",
+                              "-p", "MainPID", "-p", "FragmentPath", "-p", "DropInPaths")
+    state = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    if (set(state) != {"LoadState", "ActiveState", "MainPID", "FragmentPath", "DropInPaths"}
+            or state["DropInPaths"] or state["LoadState"] not in ("loaded", "not-found")
+            or (state["LoadState"] == "loaded" and state["FragmentPath"] != str(unit))
+            or (current is None and state["LoadState"] != "not-found"
+                and (record is None or state["ActiveState"] not in ("inactive", "failed")))
+            or not state["MainPID"].isdigit()):
+        raise ValueError("Foreign or uncertain systemd service")
+    pid = int(state["MainPID"])
+    if state["ActiveState"] not in ("active", "inactive", "failed") or (
+            (state["ActiveState"] == "active") != (pid > 0)):
+        raise ValueError("Agent service transition is not yet settled")
+    if pid and (current is None or
+                native_process_executable(pid) != root / APP / ".build/rca-standard-linux-candidate"):
+        raise ValueError("Unexpected running Agent executable")
+    return versions, unit, current, ids, key, intent, proof, record, launcher, rendered, pid
+
+
+def native_pair_permanent(root, endpoint, name):
+    import socket
+    suggested = socket.gethostname()
+    label = name if name is not None else input("Device name [" + suggested + "]: ").strip() or suggested
+    binary = root / APP / ".build/rca-standard-linux-candidate"
+    try:
+        probe = subprocess.run([str(root / APP / ".build/session-supervisor"), "--probe"],
+                               start_new_session=True, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=5, check=False)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("Required native supervisor safety probe timed out") from error
+    if probe.returncode:
+        raise ValueError("Required native supervisor safety probe failed")
+    if subprocess.run([str(binary), "--pair-local", endpoint, label],
+                      check=False).returncode:
+        raise ValueError("Native pairing not confirmed; original identity retained")
+
+
+def native_first_install(home, root, endpoint, name=None,
+                         pair=native_pair_permanent, verify=native_wait_proof,
+                         process_check=None):
+    """Fresh permanent install; only the exact authenticated PID may commit."""
+    home = pathlib.Path(home)
+    root = pathlib.Path(root)
+    if process_check is None:
+        process_check = no_running_programs
+    state = native_initial_state(home, root, endpoint)
+    versions, _, current, _, key, _, _, record, launcher, _, pid = state
+    if current is not None and record is None:
+        if launcher is None:
+            raise ValueError("Existing service without confirmed launcher; manual review required")
+        return {"status": "already_installed", "signed_wss": "unconfirmed",
+                "local_service": "active" if pid else "inactive"}
+    if record is None:
+        if not process_check(versions):
+            raise ValueError("Running or uncertain Agent blocks first pairing")
+        native_receipts_compatible(home)
+        pair(root, endpoint, name)
+    # Rust pairing uses this same lock. Re-read state under lock before
+    # service mutation; never act on a stale snapshot.
+    fd = os.open(key.parent / "v2-installer.lock",
+                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o777 != 0o600):
+            raise ValueError("Unsafe installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        versions, unit, current, ids, key, intent, proof, record, launcher, rendered, pid = (
+            native_initial_state(home, root, endpoint))
+        device_id = ids.get("permanent")
+        if not device_id:
+            raise ValueError("Pairing has not recovered an approved identity")
+        key_digest = hashlib.sha256(native_owned_file(key, 8192)).hexdigest()
+        if record is None:
+            if current is not None or launcher is not None or not process_check(versions):
+                raise ValueError("Agent state changed during pairing")
+            record = {"operation_id": secrets.token_hex(16), "device_id": device_id,
+                      "target_version": root.name, "initial_endpoint": endpoint}
+            native_atomic_file(intent, json.dumps(record, separators=(",", ":")).encode())
+        if launcher is not None and not os.path.lexists(proof):
+            # Launcher publication follows a verified proof. Interrupted
+            # cleanup can leave the initial intent alone. No new WSS claim.
+            intent.unlink()
+            native_sync_parent(intent)
+            return {"status": "already_installed", "signed_wss": "unconfirmed",
+                    "local_service": "active" if pid else "inactive"}
+        if not pid:
+            if os.path.lexists(proof):
+                raise ValueError("Stale activation evidence; use attended native recovery")
+            if not process_check(versions):
+                raise ValueError("Unconfirmed prior Agent process; use attended native recovery")
+            if current is None:
+                unit.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                native_atomic_file(unit, rendered.encode())
+            native_systemctl("daemon-reload")
+            native_systemctl("enable", "--now", UNIT)
+            pid = native_main_pid()
+        binary = root / APP / ".build/rca-standard-linux-candidate"
+        if native_process_executable(pid) != binary:
+            raise ValueError("Initial service did not activate the reviewed executable")
+        if not verify(proof, record["operation_id"], device_id, root.name, pid):
+            raise ValueError("Signed activation unconfirmed; retain initial activation for recovery")
+        if (native_main_pid() != pid or native_process_executable(pid) != binary
+                or unit.read_text("utf8") != rendered
+                or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest
+                or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
+            raise ValueError("Initial Agent changed during activation")
+        # Publish only after authentication. Never replace a foreign command.
+        if owned_manager_launcher(home, versions) is None:
+            target = home / ".local/bin/rca"
+            target.parent.mkdir(mode=0o700, exist_ok=True)
+            os.symlink(str(root / APP / "scripts/rca.sh"), target)
+            native_sync_parent(target)
+        native_launcher(home, root)
+        for item in (proof, intent):
+            item.unlink()
+            native_sync_parent(item)
+        return {"status": "active", "version": root.name, "signed_wss": True,
+                "identity_preserved": True}
+
+
+def native_recover_initial(home, versions, record, process_check):
+    """Abort an interrupted initial activation, never discard its identity."""
+    root = next((v for v in versions if v.name == record.get("target_version")), None)
+    if root is None:
+        raise ValueError("Unknown initial activation target")
+    endpoint = record.get("initial_endpoint")
+    if not isinstance(endpoint, str):
+        raise ValueError("Unknown initial activation endpoint")
+    versions, unit, current, ids, key, intent, proof, _, launcher, rendered, pid = (
+        native_initial_state(home, root, endpoint))
+    if launcher is not None:
+        # The first install already passed its signed activation and published
+        # the CLI. Recovery must not stop this committed service.
+        raise ValueError("Initial launcher committed; repeat the same pinned native install")
+    if pid:
+        if native_consent(key, "freeze") != "ready":
+            raise ValueError("Running or uncertain operations block initial recovery")
+        try:
+            if (native_consent(key, "verify-frozen") != "ready"
+                    or native_main_pid() != pid or unit.read_text("utf8") != rendered):
+                raise ValueError("Initial service changed during freeze")
+            native_systemctl("disable", "--now", UNIT)
+        except Exception:
+            try:
+                native_consent(key, "release")
+            except Exception:
+                pass
+            raise
+    elif current is not None:
+        native_systemctl("disable", "--now", UNIT)
+    if not process_check(versions):
+        raise ValueError("Initial service exit not established; evidence retained")
+    if current is not None:
+        if unit.read_text("utf8") != rendered:
+            raise ValueError("Initial unit changed; evidence retained")
+        unit.unlink()
+        native_sync_parent(unit)
+    native_systemctl("daemon-reload")
+    for item in (proof, intent):
+        if os.path.lexists(item):
+            item.unlink()
+            native_sync_parent(item)
+    return {"status": "initial_service_removed", "identity_preserved": True,
+            "signed_wss": "unconfirmed", "cloud_revocation": "NOT_PERFORMED"}
+
+
 def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
     """Accept only a pinned staged Rust bundle; preserve old identity and SQLite."""
     home = pathlib.Path(home)
@@ -859,7 +1077,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                 except Exception:
                     pass
 
-def native_recover(home):
+def native_recover(home, process_check=None):
     """Attended recovery of one interrupted, owner-frozen Node-free switch."""
     home = pathlib.Path(home)
     local_inventory(home)
@@ -882,6 +1100,11 @@ def native_recover(home):
         _, versions, unit, current, ids = local_inventory(home)
         has_backup = os.path.lexists(backup)
         has_intent = os.path.lexists(intent)
+        if has_intent and not has_backup:
+            record = json.loads(native_owned_file(intent, 512))
+            if isinstance(record, dict) and "initial_endpoint" in record:
+                return native_recover_initial(home, versions, record,
+                                              process_check or no_running_programs)
         if (not current or not (has_backup or has_intent)
                 or (unit.parent / (UNIT + ".d")).exists()
                 or (unit.parent / (UNIT + ".d")).is_symlink()
@@ -974,12 +1197,14 @@ def native_recover(home):
         answer = native_consent(key, "freeze")
         if answer != "ready" and native_consent(key, "verify-frozen") != "ready":
             raise ValueError("Operations still active; recovery refused")
+        stage = "verify-frozen-state"
         try:
             if (native_main_pid() != pid or native_process_executable(pid) != active_exe
                     or unit.read_text("utf8") != current
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
                 raise ValueError("Recovery state changed while frozen")
             if partial:
+                stage = "reconcile-active-service"
                 if (native_process_executable(pid) != current_exe
                         or not launcher.is_symlink()
                         or os.readlink(launcher) != str(new / APP / "scripts/rca.sh")):
@@ -993,17 +1218,25 @@ def native_recover(home):
                 return {"status": "active_service_reconciled", "version": new.name,
                         "identity_preserved": True, "signed_wss": "unconfirmed"}
             if current != previous or active_exe != old_exe:
+                stage = "restore-unit"
                 native_atomic_file(unit, previous.encode())
+                stage = "reload-unit"
                 native_systemctl("daemon-reload")
+                stage = "restart-previous-service"
                 native_systemctl("restart", UNIT)
             else:
+                stage = "release-freeze"
                 native_consent(key, "release")
+            stage = "verify-previous-process"
             if (native_process_executable(native_main_pid()) != old_exe
                     or unit.read_text("utf8") != previous
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
                 raise ValueError("Previous Agent was not restored")
+            stage = "restore-launcher"
             native_restore_launcher(home, old, target)
+            stage = "verify-receipts"
             native_receipts_compatible(home)
+            stage = "retire-evidence"
             for item in (proof, intent, backup):
                 if os.path.lexists(item):
                     item.unlink()
@@ -1011,7 +1244,7 @@ def native_recover(home):
             return {"status": "previous_service_restored", "version": old.name,
                     "identity_preserved": True, "signed_wss": "unconfirmed"}
         except Exception:
-            raise ValueError("Native recovery uncertain; original backup retained") from None
+            raise ValueError("Native recovery uncertain at " + stage + "; preserve remaining recovery evidence") from None
         finally:
             # Never release a Rust process if the on-disk systemd unit was
             # switched but restart failed. Keep it frozen for attended repair.
@@ -1445,6 +1678,8 @@ def main():
     actions.add_argument("--status", action="store_true")
     actions.add_argument("--stage-only", action="store_true",
                          help="verify and stage a separately pinned immutable Linux upgrade; never switch")
+    actions.add_argument("--native-install", action="store_true",
+                         help="owner-local permanent Node-free Rust first install and signed activation")
     actions.add_argument("--native-upgrade", action="store_true",
                          help="owner-local Node/native to Node-free Rust signed WSS cutover")
     actions.add_argument("--uninstall", action="store_true")
@@ -1454,7 +1689,7 @@ def main():
                          help="separate explicit v2 key/ID purge after uninstall; shared SQLite retained")
     parser.add_argument("--name")
     parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
-    parser.add_argument("--asset-sha256", help="independently reviewed SHA-256 for native staging or switch")
+    parser.add_argument("--asset-sha256", help="independently reviewed SHA-256 for native staging, install or switch")
     args = parser.parse_args()
     try:
         if args.status:
@@ -1462,7 +1697,7 @@ def main():
         elif args.recover_native:
             if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
                 raise ValueError("Native recovery requires an owner interactive terminal")
-            print("Recover the previous local Agent service; signed cloud WSS remains unconfirmed.")
+            print("Recover the previous local Agent service, or remove an interrupted first activation; identity retained.")
             if input("Type RECOVER-NATIVE to confirm: ").strip() != "RECOVER-NATIVE":
                 raise ValueError("Native recovery not confirmed")
             print(json.dumps(native_recover(pathlib.Path.home()), indent=2))
@@ -1513,7 +1748,7 @@ def main():
             if not args.tag or not args.commit or not args.endpoint:
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
-                    args.stage_only, args.asset_sha256, args.native_upgrade)
+                    args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install)
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)
