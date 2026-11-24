@@ -450,11 +450,25 @@ def worker_origin(endpoint):
             and uri.path in ("", "/"))
 
 
-def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False):
-    # Remote staging is data-only; the existing manual installer still demands
-    # a real console, and no noninteractive path may pair or switch systemd.
+def approved_native_detached_worker():
+    # Same admission boundary as the original one-shot Linux manager.
     if (sys.platform != "linux" or os.getuid() == 0
-            or (not stage_only and
+            or os.environ.get("RCA_UNATTENDED_UPGRADE") != "owner-approved-task-v1"
+            or not re.fullmatch(r"[a-f0-9]{32}", os.environ.get("INVOCATION_ID", ""))):
+        return False
+    try:
+        cgroups = pathlib.Path("/proc/self/cgroup").read_text("ascii")
+    except (OSError, UnicodeError):
+        return False
+    return bool(re.search(r"(?:^|/)rca-upgrade-[a-f0-9]{32}\.service(?:$|/)", cgroups, re.M))
+
+
+def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False, detached_upgrade=False):
+    # Only the admitted one-shot user systemd worker may switch without a TTY.
+    if detached_upgrade and (stage_only or not latest_archive or not approved_native_detached_worker()):
+        raise ValueError("Detached native upgrade requires an admitted systemd worker")
+    if (sys.platform != "linux" or os.getuid() == 0
+            or (not stage_only and not detached_upgrade and
                 (not sys.stdin.isatty() or not sys.stdout.isatty()))):
         raise ValueError("Run as a non-root Linux user in a real interactive terminal")
     cpu = platform.machine().lower()
@@ -487,14 +501,17 @@ def public_forward_version(installed, target):
     return new_number > old_number or (new_number == old_number and installed != target)
 
 
-def native_upgrade_latest(endpoint):
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=None):
+    if detached_upgrade:
+        if not approved_native_detached_worker() or expected_root is None:
+            raise ValueError("Detached native upgrade requires an admitted systemd worker")
+    elif not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Upgrade requires local interactive confirmation")
     home = pathlib.Path.home()
     _, versions, _, unit, ids = local_inventory(home)
     root = owned_unit_root(unit, versions)
-    if root is None or "permanent" not in ids:
-        raise ValueError("No existing paired managed Linux Agent")
+    if root is None or "permanent" not in ids or (expected_root is not None and root != expected_root):
+        raise ValueError("No matching existing paired managed Linux Agent")
     validated_owned_version(root)
     info = json.loads((root / "bundle.json").read_text("utf8"))
     if info.get("artifact_profile") != "rust-native-only-v1":
@@ -508,7 +525,8 @@ def native_upgrade_latest(endpoint):
         return 0
     if not public_forward_version(info["version"], tag):
         raise ValueError("Silent downgrade or same-version replacement refused")
-    if preflight(tag, None, endpoint, latest_archive=True) != info["target"]:
+    if preflight(tag, None, endpoint, latest_archive=True,
+                 detached_upgrade=detached_upgrade) != info["target"]:
         raise ValueError("Installed Agent target does not match host")
     data = fetch(selected["download"], "application/octet-stream", selected["size"])
     if len(data) != selected["size"] or hashlib.sha256(data).hexdigest() != selected["digest"]:
@@ -521,12 +539,68 @@ def native_upgrade_latest(endpoint):
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
         return install(tag, None, endpoint, asset_sha256=selected["digest"],
-                       native_upgrade=True, latest_archive=archive)
+                       native_upgrade=True, latest_archive=archive,
+                       detached_upgrade=detached_upgrade)
+
+
+def native_unattended_upgrade(root, *, worker=False):
+    """Explicit owner-approved remote command; never pair or resume a stopped Agent."""
+    if sys.platform != "linux" or os.getuid() == 0 or (worker and not approved_native_detached_worker()):
+        raise ValueError("Detached upgrade requires the reviewed owner systemd context")
+    home = pathlib.Path.home()
+    _, versions, unit_file, unit, ids = local_inventory(home)
+    current = owned_unit_root(unit, versions)
+    if current is None or current != root or "permanent" not in ids:
+        raise ValueError("Detached upgrade requires the currently installed paired Agent")
+    validated_owned_version(current)
+    info = json.loads((current / "bundle.json").read_text("utf8"))
+    if (info.get("artifact_profile") != "rust-native-only-v1"
+            or not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", info["version"])):
+        raise ValueError("Detached upgrade requires a stable native Agent; use attended candidate promotion")
+    key = home / STORE / "v2-identity.pem"
+    native_owned_file(key, 8192)
+    if native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]:
+        raise ValueError("Existing device identity has changed")
+    pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
+    pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
+        ".owner-stopped", ".native-upgrade-intent", ".native-upgrade-proof",
+        ".activation-pending", ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+    if any(os.path.lexists(path) for path in pending):
+        raise ValueError("Owner STOP or unreconciled lifecycle blocks detached upgrade")
+    endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
+                    for line in unit.splitlines()
+                    if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
+    if native_process_executable(native_main_pid()) != current / APP / ".build/rca-standard-linux-candidate":
+        raise ValueError("Detached upgrade requires the running owned Agent")
+    if worker:
+        return native_upgrade_latest(endpoint, detached_upgrade=True, expected_root=current)
+    unit_name = "rca-upgrade-" + secrets.token_hex(16)
+    try:
+        result = subprocess.run([
+            "/usr/bin/systemd-run", "--user", "--no-block", "--collect", "--quiet",
+            "--service-type=exec", "--unit=" + unit_name, "--property=RuntimeMaxSec=600",
+            "--property=UMask=0077", "--property=NoNewPrivileges=yes",
+            "--setenv=RCA_UNATTENDED_UPGRADE=owner-approved-task-v1",
+            "--", "/usr/bin/python3", "-I", "-B", str(current / APP / "scripts/manage-v2.py"),
+            "upgrade", "--unattended-worker"
+        ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+           timeout=15, check=False)
+        if result.returncode:
+            raise ValueError("systemd launch unconfirmed")
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        print(json.dumps({"status": "launch_unconfirmed", "unit": unit_name}))
+        raise ValueError("Detached upgrade launch unconfirmed; inspect the unit before retry") from error
+    print(json.dumps({"status": "launched", "unit": unit_name,
+                      "verification": "signed WSS and unchanged identity required"}))
+    return 0
 
 
 def install(tag, commit, endpoint, name=None, upgrade=False,
             stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False,
-            latest_archive=None):
+            latest_archive=None, detached_upgrade=False):
+    if detached_upgrade and (not native_upgrade or native_install or stage_only
+                             or latest_archive is None or not approved_native_detached_worker()):
+        raise ValueError("Detached native upgrade requires the reviewed stable worker")
     if temporary and not native_install:
         raise ValueError("Temporary mode requires --native-install")
     if stage_only or native_upgrade or native_install:
@@ -539,7 +613,8 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         raise ValueError("An asset SHA-256 is only accepted for native staging, install or upgrade")
     if latest_archive is not None and (stage_only or not (native_upgrade or native_install)):
         raise ValueError("Public archive requires an attended native install or upgrade")
-    target = preflight(tag, commit, endpoint, stage_only=stage_only, latest_archive=latest_archive is not None)
+    target = preflight(tag, commit, endpoint, stage_only=stage_only,
+                       latest_archive=latest_archive is not None, detached_upgrade=detached_upgrade)
     # The owned service template uses a canonical origin with a trailing slash.
     if not endpoint.endswith("/"):
         endpoint += "/"
@@ -632,8 +707,13 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 installed = json.loads((old_root / "bundle.json").read_text("utf8"))["version"]
                 if not public_forward_version(installed, tag):
                     raise ValueError("Silent downgrade or same-version replacement refused")
+                if detached_upgrade and not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", installed):
+                    raise ValueError("Detached candidate promotion refused; use attended upgrade")
             print("Signed WSS must be proven after switch; identity and SQLite remain unchanged.")
-            if input("Type NATIVE-UPGRADE for this owner-local service switch: ").strip() != "NATIVE-UPGRADE":
+            if detached_upgrade:
+                if not approved_native_detached_worker():
+                    raise ValueError("Detached worker admission lost")
+            elif input("Type NATIVE-UPGRADE for this owner-local service switch: ").strip() != "NATIVE-UPGRADE":
                 raise ValueError("Native service switch not confirmed")
             result = native_cutover(pathlib.Path.home(), version, endpoint)
             print(json.dumps(result, indent=2))

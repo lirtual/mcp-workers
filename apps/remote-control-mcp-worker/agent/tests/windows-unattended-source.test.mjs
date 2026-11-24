@@ -53,3 +53,14 @@ test("detached Windows Task switch refuses unfrozen Agent immediately before sto
   assert(check>=0&&stop>check);
   assert(task.includes("RCA_UNATTENDED_UPGRADE -ceq 'owner-approved-task-v1'"));
 });
+
+test("native detached upgrade admits only reviewed existing Task switch, not onboarding",()=>{
+  assert.match(text,/\$nativeDetachedUpgrade = \$detachedUpgrade -and \$upgradeExisting -and \$alreadyPaired -and/);
+  assert.ok(text.includes("Resolve-ReviewedNativeRelease $Version $releaseSha $true"));
+  const complete=text.slice(text.indexOf("function Complete-NativeInstall"),text.indexOf("function Confirm-Upgrade"));
+  assert.ok(complete.includes("if ($detachedUpgrade -and -not $nativeDetachedUpgrade)"));
+  assert.ok(complete.includes("if (-not $nativeDetachedUpgrade -and ([Console]::IsInputRedirected"));
+  assert.ok(complete.includes("if ($detachedUpgrade) { throw 'Owner STOP blocks detached native upgrade' }"));
+  assert.ok(complete.indexOf("-Action Switch -Version $Version -Direction Upgrade") < complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }"));
+  assert.ok(complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }") < complete.indexOf("--pair-local"));
+});

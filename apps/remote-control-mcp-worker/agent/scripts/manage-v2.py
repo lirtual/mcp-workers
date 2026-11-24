@@ -203,6 +203,8 @@ def dispatch(command, args, root, info, bootstrap):
         print(json.dumps(bootstrap.native_owner_lifecycle(Path.home(), command)))
         return 0
     if command == "upgrade":
+        if native_only and args in (["--unattended"], ["--unattended-worker"]):
+            return bootstrap.native_unattended_upgrade(root, worker=args == ["--unattended-worker"])
         return upgrade(bootstrap, args,
                        info.get("artifact_profile") == "rust-native-only-v1")
     if command == "recover" and native_only:
