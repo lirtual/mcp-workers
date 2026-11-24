@@ -42,6 +42,10 @@ fn challenge(mut stream: TcpStream) {
 }
 #[allow(clippy::result_large_err)]
 fn signed_socket(listener: TcpListener) -> WebSocket<TcpStream> {
+    signed_socket_ref(&listener)
+}
+#[allow(clippy::result_large_err)]
+fn signed_socket_ref(listener: &TcpListener) -> WebSocket<TcpStream> {
     let (http, _) = listener.accept().unwrap();
     challenge(http);
     let (ws, _) = listener.accept().unwrap();
@@ -714,6 +718,93 @@ fn signed_file_search_pages_content_stop_and_bad_args_stay_connected() {
             assert_eq!(valid["text"], "needle");
             end.store(true, Ordering::Release);
         });
+    let result = run_native_file_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipts,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn search_cursors_do_not_survive_signed_transport_reconnect() {
+    let root = tempfile::tempdir().unwrap();
+    let receipts = root.path().join("receipts");
+    let files = root.path().join("files");
+    std::fs::create_dir(&files).unwrap();
+    for i in 0..25 {
+        std::fs::write(files.join(format!("match-{i:02}.txt")), "needle\n").unwrap();
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let end = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        struct StopOnExit(Arc<AtomicBool>);
+        impl Drop for StopOnExit {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        let _guard = StopOnExit(end);
+        let read =
+            |socket: &mut WebSocket<TcpStream>, n: usize, tool: &str, args: Value| -> Value {
+                let request_id = format!("00000000-0000-0000-0000-{n:012}");
+                socket
+                    .send(Message::Text(
+                        json!({
+                            "kind":"read","request_id":request_id,"tool":tool,"arguments":args
+                        })
+                        .to_string()
+                        .into(),
+                    ))
+                    .unwrap();
+                let result: Value =
+                    serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+                assert_eq!(result["request_id"], request_id);
+                result
+            };
+        let args = json!({"path":files,"pattern":"match","search_type":"filename"});
+        let mut first = signed_socket_ref(&listener);
+        let mut ids = Vec::new();
+        for n in 1..=4 {
+            let reply = read(&mut first, n, "start_search", args.clone());
+            assert_eq!(reply["status"], "completed");
+            let page: Value = serde_json::from_str(reply["text"].as_str().unwrap()).unwrap();
+            ids.push(page["session_id"].as_str().unwrap().to_owned());
+        }
+        first
+            .send(Message::Close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Normal,
+                reason: "reconnect".into(),
+            })))
+            .unwrap();
+        drop(first);
+        let mut second = signed_socket_ref(&listener);
+        let old = read(
+            &mut second,
+            5,
+            "get_more_search_results",
+            json!({"session_id":ids[0]}),
+        );
+        assert_eq!(
+            old["status"], "failed",
+            "old cursor belongs only to the first connection"
+        );
+        let stopped = read(&mut second, 6, "stop_search", json!({"session_id":ids[1]}));
+        assert_eq!(stopped["status"], "failed");
+        for n in 7..=10 {
+            let reply = read(&mut second, n, "start_search", args.clone());
+            assert_eq!(
+                reply["status"], "completed",
+                "all four slots must be available"
+            );
+        }
+    });
     let result = run_native_file_session(
         &endpoint,
         &common::test_pem(),
