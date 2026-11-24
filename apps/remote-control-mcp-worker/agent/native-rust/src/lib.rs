@@ -34,6 +34,7 @@ mod receipt_boundary;
 pub mod receipts;
 pub mod session;
 pub mod session_enrollment;
+mod session_idle;
 pub mod session_recovery;
 pub mod session_registration;
 #[cfg(target_os = "linux")]

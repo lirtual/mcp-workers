@@ -40,6 +40,16 @@ pub(crate) fn valid_command_text(command: &str) -> bool {
         && command.encode_utf16().take(8193).count() <= 8192
 }
 
+/// Preserve the installed Linux Agent's configured shell. ManagedSessions
+/// still requires an absolute executable path; do not silently substitute Bash.
+pub fn configured_shell() -> std::path::PathBuf {
+    shell_from_environment(std::env::var_os("SHELL"))
+}
+
+fn shell_from_environment(shell: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    shell.map_or_else(|| "/bin/sh".into(), std::path::PathBuf::from)
+}
+
 fn output_snapshot(mut drain: BoundedProcessOutput) -> io::Result<(String, bool, bool)> {
     let deadline = Instant::now() + OUTPUT_SETTLE;
     loop {
@@ -138,4 +148,18 @@ pub fn run_command(
         truncated,
         output_eof: eof,
     })
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+    #[test]
+    fn node_shell_selection_uses_configured_value_or_sh() {
+        assert_eq!(shell_from_environment(None), Path::new("/bin/sh"));
+        assert_eq!(
+            shell_from_environment(Some("/bin/zsh".into())),
+            Path::new("/bin/zsh")
+        );
+        assert_eq!(shell_from_environment(Some("".into())), Path::new(""));
+    }
 }

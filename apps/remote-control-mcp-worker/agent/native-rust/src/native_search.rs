@@ -261,8 +261,12 @@ impl Scan<'_> {
             if !self.active() {
                 return Ok(false);
             }
-            let line = line.strip_suffix('\n').unwrap_or(line);
-            let line = line.strip_suffix('\r').unwrap_or(line);
+            // CR belongs to the line at EOF; only CRLF is a line ending.
+            let line = if let Some(line) = line.strip_suffix('\n') {
+                line.strip_suffix('\r').unwrap_or(line)
+            } else {
+                line
+            };
             if line.encode_utf16().count() > MAX_LINE_CHARS {
                 self.mark_truncated();
                 continue;
@@ -604,6 +608,20 @@ mod tests {
             json!({"path":root,"pattern":pattern,"search_type":kind}),
         ))
     }
+    #[test]
+    fn content_keeps_lone_cr_at_eof_but_strips_crlf() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("text"), "marker\r\nmarker\r").unwrap();
+        let page = start(
+            &mut SearchSessions::default(),
+            root.path(),
+            "marker",
+            "content",
+        );
+        assert_eq!(page["results"][0]["text"], "marker");
+        assert_eq!(page["results"][1]["text"], "marker\r");
+    }
+
     #[test]
     fn filename_literal_case_sensitive_and_two_pages_no_loss() {
         let root = tempfile::tempdir().unwrap();

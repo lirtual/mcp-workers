@@ -214,6 +214,8 @@ mod linux {
             assert_eq!(info["agent_version"], "v0.1.57");
             assert_eq!(info["os"], "linux");
             assert_eq!(info["capabilities"], json!(["read", "file_write", "shell"]));
+            assert_eq!(upgrade(&upgrade_socket, "idle-status"), "");
+            assert_eq!(upgrade(&upgrade_socket, "idle-freeze"), "busy\n");
             assert_eq!(upgrade(&upgrade_socket, "freeze"), "ready\n");
             assert_eq!(upgrade(&upgrade_socket, "verify-frozen"), "ready\n");
             let denied = reply(

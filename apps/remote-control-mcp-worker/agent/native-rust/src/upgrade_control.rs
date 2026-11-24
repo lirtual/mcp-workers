@@ -16,11 +16,13 @@ pub enum UpgradeCommand {
     Freeze,
     VerifyFrozen,
     Release,
+    IdleStatus,
+    IdleFreeze,
 }
 
 pub struct UpgradeRequest {
     pub command: UpgradeCommand,
-    pub reply: SyncSender<&'static str>,
+    pub reply: SyncSender<String>,
 }
 
 pub fn verify_upgrade_directory(key: &Path) -> io::Result<()> {
@@ -89,6 +91,8 @@ fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>
                 b"freeze\n" => UpgradeCommand::Freeze,
                 b"verify-frozen\n" => UpgradeCommand::VerifyFrozen,
                 b"release\n" => UpgradeCommand::Release,
+                b"idle-status\n" => UpgradeCommand::IdleStatus,
+                b"idle-freeze\n" => UpgradeCommand::IdleFreeze,
                 _ => return,
             };
         }

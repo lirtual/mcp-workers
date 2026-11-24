@@ -190,7 +190,7 @@ pub fn run_verified_linux_session_child(
     checked_executable(supervisor)?;
     let managed = crate::linux_managed::LinuxManagedSessions::new(
         supervisor,
-        Path::new("/bin/bash"),
+        &crate::linux_command::configured_shell(),
         Duration::from_secs(60 * 60),
     )
     .map(Arc::new)
@@ -206,14 +206,14 @@ pub fn run_verified_linux_session_child(
         .parent()
         .ok_or(SessionRunnerError::UntrustedIdentity)?
         .join("receipts");
-    let result = crate::native_file::run_native_managed_session(
+    let result = crate::native_file::run_native_session_with_idle(
         crate::session_recovery::ORIGIN,
         &identity.private_key_pem,
         &grant.device_id,
         &receipts,
         managed,
         stop,
-        crate::session::HeartbeatTiming::default(),
+        (&file, identity.attempt.clone()),
     );
     stop.store(true, Ordering::Release);
     watch.join().map_err(|_| SessionChildError::Watch)?;

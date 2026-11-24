@@ -190,7 +190,7 @@ mod linux {
         }
         LinuxManagedSessions::new(
             &helper,
-            Path::new("/bin/bash"),
+            &rca_native_agent::linux_command::configured_shell(),
             Duration::from_secs(60 * 60),
         )
         .map(Arc::new)
