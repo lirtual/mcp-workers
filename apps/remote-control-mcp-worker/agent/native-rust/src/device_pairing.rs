@@ -142,6 +142,60 @@ impl PairingClient {
         Ok(())
     }
 
+    /// Explicit owner intent uses a separate signing domain and exact Worker
+    /// response. A timeout, invalid proof or rejection is never success.
+    pub fn owner_intent(
+        &self,
+        pem: &str,
+        id: &str,
+        action: &str,
+    ) -> Result<(), SessionRecoveryError> {
+        if !valid_device_id(id) || !matches!(action, "stop" | "resume") {
+            return Err(SessionRecoveryError::InvalidIdentity);
+        }
+        let challenge = post_bounded(
+            &self.client,
+            &self.origin,
+            "/agent/owner/intent/challenge",
+            json!({"action":action,"device_id":id}),
+            200,
+            false,
+        )?;
+        if challenge["action"] != action || challenge["device_id"] != id {
+            return Err(SessionRecoveryError::Rejected);
+        }
+        let nonce = challenge["nonce"]
+            .as_str()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let generation = challenge["generation"]
+            .as_u64()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let proof = crate::identity::signed_owner_intent_proof(pem, action, id, nonce, generation)
+            .map_err(|_| SessionRecoveryError::Rejected)?;
+        let result = post_bounded(
+            &self.client,
+            &self.origin,
+            "/agent/owner/intent",
+            json!({"action":action,"device_id":id,"nonce":nonce,"generation":generation,"proof":proof}),
+            200,
+            false,
+        )?;
+        let expected = if action == "stop" {
+            "stopped"
+        } else {
+            "resume_pending"
+        };
+        if result["status"] != expected
+            || result["device_id"] != id
+            || !result["idle_expires_at"]
+                .as_i64()
+                .is_some_and(|value| value.unsigned_abs() <= 9_007_199_254_740_991)
+        {
+            return Err(SessionRecoveryError::Rejected);
+        }
+        Ok(())
+    }
+
     /// At most one pending registration per explicit pairing. Never rotate
     /// or re-register a confirmed ID or treat a network error as pending.
     pub fn pair(
@@ -174,6 +228,52 @@ impl PairingClient {
     }
 }
 
+#[cfg(windows)]
+mod windows_pair_store {
+    use crate::session_recovery::SessionRecoveryError;
+    use crate::{seal_new_windows_private_file, validate_windows_private_path};
+    use std::fs::{self, OpenOptions};
+    use std::io::{ErrorKind, Read, Write};
+    use std::path::Path;
+    pub(super) fn present(path: &Path) -> Result<bool, SessionRecoveryError> {
+        match fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(SessionRecoveryError::Unavailable),
+        }
+    }
+    pub(super) fn read(path: &Path, max: u64) -> Result<Option<String>, SessionRecoveryError> {
+        if !present(path)? {
+            return Ok(None);
+        }
+        validate_windows_private_path(path, false)
+            .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+        let mut file = fs::File::open(path).map_err(|_| SessionRecoveryError::Unavailable)?;
+        let mut value = String::new();
+        (&mut file)
+            .take(max + 1)
+            .read_to_string(&mut value)
+            .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+        if value.is_empty() || value.len() as u64 > max {
+            return Err(SessionRecoveryError::InvalidIdentity);
+        }
+        Ok(Some(value))
+    }
+    pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), SessionRecoveryError> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(|_| SessionRecoveryError::Unavailable)?;
+        seal_new_windows_private_file(path).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| SessionRecoveryError::Unavailable)
+    }
+}
+#[cfg(windows)]
+use windows_pair_store::{present, read, write_new};
+
 // Standard Windows keeps the original same-key identity and install-mode
 // contract. Pairing is deliberately separate from Task publication.
 #[cfg(windows)]
@@ -195,48 +295,9 @@ fn pair_windows_identity_with(
     temporary: bool,
     resolve: impl FnOnce(&str, Option<&str>) -> Result<String, SessionRecoveryError>,
 ) -> Result<String, SessionRecoveryError> {
-    use crate::{seal_new_windows_private_file, validate_windows_private_path};
-    use std::fs::{self, OpenOptions};
-    use std::io::{ErrorKind, Read, Write};
-    use std::os::windows::fs::OpenOptionsExt;
-    use std::path::Path;
-    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    use crate::validate_windows_private_path;
+    use std::fs;
     let invalid = || SessionRecoveryError::InvalidIdentity;
-    fn present(path: &Path) -> Result<bool, SessionRecoveryError> {
-        match fs::symlink_metadata(path) {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
-            Err(_) => Err(SessionRecoveryError::Unavailable),
-        }
-    }
-    fn read(path: &Path, max: u64) -> Result<Option<String>, SessionRecoveryError> {
-        if !present(path)? {
-            return Ok(None);
-        }
-        validate_windows_private_path(path, false)
-            .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
-        let mut file = fs::File::open(path).map_err(|_| SessionRecoveryError::Unavailable)?;
-        let mut value = String::new();
-        (&mut file)
-            .take(max + 1)
-            .read_to_string(&mut value)
-            .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
-        if value.is_empty() || value.len() as u64 > max {
-            return Err(SessionRecoveryError::InvalidIdentity);
-        }
-        Ok(Some(value))
-    }
-    fn write_new(path: &Path, bytes: &[u8]) -> Result<(), SessionRecoveryError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|_| SessionRecoveryError::Unavailable)?;
-        seal_new_windows_private_file(path).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
-        file.write_all(bytes)
-            .and_then(|_| file.sync_all())
-            .map_err(|_| SessionRecoveryError::Unavailable)
-    }
     validate_windows_private_path(directory, true).map_err(|_| invalid())?;
     let key = directory.join("v2-identity.pem");
     let id = directory.join("v2-identity.pem.device-id");
@@ -262,23 +323,8 @@ fn pair_windows_identity_with(
         }
         write_new(&mode, required_mode.as_bytes())?;
     }
-    validate_windows_private_path(&mode, false).map_err(|_| invalid())?;
-    // Hold the existing immutable mode file against another pairing writer
-    // or deletion. No additional durable lock or new state format.
-    let mut guard = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .share_mode(FILE_SHARE_READ)
-        .open(&mode)
-        .map_err(|_| SessionRecoveryError::Unavailable)?;
-    let mut saved_mode = String::new();
-    (&mut guard)
-        .take(32)
-        .read_to_string(&mut saved_mode)
-        .map_err(|_| invalid())?;
-    if saved_mode != required_mode {
-        return Err(invalid());
-    }
+    // Same immutable-mode file is held by pairing, re-pair and owner intent.
+    let guard = lock_windows_mode(directory, required_mode)?;
     let existing = read(&id, 128)?;
     let pending = read(&activation, 128)?;
     if temporary && pending.is_some() {
@@ -326,6 +372,135 @@ fn pair_windows_identity_with(
     Ok(approved)
 }
 
+/// Exclusive owner lifecycle operation using the existing immutable mode
+/// file. No new persistent lock or state format.
+#[cfg(windows)]
+pub fn lock_windows_permanent_mode(
+    directory: &std::path::Path,
+) -> Result<std::fs::File, SessionRecoveryError> {
+    lock_windows_mode(directory, "permanent\n")
+}
+
+#[cfg(windows)]
+fn lock_windows_mode(
+    directory: &std::path::Path,
+    expected: &str,
+) -> Result<std::fs::File, SessionRecoveryError> {
+    use std::io::Read;
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    crate::validate_windows_private_path(directory, true)
+        .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+    let mode = directory.join("v2-identity.pem.install-mode");
+    crate::validate_windows_private_path(&mode, false)
+        .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+    let mut guard = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(mode)
+        .map_err(|_| SessionRecoveryError::Unavailable)?;
+    let mut saved = String::new();
+    (&mut guard)
+        .take(32)
+        .read_to_string(&mut saved)
+        .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+    if saved != expected {
+        return Err(SessionRecoveryError::InvalidIdentity);
+    }
+    Ok(guard)
+}
+
+#[cfg(windows)]
+pub fn persist_windows_owner_stop(directory: &std::path::Path) -> Result<(), SessionRecoveryError> {
+    let marker = directory.join("v2-identity.pem.owner-stopped");
+    match read(&marker, 32)? {
+        Some(saved) if saved == "stopped\n" => Ok(()),
+        Some(_) => Err(SessionRecoveryError::InvalidIdentity),
+        None => write_new(&marker, b"stopped\n"),
+    }
+}
+
+/// Existing Windows reauthorization retains the original key. A new device
+/// ID comes only from signed same-key recovery / independently approved
+/// pending enrollment. The original ID remains until the stopped Task is
+/// rechecked and the sealed same-volume replacement is ready.
+#[cfg(windows)]
+pub fn repair_windows_identity(
+    directory: &std::path::Path,
+    client: &PairingClient,
+    name: &str,
+    assert_stopped: impl FnMut() -> Result<(), SessionRecoveryError>,
+    display: impl FnOnce(&PendingEnrollment),
+) -> Result<String, SessionRecoveryError> {
+    repair_windows_identity_with(directory, assert_stopped, |pem, pending| {
+        client.pair(pem, pending, name, false, display)
+    })
+}
+
+#[cfg(windows)]
+fn repair_windows_identity_with(
+    directory: &std::path::Path,
+    mut assert_stopped: impl FnMut() -> Result<(), SessionRecoveryError>,
+    resolve: impl FnOnce(&str, Option<&str>) -> Result<String, SessionRecoveryError>,
+) -> Result<String, SessionRecoveryError> {
+    let _guard = lock_windows_permanent_mode(directory)?;
+    let invalid = || SessionRecoveryError::InvalidIdentity;
+    for name in [
+        "windows-native-upgrade.json",
+        "v2-identity.pem.activation-pending",
+    ] {
+        if present(&directory.join(name))? {
+            return Err(invalid());
+        }
+    }
+    let key = directory.join("v2-identity.pem");
+    let id_path = directory.join("v2-identity.pem.device-id");
+    let stage = directory.join("v2-identity.pem.device-id.pending");
+    let pem = read(&key, 8192)?.ok_or_else(invalid)?;
+    signing_key(&pem).map_err(|_| invalid())?;
+    let old = read(&id_path, 128)?.ok_or_else(invalid)?;
+    let pending = read(&stage, 128)?;
+    if !valid_device_id(old.trim())
+        || pending
+            .as_deref()
+            .is_some_and(|value| !valid_device_id(value.trim()))
+    {
+        return Err(invalid());
+    }
+    assert_stopped()?;
+    let approved = resolve(&pem, pending.as_deref().map(str::trim))?;
+    if !valid_device_id(&approved)
+        || pending
+            .as_deref()
+            .is_some_and(|value| value.trim() != approved)
+    {
+        return Err(invalid());
+    }
+    if read(&key, 8192)?.as_deref() != Some(&pem) || read(&id_path, 128)?.as_deref() != Some(&old) {
+        return Err(invalid());
+    }
+    assert_stopped()?;
+    if old.trim() == approved && pending.is_none() {
+        return Ok(approved);
+    }
+    if pending.is_none() {
+        write_new(&stage, format!("{approved}\n").as_bytes())?;
+    }
+    // If an attended operation was interrupted after staging, the next
+    // attempt must reverify the same signed pending ID before promoting.
+    assert_stopped()?;
+    if read(&stage, 128)?.as_deref().map(str::trim) != Some(approved.as_str())
+        || read(&id_path, 128)?.as_deref() != Some(&old)
+        || read(&key, 8192)?.as_deref() != Some(&pem)
+    {
+        return Err(invalid());
+    }
+    std::fs::rename(&stage, &id_path).map_err(|_| SessionRecoveryError::Unavailable)?;
+    crate::validate_windows_private_path(&id_path, false).map_err(|_| invalid())?;
+    Ok(approved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,6 +524,43 @@ mod tests {
             },
             listener,
         )
+    }
+
+    #[test]
+    fn signed_owner_intent_checks_exact_challenge_and_result() {
+        for (action, status) in [("stop", "stopped"), ("resume", "resume_pending")] {
+            for valid in [true, false] {
+                let (client, listener) = fixture();
+                let pem = generate_private_pem().unwrap();
+                let expected_pem = pem.clone();
+                let server = std::thread::spawn(move || {
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let (route, request) = recv_request(&mut socket);
+                    assert_eq!(route, "POST /agent/owner/intent/challenge HTTP/1.1");
+                    assert_eq!(request, json!({"action":action,"device_id":ID}));
+                    reply(
+                        &mut socket,
+                        "200 OK",
+                        json!({"action":action,"device_id":ID,"nonce":NONCE,"generation":3}),
+                    );
+                    let (mut socket, _) = listener.accept().unwrap();
+                    let (route, request) = recv_request(&mut socket);
+                    assert_eq!(route, "POST /agent/owner/intent HTTP/1.1");
+                    assert_eq!(
+                        request,
+                        json!({"action":action,"device_id":ID,"nonce":NONCE,"generation":3,
+                        "proof":crate::identity::signed_owner_intent_proof(&expected_pem, action, ID, NONCE, 3).unwrap()})
+                    );
+                    reply(
+                        &mut socket,
+                        "200 OK",
+                        json!({"status":if valid {status} else {"verified"},"device_id":ID,"idle_expires_at":1795490000000_u64}),
+                    );
+                });
+                assert_eq!(client.owner_intent(&pem, ID, action).is_ok(), valid);
+                server.join().unwrap();
+            }
+        }
     }
 
     #[cfg(windows)]
@@ -403,6 +615,67 @@ mod tests {
             "healthy repeat must not schedule activation"
         );
         assert_eq!(std::fs::read_to_string(id).unwrap().trim(), ID);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_same_key_repair_retains_original_until_stopped_signed_promotion() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::seal_new_windows_private_directory(directory.path()).unwrap();
+        let root = directory.path();
+        pair_windows_identity_with(root, false, |_, _| Ok(ID.to_owned())).unwrap();
+        let key = root.join("v2-identity.pem");
+        let original = std::fs::read_to_string(&key).unwrap();
+        let id_path = root.join("v2-identity.pem.device-id");
+        let stage = root.join("v2-identity.pem.device-id.pending");
+        std::fs::remove_file(root.join("v2-identity.pem.activation-pending")).unwrap();
+        let new_id = "123e4567-e89b-42d3-a456-426614174002";
+        assert!(repair_windows_identity_with(
+            root,
+            || Err(SessionRecoveryError::Unavailable),
+            |_, _| panic!("running Task cannot pair")
+        )
+        .is_err());
+        assert!(repair_windows_identity_with(
+            root,
+            || Ok(()),
+            |_, _| Err(SessionRecoveryError::Rejected)
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&id_path).unwrap().trim(), ID);
+        let mut checks = 0;
+        assert!(repair_windows_identity_with(
+            root,
+            || {
+                checks += 1;
+                if checks == 3 {
+                    Err(SessionRecoveryError::Unavailable)
+                } else {
+                    Ok(())
+                }
+            },
+            |pem, pending| {
+                assert_eq!(pem, original);
+                assert!(pending.is_none());
+                Ok(new_id.to_owned())
+            }
+        )
+        .is_err());
+        assert_eq!(std::fs::read_to_string(&id_path).unwrap().trim(), ID);
+        assert_eq!(std::fs::read_to_string(&stage).unwrap().trim(), new_id);
+        repair_windows_identity_with(
+            root,
+            || Ok(()),
+            |pem, pending| {
+                assert_eq!(pem, original);
+                assert_eq!(pending, Some(new_id));
+                Ok(new_id.to_owned())
+            },
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(&id_path).unwrap().trim(), new_id);
+        assert_eq!(std::fs::read_to_string(key).unwrap(), original);
+        assert!(!stage.exists());
     }
 
     #[cfg(windows)]

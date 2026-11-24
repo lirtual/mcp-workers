@@ -342,6 +342,121 @@ mod windows {
         run_agent(endpoint, &key, &pem, &id, None)
     }
 
+    fn repair_local(endpoint: &str, name: &str) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::{repair_windows_identity, PairingClient};
+        use rca_native_agent::session_recovery::SessionRecoveryError;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        let client = PairingClient::new(endpoint).map_err(|_| ())?;
+        repair_windows_identity(
+            &root,
+            &client,
+            name,
+            || {
+                let checked = || -> Result<(), ()> {
+                    let task_endpoint = task_command(&directory, &["-Action", "Endpoint"])?;
+                    if std::str::from_utf8(&task_endpoint.stdout)
+                        .map_err(|_| ())?
+                        .trim()
+                        != endpoint
+                    {
+                        return Err(());
+                    }
+                    let status = task_command(&directory, &["-Action", "Status"])?;
+                    let state: serde_json::Value =
+                        serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+                    if state["installed"] != true || state["running"] != false {
+                        return Err(());
+                    }
+                    Ok(())
+                };
+                checked().map_err(|_| SessionRecoveryError::InvalidIdentity)
+            },
+            |pending| {
+                println!("Pairing code (10 min): {}", pending.code);
+                println!("Local public key fingerprint: {}", pending.fingerprint);
+                println!("Use MCP pairing_lookup and pairing_approve for the original key.");
+            },
+        )
+        .map_err(|_| ())?;
+        println!(
+            "Signed authorization confirmed; original private key retained. Task remains stopped."
+        );
+        Ok(())
+    }
+
+    fn owner_lifecycle(resume: bool) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::{
+            lock_windows_permanent_mode, persist_windows_owner_stop, PairingClient,
+        };
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        let _guard = lock_windows_permanent_mode(&root).map_err(|_| ())?;
+        for name in [
+            "windows-native-upgrade.json",
+            "v2-identity.pem.activation-pending",
+            "v2-identity.pem.device-id.pending",
+        ] {
+            if optional_private(&root.join(name), 4096)?.is_some() {
+                return Err(());
+            }
+        }
+        let (pem, id) = local_identity(&root.join("v2-identity.pem"))?;
+        let pem = pem.ok_or(())?;
+        let id = id.ok_or(())?;
+        let output = task_command(&directory, &["-Action", "Endpoint"])?;
+        let endpoint = std::str::from_utf8(&output.stdout).map_err(|_| ())?.trim();
+        let client = PairingClient::new(endpoint).map_err(|_| ())?;
+        let marker = root.join("v2-identity.pem.owner-stopped");
+        let saved = optional_private(&marker, 32)?;
+        if saved.as_ref().is_some_and(|value| value != b"stopped\n") {
+            return Err(());
+        }
+        if !resume {
+            persist_windows_owner_stop(&root).map_err(|_| ())?;
+            let cloud = if client.owner_intent(&pem, &id, "stop").is_ok() {
+                "confirmed"
+            } else {
+                "unconfirmed"
+            };
+            task_command(&directory, &["-Action", "Stop"])?;
+            let status = task_command(&directory, &["-Action", "Status"])?;
+            let state: serde_json::Value =
+                serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+            if state["installed"] != true || state["running"] != false {
+                return Err(());
+            }
+            println!(
+                "{}",
+                serde_json::json!({"local":"task_stopped","cloud":cloud})
+            );
+            return Ok(());
+        }
+        if saved.is_none() {
+            return Err(());
+        }
+        // Reconfirm STOP first, including an earlier offline Stop. Never
+        // remove the durable intent on a lost or rejected Resume response.
+        client.owner_intent(&pem, &id, "stop").map_err(|_| ())?;
+        client.owner_intent(&pem, &id, "resume").map_err(|_| ())?;
+        fs::remove_file(&marker).map_err(|_| ())?;
+        if task_command(&directory, &["-Action", "Start"]).is_err() {
+            persist_windows_owner_stop(&root).map_err(|_| ())?;
+            return Err(());
+        }
+        println!(
+            "{}",
+            serde_json::json!({"local":"start_requested","cloud":"resume_pending_signed_WSS"})
+        );
+        Ok(())
+    }
+
     pub fn run() -> Result<(), ()> {
         if !cfg!(target_arch = "x86_64")
             || rca_native_agent::is_windows_system_identity().map_err(|_| ())?
@@ -360,6 +475,33 @@ mod windows {
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
                 [_, command] if command == "status" => local_status(),
+                [_, command] if command == "stop" => owner_lifecycle(false),
+                [_, command] if command == "start" => owner_lifecycle(true),
+                [_, command, flag, endpoint] if command == "re-pair" && flag == "--endpoint" => {
+                    let name =
+                        std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows".to_owned());
+                    repair_local(endpoint, &name)
+                }
+                [_, command] if command == "task-status" => {
+                    let (directory, _) = program_root()?;
+                    let output = task_command(&directory, &["-Action", "Status"])?;
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    Ok(())
+                }
+                [_, command] if command == "disable" => {
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(());
+                    }
+                    let (directory, _) = program_root()?;
+                    let output = task_command(&directory, &["-Action", "Disable"])?;
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    Ok(())
+                }
+                [_, command] if command == "version" => {
+                    let (_, tag) = program_root()?;
+                    println!("{tag}");
+                    Ok(())
+                }
                 [_, command, flag, endpoint] if command == "run" && flag == "--endpoint" => {
                     foreground(endpoint)
                 }

@@ -120,4 +120,19 @@ fn windows_native_pair_entry_refuses_non_interactive_invocation() {
         .unwrap();
     assert!(!output.status.success());
     assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    for args in [
+        vec!["--cli", "stop"],
+        vec!["--cli", "start"],
+        vec!["--cli", "disable"],
+        vec!["--cli", "re-pair", "--endpoint", "https://127.0.0.1:9/"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-windows-candidate"))
+            .args(args)
+            .env("LOCALAPPDATA", home.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
+    }
 }
