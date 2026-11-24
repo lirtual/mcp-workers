@@ -1,14 +1,9 @@
 /**
- * Offline, reviewed native-host packaging for #73.
- * Produces an UNPUBLISHED deterministic tar.gz asset; never downloads or publishes.
- * Run this separately on verified x64 and arm64 glibc build hosts.
- *
- * node scripts/build-v2-release.mjs --version v0.1.0 --target linux-x64-glibc
- *   --node-bin /trusted/node-24 --native /trusted/session-supervisor --out /tmp/stage
- *
- * An unpublished Linux Rust candidate uses the same archive format:
- *   --version v0.1.1-rust-candidate.1 --rust-agent-bin /trusted/rca-standard-linux-candidate
- *   --rust-agent-sha256 <sha256>
+ * Offline reviewed native-host packaging. Linux emits only the Rust-native
+ * profile; Darwin retains Node v2 and its opt-in Rust prototype.
+ * Produces deterministic unpublished archives, never downloads or publishes.
+ * Linux's historical Node executable is only an independently pinned ABI
+ * baseline, not a runtime payload.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -42,6 +37,8 @@ export function parseArgs(argv) {
   const hasRustCandidate = Boolean(params.rustAgentBin || params.rustAgentSha256);
   const nativeOnly = params.artifactProfile === "rust-native-only-v1";
   const hasSession = Boolean(params.rustSessionBin || params.rustSessionSha256);
+  if (params.target?.startsWith("linux-") && !nativeOnly)
+    throw new Error("Linux packaging requires the Rust native-only profile.");
   if ((hasSession && (!nativeOnly || params.target !== "linux-x64-glibc" ||
       !params.rustSessionBin || !path.isAbsolute(params.rustSessionBin) ||
       !/^[a-f0-9]{64}$/.test(params.rustSessionSha256))) ||
@@ -196,7 +193,7 @@ function rewriteExtensions(text) {
 }
 
 /** Follow static source dependency graph, no tests, checkout or node_modules copied. */
-export function runtimeSources(entries = ["v2-main.ts", "pair-device.ts", "v2-repair.ts", "install-mode.ts", "session-rca-main.ts"]) {
+export function runtimeSources(entries) {
   const visited = new Set();
   function walk(name) {
     if (!/^[a-z0-9-]+\.ts$/.test(name)) throw new Error("Unreviewed runtime import: " + name);
@@ -279,7 +276,8 @@ export function build(args) {
     ? ensureRustCandidate({...args,maxGlibcMin:glibcMin}) : null;
   const darwin = args.target === "darwin-arm64" || args.target === "darwin-x64";
   const nativeOnly = args.artifactProfile === "rust-native-only-v1";
-  if (nativeOnly && (!rustCandidate || darwin)) throw Error("Native-only staging requires reviewed Linux Rust.");
+  if ((!darwin && !nativeOnly) || (nativeOnly && (!rustCandidate || darwin)))
+    throw Error("Linux packaging requires reviewed native-only Rust.");
   const hasSession = Boolean(args.rustSessionBin || args.rustSessionSha256);
   if (hasSession && (!nativeOnly || args.target !== "linux-x64-glibc"))
     throw Error("Packaged Session entry requires reviewed Linux x64 native-only archive.");
@@ -324,21 +322,16 @@ export function build(args) {
         (darwin ? "rca-standard-darwin-candidate" : "rca-standard-linux-candidate")] : [])]) {
     chmodSync(path.join(work,relative),0o700);
   }
-  // Both full-tools operation routing and the owner-local admission freeze
-  // must be present in a future reviewed Release. No unsafe promotion.
-  const entrySource=readFileSync(path.join(source,"v2-main.ts"),"utf8");
-  const lifecycleSource=readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8");
-  if(!nativeOnly && (!/V2_RUNTIME_PROFILE\s*=\s*"paired-full-v1"/.test(entrySource) ||
-     /(?:readOnly|writeFile|shell)\s*:/.test(entrySource) ||
-     !/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
+  // Retain the actual shared macOS full-tool and freeze gate, without depending on the retired Linux entry.
+  const lifecycleSource=darwin ? readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8") : "";
+  if(darwin && (!/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
      !/receiptDirectory:\s*options\.receiptDirectory/.test(lifecycleSource) ||
      !/startUpgradeControl\(execution(?:!)?, keyPath\)/.test(lifecycleSource) ||
      !/executeV2FileOperation\(execution,/.test(lifecycleSource) ||
      !/executeV2SessionRead\(execution,/.test(lifecycleSource))) {
     throw new Error("Reviewed paired full-tools release profile is not proven.");
   }
-  const modules=nativeOnly ? [] : runtimeSources(darwin
-    ? ["macos-temporary.ts","macos-permanent.ts"] : undefined);
+  const modules = nativeOnly ? [] : runtimeSources(["macos-temporary.ts", "macos-permanent.ts"]);
   for(const file of modules){
     const src=readFileSync(path.join(source,file),"utf8");
     const compiled=ts.transpileModule(src,{fileName:file,reportDiagnostics:true,
@@ -358,21 +351,11 @@ export function build(args) {
     chmodSync(remoteDest,0o600);
   }
   if (!darwin) {
-  if (!nativeOnly) {
-    const installer=readFileSync(path.join(root,"scripts/install-v2.mjs"),"utf8");
-    writeFileSync(path.join(work,"apps/remote-control-agent/scripts/install-v2.mjs"),
-      rewriteExtensions(installer),{mode:0o600});
-  }
-  for (const name of nativeOnly ? ["bootstrap-v2.py","manage-v2.py","rca.sh"] : [
-      "bootstrap-node.mjs","manage-v2.mjs",
-      "lifecycle-v2.mjs","upgrade-v2.mjs","upgrade-existing-service.mjs",
-      "bootstrap-v2.py","verify-v2-release.mjs","rca.sh",
-      ...(rustCandidate && !darwin ? ["manage-v2.py"] : [])]) {
-    const sourceFile=path.join(root,"scripts",name);
-    const dest=path.join(work,"apps/remote-control-agent/scripts",name);
-    copyFileSync(sourceFile,dest);
-    chmodSync(dest,["rca.sh","manage-v2.py"].includes(name) ? 0o700 : 0o600);
-  }
+    for (const name of ["bootstrap-v2.py", "manage-v2.py", "rca.sh"]) {
+      const dest = path.join(work, "apps/remote-control-agent/scripts", name);
+      copyFileSync(path.join(root, "scripts", name), dest);
+      chmodSync(dest, ["rca.sh", "manage-v2.py"].includes(name) ? 0o700 : 0o600);
+    }
   }
   if (!nativeOnly) writeFileSync(path.join(work,"apps/remote-control-agent/package.json"),
     JSON.stringify({type:"module"})+"\n",{mode:0o600});

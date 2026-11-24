@@ -61,84 +61,6 @@ jobs:
         run: pnpm --filter remote-control-agent test
       - name: Isolated Linux one-shot immutable staging contract (no systemd effects)
         run: python3 -B apps/remote-control-mcp-worker/agent/tests/linux-stage-only.test.py
-      - name: Build and unpack unpublished native candidate (no Release publishing)
-        shell: bash
-        run: |
-          set -euo pipefail
-          candidate_tag="$RCA_CANDIDATE_TAG"
-          # A candidate label is not release approval. No version-specific
-          # feature switch or published-Release mutation is permitted here.
-          if [[ "$candidate_tag" != v0.0.0-ci &&
-                ! "$candidate_tag" =~ ^v0\.[1-9][0-9]*\.[0-9]+(-[a-z0-9][a-z0-9.-]*)?$ ]]; then
-            echo "Invalid candidate-only version label" >&2
-            exit 1
-          fi
-          # Digests from the official Node.js v24.21.0 SHASUMS256.txt,
-          # independently reviewed before pinning this CI. Do not package a
-          # mutable setup-node cache binary or an unreviewed Node patch release.
-          case "$(uname -m)" in
-            x86_64)
-              target=linux-x64-glibc
-              node_arch=x64
-              node_archive_sha256=fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
-              ;;
-            aarch64)
-              target=linux-arm64-glibc
-              node_arch=arm64
-              node_archive_sha256=6ad1325edbdb5649c379b75a237147a666c95d4f9ae8d340fef2d1575d289ad2
-              ;;
-            *) echo "Unsupported CPU for native bundle smoke"; exit 1 ;;
-          esac
-          native_bin="$(realpath apps/remote-control-mcp-worker/agent/.build/session-supervisor)"
-          command -v readelf >/dev/null
-          temp_dir="$(mktemp -d)"
-          trap 'rm -rf "$temp_dir"' EXIT
-          node_archive="$temp_dir/node-v24.21.0-linux-$node_arch.tar.xz"
-          curl --fail --silent --show-error --location --max-time 60 \
-            --proto '=https' --tlsv1.2 \
-            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-$node_arch.tar.xz" \
-            -o "$node_archive"
-          echo "$node_archive_sha256  $node_archive" | sha256sum --check --status
-          node_bin="$temp_dir/node"
-          tar -xJOf "$node_archive" "node-v24.21.0-linux-$node_arch/bin/node" > "$node_bin"
-          chmod 700 "$node_bin"
-          test "$("$node_bin" --version)" = v24.21.0
-          node apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs \
-            --version "$candidate_tag" --target "$target" \
-            --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
-            --native "$native_bin" --native-sha256 "$(sha256sum "$native_bin" | cut -d' ' -f1)" \
-            --out "$temp_dir/build"
-          archive="$temp_dir/build/remote-control-agent-$candidate_tag-$target.tar.gz"
-          python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
-            "$archive" "$candidate_tag" "$target"
-          # A genuinely separate, minimal runtime image without Node, Git or
-          # compiler verifies the *packaged* Node and native helper. The image
-          # is pulled before running the fully offline, read-only container.
-          docker pull --quiet python:3.12-slim-bookworm >/dev/null
-          mkdir "$temp_dir/bootstrap"
-          cp apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py \
-             apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
-             "$temp_dir/bootstrap/"
-          chmod 755 "$temp_dir/bootstrap"
-          chmod 644 "$temp_dir/bootstrap/"*.py "$archive"
-          docker run --rm --network none --read-only \
-            --cap-drop ALL --security-opt no-new-privileges \
-            --user 65534:65534 --tmpfs /tmp:rw,exec,mode=1777 \
-            -v "$archive:/opt/agent.tar.gz:ro" \
-            -v "$temp_dir/bootstrap:/opt/bootstrap:ro" \
-            python:3.12-slim-bookworm sh -ec \
-            'for tool in node git cc; do
-               if command -v "$tool" >/dev/null; then exit 11; fi
-             done
-             exec python3 -B /opt/bootstrap/validate-local-archive.py \
-               /opt/agent.tar.gz "$2" "$1"' shell "$target" "$candidate_tag"
-          # Real packaged runtime, not just source mocks: this must exit and
-          # restore raw TTY after Enter, arrows, numbers and cancellation.
-          mkdir -p "$temp_dir/pty"
-          tar -xzf "$archive" -C "$temp_dir/pty"
-          python3 apps/remote-control-mcp-worker/agent/tests/packaged-install-mode-pty.py "$temp_dir/pty"
-          echo "Candidate verified on build runner and offline minimal container; never published."
-
   linux-systemd-upgrade-recovery:
     name: Real systemd Linux upgrade / ${{ matrix.target }}
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
@@ -247,6 +169,31 @@ jobs:
           fi
           test "$(stat -c %s "$pure")" -lt "$(stat -c %s "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz")"
           chmod 0644 "$pure" "$SPEC914_TEMP/remote-control-agent-v0.1.56-$SPEC914_TARGET.tar.gz"
+      - name: Verify actual Node-free Linux archive without development tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=v0.1.57-rust-candidate.1
+          archive="$SPEC914_TEMP/native-only/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
+          agent=apps/remote-control-mcp-worker/agent
+          python3 -B "$agent/scripts/validate-local-archive.py" "$archive" "$version" "$SPEC914_TARGET"
+          docker pull --quiet python:3.12-slim-bookworm >/dev/null
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          chmod 755 "$temp_dir"
+          cp "$agent/scripts/bootstrap-v2.py" "$agent/scripts/validate-local-archive.py" "$temp_dir/"
+          chmod 644 "$temp_dir/"*.py
+          docker run --rm --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --user 65534:65534 --tmpfs /tmp:rw,exec,mode=1777 \
+            -v "$archive:/opt/agent.tar.gz:ro" \
+            -v "$temp_dir:/opt/bootstrap:ro" \
+            python:3.12-slim-bookworm sh -ec \
+            'for tool in node git cc; do
+               if command -v "$tool" >/dev/null; then exit 11; fi
+             done
+             exec python3 -B /opt/bootstrap/validate-local-archive.py \
+               /opt/agent.tar.gz "$1" "$2"' shell "$version" "$SPEC914_TARGET"
       - name: Kill installer after candidate activation and verify real systemd recovery
         shell: bash
         run: |
@@ -454,6 +401,7 @@ jobs:
           fi
           test ! -e "$home/.local"
           grep -q 'interactive owner terminal' "$temp_dir/stderr"
+          python3 apps/remote-control-mcp-worker/agent/tests/packaged-install-mode-pty.py "$temp_dir/unpacked"
           # Test the extracted native runtime itself: WSS frame adapter, file
           # effects, permission denial, SQLite receipts and Unknown recovery.
           RCA_MACOS_BUNDLE_ROOT="$temp_dir/unpacked" \

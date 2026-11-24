@@ -82,25 +82,28 @@ function mockGithub(buffer,{immutable=true,digest="sha256:"+sha(buffer),actualCo
 }
 
 test("#73 release package build rejects unverified architectures and unpinned targets",async()=>{
-  assert.deepEqual(parseArgs(["--version",tag,"--target",target,
+  const oldLinux = ["--version",tag,"--target",target,
     "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
-    "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64)]),{
-      version:tag,target,nodeBin:"/opt/node",native:"/opt/supervisor",out:"/tmp/archive",
-      nodeSha256:"f".repeat(64),nativeSha256:"e".repeat(64)});
+    "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64)];
+  assert.throws(()=>parseArgs(oldLinux), /Linux packaging requires the Rust native-only profile/);
+  assert.throws(()=>parseArgs(oldLinux.map((x,i)=>i===1?"v0.1.57-rust-candidate.1":x)
+    .concat("--rust-agent-bin","/opt/rca","--rust-agent-sha256","d".repeat(64))),
+    /Linux packaging requires the Rust native-only profile/);
   for(const args of [
     ["--version","latest","--target",target,"--node-bin","/n","--native","/b","--out","/tmp/o"],
     ["--version",tag,"--target","linux-x64-musl","--node-bin","/n","--native","/b","--out","/tmp/o"],
     ["--version",tag,"--target",target,"--node-bin","node","--native","/b","--out","/tmp/o"],
   ]) assert.throws(()=>parseArgs(args));
-  assert.ok(runtimeSources().includes("v2-main.ts"));
-  assert.ok(runtimeSources().includes("upgrade-control.ts"));
-  assert.ok(!runtimeSources().includes("main.ts"));
-  assert.ok(!runtimeSources().includes("server.ts"));
+  const darwinModules=runtimeSources(["macos-temporary.ts","macos-permanent.ts"]);
+  assert.ok(darwinModules.includes("upgrade-control.ts"));
+  for (const retired of ["main.ts","server.ts","v2-main.ts","v2-repair.ts","session-rca-main.ts"])
+    assert.ok(!darwinModules.includes(retired), retired);
   const candidateTag="v0.1.1-rust-candidate.1";
   const candidateArgs=parseArgs(["--version",candidateTag,"--target",target,
     "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
     "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64),
-    "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64)]);
+    "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64),
+    "--artifact-profile","rust-native-only-v1"]);
   assert.equal(candidateArgs.rustAgentBin,"/opt/rca-agent");
   assert.equal(candidateArgs.rustAgentSha256,"d".repeat(64));
   const darwinArgs=parseArgs(["--version","v0.1.57-rust-candidate.1","--target","darwin-arm64",
@@ -133,7 +136,7 @@ test("#73 release package build rejects unverified architectures and unpinned ta
   assert.throws(()=>parseArgs(["--version",tag,"--target",target,
     "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
     "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64),
-    "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64)]),/packaging parameters|pinned version/);
+    "--rust-agent-bin","/opt/rca-agent","--rust-agent-sha256","d".repeat(64)]),/packaging parameters|pinned version|native-only profile/);
   const candidateBytes=fixture([
     {name:"apps/remote-control-agent/.build/rca-standard-linux-candidate",data:elf(62)},
     {name:"apps/remote-control-agent/scripts/manage-v2.py",data:Buffer.from("inspection-only")},
@@ -350,7 +353,7 @@ test("#914 native-only packaging is explicit and cannot target Node or Darwin",(
   assert.equal(selected.artifactProfile,"rust-native-only-v1");
   const stableArgs=args.map((x,i)=>i===1?"v0.1.57":x);
   assert.equal(parseArgs(stableArgs).version,"v0.1.57");
-  assert.throws(()=>parseArgs(stableArgs.slice(0,-2)),/pinned version/);
+  assert.throws(()=>parseArgs(stableArgs.slice(0,-2)),/native-only profile/);
   const sessionArgs=["--rust-session-bin","/opt/rca-session","--rust-session-sha256","d".repeat(64)];
   assert.equal(parseArgs([...args,...sessionArgs]).rustSessionBin,"/opt/rca-session");
   assert.throws(()=>parseArgs([...args,...sessionArgs.slice(0,2)]));
