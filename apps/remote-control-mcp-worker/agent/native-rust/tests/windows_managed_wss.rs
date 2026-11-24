@@ -114,6 +114,7 @@ fn signed_windows_start_input_output_receipt_and_owner_revoke() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         // The genuine PowerShell redirected streams may contain CLIXML progress.
         // The exact byte sentinel, not a stream-wide equality, is the contract.
         let command = "$stdin=[Console]::OpenStandardInput();$stdout=[Console]::OpenStandardOutput();$buffer=New-Object byte[] 19;$read=$stdin.Read($buffer,0,19);$stdout.Write($buffer,0,$read);$stdout.Flush()";
@@ -246,6 +247,7 @@ fn owner_revoke_stops_active_windows_job_before_confirmed_ack() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         let start = reply(
             &mut socket,
             operation(
@@ -304,6 +306,7 @@ fn invalid_windows_process_command_is_rejected_without_receipt_or_launch() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         socket
             .send(Message::Text(
                 operation(
@@ -357,6 +360,7 @@ fn explicit_force_terminate_confirms_windows_job_and_receipt() {
     let server = thread::spawn(move || {
         let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
         let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
         let start = reply(
             &mut socket,
             operation(
