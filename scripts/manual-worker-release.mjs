@@ -9,7 +9,7 @@ function databaseSecretNames(raw) {
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { collectWorkerVars, BROWSER_ACCESS_VARIABLES, browserActivationOrigin, gatewayOriginFromConfig } from "./worker-release-variables.mjs";
+import { collectWorkerVars, remoteControlClerkIdentity, BROWSER_ACCESS_VARIABLES, browserActivationOrigin, gatewayOriginFromConfig } from "./worker-release-variables.mjs";
 import { verifyWorkflowGitHubExecutor,parseVerifiedExecutorIdentity } from "./workflow-github-executor.mjs";
 import { discoverBrowserActivationIdentity, verifyBrowserIdentityContinuity } from "./browser-owner-access.mjs";
 import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
@@ -381,6 +381,10 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
         find("REMOTE_CONTROL_INSTALL_ORIGIN", "plain_text")?.text ===
           "https://" + route[0].pattern,
         "Remote Control installer origin binding differs from Custom Domain");
+      const clerkIdentity=options.expectedRcaClerkIdentity;
+      invariant(clerkIdentity && ["CLERK_PUBLISHABLE_KEY","CLERK_OWNER_USER_ID"].every(name=>
+        typeof clerkIdentity[name]==="string" && find(name,"plain_text")?.text===clerkIdentity[name]),
+        "Remote Control shared Clerk public identity binding differs from release source");
       invariant(!bindings.some(x => x.name?.startsWith("BROWSER_APPROVAL_")),
         "Retired Remote Control approval bindings must be removed");
     }
@@ -1334,6 +1338,8 @@ async function main() {
       expectedWorkflowIdentity: workflowExecutorIdentity,
       workflowExecutorBaseline: previous?.workflowExecutorBaseline,
       expectedBrowserActivationAudience: browserIdentity?.audience,
+      expectedRcaClerkIdentity: worker==="remote-control-mcp-worker" && mode==="readback"
+        ? remoteControlClerkIdentity(process.env) : undefined,
     });
     // Compare active deployments inside the existing bounded retry loop.
     // Keep identity and binding drift failures fatal.

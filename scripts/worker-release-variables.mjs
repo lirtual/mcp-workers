@@ -78,6 +78,20 @@ export function gatewayOriginFromConfig(config) {
   return "https://" + host;
 }
 
+// RCA and Gateway share the already approved public Clerk identity source.
+export function remoteControlClerkIdentity(env) {
+  const key=env.CLERK_PILOT_PUBLISHABLE_KEY, owner=env.CLERK_PILOT_OWNER_USER_ID;
+  let validKey=false;
+  try {
+    validKey=typeof key==="string" && /^pk_live_[A-Za-z0-9+/=]+$/.test(key) &&
+      atob(key.slice("pk_live_".length))==="clerk.lirtual.dpdns.org$";
+  } catch {}
+  if(!validKey || typeof owner!=="string" || !/^user_[A-Za-z0-9]+$/.test(owner) ||
+      env.CLERK_PILOT_ISSUER!=="https://clerk.lirtual.dpdns.org")
+    throw Error("RCA shared Clerk public identity missing or invalid");
+  return {CLERK_PUBLISHABLE_KEY:key,CLERK_OWNER_USER_ID:owner};
+}
+
 export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
@@ -150,6 +164,7 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "remote-control-mcp-worker") {
     const origin=remoteControlInstallOrigin(options.config);
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + origin);
+    for(const [name,value] of Object.entries(remoteControlClerkIdentity(env))) variables.push(name+":"+value);
   }
   if (worker === 'database-mcp-worker') {
     // Validate with only reviewed named inputs; output retains unresolved Secret tokens.

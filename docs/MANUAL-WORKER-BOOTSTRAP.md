@@ -26,7 +26,7 @@
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | 无必填 |
 | `ssh-mcp-worker` | `SSH_ENCRYPTION_KEY` | 无 |
-| `remote-control-mcp-worker` | 无额外 Secret | 无 |
+| `remote-control-mcp-worker` | 无额外 Secret | 复用 `CLERK_PILOT_PUBLISHABLE_KEY`、`CLERK_PILOT_OWNER_USER_ID`、`CLERK_PILOT_ISSUER`；可选 `RCA_PERMANENT_IDLE_DAYS` |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_REPOSITORY` |
 | `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（不使用共享 `MCP_ACCESS_TOKEN`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`；Gateway 身份仍读取历史命名的 `CLERK_PILOT_*` GitHub Variables（不是 Raindrop 试点运行时绑定） |

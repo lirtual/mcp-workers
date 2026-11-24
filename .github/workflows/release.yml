@@ -474,9 +474,9 @@ jobs:
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
           RCA_PERMANENT_IDLE_DAYS: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.RCA_PERMANENT_IDLE_DAYS || '' }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
-          CLERK_PILOT_PUBLISHABLE_KEY: ${{ inputs.worker == 'mcp-gateway-worker' && vars.CLERK_PILOT_PUBLISHABLE_KEY || '' }}
-          CLERK_PILOT_OWNER_USER_ID: ${{ inputs.worker == 'mcp-gateway-worker' && vars.CLERK_PILOT_OWNER_USER_ID || '' }}
-          CLERK_PILOT_ISSUER: ${{ inputs.worker == 'mcp-gateway-worker' && vars.CLERK_PILOT_ISSUER || '' }}
+          CLERK_PILOT_PUBLISHABLE_KEY: ${{ (inputs.worker == 'mcp-gateway-worker' || inputs.worker == 'remote-control-mcp-worker') && vars.CLERK_PILOT_PUBLISHABLE_KEY || '' }}
+          CLERK_PILOT_OWNER_USER_ID: ${{ (inputs.worker == 'mcp-gateway-worker' || inputs.worker == 'remote-control-mcp-worker') && vars.CLERK_PILOT_OWNER_USER_ID || '' }}
+          CLERK_PILOT_ISSUER: ${{ (inputs.worker == 'mcp-gateway-worker' || inputs.worker == 'remote-control-mcp-worker') && vars.CLERK_PILOT_ISSUER || '' }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
@@ -1229,6 +1229,9 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           EXPECTED_VERSION_ID: ${{ steps.publish.outputs.version_id }}
+          CLERK_PILOT_PUBLISHABLE_KEY: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.CLERK_PILOT_PUBLISHABLE_KEY || '' }}
+          CLERK_PILOT_OWNER_USER_ID: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.CLERK_PILOT_OWNER_USER_ID || '' }}
+          CLERK_PILOT_ISSUER: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.CLERK_PILOT_ISSUER || '' }}
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
           OWNER_EMAIL: ${{ vars.OWNER_EMAIL }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
