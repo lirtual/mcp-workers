@@ -1145,6 +1145,11 @@ def verify_latest_selection():
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
         import hashlib
+        manager_spec = importlib.util.spec_from_file_location("rca_manager", SCRIPT.with_name("manage-v2.py"))
+        manager = importlib.util.module_from_spec(manager_spec)
+        manager_spec.loader.exec_module(manager)
+        with patch.dict(os.environ, {"HOME": str(home)}):
+            assert manager.installed_endpoint(bootstrap) == ENDPOINT
         data = b"disposable-verified-archive"
         selected = {"tag":tag, "download":assets[0]["browser_download_url"],
                     "size":len(data), "digest":hashlib.sha256(data).hexdigest()}

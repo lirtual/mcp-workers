@@ -781,7 +781,7 @@ def native_owner_lifecycle(home, action):
         native_owned_file(key, 8192)
         if native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]:
             raise ValueError("Existing device identity has changed")
-        endpoint = next(line.partition("=")[2] for line in unit.splitlines()
+        endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=") for line in unit.splitlines()
                         if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
         pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
         pending.extend(pathlib.Path(str(key) + suffix) for suffix in (

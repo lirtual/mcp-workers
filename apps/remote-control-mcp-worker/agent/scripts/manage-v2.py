@@ -59,7 +59,7 @@ def installed_endpoint(bootstrap):
     _, _, _, unit, _ = bootstrap.local_inventory(str(Path.home()))
     if not unit:
         return None
-    lines = [s.partition("=")[2] for s in unit.splitlines()
+    lines = [s.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=") for s in unit.splitlines()
              if s.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
     if len(lines) != 1:
         raise ValueError("Cannot establish a unique owned Worker endpoint.")
