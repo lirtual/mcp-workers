@@ -326,21 +326,3 @@ test('Gateway release derives its origin and identity from existing configuratio
   assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', { ...env, MCP_GATEWAY_PORTAL_CLIENT_ID: '' }, { config }), /Gateway/);
   assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', env, { config: {} }), /Gateway/);
 });
-
-
-test("Spec 1018 RCA probe stages only existing public Clerk identity and a bounded expiry on explicit dispatch", () => {
-  const env = { RCA_CLERK_PROBE:"true", CLERK_PILOT_ISSUER:"https://clerk.lirtual.dpdns.org",
-    CLERK_PILOT_PUBLISHABLE_KEY:"pk_live_" + Buffer.from("clerk.lirtual.dpdns.org$").toString("base64"),
-    CLERK_PILOT_OWNER_USER_ID:"user_fixture", CLERK_SECRET_KEY:"not-forwarded" };
-  const before = Math.floor(Date.now()/1000);
-  const flags = collectWorkerVars("remote-control-mcp-worker", env, {config:remoteConfig});
-  assert.deepEqual(flags.slice(0,-1), ["REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org",
-    "CLERK_PUBLISHABLE_KEY:"+env.CLERK_PILOT_PUBLISHABLE_KEY,"CLERK_OWNER_USER_ID:user_fixture"]);
-  const expiry = Number(flags.at(-1).split(":")[1]);
-  assert.ok(expiry >= before + 1800 && expiry <= Math.floor(Date.now()/1000)+1800);
-  assert.deepEqual(collectWorkerVars("remote-control-mcp-worker", {...env,RCA_CLERK_PROBE:"false"}, {config:remoteConfig}), [flags[0]]);
-  assert.deepEqual(collectWorkerVars("ssh-mcp-worker", env), []);
-  for (const bad of [{CLERK_PILOT_ISSUER:"https://example.com"},{CLERK_PILOT_OWNER_USER_ID:""},{CLERK_PILOT_PUBLISHABLE_KEY:"pk_live_d3Jvbmck"}]) {
-    assert.throws(()=>collectWorkerVars("remote-control-mcp-worker",{...env,...bad},{config:remoteConfig}),/reviewed Clerk identity/);
-  }
-});

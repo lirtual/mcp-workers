@@ -102,11 +102,6 @@ on:
         required: false
         type: boolean
         default: false
-      rca_clerk_probe:
-        required: false
-        description: 'Spec 1018: one-time RCA identity-only probe, expires within 30 minutes; no pairing'
-        type: boolean
-        default: false
       deploy_to_production:
         description: Explicit approval to publish exactly the selected Worker
         required: true
@@ -125,7 +120,7 @@ jobs:
     name: First Actions D1 cutover preparation (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.rca_clerk_probe != true && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare == true &&
           inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true &&
           inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true }}
@@ -188,7 +183,7 @@ jobs:
     name: Reopen reviewed Workflow Actions gate (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.rca_clerk_probe != true && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
+          github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
           inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare != true &&
           inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
           inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true &&
@@ -274,7 +269,7 @@ jobs:
     needs: checks
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.actor == 'lirtual' && inputs.rca_clerk_probe != true && github.ref == 'refs/heads/main' &&
+          github.actor == 'lirtual' && github.ref == 'refs/heads/main' &&
           inputs.worker == 'browser-mcp-worker' && inputs.browser_access_readonly == true &&
           inputs.deploy_to_production == false &&
           inputs.legacy_secret_cleanup_mode == 'none' &&
@@ -378,10 +373,6 @@ jobs:
               exit 1
             }
           fi
-          if [[ "${{ inputs.rca_clerk_probe }}" == "true" && "$SELECTED_WORKER" != "remote-control-mcp-worker" ]]; then
-            echo 'Spec 1018 probe accepts only the selected RCA Worker' >&2
-            exit 1
-          fi
           if [[ "$SELECTED_WORKER" == 'database-mcp-worker' ]]; then
             [[ "$DATABASE_EXPECTED_RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]
             [[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]] || {
@@ -482,11 +473,10 @@ jobs:
           OWNER_EMAIL: ${{ (inputs.worker == 'browser-mcp-worker') && vars.OWNER_EMAIL || '' }}
           BROWSER_REMEMBERED_IDLE_DAYS: ${{ inputs.worker == 'browser-mcp-worker' && vars.BROWSER_REMEMBERED_IDLE_DAYS || '' }}
           RCA_PERMANENT_IDLE_DAYS: ${{ inputs.worker == 'remote-control-mcp-worker' && vars.RCA_PERMANENT_IDLE_DAYS || '' }}
-          RCA_CLERK_PROBE: ${{ inputs.worker == 'remote-control-mcp-worker' && inputs.rca_clerk_probe == true }}
           RAINDROP_RATE_LIMIT_MAX_RETRIES: ${{ vars.RAINDROP_RATE_LIMIT_MAX_RETRIES }}
-          CLERK_PILOT_PUBLISHABLE_KEY: ${{ (inputs.worker == 'mcp-gateway-worker' || (inputs.worker == 'remote-control-mcp-worker' && inputs.rca_clerk_probe == true)) && vars.CLERK_PILOT_PUBLISHABLE_KEY || '' }}
-          CLERK_PILOT_OWNER_USER_ID: ${{ (inputs.worker == 'mcp-gateway-worker' || (inputs.worker == 'remote-control-mcp-worker' && inputs.rca_clerk_probe == true)) && vars.CLERK_PILOT_OWNER_USER_ID || '' }}
-          CLERK_PILOT_ISSUER: ${{ (inputs.worker == 'mcp-gateway-worker' || (inputs.worker == 'remote-control-mcp-worker' && inputs.rca_clerk_probe == true)) && vars.CLERK_PILOT_ISSUER || '' }}
+          CLERK_PILOT_PUBLISHABLE_KEY: ${{ inputs.worker == 'mcp-gateway-worker' && vars.CLERK_PILOT_PUBLISHABLE_KEY || '' }}
+          CLERK_PILOT_OWNER_USER_ID: ${{ inputs.worker == 'mcp-gateway-worker' && vars.CLERK_PILOT_OWNER_USER_ID || '' }}
+          CLERK_PILOT_ISSUER: ${{ inputs.worker == 'mcp-gateway-worker' && vars.CLERK_PILOT_ISSUER || '' }}
           IMA_BASE_URL: ${{ vars.IMA_BASE_URL }}
           IMA_CLIENT_ID: ${{ vars.IMA_CLIENT_ID }}
           WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ inputs.worker == 'workflow-mcp-worker' && vars.WORKFLOW_MCP_PORTAL_CLIENT_ID || '' }}
@@ -1401,7 +1391,7 @@ jobs:
     needs: checks
     if: >-
       ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.rca_clerk_probe != true &&
+          github.ref == 'refs/heads/main' && github.actor == 'lirtual' &&
           inputs.worker == 'workflow-mcp-worker' &&
           inputs.uu_cleanup_approved == true &&
           inputs.deploy_to_production == false && inputs.browser_access_readonly != true &&
@@ -1471,7 +1461,7 @@ jobs:
     needs: checks
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.rca_clerk_probe != true && inputs.deploy_to_production == true && inputs.browser_access_readonly != true &&
+          github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true &&
           needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
           (
             (
