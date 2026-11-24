@@ -4,9 +4,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { createAgentExecutionEngine } from "../src/execution.ts";
+import { createAgentExecutionEngine, defaultAgentShellPath } from "../src/execution.ts";
 
-test("revocation synchronously denies reads and effects while cleanup races", async () => {
+test("retired Windows Node execution refuses its shell selection", () => {
+  assert.throws(() => defaultAgentShellPath("win32"), /native Rust Agent/);
+});
+
+test("revocation synchronously denies reads and effects while cleanup races", {skip: process.platform === "win32"}, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "rc-revocation-gate-"));
   const filePath = path.join(root, "retained.txt");
   const engine = createAgentExecutionEngine({ receiptDirectory: path.join(root, "receipts") });
@@ -49,7 +53,7 @@ test("revocation synchronously denies reads and effects while cleanup races", as
   }
 });
 
-test("retired GUI effects cannot be admitted or replayed through the paired engine", async () => {
+test("retired GUI effects cannot be admitted or replayed through the paired engine", {skip: process.platform === "win32"}, async () => {
   const engine = createAgentExecutionEngine();
   try {
     for (const tool of [

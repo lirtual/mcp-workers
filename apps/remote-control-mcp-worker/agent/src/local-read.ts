@@ -15,22 +15,11 @@ function isIntegerInRange(value: unknown, min: number, max: number): value is nu
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max;
 }
 
-/** Linux paths only. A scheme such as http: or file: is a URL read, not a local path. */
-/** Windows accepts local fully qualified drive paths only. UNC, device namespaces,
- * drive-relative paths, alternate data streams and reserved device names are
- * refused before any filesystem access, on *every* read/search operation. */
+/** POSIX paths only; URL reads and retired Windows runtime paths are refused. */
 export function isPermittedLocalPath(value: string, platform = process.platform): boolean {
   if (typeof value !== "string" || value.length === 0 || value.length > 4096 ||
       value.includes("\0")) return false;
-  if (platform === "win32") {
-    if (!/^[A-Za-z]:[\\/]/.test(value) || value.slice(2).includes(":") ||
-        value.startsWith("\\\\") || value.startsWith("//")) return false;
-    const parts = value.slice(3).split(/[\\/]/);
-    if (parts.some(part => /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(part))) {
-      return false;
-    }
-    return true;
-  }
+  if (platform === "win32") return false;
   return !value.startsWith("//") && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value);
 }
 

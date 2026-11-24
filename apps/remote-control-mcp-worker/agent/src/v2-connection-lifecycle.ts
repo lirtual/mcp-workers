@@ -374,7 +374,7 @@ export async function maintainAuthenticatedDeviceSession(
   });
   let upgradeControl: Awaited<ReturnType<typeof startUpgradeControl>> | undefined;
   if (full && (process.platform === "linux" ||
-      (["darwin","win32"].includes(process.platform) && options.enableLocalUpgrade === true))) {
+      (process.platform === "darwin" && options.enableLocalUpgrade === true))) {
     try { upgradeControl = await startUpgradeControl(execution!, keyPath); }
     catch (error) { await execution!.close(); throw error; }
   }
