@@ -125,7 +125,7 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
         return {"freeze": "ready", "verify-frozen": "ready",
                 "release": "released"}[action]
 
-    def verify(path, operation, device_id, target):
+    def verify(path, operation, device_id, target, pid):
         assert path.name.endswith("native-upgrade-proof")
         assert len(operation) == 32 and device_id == ID and target == new.name
         assert Path(str(home / ".config/systemd/user/remote-control-agent.service") +
@@ -133,9 +133,9 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
         if proof_good:
             bootstrap.native_create_file(path, json.dumps({
                 "operation_id": operation, "device_id": device_id,
-                "target_version": target, "status": "authenticated_wss"
+                "target_version": target, "status": "authenticated_wss", "pid": pid
             }).encode())
-            assert bootstrap.native_wait_proof(path, operation, device_id, target, 1)
+            assert bootstrap.native_wait_proof(path, operation, device_id, target, pid, 1)
             if restart_after_proof:
                 # The signed first Rust process exits before the installer commits.
                 # A restarted process must authenticate independently.
@@ -156,7 +156,7 @@ def verify_isolated():
         assert "ExecStart=" + str(new / APP / ".build/rca-standard-linux-candidate") in (
             bootstrap.native_render_unit(new, ENDPOINT, key))
         assert not bootstrap.native_wait_proof(key.parent / "missing-proof", "a" * 32,
-                                               ID, new.name, 0)
+                                               ID, new.name, 200, 0)
     finally:
         ctx.cleanup()
 
@@ -168,7 +168,7 @@ def verify_isolated():
         owned_file(proof, json.dumps({"operation_id":"f" * 32,
              "device_id":ID,"target_version":new.name,"status":"authenticated_wss"}))
         try:
-            bootstrap.native_wait_proof(proof, "a" * 32, ID, new.name, 1)
+            bootstrap.native_wait_proof(proof, "a" * 32, ID, new.name, 200, 1)
             raise AssertionError("Mismatched operation proof was accepted")
         except ValueError:
             pass
@@ -275,6 +275,103 @@ def verify_isolated():
         assert receipts.read_bytes() == original_receipts
         assert not Path(str(unit) + ".upgrade-backup").exists()
         assert not Path(str(key) + ".native-upgrade-intent").exists()
+    finally:
+        ctx.cleanup()
+
+    # A process-killed updater can leave only its intent before the service
+    # switch, or only its backup after verified commit/rollback cleanup.
+    # Reconcile only an exact owned, running service and matching launcher.
+    for phase in ("intent-only", "backup-only-old", "backup-only-new"):
+        ctx, home, old, new, unit, launcher, key, receipts = fixture()
+        try:
+            state, mocks, verify = fake_services(home, old, new)
+            original_unit = unit.read_text()
+            original_receipts = receipts.read_bytes()
+            if phase == "intent-only":
+                bootstrap.native_create_file(Path(str(key) + ".native-upgrade-intent"),
+                    json.dumps({"operation_id": "e" * 32, "device_id": ID,
+                                "target_version": new.name}).encode())
+            else:
+                bootstrap.native_create_file(Path(str(unit) + ".upgrade-backup"),
+                                             original_unit.encode())
+                if phase == "backup-only-new":
+                    unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+                    launcher.unlink()
+                    launcher.symlink_to(new / APP / "scripts/rca.sh")
+                    state["active"] = "new"
+            active = state["active"]
+            with patch.multiple(bootstrap, **mocks):
+                result = bootstrap.native_recover(home)
+            assert result["signed_wss"] == "unconfirmed"
+            assert state["active"] == active and not state["commands"]
+            assert receipts.read_bytes() == original_receipts
+            assert not Path(str(unit) + ".upgrade-backup").exists()
+            assert not Path(str(key) + ".native-upgrade-intent").exists()
+        finally:
+            ctx.cleanup()
+
+    # A lone backup must not be discarded if the running service and CLI
+    # disagree (for example, an interrupted switch before launcher commit).
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        state, mocks, verify = fake_services(home, old, new)
+        backup = Path(str(unit) + ".upgrade-backup")
+        bootstrap.native_create_file(backup, unit.read_bytes())
+        unit.write_text(bootstrap.native_render_unit(new, ENDPOINT, key))
+        state["active"] = "new"
+        with patch.multiple(bootstrap, **mocks):
+            try:
+                bootstrap.native_recover(home)
+                raise AssertionError("Ambiguous backup was discarded")
+            except ValueError:
+                pass
+        assert backup.exists() and not state["commands"] and not state["consents"]
+    finally:
+        ctx.cleanup()
+
+    # A killed installer during freeze leaves intent even before backup
+    # creation. Its ordinary attended recovery must release the freeze.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        state, mocks, verify = fake_services(home, old, new)
+        original_consent = mocks["native_consent"]
+        def interrupted_freeze(key, action):
+            if action == "freeze":
+                raise KeyboardInterrupt("killed during freeze")
+            return original_consent(key, action)
+        with patch.multiple(bootstrap, **{**mocks, "native_consent": interrupted_freeze}):
+            try:
+                bootstrap.native_cutover(home, new, ENDPOINT, verify)
+                raise AssertionError("Interrupted freeze unexpectedly completed")
+            except KeyboardInterrupt:
+                pass
+        assert Path(str(key) + ".native-upgrade-intent").exists()
+        assert not Path(str(unit) + ".upgrade-backup").exists()
+        with patch.multiple(bootstrap, **mocks):
+            result = bootstrap.native_recover(home)
+        assert result["status"] == "active_service_reconciled"
+        assert not state["commands"]
+    finally:
+        ctx.cleanup()
+
+    # A process can authenticate and exit before the installer first observes
+    # MainPID. The replacement has the same executable but not the proof PID.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        state, mocks, verify = fake_services(home, old, new)
+        def stale_proof(path, operation, device_id, target, pid):
+            bootstrap.native_create_file(path, json.dumps({
+                "operation_id": operation, "device_id": device_id,
+                "target_version": target, "status": "authenticated_wss", "pid": pid - 1
+            }).encode())
+            return bootstrap.native_wait_proof(path, operation, device_id, target, pid, 1)
+        with patch.multiple(bootstrap, **mocks):
+            try:
+                bootstrap.native_cutover(home, new, ENDPOINT, stale_proof)
+                raise AssertionError("Proof for a replaced process accepted")
+            except ValueError:
+                pass
+        assert state["active"] == "old"
     finally:
         ctx.cleanup()
 

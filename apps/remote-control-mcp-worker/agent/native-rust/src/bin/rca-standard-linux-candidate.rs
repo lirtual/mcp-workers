@@ -144,7 +144,7 @@ mod linux {
             &mut file,
             &serde_json::json!({
                 "operation_id": operation, "device_id": device_id,
-                "target_version": target, "status": "authenticated_wss",
+                "target_version": target, "status": "authenticated_wss", "pid": std::process::id(),
             }),
         )
         .map_err(|_| ())?;

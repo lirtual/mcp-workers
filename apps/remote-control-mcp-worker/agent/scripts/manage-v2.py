@@ -149,15 +149,20 @@ def upgrade(bootstrap, arguments, native_only=False):
 def dispatch(command, args, root, info, bootstrap):
     # Pairing and mixed-bundle upgrades remain blocked. Native-only upgrade
     # and uninstall use the existing owner-TTY Python bootstrap protections.
+    native_only = info.get("artifact_profile") == "rust-native-only-v1"
     if (info.get("agent_runtime") == "rust-standard-linux-v1"
             and (command == "pair" or
-                 (command in ("upgrade", "uninstall") and
-                  info.get("artifact_profile") != "rust-native-only-v1"))):
+                 (command in ("upgrade", "uninstall", "recover") and not native_only))):
         raise ValueError("Rust Python lifecycle operation is not yet reviewed.")
     if command in ("--help", "-h", "help"):
-        print("Usage: rca [status|pair|logs|upgrade|uninstall]")
+        if native_only:
+            print("Usage: rca [status|logs|upgrade|recover|uninstall]")
+            print("Pairing/repair is not yet available for this candidate.")
+        else:
+            print("Usage: rca [status|pair|logs|upgrade|uninstall]")
         print("Without arguments: open the interactive local Agent manager.")
-        print("Upgrade requires: upgrade <immutable-tag> <reviewed-40-char-commit>.")
+        print("Upgrade requires: upgrade <immutable-tag> <reviewed-40-char-commit>"
+              + (" <reviewed-64-char-asset-sha256>" if native_only else "") + ".")
         return 0
     if command in ("--version", "version"):
         print(info["version"])
@@ -177,6 +182,10 @@ def dispatch(command, args, root, info, bootstrap):
     if command == "upgrade":
         return upgrade(bootstrap, args,
                        info.get("artifact_profile") == "rust-native-only-v1")
+    if command == "recover" and native_only:
+        if args:
+            raise ValueError("recover takes no arguments")
+        return bootstrap_action(bootstrap, ["--recover-native"])
     if command == "uninstall":
         if args:
             raise ValueError("uninstall takes no arguments")
@@ -186,7 +195,8 @@ def dispatch(command, args, root, info, bootstrap):
 
 def main():
     root, info, bootstrap = local_runtime()
-    if info.get("agent_runtime") == "rust-standard-linux-v1" and len(sys.argv) == 1:
+    native_only = info.get("artifact_profile") == "rust-native-only-v1"
+    if info.get("agent_runtime") == "rust-standard-linux-v1" and not native_only and len(sys.argv) == 1:
         raise ValueError("Rust Python manager requires an explicit command.")
     if len(sys.argv) > 1:
         return dispatch(sys.argv[1], sys.argv[2:], root, info, bootstrap)
@@ -194,20 +204,21 @@ def main():
         raise ValueError("Interactive menu needs a local TTY; use 'status' for scripted checks.")
     while True:
         print("\nRemote Control Agent " + info["version"])
-        print("1. Status   2. Pair / repair   3. Logs")
+        print("1. Status   2. " + ("Recover interrupted upgrade" if native_only else "Pair / repair") + "   3. Logs")
         print("4. Upgrade  5. Uninstall       6. Exit")
         choice = input("Choose an option: ").strip()
         if choice in ("6", "q", "Q"):
             return 0
-        mapping = {"1": "status", "2": "pair", "3": "logs", "4": "upgrade",
+        mapping = {"1": "status", "2": "recover" if native_only else "pair", "3": "logs", "4": "upgrade",
                    "5": "uninstall"}
         if choice not in mapping:
             print("Choose 1–6.")
             continue
         action = mapping[choice]
         if action == "upgrade":
-            print("Provide the reviewed immutable Release tag and its 40-character commit.")
-            args = input("tag commit: ").split()
+            print("Provide the reviewed immutable Release tag and its 40-character commit"
+                  + (", and asset SHA-256." if native_only else "."))
+            args = input("tag commit" + (" asset-sha256" if native_only else "") + ": ").split()
         else:
             args = []
         try:

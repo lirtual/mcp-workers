@@ -270,6 +270,15 @@ with tempfile.TemporaryDirectory(prefix="rca-native-only-") as t:
             env={**os.environ,"HOME":str(home)},capture_output=True,text=True,timeout=8)
         assert result.returncode==0,(command,result.stderr)
         assert tag in result.stdout
+    help_result=subprocess.run(["/bin/sh",str(dest/b.APP/"scripts/rca.sh"),"--help"],
+        env={**os.environ,"HOME":str(home)},capture_output=True,text=True,timeout=8)
+    assert help_result.returncode==0,help_result.stderr
+    assert "reviewed-64-char-asset-sha256" in help_result.stdout
+    assert "recover" in help_result.stdout and "not yet available" in help_result.stdout
+    for command in ["pair","upgrade","uninstall","recover"]:
+        result=subprocess.run(["/bin/sh",str(dest/b.APP/"scripts/rca.sh"),command],
+            env={**os.environ,"HOME":str(home)},capture_output=True,text=True,timeout=8)
+        assert result.returncode!=0,command
     for command in ["pair","upgrade","uninstall"]:
         result=subprocess.run(["/usr/bin/python3","-I","-B",
              str(dest/b.APP/"scripts/manage-v2.py"),command],

@@ -668,7 +668,7 @@ def native_restore_launcher(home, old_root, new_root):
             stage.unlink()
 
 
-def native_wait_proof(path, operation, device_id, version, seconds=90):
+def native_wait_proof(path, operation, device_id, version, pid, seconds=90):
     import time
     expires = time.monotonic() + seconds
     while time.monotonic() < expires:
@@ -680,11 +680,12 @@ def native_wait_proof(path, operation, device_id, version, seconds=90):
                 # it is not accepted until the complete JSON is present.
                 time.sleep(0.25)
                 continue
-            if (set(proof) != {"operation_id", "device_id", "target_version", "status"}
+            if (set(proof) != {"operation_id", "device_id", "target_version", "status", "pid"}
                     or proof["operation_id"] != operation
                     or proof["device_id"] != device_id
                     or proof["target_version"] != version
-                    or proof["status"] != "authenticated_wss"):
+                    or proof["status"] != "authenticated_wss"
+                    or type(proof["pid"]) is not int or proof["pid"] != pid):
                 raise ValueError("Signed Rust WSS proof does not match this attempt")
             return True
         time.sleep(0.25)
@@ -773,6 +774,10 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("Another owner installer is active")
+        # Recheck after acquiring the shared installer lock. The two durable
+        # records are published atomically before the unit is changed.
+        if any(os.path.lexists(item) for item in (backup, intent, proof)):
+            raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
         pid = native_main_pid()
         # The service entrypoint must be the version whose socket we freeze.
         expected_binary = old_root / ("apps/remote-control-agent/.build/rca-standard-linux-candidate"
@@ -781,21 +786,24 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                                      else "bin/node")
         if native_process_executable(pid) != expected_binary:
             raise ValueError("Service process differs from frozen Agent")
-        if native_consent(key, "freeze") != "ready":
-            raise ValueError("Agent has running or unknown operations; upgrade refused")
         switched = False
+        committed = False
         operation = secrets.token_hex(16)
+        # Publish intent before freezing so a killed installer cannot leave
+        # a frozen old service with no recoverable record.
+        native_atomic_file(intent, json.dumps({
+            "operation_id": operation, "device_id": device_id,
+            "target_version": new_root.name
+        }, separators=(",", ":")).encode())
         try:
+            if native_consent(key, "freeze") != "ready":
+                raise ValueError("Agent has running or unknown operations; upgrade refused")
             if (native_consent(key, "verify-frozen") != "ready"
                     or native_main_pid() != pid
                     or unit_file.read_text("utf8") != current
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before):
                 raise ValueError("Agent changed during freeze")
-            native_create_file(intent, json.dumps({
-                "operation_id": operation, "device_id": device_id,
-                "target_version": new_root.name
-            }, separators=(",", ":")).encode())
-            native_create_file(backup, current.encode())
+            native_atomic_file(backup, current.encode())
             native_atomic_file(unit_file, next_unit.encode())
             switched = True
             native_systemctl("daemon-reload")
@@ -804,7 +812,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             if native_process_executable(new_pid) != (
                     new_root / APP / ".build/rca-standard-linux-candidate"):
                 raise ValueError("systemd did not activate the native Rust executable")
-            if not verify(proof, operation, device_id, new_root.name):
+            if not verify(proof, operation, device_id, new_root.name, new_pid):
                 raise ValueError("New Rust Agent signed WSS was not confirmed")
             # A proof from a Rust process that exited/restarted during the
             # handshake does not authenticate its replacement. Keep the
@@ -817,12 +825,17 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                     or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
                 raise ValueError("Rust process, identity or systemd unit changed after WSS")
             native_launcher(home, old_root, new_root)
-            for item in (intent, proof, backup):
+            committed = True
+            # Keep the original unit until the final cleanup step; only
+            # an already reconciled service/launcher may leave backup alone.
+            for item in (proof, intent, backup):
                 item.unlink()
                 native_sync_parent(item)
             return {"status": "active", "version": new_root.name,
                     "signed_wss": True, "identity_preserved": True}
         except Exception as error:
+            if committed:
+                raise ValueError("Native Agent activated; recovery record cleanup uncertain") from error
             if switched or backup.exists():
                 try:
                     native_atomic_file(unit_file, current.encode())
@@ -837,8 +850,15 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                 except Exception:
                     # The durable old unit remains available for attended recovery.
                     raise ValueError("Native upgrade failed; rollback uncertain; backup retained") from None
+            # No switch: release any pending freeze before retiring its record.
+            if not switched and not backup.exists():
+                try:
+                    if native_consent(key, "release") != "released":
+                        raise ValueError("Freeze release unconfirmed")
+                except Exception:
+                    raise ValueError("Native upgrade refused; freeze release uncertain; intent retained") from error
             # No service switch or a verified old unit: evidence can be retired.
-            for item in (proof, backup, intent):
+            for item in (proof, intent, backup):
                 if os.path.lexists(item):
                     item.unlink()
                     native_sync_parent(item)
@@ -871,13 +891,15 @@ def native_recover(home):
         except BlockingIOError:
             raise ValueError("Another owner installer is active")
         _, versions, unit, current, ids = local_inventory(home)
-        if (not current or not backup.is_file() or not intent.is_file()
+        has_backup = os.path.lexists(backup)
+        has_intent = os.path.lexists(intent)
+        if (not current or not (has_backup or has_intent)
                 or (unit.parent / (UNIT + ".d")).exists()
                 or (unit.parent / (UNIT + ".d")).is_symlink()
                 or pathlib.Path(str(key) + ".owner-stopped").exists()
                 or pathlib.Path(str(key) + ".owner-stopped").is_symlink()):
             raise ValueError("No safe interrupted native upgrade to recover")
-        previous = native_owned_file(backup, 8192).decode("utf8")
+        previous = native_owned_file(backup, 8192).decode("utf8") if has_backup else current
         old = owned_unit_root(previous, versions)
         new = owned_unit_root(current, versions)
         if old is None or new is None:
@@ -897,17 +919,23 @@ def native_recover(home):
             raise ValueError("Modified service template blocks recovery")
         key_digest = hashlib.sha256(native_owned_file(key, 8192)).hexdigest()
         device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
-        record = json.loads(native_owned_file(intent, 512))
-        if (set(record) != {"operation_id", "device_id", "target_version"}
+        if ids.get("permanent") != device_id:
+            raise ValueError("Recovery device identity mismatch")
+        record = json.loads(native_owned_file(intent, 512)) if has_intent else None
+        if has_intent and (not isinstance(record, dict)
+                or set(record) != {"operation_id", "device_id", "target_version"}
                 or not isinstance(record["operation_id"], str)
                 or not re.fullmatch(r"[0-9a-f]{32}", record["operation_id"])
-                or record["device_id"] != device_id or ids.get("permanent") != device_id
+                or record["device_id"] != device_id
                 or record["target_version"] not in {v.name for v in versions}
                 or (old != new and record["target_version"] != new.name)):
             raise ValueError("Recovery intent or device identity mismatch")
+        partial = not (has_backup and has_intent)
         if os.path.lexists(proof):
+            if partial:
+                raise ValueError("Incomplete recovery records with activation proof")
             signed = json.loads(native_owned_file(proof, 512))
-            if (set(signed) != set(record) | {"status"}
+            if (set(signed) not in (set(record) | {"status"}, set(record) | {"status", "pid"})
                     or any(signed.get(field) != value for field, value in record.items())
                     or signed["status"] != "authenticated_wss"):
                 raise ValueError("Recovery proof does not match this attempt")
@@ -917,6 +945,12 @@ def native_recover(home):
                 or os.readlink(launcher) not in
                 {str(root / APP / "scripts/rca.sh") for root in (old, new)}):
             raise ValueError("Unreviewed recovery launcher")
+        # Before any switch, intent can exist alone. After a verified commit
+        # or rollback, backup can remain alone. Never guess which program to
+        # restart: reconcile only if the running unit and CLI already agree.
+        if partial and (os.readlink(launcher) != str(new / APP / "scripts/rca.sh")
+                        or (has_intent and record["target_version"] == new.name)):
+            raise ValueError("Incomplete recovery records do not match the active launcher")
         pid = native_main_pid()
         current_exe = (new / APP / ".build/rca-standard-linux-candidate"
                        if new_info.get("artifact_profile") == "rust-native-only-v1"
@@ -930,6 +964,19 @@ def native_recover(home):
             if (native_main_pid() != pid or unit.read_text("utf8") != current
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_digest):
                 raise ValueError("Recovery state changed while frozen")
+            if partial:
+                if (native_process_executable(pid) != current_exe
+                        or not launcher.is_symlink()
+                        or os.readlink(launcher) != str(new / APP / "scripts/rca.sh")):
+                    raise ValueError("Recovery launcher or process changed while frozen")
+                if native_consent(key, "release") != "released":
+                    raise ValueError("Active Agent could not be unfrozen")
+                for item in (intent, backup):
+                    if os.path.lexists(item):
+                        item.unlink()
+                        native_sync_parent(item)
+                return {"status": "active_service_reconciled", "version": new.name,
+                        "identity_preserved": True, "signed_wss": "unconfirmed"}
             if current != previous:
                 native_atomic_file(unit, previous.encode())
                 native_systemctl("daemon-reload")

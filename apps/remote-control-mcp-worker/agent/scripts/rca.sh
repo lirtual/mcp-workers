@@ -21,7 +21,7 @@ if test -x "$root/apps/remote-control-agent/.build/rca-standard-linux-candidate"
       test -r "$root/apps/remote-control-agent/scripts/manage-v2.py" || exit 1
       exec /usr/bin/python3 -I -B "$root/apps/remote-control-agent/scripts/manage-v2.py" "$@"
       ;;
-    upgrade|uninstall)
+    *)
       if ! test -e "$root/bin/node"; then
         test -r "$root/apps/remote-control-agent/scripts/manage-v2.py" || exit 1
         exec /usr/bin/python3 -I -B "$root/apps/remote-control-agent/scripts/manage-v2.py" "$@"
