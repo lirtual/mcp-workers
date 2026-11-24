@@ -90,7 +90,9 @@ windows("legacy switch excludes only its exact management caller, not an Agent o
   const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
   const fn=source.match(/^function Wait-VersionExited\([\s\S]*?^\}/m)?.[0];
   assert(fn);
-  const command=fn+String.raw`
+  const callerFn=source.match(/^function Get-LocalSwitchCaller\([\s\S]*?^\}/m)?.[0];
+  assert(callerFn);
+  const command=fn+'\n'+callerFn+String.raw`
 $ErrorActionPreference='Stop'
 $root='C:\Users\fixture\programs\v0.0.1-ci-windows-x64'
 $program=[pscustomobject]@{Root=$root}
@@ -112,6 +114,28 @@ Assert-Blocked ([pscustomobject]@{ProcessId=102;CreationDate=1;ExecutablePath=($
 $script:rows=@($caller)
 try { Wait-VersionExited $program; throw 'Unexpected strict success' }
 catch { if ($_.Exception.Message -ne 'Previous Agent process exit not confirmed') {throw} }
+# Actual native-management caller classification. Mock only OS process
+# enumeration, not command/path/SID/PID validation in the controller.
+$root='C:\Users\fixture\programs'
+$exe=$root+'\v0.1.58-rust-candidate.1-windows-x64\apps\remote-control-agent\.build\rca-standard-windows-candidate.exe'
+$script:parent=[pscustomobject]@{ProcessId=100;CreationDate=1;ExecutablePath=$exe;CommandLine=('"' + $exe + '" --cli upgrade --version v0.1.59-rust-candidate.1')}
+$script:owner='fixture-owner'
+function Get-CimInstance {
+  param($ClassName,$Filter)
+  if ($Filter -eq ('ProcessId = '+$PID)) { return [pscustomobject]@{ParentProcessId=100;CreationDate=2} }
+  $script:parent
+}
+function Invoke-CimMethod { [pscustomobject]@{Sid=$script:owner} }
+if (-not (Get-LocalSwitchCaller 'Upgrade' 'v0.1.59-rust-candidate.1')) { throw 'Native upgrade caller not recognized' }
+if (Get-LocalSwitchCaller 'Upgrade' 'v0.1.60-rust-candidate.1') { throw 'Wrong target caller accepted' }
+$script:parent.CommandLine='"'+$exe+'" --service --endpoint "https://example.test/" --generation "test"'
+if (Get-LocalSwitchCaller 'Upgrade' 'v0.1.59-rust-candidate.1') { throw 'Service excluded from exit observation' }
+$script:parent.CommandLine='"'+$exe+'" --cli recover'
+if (-not (Get-LocalSwitchCaller 'Recover' '')) { throw 'Native recovery caller not recognized' }
+$script:parent.CommandLine='"'+$exe+'" --cli re-pair --endpoint https://example.test/'
+if (-not (Get-LocalSwitchCaller 'RePair' 'https://example.test/')) { throw 'Native repair caller not recognized' }
+$script:owner='another-owner'
+if (Get-LocalSwitchCaller 'RePair' 'https://example.test/') { throw 'Foreign owner excluded' }
 Write-Output 'exit-filter-pass'
 `;
   const shell="powershell.exe";

@@ -251,7 +251,11 @@ mod windows {
         Ok(())
     }
 
-    fn approved_identity(endpoint: &str, temporary: bool) -> Result<(PathBuf, String, String), ()> {
+    fn approved_identity(
+        endpoint: &str,
+        temporary: bool,
+        initial: bool,
+    ) -> Result<(PathBuf, String, String), ()> {
         use rca_native_agent::device_pairing::PairingClient;
         let root = store_root()?;
         validate_windows_private_path(&root, true).map_err(|_| ())?;
@@ -272,15 +276,16 @@ mod windows {
         let pem = pem.ok_or(())?;
         let id = id.ok_or(())?;
         let pending = optional_private(&root.join("v2-identity.pem.activation-pending"), 128)?;
-        if (temporary && pending.is_some())
-            || (!temporary && pending.as_deref() != Some(format!("{id}\n").as_bytes()))
+        if ((temporary || !initial) && pending.is_some())
+            || (initial && pending.as_deref() != Some(format!("{id}\n").as_bytes()))
         {
             return Err(());
         }
-        PairingClient::new(endpoint)
-            .map_err(|_| ())?
-            .recover(&pem, Some(&id))
-            .map_err(|_| ())?;
+        let client = PairingClient::new(endpoint).map_err(|_| ())?;
+        client.recover(&pem, Some(&id)).map_err(|_| ())?;
+        if !temporary {
+            client.verify_permanent_grant(&id).map_err(|_| ())?;
+        }
         Ok((key, pem, id))
     }
 
@@ -339,7 +344,7 @@ mod windows {
         if state["installed"] != false {
             return Err(());
         }
-        let (key, pem, id) = approved_identity(endpoint, true)?;
+        let (key, pem, id) = approved_identity(endpoint, true, false)?;
         run_agent(endpoint, &key, &pem, &id, None)
     }
 
@@ -358,20 +363,10 @@ mod windows {
             name,
             || {
                 let checked = || -> Result<(), ()> {
-                    let task_endpoint = task_command(&directory, &["-Action", "Endpoint"])?;
-                    if std::str::from_utf8(&task_endpoint.stdout)
-                        .map_err(|_| ())?
-                        .trim()
-                        != endpoint
-                    {
-                        return Err(());
-                    }
-                    let status = task_command(&directory, &["-Action", "Status"])?;
-                    let state: serde_json::Value =
-                        serde_json::from_slice(&status.stdout).map_err(|_| ())?;
-                    if state["installed"] != true || state["running"] != false {
-                        return Err(());
-                    }
+                    task_command(
+                        &directory,
+                        &["-Action", "ConfirmStopped", "-Endpoint", endpoint],
+                    )?;
                     Ok(())
                 };
                 checked().map_err(|_| SessionRecoveryError::InvalidIdentity)
@@ -386,6 +381,69 @@ mod windows {
         println!(
             "Signed authorization confirmed; original private key retained. Task remains stopped."
         );
+        Ok(())
+    }
+
+    /// Same-version installer reconciliation. Healthy signed identity is a
+    /// no-op. Only a confirmed missing grant or signed same-key ID change
+    /// permits stopping the Task and asking for attended recovery.
+    fn reconcile_existing(endpoint: &str) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::PairingClient;
+        use rca_native_agent::session_recovery::SessionRecoveryError;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        let key = root.join("v2-identity.pem");
+        if stopped(&key)? {
+            println!("Owner STOP preserved.");
+            return Ok(());
+        }
+        if read_private(&root.join("v2-identity.pem.install-mode"), 32)? != b"permanent\n"
+            || optional_private(&root.join("windows-native-upgrade.json"), 4096)?.is_some()
+            || optional_private(&root.join("v2-identity.pem.activation-pending"), 128)?.is_some()
+        {
+            return Err(());
+        }
+        let (pem, id) = local_identity(&key)?;
+        let pem = pem.ok_or(())?;
+        let id = id.ok_or(())?;
+        let output = task_command(&directory, &["-Action", "Endpoint"])?;
+        if std::str::from_utf8(&output.stdout).map_err(|_| ())?.trim() != endpoint {
+            return Err(());
+        }
+        let client = PairingClient::new(endpoint).map_err(|_| ())?;
+        let pending = optional_private(&root.join("v2-identity.pem.device-id.pending"), 128)?;
+        match client.recover(&pem, None) {
+            Ok(approved) if approved == id && pending.is_none() => {
+                println!("Approved identity unchanged; no Task modification.");
+                return Ok(());
+            }
+            Ok(_) | Err(SessionRecoveryError::Pending) => {}
+            Err(_) => return Err(()),
+        }
+        let status = task_command(&directory, &["-Action", "Status"])?;
+        let state: serde_json::Value = serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+        if state["installed"] != true {
+            return Err(());
+        }
+        if state["running"] == true {
+            task_command(&directory, &["-Action", "Stop"])?;
+        }
+        let name = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows".to_owned());
+        repair_local(endpoint, &name)?;
+        // Old Node installer contract: successful reauthorization requests
+        // Start, but does not claim signed WSS activation.
+        if stopped(&key)? {
+            return Err(());
+        }
+        task_command(
+            &directory,
+            &["-Action", "ConfirmStopped", "-Endpoint", endpoint],
+        )?;
+        task_command(&directory, &["-Action", "Start"])?;
+        println!("Authorization restored; Task start requested, connection unconfirmed.");
         Ok(())
     }
 
@@ -490,6 +548,56 @@ mod windows {
                         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows".to_owned());
                     repair_local(endpoint, &name)
                 }
+                [_, command, flag, endpoint] if command == "onboard" && flag == "--endpoint" => {
+                    reconcile_existing(endpoint)
+                }
+                [_, command, flag, endpoint] if command == "enable" && flag == "--endpoint" => {
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(());
+                    }
+                    let (directory, tag) = program_root()?;
+                    let output = task_command(
+                        &directory,
+                        &[
+                            "-Action",
+                            "EnableNative",
+                            "-Version",
+                            &tag,
+                            "-Endpoint",
+                            endpoint,
+                        ],
+                    )?;
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    Ok(())
+                }
+                [_, command, flag, version] if command == "upgrade" && flag == "--version" => {
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(());
+                    }
+                    let (directory, _) = program_root()?;
+                    let output = task_command(
+                        &directory,
+                        &[
+                            "-Action",
+                            "Switch",
+                            "-Direction",
+                            "Upgrade",
+                            "-Version",
+                            version,
+                        ],
+                    )?;
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    Ok(())
+                }
+                [_, command] if command == "recover" => {
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(());
+                    }
+                    let (directory, _) = program_root()?;
+                    let output = task_command(&directory, &["-Action", "RecoverNativeUpgrade"])?;
+                    print!("{}", String::from_utf8_lossy(&output.stdout));
+                    Ok(())
+                }
                 [_, command] if command == "task-status" => {
                     let (directory, _) = program_root()?;
                     let output = task_command(&directory, &["-Action", "Status"])?;
@@ -520,8 +628,13 @@ mod windows {
             if command == "--verify-activation-proof" {
                 return activation_proof(generation);
             }
+            if command == "--verify-enable-pairing" {
+                let (_, _, id) = approved_identity(generation, false, false)?;
+                println!("{}", serde_json::json!({"device_id":id}));
+                return Ok(());
+            }
             if command == "--verify-initial-pairing" {
-                let (_, _, id) = approved_identity(generation, false)?;
+                let (_, _, id) = approved_identity(generation, false, true)?;
                 println!("{}", serde_json::json!({"device_id":id}));
                 return Ok(());
             }

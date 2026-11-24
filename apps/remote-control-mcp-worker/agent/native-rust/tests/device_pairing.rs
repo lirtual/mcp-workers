@@ -121,6 +121,10 @@ fn windows_native_pair_entry_refuses_non_interactive_invocation() {
     assert!(!output.status.success());
     assert!(std::fs::read_dir(home.path()).unwrap().next().is_none());
     for args in [
+        vec!["--cli", "enable", "--endpoint", "https://127.0.0.1:9/"],
+        vec!["--cli", "onboard", "--endpoint", "https://127.0.0.1:9/"],
+        vec!["--cli", "upgrade", "--version", "v0.1.59-rust-candidate.1"],
+        vec!["--cli", "recover"],
         vec!["--cli", "stop"],
         vec!["--cli", "start"],
         vec!["--cli", "disable"],

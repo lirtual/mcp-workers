@@ -349,6 +349,12 @@ function Complete-NativeInstall([string]$directory) {
   if ($state.installed -and ($mode -eq 'temporary' -or -not (Test-Path -LiteralPath $idFile))) {
     throw 'Existing Task conflicts with pairing'
   }
+  if ($state.installed -and $mode -ceq 'permanent' -and
+      -not (Test-Path -LiteralPath ($identityFile + '.activation-pending'))) {
+    & $entry --cli onboard --endpoint $origin
+    if ($LASTEXITCODE -ne 0) { throw 'Native authorization reconciliation incomplete; existing identity retained' }
+    return
+  }
   $name = [Environment]::MachineName
   if (-not (Test-Path -LiteralPath $idFile)) {
     $entered = Read-Host ('Device name [' + $name + ']')

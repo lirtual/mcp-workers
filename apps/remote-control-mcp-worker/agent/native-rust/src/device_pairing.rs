@@ -142,14 +142,17 @@ impl PairingClient {
         Ok(())
     }
 
-    /// Explicit owner intent uses a separate signing domain and exact Worker
-    /// response. A timeout, invalid proof or rejection is never success.
-    pub fn owner_intent(
+    /// Read-only evidence that the recovered key's ID has a permanent
+    /// grant. The challenge alone does not change owner intent.
+    pub fn verify_permanent_grant(&self, id: &str) -> Result<(), SessionRecoveryError> {
+        self.owner_challenge(id, "stop").map(|_| ())
+    }
+
+    fn owner_challenge(
         &self,
-        pem: &str,
         id: &str,
         action: &str,
-    ) -> Result<(), SessionRecoveryError> {
+    ) -> Result<(String, u64), SessionRecoveryError> {
         if !valid_device_id(id) || !matches!(action, "stop" | "resume") {
             return Err(SessionRecoveryError::InvalidIdentity);
         }
@@ -170,7 +173,27 @@ impl PairingClient {
         let generation = challenge["generation"]
             .as_u64()
             .ok_or(SessionRecoveryError::Rejected)?;
-        let proof = crate::identity::signed_owner_intent_proof(pem, action, id, nonce, generation)
+        if nonce.len() != 24
+            || !nonce
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            || generation >= 9_007_199_254_740_991
+        {
+            return Err(SessionRecoveryError::Rejected);
+        }
+        Ok((nonce.to_owned(), generation))
+    }
+
+    /// Explicit owner intent uses a separate signing domain and exact Worker
+    /// response. A timeout, invalid proof or rejection is never success.
+    pub fn owner_intent(
+        &self,
+        pem: &str,
+        id: &str,
+        action: &str,
+    ) -> Result<(), SessionRecoveryError> {
+        let (nonce, generation) = self.owner_challenge(id, action)?;
+        let proof = crate::identity::signed_owner_intent_proof(pem, action, id, &nonce, generation)
             .map_err(|_| SessionRecoveryError::Rejected)?;
         let result = post_bounded(
             &self.client,
@@ -529,6 +552,27 @@ mod tests {
             },
             listener,
         )
+    }
+
+    #[test]
+    fn permanent_grant_evidence_is_challenge_only() {
+        for valid in [true, false] {
+            let (client, listener) = fixture();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let (route, request) = recv_request(&mut socket);
+                assert_eq!(route, "POST /agent/owner/intent/challenge HTTP/1.1");
+                assert_eq!(request, json!({"action":"stop","device_id":ID}));
+                reply(
+                    &mut socket,
+                    "200 OK",
+                    json!({"action":"stop","device_id":ID,"nonce":if valid {NONCE} else {"bad"},"generation":3}),
+                );
+                // Listener drops: the read-only check cannot submit an intent.
+            });
+            assert_eq!(client.verify_permanent_grant(ID).is_ok(), valid);
+            server.join().unwrap();
+        }
     }
 
     #[test]
