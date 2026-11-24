@@ -1,6 +1,6 @@
 //! Owner-reviewed single-code enrollment. A pending code is not approval;
 //! signed recovery of the same local key must confirm the device identity.
-use crate::identity::{new_private_key_pem, public_key, signing_key};
+use crate::identity::{new_private_key_pem, public_key, signing_key, valid_device_id};
 use crate::session_recovery::{
     post_bounded, recover_approved_key, recovery_client, SessionRecoveryError,
 };
@@ -108,6 +108,40 @@ impl PairingClient {
     ) -> Result<String, SessionRecoveryError> {
         recover_approved_key(&self.client, &self.origin, pem, expected)
     }
+    /// Signed negative approval status, not proof of a historical ID/key
+    /// binding. Only exact HTTP 200 / not_approved / matching ID permits
+    /// the owner-local replacement transaction to proceed.
+    pub fn assert_revoked(&self, pem: &str, device_id: &str) -> Result<(), SessionRecoveryError> {
+        if !valid_device_id(device_id) {
+            return Err(SessionRecoveryError::InvalidIdentity);
+        }
+        let key = signing_key(pem).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+        let public = public_key(&key).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+        let issued_at: u64 = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| SessionRecoveryError::Unavailable)?
+            .as_millis()
+            .try_into()
+            .map_err(|_| SessionRecoveryError::Unavailable)?;
+        let transcript =
+            format!("remote-control:v2:re-pair-revoked:{device_id}:{public}:{issued_at}");
+        let proof = STANDARD.encode(key.sign(transcript.as_bytes()).to_bytes());
+        let result = post_bounded(
+            &self.client,
+            &self.origin,
+            "/agent/re-pair/status",
+            json!({"device_id":device_id,"public_key":public,"issued_at":issued_at,"proof":proof}),
+            200,
+            false,
+        )?;
+        if result.get("status").and_then(Value::as_str) != Some("not_approved")
+            || result.get("device_id").and_then(Value::as_str) != Some(device_id)
+        {
+            return Err(SessionRecoveryError::Rejected);
+        }
+        Ok(())
+    }
+
     /// At most one pending registration per explicit pairing. Never rotate
     /// or re-register a confirmed ID or treat a network error as pending.
     pub fn pair(
@@ -163,6 +197,51 @@ mod tests {
             },
             listener,
         )
+    }
+
+    #[test]
+    fn revoked_status_requires_exact_signed_negative_response() {
+        use ed25519_dalek::{Signature, Verifier};
+        for (status, payload, accepted) in [
+            (200, json!({"status":"not_approved","device_id":ID}), true),
+            (200, json!({"status":"approved","device_id":ID}), false),
+            (
+                200,
+                json!({"status":"not_approved","device_id":"123e4567-e89b-42d3-a456-426614174002"}),
+                false,
+            ),
+            (401, json!({"status":"not_approved","device_id":ID}), false),
+            (403, json!({"status":"not_approved","device_id":ID}), false),
+            (404, json!({"status":"not_approved","device_id":ID}), false),
+            (409, json!({"status":"not_approved","device_id":ID}), false),
+            (429, json!({"status":"not_approved","device_id":ID}), false),
+            (503, json!({"status":"not_approved","device_id":ID}), false),
+        ] {
+            let (client, listener) = fixture();
+            let pem = generate_private_pem().unwrap();
+            let key = signing_key(&pem).unwrap();
+            let public = public_key(&key).unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let (path, body) = recv_request(&mut socket);
+                assert_eq!(path, "POST /agent/re-pair/status HTTP/1.1");
+                assert_eq!(body["device_id"], ID);
+                assert_eq!(body["public_key"], public);
+                let issued = body["issued_at"].as_u64().unwrap();
+                let signature = Signature::from_slice(
+                    &STANDARD.decode(body["proof"].as_str().unwrap()).unwrap(),
+                )
+                .unwrap();
+                // Independent Node/Worker transcript contract.
+                let message = format!("remote-control:v2:re-pair-revoked:{ID}:{public}:{issued}");
+                key.verifying_key()
+                    .verify(message.as_bytes(), &signature)
+                    .unwrap();
+                reply(&mut socket, &format!("{status} Fixture"), payload);
+            });
+            assert_eq!(client.assert_revoked(&pem, ID).is_ok(), accepted);
+            server.join().unwrap();
+        }
     }
 
     #[test]
@@ -241,7 +320,12 @@ mod tests {
                 false,
                 |_| panic!("unapproved rejection attempted registration"),
             );
-            assert!(matches!(result, Err(SessionRecoveryError::Rejected)));
+            match status {
+                "404 Not Found" | "403 Forbidden" => {
+                    assert!(matches!(result, Err(SessionRecoveryError::Denied)))
+                }
+                _ => assert!(matches!(result, Err(SessionRecoveryError::Rejected))),
+            }
             server.join().unwrap();
         }
     }
