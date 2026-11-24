@@ -23,6 +23,7 @@ import struct
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -428,6 +429,9 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
     elif asset_sha256 is not None:
         raise ValueError("An asset SHA-256 is only accepted for native staging, install or upgrade")
     target = preflight(tag, commit, endpoint, stage_only=stage_only)
+    # The owned service template uses a canonical origin with a trailing slash.
+    if not endpoint.endswith("/"):
+        endpoint += "/"
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
     location = program_home(os.path.expanduser("~"))
     version = location / (tag + "-" + target)
@@ -604,6 +608,27 @@ def native_main_pid():
 
 def native_process_executable(pid):
     return pathlib.Path("/proc/%d/exe" % pid).resolve(strict=True)
+
+
+def native_wait_started(expected, seconds=3):
+    """Wait for exec of this systemd start, never a replacement MainPID."""
+    pid = native_main_pid()
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            executable = native_process_executable(pid)
+        except (FileNotFoundError, PermissionError):
+            # Before exec, systemd's child may not yet expose /proc/PID/exe.
+            # Neither missing nor inaccessible evidence establishes identity.
+            executable = None
+        if native_main_pid() != pid:
+            raise ValueError("Agent process changed during service startup")
+        if executable == expected:
+            return pid
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ValueError("Reviewed Agent executable was not established after service start")
+        time.sleep(min(0.025, remaining))
 
 
 def native_consent(key, action):
@@ -1012,6 +1037,7 @@ def native_first_install(home, root, endpoint, name=None,
             native_sync_parent(intent)
             return {"status": "already_installed", "signed_wss": "unconfirmed",
                     "local_service": "active" if pid else "inactive"}
+        binary = root / APP / ".build/rca-standard-linux-candidate"
         if not pid:
             if os.path.lexists(proof):
                 raise ValueError("Stale activation evidence; use attended native recovery")
@@ -1022,8 +1048,7 @@ def native_first_install(home, root, endpoint, name=None,
                 native_atomic_file(unit, rendered.encode())
             native_systemctl("daemon-reload")
             native_systemctl("enable", "--now", UNIT)
-            pid = native_main_pid()
-        binary = root / APP / ".build/rca-standard-linux-candidate"
+            pid = native_wait_started(binary)
         if native_process_executable(pid) != binary:
             raise ValueError("Initial service did not activate the reviewed executable")
         if not verify(proof, record["operation_id"], device_id, root.name, pid):
@@ -1175,28 +1200,33 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             "operation_id": operation, "device_id": device_id,
             "target_version": new_root.name
         }, separators=(",", ":")).encode())
+        stage = "freeze"
         try:
             if native_consent(key, "freeze") != "ready":
                 raise ValueError("Agent has running or unknown operations; upgrade refused")
+            stage = "verify-frozen"
             if (native_consent(key, "verify-frozen") != "ready"
                     or native_main_pid() != pid
                     or unit_file.read_text("utf8") != current
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before):
                 raise ValueError("Agent changed during freeze")
+            stage = "publish-service"
             native_atomic_file(backup, current.encode())
             native_atomic_file(unit_file, next_unit.encode())
             switched = True
+            stage = "reload-service"
             native_systemctl("daemon-reload")
+            stage = "restart-service"
             native_systemctl("restart", UNIT)
-            new_pid = native_main_pid()
-            if native_process_executable(new_pid) != (
-                    new_root / APP / ".build/rca-standard-linux-candidate"):
-                raise ValueError("systemd did not activate the native Rust executable")
+            stage = "verify-started-executable"
+            new_pid = native_wait_started(new_root / APP / ".build/rca-standard-linux-candidate")
+            stage = "signed-wss"
             if not verify(proof, operation, device_id, new_root.name, new_pid):
                 raise ValueError("New Rust Agent signed WSS was not confirmed")
             # A proof from a Rust process that exited/restarted during the
             # handshake does not authenticate its replacement. Keep the
             # systemd instance that produced the signed WSS evidence.
+            stage = "verify-authenticated-process"
             if (native_main_pid() != new_pid
                     or native_process_executable(new_pid) != (
                         new_root / APP / ".build/rca-standard-linux-candidate")
@@ -1204,8 +1234,10 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                     or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before
                     or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
                 raise ValueError("Rust process, identity or systemd unit changed after WSS")
+            stage = "publish-launcher"
             native_launcher(home, old_root, new_root)
             committed = True
+            stage = "retire-evidence"
             # Keep the original unit until the final cleanup step; only
             # an already reconciled service/launcher may leave backup alone.
             for item in (proof, intent, backup):
@@ -1217,19 +1249,27 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             if committed:
                 raise ValueError("Native Agent activated; recovery record cleanup uncertain") from error
             if switched or backup.exists():
+                rollback_stage = "restore-unit"
                 try:
                     native_atomic_file(unit_file, current.encode())
+                    rollback_stage = "reload-service"
                     native_systemctl("daemon-reload")
+                    rollback_stage = "restart-service"
                     native_systemctl("restart", UNIT)
-                    restored_pid = native_main_pid()
-                    if (native_process_executable(restored_pid) != expected_binary
+                    rollback_stage = "verify-started-executable"
+                    restored_pid = native_wait_started(expected_binary)
+                    rollback_stage = "verify-restored-state"
+                    if (native_main_pid() != restored_pid
+                            or native_process_executable(restored_pid) != expected_binary
                             or unit_file.read_text("utf8") != current
                             or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before):
                         raise ValueError("Rollback process, identity or unit mismatch")
+                    rollback_stage = "restore-launcher"
                     native_restore_launcher(home, old_root, new_root)
                 except Exception:
-                    # The durable old unit remains available for attended recovery.
-                    raise ValueError("Native upgrade failed; rollback uncertain; backup retained") from None
+                    # Only fixed stage names are safe to disclose; no raw exception.
+                    raise ValueError("Native upgrade failed; rollback uncertain; backup retained "
+                                     "(upgrade=" + stage + ", rollback=" + rollback_stage + ")") from None
             # No switch: release any pending freeze before retiring its record.
             if not switched and not backup.exists():
                 try:
@@ -1242,7 +1282,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                 if os.path.lexists(item):
                     item.unlink()
                     native_sync_parent(item)
-            raise ValueError("Native upgrade refused or safely rolled back") from error
+            raise ValueError("Native upgrade refused or safely rolled back (stage=" + stage + ")") from error
         finally:
             if not switched:
                 try:
@@ -1397,6 +1437,8 @@ def native_recover(home, process_check=None):
                 native_systemctl("daemon-reload")
                 stage = "restart-previous-service"
                 native_systemctl("restart", UNIT)
+                stage = "verify-started-executable"
+                native_wait_started(old_exe)
             else:
                 stage = "release-freeze"
                 native_consent(key, "release")

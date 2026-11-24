@@ -404,6 +404,74 @@ def verify_permanent_repair():
             ctx.cleanup()
 
 
+def verify_service_start():
+    expected = Path("/reviewed/agent")
+    # Real Type=simple may expose no executable yet, then the same PID execs.
+    with patch.object(bootstrap, "native_main_pid", return_value=200), patch.object(
+            bootstrap, "native_process_executable",
+            side_effect=[FileNotFoundError(), PermissionError(), expected]):
+        assert bootstrap.native_wait_started(expected) == 200
+    # Persistent permission denial is never treated as a successful start.
+    with patch.object(bootstrap, "native_main_pid", return_value=200), patch.object(
+            bootstrap, "native_process_executable", side_effect=PermissionError()):
+        try:
+            bootstrap.native_wait_started(expected, seconds=0)
+            raise AssertionError("Inaccessible executable was accepted")
+        except ValueError as e:
+            assert "not established" in str(e)
+    # A later systemd restart must never substitute a different PID.
+    with patch.object(bootstrap, "native_main_pid", side_effect=[200, 201]), patch.object(
+            bootstrap, "native_process_executable", return_value=expected):
+        try:
+            bootstrap.native_wait_started(expected)
+            raise AssertionError("Replacement PID was accepted")
+        except ValueError as e:
+            assert "process changed" in str(e)
+    # An existing foreign executable never establishes the reviewed process.
+    with patch.object(bootstrap, "native_main_pid", return_value=200), patch.object(
+            bootstrap, "native_process_executable", return_value=Path("/foreign/agent")):
+        try:
+            bootstrap.native_wait_started(expected, seconds=0)
+            raise AssertionError("Wrong executable was accepted")
+        except ValueError as e:
+            assert "not established" in str(e)
+    # A transient missing executable in both directions must not turn a
+    # successful activation or verified rollback into an uncertain result.
+    for proof_good in (True, False):
+        ctx, home, old, new, unit, launcher, key, receipts = fixture()
+        try:
+            state, mocks, verify = fake_services(home, old, new, proof_good=proof_good)
+            control = mocks["native_systemctl"]
+            executable = mocks["native_process_executable"]
+            pending = set()
+            def delayed_control(*args):
+                result = control(*args)
+                if args[0] == "restart":
+                    pending.add(mocks["native_main_pid"]())
+                return result
+            def delayed_executable(pid):
+                if pid in pending:
+                    pending.remove(pid)
+                    raise PermissionError()
+                return executable(pid)
+            with patch.multiple(bootstrap, **{**mocks,
+                    "native_systemctl": delayed_control, "native_process_executable": delayed_executable}):
+                if proof_good:
+                    assert bootstrap.native_cutover(home, new, ENDPOINT, verify)["signed_wss"]
+                else:
+                    try:
+                        bootstrap.native_cutover(home, new, ENDPOINT, verify)
+                        raise AssertionError("Missing WSS proof was accepted")
+                    except ValueError as e:
+                        assert "safely rolled back (stage=signed-wss)" in str(e)
+                assert not pending
+            assert state["active"] == ("new" if proof_good else "old")
+            assert not Path(str(unit) + ".upgrade-backup").exists()
+            assert not Path(str(key) + ".native-upgrade-intent").exists()
+        finally:
+            ctx.cleanup()
+
+
 def verify_isolated():
     verify_permanent_repair()
     verify_initial_install()
@@ -896,4 +964,5 @@ if __name__ == "__main__":
         finally:
             ctx.cleanup()
     else:
+        verify_service_start()
         verify_isolated()
