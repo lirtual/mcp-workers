@@ -294,6 +294,25 @@ with tempfile.TemporaryDirectory(prefix="rca-native-only-") as t:
     archive(invalid,{key:value for key,value in files.items() if not key.endswith("manage-v2.py")})
     try:b.inspect_archive(invalid,tag,target);raise AssertionError("missing Python manager accepted")
     except ValueError:pass
+    session=b.APP+"/.build/rca-session-linux-candidate"
+    declared={**files,"bundle.json":json.dumps({**manifest,"session_runtime":"rust-session-v1"}).encode()}
+    for invalid_files in (declared,{**files,session:bytes(elf)},
+                          {**declared,session:bytes(elf[:18]+b"\xb7\x00"+elf[20:])}):
+        archive(invalid,invalid_files)
+        try:b.inspect_archive(invalid,tag,target);raise AssertionError("invalid Session bundle accepted")
+        except ValueError:pass
+    reviewed=pathlib.Path(t)/"native-session.tar.gz"
+    archive(reviewed,{**declared,session:bytes(elf)})
+    records=b.inspect_archive(reviewed,tag,target)
+    other=programs/"isolated";other.mkdir(mode=0o700)
+    second=other/(tag+"-"+target)
+    b.unpack_verified(reviewed,second,records,tag,target)
+    assert stat.S_IMODE((second/session).stat().st_mode)==0o700
+    assert b.validated_owned_version(second)
+    (second/session).unlink()
+    try:b.validated_owned_version(second);raise AssertionError("missing installed Session entry accepted")
+    except ValueError:pass
+    assert b.validated_owned_version(dest)
 print("NATIVE_ONLY_STAGING_AND_STATUS_PASS")`;
   const result=python(["-c",body,script]);
   assert.equal(result.status,0,result.stderr);

@@ -46,6 +46,7 @@ ALLOWED_DIRS = frozenset((
 ALLOWED_FILES = frozenset((
     "bin/node", "bundle.json", APP + "/package.json",
     APP + "/.build/rca-standard-linux-candidate",
+    APP + "/.build/rca-session-linux-candidate",
     APP + "/scripts/install-v2.mjs", APP + "/scripts/bootstrap-v2.py",
     APP + "/scripts/manage-v2.py", APP + "/.build/session-supervisor",
     APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
@@ -56,7 +57,7 @@ ALLOWED_FILES = frozenset((
     APP + "/scripts/verify-v2-release.mjs", APP + "/scripts/rca.sh",
 ))
 ELF_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor",
-                        APP + "/.build/rca-standard-linux-candidate"))
+                        APP + "/.build/rca-standard-linux-candidate", APP + "/.build/rca-session-linux-candidate"))
 EXEC_FILES = frozenset(("bin/node", APP + "/.build/session-supervisor"))
 NODE_REQUIRED = frozenset((
     APP + "/scripts/bootstrap-node.mjs", APP + "/scripts/manage-v2.mjs",
@@ -173,6 +174,18 @@ def safe_member(name, directory):
     return name
 
 
+def native_program_files(manifest, target):
+    files = {"bundle.json", APP + "/.build/session-supervisor",
+             APP + "/.build/rca-standard-linux-candidate",
+             APP + "/scripts/bootstrap-v2.py", APP + "/scripts/manage-v2.py",
+             APP + "/scripts/rca.sh"}
+    if "session_runtime" in manifest:
+        if target != "linux-x64-glibc" or manifest["session_runtime"] != "rust-session-v1":
+            raise ValueError("Unreviewed packaged Session runtime")
+        files.add(APP + "/.build/rca-session-linux-candidate")
+    return files
+
+
 def inspect_archive(archive, tag, target):
     records = []
     names = set()
@@ -196,13 +209,12 @@ def inspect_archive(archive, tag, target):
         agent_runtime = manifest.get("agent_runtime", "node-v2")
         rust_candidate = agent_runtime == "rust-standard-linux-v1"
         native_only = manifest.get("artifact_profile") == "rust-native-only-v1"
-        native_files = {"bundle.json", APP + "/.build/session-supervisor",
-                        APP + "/.build/rca-standard-linux-candidate",
-                        APP + "/scripts/bootstrap-v2.py", APP + "/scripts/manage-v2.py",
-                        APP + "/scripts/rca.sh"}
+        session_entry = APP + "/.build/rca-session-linux-candidate"
+        if not native_only and ("session_runtime" in manifest or session_entry in names):
+            raise ValueError("Unreviewed packaged Session runtime")
         if native_only:
             files = {name for name, member in records if member.isfile()}
-            if files != native_files:
+            if files != native_program_files(manifest, target):
                 raise ValueError("Native-only archive must contain only reviewed Rust files")
         else:
             if not EXEC_FILES.issubset(names) or APP + "/src/v2-main.js" not in names \
@@ -321,7 +333,7 @@ def unpack_verified(archive, destination, records, tag, target):
                         os.fsync(stream.fileno())
                 except Exception:
                     raise
-                if name in EXEC_FILES or name == APP + "/.build/rca-standard-linux-candidate" or name in (
+                if name in ELF_FILES or name in (
                         APP + "/scripts/manage-v2.py", APP + "/scripts/rca.sh"):
                     output.chmod(0o700)
         # Under this private parent and exclusive flock, only the current user
@@ -1641,12 +1653,15 @@ def validated_owned_version(p):
             if stat.S_ISREG(st.st_mode):
                 observed.add(file.relative_to(p).as_posix())
     if native_only:
-        expected = {"bundle.json", str(pathlib.Path(APP) / ".build/session-supervisor"),
-                    str(pathlib.Path(APP) / ".build/rca-standard-linux-candidate"),
-                    str(pathlib.Path(APP) / "scripts/bootstrap-v2.py"),
-                    str(pathlib.Path(APP) / "scripts/manage-v2.py"), str(pathlib.Path(APP) / "scripts/rca.sh")}
+        expected = native_program_files(manifest, manifest.get("target"))
         if observed != expected:
             raise ValueError("Native-only program contains missing or unexpected files")
+        if "session_runtime" in manifest:
+            st = (p / APP / ".build/rca-session-linux-candidate").lstat()
+            if st.st_nlink != 1 or not st.st_mode & 0o111:
+                raise ValueError("Untrusted installed Session entry")
+    elif "session_runtime" in manifest or APP + "/.build/rca-session-linux-candidate" in observed:
+        raise ValueError("Unreviewed installed Session runtime")
     return True
 
 

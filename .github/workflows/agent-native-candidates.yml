@@ -224,10 +224,15 @@ jobs:
                 --proto "=https" --tlsv1.2 https://sh.rustup.rs -o /tmp/rustup-init.sh
               sh /tmp/rustup-init.sh -y --no-modify-path --profile minimal --default-toolchain 1.100.0
               export PATH="$CARGO_HOME/bin:$PATH"
+              bins=(--bin rca-standard-linux-candidate)
+              if [[ "$(uname -m)" == x86_64 ]]; then bins+=(--bin rca-session-linux-candidate); fi
               cargo build --locked --release \
                 --manifest-path /src/apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
-                --bin rca-standard-linux-candidate
+                "${bins[@]}"
               install -m 0755 "$CARGO_TARGET_DIR/release/rca-standard-linux-candidate" /out/rca-standard-linux-candidate
+              if [[ "$(uname -m)" == x86_64 ]]; then
+                install -m 0755 "$CARGO_TARGET_DIR/release/rca-session-linux-candidate" /out/rca-session-linux-candidate
+              fi
             '
           old="$SPEC914_TEMP/old"
           node_bin="$old/bin/node"
@@ -243,12 +248,17 @@ jobs:
           python3 -B apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py \
             "$archive" "$version" "$SPEC914_TARGET"
           # Stage-only, unpublished native Rust package with no Node or JS.
+          session_args=()
+          if [[ "$SPEC914_TARGET" == linux-x64-glibc ]]; then
+            session_bin="$SPEC914_TEMP/build/rca-session-linux-candidate"
+            session_args=(--rust-session-bin "$session_bin" --rust-session-sha256 "$(sha256sum "$session_bin" | cut -d' ' -f1)")
+          fi
           node "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs" \
             --version "$version" --target "$SPEC914_TARGET" \
             --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
             --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
             --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
-            --artifact-profile rust-native-only-v1 --out "$SPEC914_TEMP/native-only"
+            --artifact-profile rust-native-only-v1 "${session_args[@]}" --out "$SPEC914_TEMP/native-only"
           pure="$SPEC914_TEMP/native-only/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
           python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("b",sys.argv[1]); b=importlib.util.module_from_spec(s); s.loader.exec_module(b); b.inspect_archive(sys.argv[2],sys.argv[3],sys.argv[4])' \
             apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$pure" "$version" "$SPEC914_TARGET"
@@ -331,12 +341,17 @@ jobs:
           supervisor="$old/apps/remote-control-agent/.build/session-supervisor"
           rust_agent="$SPEC914_TEMP/build/rca-standard-linux-candidate"
           output="$RUNNER_TEMP/native-review"
+          session_args=()
+          if [[ "$SPEC914_TARGET" == linux-x64-glibc ]]; then
+            session_bin="$SPEC914_TEMP/build/rca-session-linux-candidate"
+            session_args=(--rust-session-bin "$session_bin" --rust-session-sha256 "$(sha256sum "$session_bin" | cut -d' ' -f1)")
+          fi
           node apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs \
             --version "$version" --target "$SPEC914_TARGET" \
             --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
             --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
             --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
-            --artifact-profile rust-native-only-v1 --out "$output"
+            --artifact-profile rust-native-only-v1 "${session_args[@]}" --out "$output"
           asset="remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
           python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("b",sys.argv[1]); b=importlib.util.module_from_spec(s); s.loader.exec_module(b); b.inspect_archive(sys.argv[2],sys.argv[3],sys.argv[4])' \
             apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$output/$asset" "$version" "$SPEC914_TARGET"
@@ -774,7 +789,7 @@ jobs:
           rustup toolchain install 1.100.0 --profile minimal
           if ($LASTEXITCODE -ne 0) { throw 'Pinned Rust toolchain install failed' }
           $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'windows-rust-cargo-target'
-          cargo +1.100.0 build --locked --release --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml --bin rca-standard-windows-candidate
+          cargo +1.100.0 build --locked --release --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml --bin rca-standard-windows-candidate --bin rca-session-windows-candidate
           if ($LASTEXITCODE -ne 0) { throw 'Native Windows Rust candidate build failed' }
           $rustBin = Join-Path $env:CARGO_TARGET_DIR 'release/rca-standard-windows-candidate.exe'
           if (-not (Test-Path -LiteralPath $rustBin -PathType Leaf)) { throw 'Windows Rust candidate binary missing' }
@@ -796,9 +811,12 @@ jobs:
           # This stage-only candidate is not uploaded or a promotable Release.
           $nativeTag = 'v0.1.58-rust-candidate.1'
           $nativeOut = Join-Path $env:RUNNER_TEMP 'windows-native-only'
-          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $nativeTag --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --artifact-profile rust-native-only-v1 --out $nativeOut
+          $sessionBin = Join-Path $env:CARGO_TARGET_DIR 'release/rca-session-windows-candidate.exe'
+          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $nativeTag --node-bin $nodeBinary --node-sha256 $official --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --artifact-profile rust-native-only-v1 --rust-session-bin $sessionBin --rust-session-sha256 (Get-FileHash -LiteralPath $sessionBin -Algorithm SHA256).Hash.ToLowerInvariant() --out $nativeOut
           if ($LASTEXITCODE -ne 0) { throw 'Native-only Windows candidate build failed' }
           $nativeStage = Join-Path $nativeOut ('remote-control-agent-' + $nativeTag + '-windows-x64')
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/tests/windows-zip-preflight.ps1 -Installer (Join-Path $PWD 'apps/remote-control-mcp-worker/agent/install.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Installer archive preflight contract failed' }
           $nativeVerifier = 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1'
           & $nativeVerifier -Root $nativeStage -Version $nativeTag
           # The packaged native CLI must remain offline and read-only even
@@ -813,6 +831,28 @@ jobs:
           Compress-Archive -Path (Join-Path $nativeStage '*') -DestinationPath $nativeArchive -CompressionLevel Optimal
           $nativeReopened = Join-Path $env:RUNNER_TEMP 'windows-native-only-reopened'
           Expand-Archive -LiteralPath $nativeArchive -DestinationPath $nativeReopened -ErrorAction Stop
+          & $nativeVerifier -Root $nativeReopened -Version $nativeTag
+          # The packaged Session entry is separately required and hashed.
+          $session = Join-Path $nativeReopened 'apps/remote-control-agent/.build/rca-session-windows-candidate.exe'
+          $manifestPath = Join-Path $nativeReopened 'bundle.json'
+          $originalManifest = Get-Content -LiteralPath $manifestPath -Raw
+          $manifest = $originalManifest | ConvertFrom-Json
+          if ($manifest.session_runtime -cne 'rust-session-v1' -or -not (Test-Path -LiteralPath $session -PathType Leaf)) {
+            throw 'Packaged Session runtime missing'
+          }
+          $manifest.PSObject.Properties.Remove('session_runtime')
+          [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 20))
+          $refused = $false
+          try { & $nativeVerifier -Root $nativeReopened -Version $nativeTag } catch { $refused = $true }
+          if (-not $refused) { throw 'Undeclared Session entry accepted' }
+          [IO.File]::WriteAllText($manifestPath, $originalManifest)
+          $saved = Join-Path $env:RUNNER_TEMP 'spec914-session-exe-saved'
+          Move-Item -LiteralPath $session -Destination $saved
+          try {
+            $refused = $false
+            try { & $nativeVerifier -Root $nativeReopened -Version $nativeTag } catch { $refused = $true }
+            if (-not $refused) { throw 'Missing Session entry accepted' }
+          } finally { Move-Item -LiteralPath $saved -Destination $session }
           & $nativeVerifier -Root $nativeReopened -Version $nativeTag
           # Reject a Node runtime injected into an otherwise valid inventory.
           $extraNode = Join-Path $nativeReopened 'bin/node.exe'
@@ -1549,7 +1589,8 @@ jobs:
           if ($nativeOnly) {
             if ($tag -cnotmatch '^v0\.[1-9][0-9]*\.[0-9]+-rust-candidate\.[1-9][0-9]*$') { throw 'Invalid Rust review label' }
             $rustBin = Join-Path $env:RUNNER_TEMP 'windows-rust-cargo-target/release/rca-standard-windows-candidate.exe'
-            $rustArgs = @('--rust-agent-bin',$rustBin,'--rust-agent-sha256',(Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant(),'--artifact-profile','rust-native-only-v1')
+            $sessionBin = Join-Path $env:RUNNER_TEMP 'windows-rust-cargo-target/release/rca-session-windows-candidate.exe'
+            $rustArgs = @('--rust-agent-bin',$rustBin,'--rust-agent-sha256',(Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant(),'--artifact-profile','rust-native-only-v1','--rust-session-bin',$sessionBin,'--rust-session-sha256',(Get-FileHash -LiteralPath $sessionBin -Algorithm SHA256).Hash.ToLowerInvariant())
           }
           # The builder independently verifies the official pinned Node binary
           # even when it is only a build input, never part of the Rust archive.

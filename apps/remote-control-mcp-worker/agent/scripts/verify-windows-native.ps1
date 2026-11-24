@@ -23,6 +23,7 @@ $files = @(
   "$app/scripts/windows-stage-install.ps1",
   "$app/scripts/verify-windows-native.ps1"
 )
+$sessionEntry = "$app/.build/rca-session-windows-candidate.exe"
 $dirs = @('bin','apps',$app,"$app/.build","$app/scripts")
 $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
 # Inspect each directory before traversing it. In particular, never follow
@@ -35,7 +36,7 @@ function Visit-Bundle([string]$directory,[string]$relative) {
     if ($item.PSIsContainer) {
       if ($name -cnotin $dirs) { throw 'Unreviewed native bundle directory' }
       Visit-Bundle $item.FullName $name
-    } elseif ($name -cne 'bundle.json' -and $name -cnotin $files) {
+    } elseif ($name -cne 'bundle.json' -and $name -cne $sessionEntry -and $name -cnotin $files) {
       throw 'Unreviewed native bundle file'
     }
   }
@@ -56,6 +57,15 @@ if ($manifest.name -cne 'remote-control-agent' -or $manifest.version -cne $Versi
     $null -ne $manifest.PSObject.Properties['browser_runtime'] -or
     @($manifest.modules).Count -ne 0) {
   throw 'Unreviewed native-only Windows manifest'
+}
+$sessionProfile = $manifest.PSObject.Properties['session_runtime']
+if ($null -ne $sessionProfile) {
+  if ($sessionProfile.Value -cne 'rust-session-v1' -or -not $seen.Contains($sessionEntry)) {
+    throw 'Unreviewed packaged Session runtime'
+  }
+  $files += $sessionEntry
+} elseif ($seen.Contains($sessionEntry)) {
+  throw 'Undeclared packaged Session runtime'
 }
 $hashes = @($manifest.hashes.PSObject.Properties)
 if ($hashes.Count -ne $files.Count) { throw 'Unreviewed native bundle hashes' }
