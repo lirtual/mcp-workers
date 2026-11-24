@@ -4,6 +4,7 @@ Remote Control is a single-owner MCP Worker backed by a signed per-device WebSoc
 
 **Identity and permission**
 
+- Browser pairing (#1018, staged rollout) authenticates the fixed Clerk Owner with a short-lived standard Session JWT, then requires explicit review and approval of the pending identity and grant type. It shares the existing coordinator with MCP pairing; login is not device authority. Clerk failure is scoped to this entry. The old MCP tools remain until real-device and production acceptance.
 - Pairing requires an explicit Owner grant tied to a device identity. A temporary grant is bounded and nonrenewable; permanent grants retain independent revocation and online/idle rules. Neither installation nor a valid MCP token alone grants a device.
 - GitHub-hosted temporary Session devices require independent Workflow physical Attempt authorization; an approved personal device is not a substitute for a Session grant.
 - The Agent's OS account and host permission model remain authoritative. Native process ownership, session stops, device revocation and receipts must fail closed when identity cannot be verified.

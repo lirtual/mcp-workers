@@ -4,6 +4,7 @@ import {mkdtemp, readFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import {exportJWK,generateKeyPair,SignJWT} from "jose";
 import {newEnrollment, saveNewPrivateKey} from "../agent/src/v2-enrollment.ts";
 import {recoverDeviceId, signedSessionProof} from "../agent/src/v2-session-client.ts";
 import {ReceiptStore, operationDigest} from "../agent/src/operations.ts";
@@ -11,7 +12,9 @@ import worker, {V2OwnerCoordinator} from "../src/worker.ts";
 import {approvePendingKey} from "../src/v2-pairing.ts";
 import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/v2-session.ts";
 
-function fixture() {
+function fixture(browser=false) {
+  let dropApprovalReply=false;
+  let dispatches=0;
   const rows = new Map<string,unknown>();
   // Simulate Durable Object storage's transaction serialization. This test
   // fixture cannot model every DO failure, but simultaneous owner requests
@@ -34,12 +37,20 @@ function fixture() {
   const owner = new V2OwnerCoordinator({storage:store} as unknown as DurableObjectState);
   const V2_OWNER = {
     idFromName() {return "single-owner";},
-    get() {return {fetch:(input:RequestInfo|URL,init?:RequestInit) =>
-      owner.fetch(input instanceof Request ? input : new Request(input,init))};},
+    get() {return {fetch:async(input:RequestInfo|URL,init?:RequestInit) => {
+      dispatches++;
+      const request=input instanceof Request ? input : new Request(input,init);
+      const response=await owner.fetch(request);
+      if(dropApprovalReply&&new URL(request.url).pathname==="/approve"&&response.ok){
+        dropApprovalReply=false;throw Error("simulated lost approval reply");
+      }
+      return response;
+    }};},
   } as unknown as DurableObjectNamespace;
   const env = {MCP_ACCESS_TOKEN:"owner-test-credential",V2_OWNER,
-    REMOTE_CONTROL_DEVICE_TOKEN:"legacy-v1-fixture"} as unknown as Env;
-  const origin="https://pairing.test/";
+    REMOTE_CONTROL_DEVICE_TOKEN:"legacy-v1-fixture",
+    ...(browser?{CLERK_OWNER_USER_ID:"user_fixture",CLERK_PUBLISHABLE_KEY:"pk_live_"+Buffer.from("clerk.lirtual.dpdns.org$").toString("base64")}:{} )} as unknown as Env;
+  const origin=browser?"https://rca.lirtual.dpdns.org/":"https://pairing.test/";
   const send:typeof fetch=async(input,init)=>worker.fetch(
     input instanceof Request ? input : new Request(input,init),env);
   const rpc=async(name:string,args:object,token="owner-test-credential")=>{
@@ -54,7 +65,7 @@ function fixture() {
   const register=async(request:object)=>send(origin+"agent/pair/start",{
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(request),
   });
-  return {rows,store,send,rpc,register,origin};
+  return {rows,store,send,rpc,register,origin,dispatches:()=>dispatches,dropApprovalReply:()=>{dropApprovalReply=true;}};
 }
 
 test("#97 explicit MCP approval is separate from lookup and Agent claims by existing signed recovery",async()=>{
@@ -362,4 +373,98 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
     await receipts.close();
     await rm(directory,{recursive:true,force:true});
   }
+});
+
+test("#1018 actual Worker browser approval shares signed enrollment and single-consumption core with MCP",async t=>{
+  const f=fixture(true),origin=f.origin.slice(0,-1);
+  const issuer="https://clerk.lirtual.dpdns.org";
+  const {publicKey,privateKey}=await generateKeyPair("RS256");
+  const other=await generateKeyPair("RS256");
+  const jwk={...await exportJWK(publicKey),kid:"browser-fixture-key",alg:"RS256",use:"sig"};
+  let keyRequests=0;
+  t.mock.method(globalThis,"fetch",async(input:RequestInfo|URL,init?:RequestInit)=>{
+    assert.equal(String(input),issuer+"/.well-known/jwks.json");
+    assert.equal(init?.redirect,"manual");
+    keyRequests++;return Response.json({keys:[jwk]});
+  });
+  const mint=(extra:Record<string,unknown>={},key=privateKey,typ="JWT")=>{
+    const now=Math.floor(Date.now()/1000);
+    return new SignJWT({iss:issuer,sub:"user_fixture",azp:origin,sid:"sess_fixture",v:2,iat:now,nbf:now-5,exp:now+60,...extra})
+      .setProtectedHeader({alg:"RS256",typ,kid:jwk.kid}).sign(key);
+  };
+  const token=await mint(); // actual accepted Clerk profile does not require jti
+  const post=(path:string,body:unknown,bearer=token,requestOrigin:string|null=origin)=>{
+    const h=new Headers({"content-type":"application/json",authorization:"Bearer "+bearer});
+    if(requestOrigin!==null)h.set("origin",requestOrigin);
+    return f.send(origin+path,{method:"POST",headers:h,body:JSON.stringify(body)});
+  };
+  const count=()=>[...f.rows.keys()].filter(k=>k.startsWith("device:")).length;
+  const before=f.dispatches();
+  const page=await f.send(origin+"/pair?utm_source=chatgpt.com");
+  assert.equal(page.status,200);
+  assert.equal(page.headers.get("cache-control"),"no-store");
+  assert.match(page.headers.get("content-security-policy")??"",/frame-ancestors 'none'/);
+  const html=await page.text();
+  assert.match(html,/location.hash\|\|location.search/);
+  assert.match(html,/accounts\.lirtual\.dpdns\.org\/sign-in\?redirect_url=/);
+  assert.doesNotMatch(html,/user_fixture|owner-test-credential|utm_source/);
+  assert.equal((await f.send("https://other.example/pair")).status,404);
+  assert.equal((await f.send(origin+"/pair/approve")).status,405);
+  assert.equal((await fixture().send(origin+"/pair")).status,404);
+  assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},"owner-test-credential")).status,401);
+  assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},token,null)).status,403);
+  assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},token,"https://other.example")).status,403);
+  assert.equal((await f.send(origin+"/pair/lookup",{method:"POST",headers:{origin,cookie:"__session=fixture"}})).status,401);
+  assert.equal(f.dispatches(),before);
+  const pending=newEnrollment("<img src=x onerror=alert(1)>",undefined,"temporary");
+  assert.equal((await f.register(pending.request)).status,202);
+  const beforeDenials=f.dispatches();
+  for(const overrides of [
+    {sub:"user_other"},{azp:"https://other.example"},{azp:undefined},{v:1},{sid:undefined},
+    {sts:"pending"},{act:{sub:"user_other"}},{aud:"client",scope:"openid",client_id:"client"},
+    {iss:"https://other.example"},{exp:Math.floor(Date.now()/1000)-10},
+    {exp:Math.floor(Date.now()/1000)+120},{sub:"mch_fixture",sid:undefined},
+  ]) assert.equal((await post("/pair/lookup",{code:pending.code},await mint(overrides))).status,401);
+  assert.equal((await post("/pair/lookup",{code:pending.code},await mint({},other.privateKey))).status,401);
+  assert.equal((await post("/pair/lookup",{code:pending.code},await mint({},privateKey,"at+jwt"))).status,401);
+  assert.equal((await post("/pair/lookup",{code:"x".repeat(5000)})).status,400);
+  assert.equal(f.dispatches(),beforeDenials);
+  assert.equal((await f.rpc("pairing_lookup",{code:pending.code},token)).response.status,401);
+  assert.equal((await post("/agent/pair/start",pending.request)).status,405);
+  const looked=await post("/pair/lookup",{code:pending.code});
+  assert.equal(looked.status,200);
+  const detail=await looked.json() as Record<string,unknown>;
+  assert.equal(detail.name,"<img src=x onerror=alert(1)>");
+  assert.equal(detail.grant_type,"temporary");
+  assert.deepEqual(Object.keys(detail).sort(),["expires_at","fingerprint","grant_type","name","pairing_id"]);
+  assert.equal(count(),0);
+  const args={pairing_id:detail.pairing_id,expected_fingerprint:detail.fingerprint,expected_grant_type:detail.grant_type};
+  assert.equal((await post("/pair/approve",{...args,expected_fingerprint:"0".repeat(24)})).status,404);
+  assert.equal((await post("/pair/approve",{...args,expected_grant_type:"permanent"})).status,409);
+  assert.equal(count(),0);
+  const [browser,mcp]=await Promise.all([post("/pair/approve",args),f.rpc("pairing_approve",args)]);
+  assert.equal(Number(browser.status===200)+Number(mcp.object.status==="approved"),1);
+  assert.equal(count(),1);
+  const id=[...f.rows.keys()].find(k=>k.startsWith("device:"))!.slice(7);
+  const row=f.rows.get("device:"+id) as {grant_type:string;approved_at:number;expires_at:number};
+  assert.equal(row.grant_type,"temporary");
+  assert.equal(row.expires_at-row.approved_at,TEMPORARY_GRANT_MS);
+  const dir=await mkdtemp(path.join(os.tmpdir(),"rca-browser-claim-"));
+  try{
+    const keyPath=path.join(dir,"identity.pem");
+    await saveNewPrivateKey(keyPath,pending.privateKeyPem);
+    assert.equal(await recoverDeviceId(f.origin,keyPath,f.send),id);
+  }finally{await rm(dir,{recursive:true,force:true});}
+  assert.equal((await post("/pair/approve",args)).status,404);
+  assert.equal(count(),1);
+  const pending2=newEnrollment("lost-browser-reply");
+  assert.equal((await f.register(pending2.request)).status,202);
+  const detail2=await (await post("/pair/lookup",{code:pending2.code})).json() as Record<string,unknown>;
+  const args2={pairing_id:detail2.pairing_id,expected_fingerprint:detail2.fingerprint,expected_grant_type:detail2.grant_type};
+  f.dropApprovalReply();
+  assert.equal((await post("/pair/approve",args2)).status,503);
+  assert.equal(count(),2);
+  assert.equal((await post("/pair/approve",args2)).status,404);
+  assert.equal(count(),2);
+  assert.equal(keyRequests,1);
 });
