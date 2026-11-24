@@ -382,15 +382,16 @@ test("#1018 actual Worker browser approval shares signed enrollment and single-c
   const other=await generateKeyPair("RS256");
   const jwk={...await exportJWK(publicKey),kid:"browser-fixture-key",alg:"RS256",use:"sig"};
   let keyRequests=0;
+  let keyResponse:()=>Response=()=>Response.json({keys:[jwk]});
   t.mock.method(globalThis,"fetch",async(input:RequestInfo|URL,init?:RequestInit)=>{
     assert.equal(String(input),issuer+"/.well-known/jwks.json");
     assert.equal(init?.redirect,"manual");
-    keyRequests++;return Response.json({keys:[jwk]});
+    keyRequests++;return keyResponse();
   });
-  const mint=(extra:Record<string,unknown>={},key=privateKey,typ="JWT")=>{
+  const mint=(extra:Record<string,unknown>={},key=privateKey,typ="JWT",kid=jwk.kid)=>{
     const now=Math.floor(Date.now()/1000);
     return new SignJWT({iss:issuer,sub:"user_fixture",azp:origin,sid:"sess_fixture",v:2,iat:now,nbf:now-5,exp:now+60,...extra})
-      .setProtectedHeader({alg:"RS256",typ,kid:jwk.kid}).sign(key);
+      .setProtectedHeader({alg:"RS256",typ,kid}).sign(key);
   };
   const token=await mint(); // actual accepted Clerk profile does not require jti
   const post=(path:string,body:unknown,bearer=token,requestOrigin:string|null=origin)=>{
@@ -467,4 +468,30 @@ test("#1018 actual Worker browser approval shares signed enrollment and single-c
   assert.equal((await post("/pair/approve",args2)).status,404);
   assert.equal(count(),2);
   assert.equal(keyRequests,1);
+
+  // Exercise the real configured verifier and jose's existing JWKS cache
+  // without adding a refresh service or waiting for wall-clock cooldown.
+  const rotated={...await exportJWK(other.publicKey),kid:"rotated-fixture-key",alg:"RS256",use:"sig"};
+  const rotatedToken=await mint({},other.privateKey,"JWT",rotated.kid);
+  const absentToken=await mint({},privateKey,"JWT","unknown-fixture-key");
+  keyResponse=()=>Response.json({keys:[rotated]});
+  assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},rotatedToken)).status,401);
+  assert.equal(keyRequests,1,"unknown kid fails closed within existing cooldown");
+  const now=Date.now();
+  const time=t.mock.method(Date,"now",()=>now+31_000);
+  try{
+    assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},rotatedToken)).status,404,
+      "after rotation, valid Owner token reaches the nonexistent pairing lookup");
+    assert.equal(keyRequests,2);
+    assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},token)).status,401,
+      "removed key must not authenticate");
+    time.mock.mockImplementation(()=>now+62_000);
+    keyResponse=()=>new Response(null,{status:503});
+    assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},absentToken)).status,401);
+    assert.equal(keyRequests,3);
+    keyResponse=()=>new Response(null,{status:302,headers:{location:"https://example.invalid/jwks"}});
+    assert.equal((await post("/pair/lookup",{code:"AAAAAAAAAA"},absentToken)).status,401);
+    assert.equal(keyRequests,4);
+    assert.equal(count(),2);
+  }finally{time.mock.restore();}
 });
