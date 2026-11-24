@@ -120,6 +120,8 @@ class LinuxStageOnly(unittest.TestCase):
     def test_native_install_digest_and_action_boundaries(self):
         for overrides, message in [
             ({"asset_sha256": "a" * 64}, "only accepted for native staging, install or upgrade"),
+            ({"temporary": True}, "Temporary mode requires --native-install"),
+            ({"temporary": True, "stage_only": True, "asset_sha256": "a" * 64}, "Temporary mode requires --native-install"),
             ({"native_install": True}, "Native install requires a reviewed SHA-256"),
             ({"native_install": True, "asset_sha256": "F" * 64}, "Native install requires a reviewed SHA-256"),
             ({"native_install": True, "asset_sha256": "a" * 64, "upgrade": True}, "Native install requires a reviewed SHA-256"),
