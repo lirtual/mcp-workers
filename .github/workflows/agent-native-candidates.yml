@@ -144,7 +144,7 @@ jobs:
           fi
           echo "Candidate verified on build runner and offline minimal container; never published."
       - name: Save reviewed native candidate for manual Release promotion
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !contains(inputs.candidate_tag, '-rust-candidate.')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.candidate_tag }}-${{ matrix.os }}
@@ -319,6 +319,41 @@ jobs:
             RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_NATIVE_ARCHIVE="$native_archive" \
             "$(node -p 'process.execPath')" --experimental-strip-types \
             "$source_dir/tests/linux-native-only-systemd.integration.mjs"
+      - name: Assemble unpublished Linux Node-free review artifact
+        if: github.event_name == 'workflow_dispatch' && contains(inputs.candidate_tag, '-rust-candidate.')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$RCA_CANDIDATE_TAG"
+          [[ "$version" =~ ^v0\.[1-9][0-9]*\.[0-9]+-rust-candidate\.[1-9][0-9]*$ ]]
+          old="$SPEC914_TEMP/old"
+          node_bin="$old/bin/node"
+          supervisor="$old/apps/remote-control-agent/.build/session-supervisor"
+          rust_agent="$SPEC914_TEMP/build/rca-standard-linux-candidate"
+          output="$RUNNER_TEMP/native-review"
+          node apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs \
+            --version "$version" --target "$SPEC914_TARGET" \
+            --node-bin "$node_bin" --node-sha256 "$(sha256sum "$node_bin" | cut -d' ' -f1)" \
+            --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
+            --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
+            --artifact-profile rust-native-only-v1 --out "$output"
+          asset="remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
+          python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("b",sys.argv[1]); b=importlib.util.module_from_spec(s); s.loader.exec_module(b); b.inspect_archive(sys.argv[2],sys.argv[3],sys.argv[4])' \
+            apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$output/$asset" "$version" "$SPEC914_TARGET"
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-v2-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
+            "$output/$asset" "$version" "$SPEC914_TARGET"
+          (cd "$output"; sha256sum "$asset" > SHA256SUMS.txt; sha256sum -c SHA256SUMS.txt)
+      - name: Save unpublished Linux Node-free review artifact
+        if: github.event_name == 'workflow_dispatch' && contains(inputs.candidate_tag, '-rust-candidate.')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.candidate_tag }}-${{ matrix.target }}-native-only
+          path: |
+            ${{ runner.temp }}/native-review/*.tar.gz
+            ${{ runner.temp }}/native-review/SHA256SUMS.txt
+          retention-days: 2
+          if-no-files-found: error
+          compression-level: 0
   macos-native-candidate:
     name: Unpublished native macOS 15 / ${{ matrix.arch }} candidate
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
@@ -455,7 +490,7 @@ jobs:
           fi
           # CI runner is NOT an owner-paired real Mac. No permanent grant or public Release.
       - name: Save unpublished macOS candidate for owner-native E2E
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && !contains(inputs.candidate_tag, '-rust-candidate.')
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.candidate_tag }}-${{ matrix.target }}
@@ -1508,18 +1543,31 @@ jobs:
           }
           $nodeSha = 'ba4e6d110e8c1592a1ecd390f6b05f3da124b13871a5be62b341a07a853c6c32'
           $nodeBin = (Get-Command node.exe).Source
-          if ((Get-FileHash -LiteralPath $nodeBin -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nodeSha) {
-            throw 'Unreviewed Windows Node binary for candidate'
-          }
           $output = Join-Path $env:RUNNER_TEMP 'spec24-reviewed-windows-candidate'
+          $nativeOnly = $tag -cmatch '-rust-candidate\.'
+          $rustArgs = @()
+          if ($nativeOnly) {
+            if ($tag -cnotmatch '^v0\.[1-9][0-9]*\.[0-9]+-rust-candidate\.[1-9][0-9]*$') { throw 'Invalid Rust review label' }
+            $rustBin = Join-Path $env:RUNNER_TEMP 'windows-rust-cargo-target/release/rca-standard-windows-candidate.exe'
+            $rustArgs = @('--rust-agent-bin',$rustBin,'--rust-agent-sha256',(Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant(),'--artifact-profile','rust-native-only-v1')
+          }
+          # The builder independently verifies the official pinned Node binary
+          # even when it is only a build input, never part of the Rust archive.
           node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $tag `
             --node-bin $nodeBin --node-sha256 $nodeSha `
             --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') `
-            --out $output
+            --out $output @rustArgs
           if ($LASTEXITCODE -ne 0) { throw 'Windows candidate build refused' }
           $stage = Join-Path $output "remote-control-agent-$tag-windows-x64"
-          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $stage
-          if ($LASTEXITCODE -ne 0) { throw 'Windows candidate integrity refused' }
+          function Confirm-ReviewedArchive([string]$directory) {
+            if ($nativeOnly) {
+              & 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1' -Root $directory -Version $tag
+            } else {
+              node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $directory
+              if ($LASTEXITCODE -ne 0) { throw 'Windows candidate integrity refused' }
+            }
+          }
+          Confirm-ReviewedArchive $stage
           $status = & (Join-Path $stage 'rca.cmd') status | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0 -or $status.identity_present -ne $false -or
               $status.mode -cne 'native-user-agent' -or $status.shell -ne $true -or
@@ -1531,8 +1579,7 @@ jobs:
           Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
           $reopened = Join-Path $env:RUNNER_TEMP 'spec24-review-windows-reopened'
           Expand-Archive -LiteralPath $zip -DestinationPath $reopened -ErrorAction Stop
-          node apps/remote-control-mcp-worker/agent/scripts/verify-windows-preview.mjs $reopened
-          if ($LASTEXITCODE -ne 0) { throw 'Reopened Windows candidate ZIP refused' }
+          Confirm-ReviewedArchive $reopened
           $digest = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
           [IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'),
             ($digest + '  ' + $name + [Environment]::NewLine))
@@ -1543,7 +1590,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.candidate_tag }}-windows-x64
+          name: ${{ inputs.candidate_tag }}-windows-x64${{ contains(inputs.candidate_tag, '-rust-candidate.') && '-native-only' || '' }}
           path: ${{ runner.temp }}/spec24-windows-review-artifacts/
           retention-days: 2
           if-no-files-found: error
