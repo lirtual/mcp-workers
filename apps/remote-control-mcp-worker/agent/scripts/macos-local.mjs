@@ -235,6 +235,11 @@ export async function stopLaunchdForSwitch(service,invoke,pause,bootout=true){
   if(!await awaitLaunchctlUnregistered(service,invoke,pause))
     throw Error("LaunchAgent deregistration not confirmed.");
 }
+export function parseFreezeReply(frame){
+  if(!["ready\n","busy\n","released\n"].includes(frame))
+    throw Error("Freeze response unconfirmed.");
+  return frame.slice(0,-1);
+}
 export async function freeze(key,command="freeze"){
   const socketPath=path.join(path.dirname(key),"upgrade.sock");
   await checked(socketPath,{optional:false}).catch(async e=>{
@@ -249,9 +254,15 @@ export async function freeze(key,command="freeze"){
     };
     const timer=setTimeout(()=>done(Error("Freeze timeout.")),3000);
     socket.on("connect",()=>socket.write(command+"\n"));
-    socket.on("data",chunk=>{buffer+=String(chunk);if(buffer.includes("\n"))done(null,buffer.trim());});
+    socket.on("data",chunk=>{
+      buffer+=String(chunk);
+      if(buffer.length>9)done(Error("Freeze response unconfirmed."));
+      else if(buffer.includes("\n")){
+        try{done(null,parseFreezeReply(buffer));}catch(error){done(error);}
+      }
+    });
     socket.on("error",err=>done(err));
-    socket.on("end",()=>done(null,buffer.trim()));
+    socket.on("end",()=>done(Error("Freeze response unconfirmed.")));
   });
 }
 export async function ownedWrite(file,content,replace=false,mode=0o600,parentPrivate=true){
@@ -308,9 +319,12 @@ export async function writeMacAutoPolicy(key,deviceId,enabled){
 }
 // Bind the attended operation to the existing local target, not to whatever
 // identity or LaunchAgent happens to be present after confirmation/staging.
-export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,journal}){
-  if(await checked(journal,{optional:true,mode:0o600}))
-    throw Error("Unresolved upgrade journal: manual reconciliation required.");
+export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,journal},ownJournal){
+  const pending=await checked(journal,{optional:true,mode:0o600});
+  if(ownJournal!==undefined){
+    if(!pending||await readFile(journal,"utf8")!==ownJournal)
+      throw Error("Existing upgrade journal changed.");
+  }else if(pending)throw Error("Unresolved upgrade journal: manual reconciliation required.");
   if(!await approved(key))throw Error("Approved permanent identity required.");
   const read=async(file,mode,optional=false)=>await checked(file,{mode,optional})
     ?await readFile(file,"utf8"):null;
@@ -319,6 +333,30 @@ export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,jou
     endpoint:(await read(endpointFile,0o600,true))?.trim()??null,
     stop:await read(stopMark,0o600,true),
     keyHash:await hash(key),idHash:await hash(key+".device-id")};
+}
+// The existing recovery journal is also the exclusive admission marker.
+// Unlike rename(), an exclusive create cannot overwrite a competing claim.
+export async function reserveMacSwitch(journal,record,recheck,requestFreeze){
+  await checked(path.dirname(journal),{dir:true});
+  await writeFile(journal,record,{flag:"wx",mode:0o600,flush:true});
+  const discardBeforeSwitch=async()=>{
+    await checked(journal,{mode:0o600});
+    if(await readFile(journal,"utf8")!==record)
+      throw Error("Existing upgrade journal changed.");
+    await rm(journal);
+  };
+  try{await recheck();}
+  catch(error){await discardBeforeSwitch();throw error;}
+  if(!requestFreeze)return false;
+  let answer;
+  try{answer=await requestFreeze();}
+  catch{throw Error("Freeze ownership unknown; journal retained.");}
+  if(answer==="ready")return true;
+  if(answer==="busy"){
+    await discardBeforeSwitch();
+    throw Error("Busy or uncertain Agent; refuse switch.");
+  }
+  throw Error("Freeze ownership unknown; journal retained.");
 }
 export function macBindingDigest(binding){
   return createHash("sha256").update(JSON.stringify(binding)).digest("hex");
@@ -598,8 +636,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     binding.endpoint!==stored||(binding.stop!==null)!==stopped||
     (binding.stop!==null&&binding.stop!=="stopped\n")))
     throw Error("Existing upgrade target changed.");
-  const recheckBinding=async()=>{
-    if(binding&&JSON.stringify(await macUpgradeBinding(bindingFiles))!==JSON.stringify(binding))
+  const recheckBinding=async(ownJournal)=>{
+    if(binding&&JSON.stringify(await macUpgradeBinding(bindingFiles,ownJournal))!==JSON.stringify(binding))
       throw Error("Existing upgrade target changed.");
   };
   const nextRoot=path.join(programs,version);
@@ -612,7 +650,9 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   const stage=path.join(programs,".staging-"+randomUUID());
   await cp(bundle,stage,{recursive:true,errorOnExist:true,force:false});
   await checked(stage,{dir:true});
-  await rename(stage,nextRoot);
+  // Upgrades publish the verified candidate only after exclusive admission.
+  // A busy attempt must not occupy the version path and prevent a later retry.
+  if(action==="install")await rename(stage,nextRoot);
   if(!await approved(key)){
     if(action!=="install")throw Error("Upgrade cannot create a new identity.");
     const pair=spawnSync(path.join(nextRoot,"bin/node"),[
@@ -624,13 +664,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   await recheckBinding();
   const active=!!current&&!stopped&&launch(["print",service],invoke);
   if(current&&!stopped&&!active)throw Error("Service state uncertain; refuse upgrade.");
-  let frozen=false;
-  if(active){
-    if(await freezeAgent(key)!=="ready")throw Error("Busy or uncertain Agent; refuse switch.");
-    frozen=true;
-  }
   const generation=randomUUID();
-  const candidateMeta=JSON.parse(await readFile(path.join(nextRoot,"bundle.json"),"utf8"));
+  const candidateMeta=JSON.parse(await readFile(path.join(action==="install"?nextRoot:stage,"bundle.json"),"utf8"));
   const agentRuntime=candidateMeta.agent_runtime??"node-v2";
   const rustEntry=path.join(nextRoot,"apps/remote-control-agent/.build/rca-standard-darwin-candidate");
   const next=plistText({
@@ -639,12 +674,29 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       path.join(nextRoot,"apps/remote-control-agent/src/macos-permanent.js"),
     endpoint:bound,generation,agentRuntime,
   });
-  let journalCreated=false,oldStopped=false,newLoaded=false,cliWritten=false;
-  let failureStage="write-switch-journal",rollbackStage="begin";
+  const record=JSON.stringify({
+    version,previous:old,generation,stopped,phase:"switch_pending"})+"\n";
+  let frozen;
   try{
-    await ownedWrite(journal,JSON.stringify({
-      version,previous:old,generation,stopped,phase:"switch_pending"})+"\n");
-    journalCreated=true;
+    frozen=await reserveMacSwitch(journal,record,async()=>{
+      await recheckBinding(record);
+      if(action==="upgrade"&&await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite.");
+      if(active&&!launch(["print",service],invoke))throw Error("Service state uncertain; refuse upgrade.");
+    },active?()=>freezeAgent(key):null);
+  }catch(error){
+    // Only this attempt's private, unpublished copy is disposable.
+    // The journal, installed versions and receipts are never removed here.
+    if(action==="upgrade")await rm(stage,{recursive:true,force:true});
+    throw error;
+  }
+  let oldStopped=false,newLoaded=false,cliWritten=false,plistWritten=false;
+  let failureStage="publish-candidate",rollbackStage="begin";
+  try{
+    if(action==="upgrade"){
+      await recheckBinding(record);
+      if(await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite.");
+      await rename(stage,nextRoot);
+    }
     if(active){
       failureStage="stop-old-service";
       if(!launch(["bootout",service],invoke))throw Error("Old service bootout failed.");
@@ -654,6 +706,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     }
     failureStage="write-launchagent";
     await ownedWrite(plist,next,!!old,0o600,false);
+    plistWritten=true;
     failureStage="write-endpoint";
     if(!stored)await ownedWrite(endpointFile,bound+"\n");
     if(!stopped){
@@ -672,10 +725,6 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     return {status:stopped?"stopped_preserved":"connected_observed",version,generation,
       cli};
   }catch(error){
-    if(!journalCreated&&frozen){
-      try{await freezeAgent(key,"release");}catch{/* only safe to reconcile */}
-    }
-    if(!journalCreated)throw error;
     try{
       if(cliWritten){
         rollbackStage=previousCli!==null?"restore-local-cli":"remove-local-cli";
@@ -694,10 +743,10 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
         rollbackStage="stop-new-service";
         await stopLaunchdForSwitch(service,invoke,pauseLaunchd,state==="present");
       }
-      if(old){
+      if(old&&plistWritten){
         rollbackStage="restore-previous-launchagent";
         await ownedWrite(plist,old,true,0o600,false);
-      }else{
+      }else if(!old&&plistWritten){
         rollbackStage="check-new-launchagent";
         if(await checked(plist,{optional:true,mode:0o600})){
           rollbackStage="remove-new-launchagent";
@@ -713,8 +762,10 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
           throw Error("Old signed service not restored.");
       }else if(frozen){
         rollbackStage="release-frozen-agent";
-        await freezeAgent(key,"release");
+        if(await freezeAgent(key,"release")!=="released")
+          throw Error("Freeze release unconfirmed.");
       }
+      if(action==="upgrade")await rm(stage,{recursive:true,force:true});
       rollbackStage="remove-switch-journal";
       await rm(journal);
     }catch{

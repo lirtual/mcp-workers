@@ -12,6 +12,16 @@ const ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const ENDPOINT="https://rca.example.test/";
 const bundle=process.env.RCA_MACOS_BUNDLE_ROOT;
 
+test("#1035 a Freeze response requires the complete exact protocol frame",async()=>{
+  const {parseFreezeReply}=await import("../scripts/macos-local.mjs");
+  for(const value of ["busy","ready","released"]){
+    assert.equal(parseFreezeReply(value+"\n"),value);
+    assert.throws(()=>parseFreezeReply(value),/unconfirmed/);
+    assert.throws(()=>parseFreezeReply(" "+value+"\n"),/unconfirmed/);
+    assert.throws(()=>parseFreezeReply(value+"\r\n"),/unconfirmed/);
+  }
+});
+
 test("#914 macOS activation reads Rust epoch and Node ISO connection markers",async t=>{
   const identity=await mkdtemp(path.join(os.tmpdir(),"rca914-connection-"));
   t.after(()=>rm(identity,{recursive:true,force:true}));
@@ -80,6 +90,32 @@ test("#1035 automatic update consent is identity-bound and fail closed",async t=
   await writeFile(key+".device-id",other+"\n");
   await assert.rejects(writeMacAutoPolicy(key,ID,true),/identity changed/);
   await assert.rejects(lstat(policy),{code:"ENOENT"});
+});
+
+test("#1035 switch journal exclusively reserves the existing transaction before Freeze",async t=>{
+  const {reserveMacSwitch}=await import("../scripts/macos-local.mjs");
+  const root=await mkdtemp(path.join(os.tmpdir(),"rca1035-journal-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const journal=path.join(root,"switch.json"),record=JSON.stringify({phase:"switch_pending",generation:ID})+"\n";
+  let requested=0;
+  const ready=async()=>{requested++;assert.equal(await readFile(journal,"utf8"),record);return "ready";};
+  assert.equal(await reserveMacSwitch(journal,record,async()=>{},ready),true);
+  await assert.rejects(reserveMacSwitch(journal,record,async()=>{},ready),{code:"EEXIST"});
+  assert.equal(requested,1);
+  assert.equal(await readFile(journal,"utf8"),record);
+  await rm(journal);
+  await assert.rejects(reserveMacSwitch(journal,record,async()=>{throw Error("changed target");},ready),/changed target/);
+  assert.equal(requested,1);
+  await assert.rejects(lstat(journal),{code:"ENOENT"});
+  await assert.rejects(reserveMacSwitch(journal,record,async()=>{},async()=>"busy"),/Busy or uncertain/);
+  await assert.rejects(lstat(journal),{code:"ENOENT"});
+  for(const freeze of [async()=>{throw Error("lost reply");},async()=>"",async()=>"unknown"]){
+    await assert.rejects(reserveMacSwitch(journal,record,async()=>{},freeze),/Freeze ownership unknown/);
+    assert.equal(await readFile(journal,"utf8"),record);
+    await rm(journal);
+  }
+  assert.equal(await reserveMacSwitch(journal,record,async()=>{},null),false);
+  assert.equal(await readFile(journal,"utf8"),record);
 });
 
 test("#1035 existing macOS upgrade binds exact local identity and configuration",async t=>{
@@ -664,9 +700,45 @@ test("#660 native upgrade busy/activation failure retains identity and rolls bac
   await assert.rejects(localMacAction("upgrade",opts),/Busy or uncertain/);
   assert.equal((await localMacAction("status",{home:f.home,invoke:f.invoke})).version,
     f.version+"-darwin-"+process.arch);
-  // Busy attempt safely staged the second version; explicit human inspection
-  // is required before repeat, rather than overwriting it blindly.
+  const programs=path.join(f.identity,"macos/programs");
+  const next=path.join(programs,m.version+"-darwin-"+process.arch);
+  await assert.rejects(lstat(next),{code:"ENOENT"});
+  await assert.rejects(localMacAction("upgrade",opts),/Busy or uncertain/);
+  await assert.rejects(lstat(next),{code:"ENOENT"});
   assert.equal((await readFile(path.join(f.identity,"v2-identity.pem.device-id"),"utf8")).trim(),ID);
+});
+
+test("#1035 lost macOS Freeze reply leaves the existing service and recovery journal",{
+  skip:!native},async t=>{
+  const f=await fixture(t);
+  const calls=[];
+  const invoke=(command,args)=>{calls.push(args[0]);return f.invoke(command,args);};
+  const opts={home:f.home,bundle,sourceSha:f.sourceSha,endpoint:ENDPOINT,
+    invoke,ask:async()=>true,online:async()=>true};
+  await localMacAction("install",opts);
+  const plist=path.join(f.home,"Library/LaunchAgents/org.mcp-workers.remote-control-agent.plist");
+  const cli=path.join(f.home,".local/bin/rca");
+  const journal=path.join(f.identity,"macos/switch.json");
+  const before=[await readFile(plist,"utf8"),await readFile(cli,"utf8")];
+  const alt=path.join(f.root,"lost-reply");
+  await cp(bundle,alt,{recursive:true});
+  const manifestFile=path.join(alt,"bundle.json");
+  const meta=JSON.parse(await readFile(manifestFile,"utf8"));
+  meta.version=nextCandidateVersion(meta.version);
+  await writeFile(manifestFile,JSON.stringify(meta)+"\n",{mode:0o600});
+  calls.length=0;
+  const freezeCalls=[];
+  await assert.rejects(localMacAction("upgrade",{...opts,bundle:alt,
+    freezeAgent:async(key,action="freeze")=>{
+      freezeCalls.push(action);
+      assert.equal(JSON.parse(await readFile(journal,"utf8")).previous,before[0]);
+      throw Error("Simulated lost response");
+    }}),/Freeze ownership unknown/);
+  assert.deepEqual(freezeCalls,["freeze"]);
+  assert.ok(calls.length>0&&calls.every(action=>action==="print"));
+  assert.deepEqual([await readFile(plist,"utf8"),await readFile(cli,"utf8")],before);
+  assert.equal((await localMacAction("status",{home:f.home})).automatic_update_activity,"needs_attention");
+  assert.equal(JSON.parse(await readFile(journal,"utf8")).phase,"switch_pending");
 });
 
 test("#660 native refuses unsafe identity, LaunchAgent and file links",{

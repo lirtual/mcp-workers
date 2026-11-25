@@ -173,7 +173,25 @@ function Register-OwnedTask($scheduledAction) {
   $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   Register-ScheduledTask -TaskName $name -Action $scheduledAction -Trigger $trigger -Principal $principal -Settings $settings -ErrorAction Stop | Out-Null
 }
-function Invoke-AgentUpgradeFreeze([string]$keyPath,[string]$action) {
+# The protocol's LF is mandatory; ReadLineAsync alone also accepts partial EOF.
+function Read-AgentUpgradeReply($reader) {
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  $chars = [char[]]::new(1)
+  $answer = ''
+  for ($i=0; $i -lt 9; $i++) {
+    $remaining = 10000 - [int]$clock.ElapsedMilliseconds
+    if ($remaining -le 0) { throw 'Agent upgrade pipe response not confirmed' }
+    $pending = $reader.ReadAsync($chars,0,1)
+    if (-not $pending.Wait($remaining) -or $pending.GetAwaiter().GetResult() -ne 1) {
+      throw 'Agent upgrade pipe response not confirmed'
+    }
+    if ($chars[0] -ceq [char]10) { return $answer }
+    $answer += $chars[0]
+  }
+  throw 'Agent upgrade pipe response not confirmed'
+}
+
+function Invoke-AgentUpgradeFreeze([string]$keyPath,[string]$action,[bool]$allowBusy=$false) {
   if ($action -cnotin @('freeze','verify-frozen','release')) { throw 'Invalid upgrade action' }
   $canonical = $keyPath.Replace('/','\').ToLowerInvariant()
   $sha = [Security.Cryptography.SHA256]::Create()
@@ -192,10 +210,9 @@ function Invoke-AgentUpgradeFreeze([string]$keyPath,[string]$action) {
     $pipe.Flush()
     $reader = [IO.StreamReader]::new($pipe,[Text.Encoding]::ASCII,$false,1024,$true)
     try {
-      $pending = $reader.ReadLineAsync()
-      if (-not $pending.Wait(10000)) { throw 'Agent upgrade pipe response not confirmed' }
-      $answer = $pending.GetAwaiter().GetResult()
+      $answer = Read-AgentUpgradeReply $reader
       $expected = if ($action -ceq 'release') { 'released' } else { 'ready' }
+      if ($allowBusy -and $action -ceq 'freeze' -and $answer -ceq 'busy') { return 'busy' }
       if ($answer -cne $expected) { throw 'Agent is busy, absent or not frozen' }
     } finally { $reader.Dispose() }
   } finally { $pipe.Dispose() }
@@ -357,7 +374,7 @@ function Check-UpgradeStore {
     throw 'Existing permanent owner Agent required'
   }
 }
-function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false) {
+function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false,[bool]$allowBusy=$false) {
   $observed = Read-OwnedTask
   if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $expectedAction)) {
     throw 'Agent task changed before freeze'
@@ -366,7 +383,9 @@ function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false) {
   if ($recovering) {
     try { Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen' }
     catch { Invoke-AgentUpgradeFreeze $identityFile 'freeze' }
-  } else { Invoke-AgentUpgradeFreeze $identityFile 'freeze' }
+  } else {
+    if ((Invoke-AgentUpgradeFreeze $identityFile 'freeze' $allowBusy) -ceq 'busy') { return 'busy' }
+  }
   Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
   $after = Read-OwnedTask
   $currentProcess = Get-OwnedAgentProcess $program
@@ -469,11 +488,15 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   $complete = $false
   $restored = $false
   $frozen = $false
+  $deferred = $false
   $stage = 'freeze'
   try {
     $saved = Read-NativeJournal $stream
     if (($saved | ConvertTo-Json -Compress) -cne ($record | ConvertTo-Json -Compress)) { throw 'Journal changed' }
-    Freeze-OwnedAgent $original $oldAction
+    if ((Freeze-OwnedAgent $original $oldAction $false $true) -ceq 'busy') {
+      $deferred = $true
+      throw 'Agent busy; no switch attempted'
+    }
     $frozen = $true
     Assert-UpgradeIdentity $record
     $stage = 'stop original'
@@ -517,8 +540,9 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     }
   } finally {
     $stream.Dispose()
-    if ($complete -or $restored) { Remove-Item -LiteralPath $nativeJournal -ErrorAction Stop }
+    if ($complete -or $restored -or $deferred) { Remove-Item -LiteralPath $nativeJournal -ErrorAction Stop }
   }
+  if ($deferred) { throw 'Native upgrade deferred; Agent busy; retry later' }
   if ($complete) { return 'switched-authenticated-upgrade' }
   if ($restored) { throw ('Native upgrade refused at ' + $stage + '; previous task restored') }
   throw ('Native upgrade uncertain at ' + $stage + '; journal retained; attended recovery required')

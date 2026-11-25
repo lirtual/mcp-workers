@@ -156,3 +156,67 @@ windows("activation proof polling rejects pending proof without a misleading run
     assert.equal(result.stderr,"");
   } finally { await rm(dir,{recursive:true,force:true}); }
 });
+
+test("native upgrade admission distinguishes explicit Busy from unknown Freeze ownership",async t=>{
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Freeze-OwnedAgent\([\s\S]*?^\}/m)?.[0];
+  assert(fn);
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+$identityFile='synthetic-key'
+$script:answer='busy'
+$script:commands=@()
+function Read-OwnedTask { [pscustomobject]@{State='Running';Actions=@('old')} }
+function Test-SameAction { $true }
+function Get-OwnedAgentProcess { [pscustomobject]@{ProcessId=1;CreationDate=2} }
+function Invoke-AgentUpgradeFreeze($key,$action,$allowBusy=$false) {
+  $script:commands+= $action
+  if ($action -eq 'freeze') {
+    if ($script:answer -eq 'unknown') { throw 'lost response' }
+    if ($script:answer -eq 'busy') {
+      if ($allowBusy) { return 'busy' }
+      throw 'Agent is busy, absent or not frozen'
+    }
+  }
+}
+if ((Freeze-OwnedAgent 'old' 'old' $false $true) -cne 'busy') {throw 'Explicit busy not deferred'}
+if (($script:commands -join ',') -cne 'freeze') {throw 'Busy must not verify or release'}
+$script:answer='unknown';$script:commands=@()
+try { Freeze-OwnedAgent 'old' 'old' $false $true; throw 'Unknown accepted' }
+catch {if ($_.Exception.Message -cne 'lost response') {throw}}
+if (($script:commands -join ',') -cne 'freeze') {throw 'Unknown must not verify or release'}
+$script:answer='ready';$script:commands=@()
+if (Freeze-OwnedAgent 'old' 'old' $false $true) {throw 'Ready not admitted'}
+if (($script:commands -join ',') -cne 'freeze,verify-frozen') {throw 'Ready must verify'}
+Write-Output 'freeze-admission-pass'
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"freeze-admission-pass");
+});
+
+test("native Freeze reply requires exact LF rather than partial EOF",async t=>{
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Read-AgentUpgradeReply\([\s\S]*?^\}/m)?.[0];
+  assert(fn);
+  const command=fn+'\n'+String.raw`
+$ErrorActionPreference='Stop'
+foreach($value in @('busy','ready','released')){
+  $reader=[IO.StringReader]::new($value+[char]10)
+  if ((Read-AgentUpgradeReply $reader) -cne $value) {throw 'Exact response not accepted'}
+  $reader=[IO.StringReader]::new($value)
+  try {Read-AgentUpgradeReply $reader;throw 'Partial response accepted'}
+  catch {if ($_.Exception.Message -cne 'Agent upgrade pipe response not confirmed') {throw}}
+}
+Write-Output 'strict-frame-pass'
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"strict-frame-pass");
+});
