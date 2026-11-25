@@ -1,6 +1,6 @@
-# Remote Control MCP — Device grant language
+# Remote Control MCP — Domain language
 
-Terms for the agreed permanent-device idle-grant design. Deployed RCA
+Terms for agreed device-grant and lifecycle designs. Deployed RCA
 behavior remains described by [CONTEXT.md](./CONTEXT.md) until delivery.
 
 ## Language
@@ -32,3 +32,21 @@ _Avoid_: Confirmed server Stop, automatic disconnection
 **Owner Resume**:
 An explicit OS-owner-initiated restoration of an existing still-valid grant after pending Stop reconciliation and device-signed authorization.
 _Avoid_: Automatic reconnect, new pairing
+
+
+**Automatic Update Policy**:
+The Owner's continuing, revocable permission for an eligible permanent
+Standard installation to install qualifying later stable Agent releases
+without individual update approval.
+_Avoid_: Device grant, release publication authorization
+
+**Upgrade Transaction**:
+One attempt to replace an installed Agent version while preserving identity,
+authorization and necessary historical receipts, ending in verified new service,
+verified recovery or an unresolved outcome.
+_Avoid_: Download, launch acknowledgment
+
+**Normal Restart**:
+Restart of an Owner-ON Agent preserving its intentional operating state
+and authorization.
+_Avoid_: Owner Stop followed by Owner Resume, re-pairing
