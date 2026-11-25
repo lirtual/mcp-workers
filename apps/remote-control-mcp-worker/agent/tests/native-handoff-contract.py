@@ -1516,9 +1516,12 @@ def verify_status_reports_upgrade_result_and_identity_purge_removes_it():
             state = bootstrap.local_status(home)
         assert state["automatic_update"] == "on"
         assert state["automatic_update_activity"] == "recovered"
-        assert state["automatic_update_result"] == {
+        result = state["automatic_update_result"]
+        assert {key: result[key] for key in ("status", "target_version", "installed_version")} == {
             "status": "failed_recovered", "target_version": "v0.1.58",
             "installed_version": "v0.1.56"}
+        assert type(result["updated_at_unix_ms"]) is int
+        assert 0 <= bootstrap.time.time_ns() // 1_000_000 - result["updated_at_unix_ms"] <= 5_000
         active = Mock(returncode=0, stdout=(
             b"LoadState=loaded\nActiveState=active\nTransient=yes\n"
             b"Description=RCA detached update\n"))

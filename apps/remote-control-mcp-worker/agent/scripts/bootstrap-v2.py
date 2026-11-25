@@ -822,10 +822,13 @@ def native_upgrade_result(key, device_id):
     except FileNotFoundError:
         return None
     if (not isinstance(result, dict) or set(result) != {
-            "device_id", "operation_id", "target_version", "installed_version", "status"}
+            "device_id", "operation_id", "target_version", "installed_version", "status",
+            "updated_at_unix_ms"}
             or not isinstance(result["device_id"], str)
             or not isinstance(result["operation_id"], str)
             or not re.fullmatch(r"[a-f0-9]{32}", result["operation_id"])
+            or type(result["updated_at_unix_ms"]) is not int
+            or not 0 <= result["updated_at_unix_ms"] <= 9_007_199_254_740_991
             or not all(isinstance(result[field], str) and
                        native_latest_status(result[field], result[field]) == "up_to_date"
                        for field in ("target_version", "installed_version"))
@@ -909,7 +912,8 @@ def native_update_activity(home, key, device_id, policy, result):
 def native_write_upgrade_result(key, device_id, operation, target, installed, status):
     native_atomic_file(native_upgrade_result_path(key), json.dumps({
         "device_id": device_id, "operation_id": operation, "target_version": target,
-        "installed_version": installed, "status": status
+        "installed_version": installed, "status": status,
+        "updated_at_unix_ms": time.time_ns() // 1_000_000,
     }, separators=(",", ":")).encode())
 
 
@@ -2141,7 +2145,7 @@ def local_status(home):
             result = native_upgrade_result(key, ids["permanent"])
             if result is not None:
                 update_result = {field: result[field] for field in (
-                    "status", "target_version", "installed_version")}
+                    "status", "target_version", "installed_version", "updated_at_unix_ms")}
             activity = native_update_activity(home, key, ids["permanent"], policy, result)
         except (OSError, ValueError):
             update_result = {"status": "unknown"}
