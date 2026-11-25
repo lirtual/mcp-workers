@@ -231,6 +231,32 @@ pub(super) fn iso_time(ms: u64) -> Option<String> {
     ))
 }
 
+pub(super) fn default_diagnostics(arch: &str) -> serde_json::Value {
+    serde_json::json!({"installed":null,"version":null,"installed_version":null,
+        "platform":"darwin","arch":arch,"device_id":null,"identity_present":null,
+        "local_service":"unconfirmed","signed_wss":"unconfirmed","cloud_authorization":"unconfirmed",
+        "cloud_approval":"unconfirmed","last_online":"unconfirmed","automatic_update":"unknown",
+        "automatic_update_activity":"unknown","receipts":"preserved_unverified"})
+}
+
+pub(super) fn apply_policy_observation(
+    state: &mut serde_json::Value,
+    policy: &str,
+    unresolved: bool,
+) {
+    state["automatic_update"] = serde_json::json!(policy);
+    state["automatic_update_activity"] = serde_json::json!(if unresolved {
+        "needs_attention"
+    } else if policy == "off" {
+        "disabled"
+    } else {
+        "unknown"
+    });
+    if unresolved {
+        state["update_transaction"] = serde_json::json!("pending_or_cleanup");
+    }
+}
+
 // Diagnostics are projections of one local observation, not independent
 // queries or repair operations. Never expose raw identity/receipt contents.
 pub(super) fn diagnostic_response(action: &str, state: &serde_json::Value) -> serde_json::Value {
@@ -949,6 +975,25 @@ mod tests {
             "darwin-arm64"
         )
         .is_err());
+    }
+
+    #[test]
+    fn local_policy_evidence_does_not_claim_automatic_work() {
+        let off = default_diagnostics("arm64");
+        assert_eq!(off["installed"], serde_json::Value::Null);
+        assert_eq!(off["identity_present"], serde_json::Value::Null);
+        assert_eq!(off["automatic_update"], "unknown");
+        let mut state = off.clone();
+        apply_policy_observation(&mut state, "off", false);
+        assert_eq!(state["automatic_update"], "off");
+        assert_eq!(state["automatic_update_activity"], "disabled");
+        apply_policy_observation(&mut state, "on", false);
+        assert_eq!(state["automatic_update"], "on");
+        assert_eq!(state["automatic_update_activity"], "unknown");
+        apply_policy_observation(&mut state, "off", true);
+        assert_eq!(state["automatic_update_activity"], "needs_attention");
+        assert_eq!(state["update_transaction"], "pending_or_cleanup");
+        assert_eq!(state["signed_wss"], "unconfirmed");
     }
 
     #[test]

@@ -260,9 +260,10 @@ fn record_connection(
 #[cfg(target_os = "macos")]
 mod darwin {
     use super::darwin_lifecycle::{
-        connection_time, diagnostic_response, installed_generation, iso_time, native_cli,
-        native_plist, new_generation, no_other_programs, registration, resume_owned, stop_owned,
-        switch_outcome, unregister_owned, Registration, RestartRecord, SwitchOutcome, SwitchRecord,
+        apply_policy_observation, connection_time, default_diagnostics, diagnostic_response,
+        installed_generation, iso_time, native_cli, native_plist, new_generation,
+        no_other_programs, registration, resume_owned, stop_owned, switch_outcome,
+        unregister_owned, Registration, RestartRecord, SwitchOutcome, SwitchRecord,
         UninstallRecord, UninstallRecovery, LABEL,
     };
     use super::darwin_package;
@@ -661,11 +662,41 @@ mod darwin {
             .map(|p| exists_owned_path(&p.join("rca")))
             .transpose()?
             .unwrap_or(false);
-        let mut state = serde_json::json!({"installed":null,"version":null,"installed_version":null,
-            "platform":"darwin","arch":if cfg!(target_arch="aarch64") {"arm64"} else {"x64"},
-            "local_service":"unconfirmed","signed_wss":"unconfirmed","cloud_authorization":"unconfirmed",
-            "last_online":"unconfirmed","automatic_update":"unknown","automatic_update_activity":"unknown",
-            "receipts":"preserved_unverified"});
+        let mut state = default_diagnostics(if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        });
+        if let Some(base) = &base {
+            let key = base.join("v2-identity.pem");
+            match (
+                read_private(&key, 8192),
+                read_private(&sidecar(&key, ".device-id"), 128),
+            ) {
+                (Ok(Some(pem)), Ok(Some(id)))
+                    if valid_device_id(id.trim())
+                        && signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX")
+                            .is_ok() =>
+                {
+                    state["device_id"] = serde_json::json!(id.trim());
+                    state["identity_present"] = serde_json::json!(true);
+                    let policy = match read_private(&sidecar(&key, ".automatic-update"), 256) {
+                        Ok(Some(raw)) => {
+                            rca_native_agent::device_pairing::parse_auto_policy(&raw, id.trim())
+                        }
+                        Ok(None) => "off",
+                        Err(_) => "unknown",
+                    };
+                    apply_policy_observation(&mut state, policy, false);
+                }
+                (Ok(None), Ok(None)) => {
+                    state["identity_present"] = serde_json::json!(false);
+                }
+                _ => {}
+            }
+        } else {
+            state["identity_present"] = serde_json::json!(false);
+        }
         if let Some(base) = &base {
             let macos = base.join("macos");
             let unresolved = exists_owned_path(&base.join("v2-identity.pem.re-pair-transition"))?
@@ -674,13 +705,20 @@ mod darwin {
                         || (directory_present(&macos.join("remote-upgrades"), true)?
                             && exists_owned_path(&macos.join("remote-upgrades/active.json"))?)));
             if unresolved {
-                state["update_transaction"] = serde_json::json!("pending_or_cleanup");
+                let policy = state["automatic_update"]
+                    .as_str()
+                    .unwrap_or("unknown")
+                    .to_owned();
+                apply_policy_observation(&mut state, &policy, true);
                 return Ok(state);
             }
         }
         if !configured && !launcher && service_absent().is_ok() {
             state["installed"] = serde_json::json!(false);
             state["local_service"] = serde_json::json!("not_installed");
+            if state["identity_present"] == false {
+                apply_policy_observation(&mut state, "off", false);
+            }
             return Ok(state);
         }
         let base = base.ok_or(())?;
@@ -718,9 +756,13 @@ mod darwin {
     }
 
     fn diagnose(action: &str, compact: bool) -> Result<(), ()> {
-        let state = diagnostic_state().unwrap_or_else(|_| serde_json::json!({"installed":null,"version":null,
-            "installed_version":null,"platform":"darwin","local_service":"unconfirmed","signed_wss":"unconfirmed",
-            "cloud_authorization":"unconfirmed","last_online":"unconfirmed","automatic_update_activity":"unknown"}));
+        let state = diagnostic_state().unwrap_or_else(|_| {
+            default_diagnostics(if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "x64"
+            })
+        });
         let response = diagnostic_response(action, &state);
         println!(
             "{}",
