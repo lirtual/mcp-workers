@@ -230,7 +230,10 @@ with tempfile.TemporaryDirectory(prefix="rca-native-only-") as t:
         env={**os.environ,"HOME":str(home)},capture_output=True,text=True,timeout=8)
     assert help_result.returncode==0,help_result.stderr
     assert "reviewed-64-char-asset-sha256" in help_result.stdout
-    assert "recover" in help_result.stdout and "Permanent pairing / re-pair" in help_result.stdout
+    assert "recover" in help_result.stdout
+    assert "browser authorization link" in help_result.stdout
+    assert "rca pair [--temporary] [https://approved-worker-origin/]" in help_result.stdout
+    assert "provide the approved HTTPS origin explicitly" in help_result.stdout
     assert "not yet available" not in help_result.stdout
     for command in ["pair","upgrade","uninstall","recover"]:
         result=subprocess.run(["/bin/sh",str(dest/b.APP/"scripts/rca.sh"),command],
