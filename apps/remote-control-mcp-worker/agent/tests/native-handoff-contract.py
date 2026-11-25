@@ -157,6 +157,28 @@ def verify_owner_confirmation():
     print("OWNER_CONFIRMATION_CONTRACT_PASS")
 
 
+def verify_missing_pair_origin():
+    import contextlib
+    import io
+    from unittest.mock import Mock
+    manager_spec = importlib.util.spec_from_file_location("rca_manager", SCRIPT.with_name("manage-v2.py"))
+    manager = importlib.util.module_from_spec(manager_spec)
+    manager_spec.loader.exec_module(manager)
+    # Deliberately no permanent service or origin. No actual pairing target.
+    runtime = Mock()
+    with (patch.object(manager, "installed_endpoint", return_value=None),
+          patch.object(sys.stdin, "isatty", return_value=True),
+          patch.object(sys.stdout, "isatty", return_value=True)):
+        for args, usage in (([], "rca pair https://approved-worker-origin/"),
+                            (["--temporary"], "rca pair --temporary https://approved-worker-origin/")):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                assert manager.pair(Path("/unused"), runtime, args) == 1
+            assert usage in err.getvalue(), err.getvalue()
+    assert not runtime.mock_calls
+    print("MISSING_PAIR_ORIGIN_CONTRACT_PASS")
+
+
 def verify_temporary_install():
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
@@ -1997,6 +2019,7 @@ if __name__ == "__main__":
             ctx.cleanup()
     else:
         verify_owner_confirmation()
+        verify_missing_pair_origin()
         verify_service_start()
         verify_public_native_archive()
         verify_native_owner_lifecycle()

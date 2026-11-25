@@ -73,6 +73,8 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     assert.equal(help.status,0,help.stderr);
     assert.match(help.stdout,/status\|doctor/);
     assert.match(help.stdout,/--version\|--help/);
+    assert.match(help.stdout,/browser authorization link/);
+    assert.match(help.stdout,/provide the approved HTTPS origin explicitly/);
     for(const args of [["--version","extra"],["--help","extra"]])
       assert.notEqual(run(args).status,0);
     const version=run(["--version"]);

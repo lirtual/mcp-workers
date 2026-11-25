@@ -704,7 +704,11 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 return native_temporary(pathlib.Path.home(), version, endpoint, name)
             if not confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
                 raise ValueError("Native installation not confirmed")
-            print(json.dumps(native_pair_or_install(pathlib.Path.home(), version, endpoint, name), indent=2))
+            result = native_pair_or_install(pathlib.Path.home(), version, endpoint, name)
+            print(json.dumps(result, indent=2))
+            if result.get("status") in ("active", "already_installed"):
+                print('Local manager: rca --help; if not on PATH, run "$HOME/.local/bin/rca" --help.',
+                      file=sys.stderr, flush=True)
             return
         if native_upgrade:
             if latest_archive is not None:
@@ -1448,6 +1452,9 @@ def native_temporary(home, root, endpoint, name=None, process_check=None):
         raise ValueError("Temporary pairing not confirmed")
     print("Foreground only; no service will be installed. Closing the terminal disconnects, not revokes.")
     print("Reviewed local manager: " + str(root / APP / "scripts/rca.sh"), flush=True)
+    print("Temporary mode does not install a new short command on PATH. "
+          "Use the reviewed manager path above with --help; "
+          "without a permanent service, pair requires an explicit approved HTTPS origin.", flush=True)
     # Rust holds the existing installer lock from identity recovery through
     # the end of foreground execution; no additional process manager.
     native_pair_local(root, endpoint, name, temporary=True)

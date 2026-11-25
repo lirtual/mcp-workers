@@ -129,7 +129,10 @@ def pair(root, bootstrap, arguments):
             raise ValueError("Existing device endpoint cannot be silently changed.")
         endpoint = arguments[0]
     if not endpoint:
-        raise ValueError("Supply an approved HTTPS origin: pair https://example.org/")
+        mode = " --temporary" if temporary else ""
+        print("No installed Worker origin. Usage: rca pair" + mode +
+              " https://approved-worker-origin/", file=sys.stderr)
+        return 1
     if temporary:
         return bootstrap.native_temporary(Path.home(), root, endpoint)
     if not bootstrap.confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
@@ -175,7 +178,9 @@ def dispatch(command, args, root, info, bootstrap):
         if args:
             raise ValueError("help takes no arguments")
         print(USAGE)
-        print("Permanent pairing / re-pair and pair --temporary are supported.")
+        print("Pairing / repair uses the browser authorization link shown by the Agent.")
+        print("Usage: rca pair [--temporary] [https://approved-worker-origin/].")
+        print("Without an installed permanent service, provide the approved HTTPS origin explicitly.")
         print("Without arguments: open the interactive local Agent manager.")
         print("Check the reviewed stable Latest without installing: rca update --check.")
         print("Automatic update consent: rca update --auto [on|off].")
