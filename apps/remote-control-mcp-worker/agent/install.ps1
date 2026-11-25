@@ -7,7 +7,8 @@ param(
   [ValidatePattern('^[a-f0-9]{64}$')][string]$SelectedReleaseSha256,
   [string]$OfflineArchive,
   [string]$ExpectedSha256,
-  [switch]$StageOnly
+  [switch]$StageOnly,
+  [switch]$CheckOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -143,11 +144,18 @@ function Resolve-LatestAgentRelease {
   }
   if ([int]$response.StatusCode -ne 200) { throw 'GitHub latest Release lookup failed' }
   $release = $response.Content | ConvertFrom-Json
-  if ($release.immutable -ne $true -or $release.draft -ne $false -or $release.prerelease -ne $false -or
-      $release.tag_name -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+  if ($release.immutable -isnot [bool] -or -not $release.immutable -or
+      $release.draft -isnot [bool] -or $release.draft -or
+      $release.prerelease -isnot [bool] -or $release.prerelease -or
+      $release.tag_name -isnot [string] -or $release.tag_name -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
     throw 'Latest Agent Release is not a stable immutable Agent Release'
   }
   $tag = [string]$release.tag_name
+  $html = $release.PSObject.Properties['html_url']
+  if (($null -ne $html -and ($html.Value -isnot [string] -or $html.Value -cne "https://github.com/lirtual/mcp-workers/releases/tag/$tag")) -or
+      $release.assets -isnot [array]) {
+    throw 'Invalid stable Agent Release identity or assets'
+  }
   $specs = @(
     @{ target = 'linux-x64-glibc'; ext = 'tar.gz' },
     @{ target = 'linux-arm64-glibc'; ext = 'tar.gz' },
@@ -158,7 +166,8 @@ function Resolve-LatestAgentRelease {
   $assets = @($release.assets)
   $platformName = '^remote-control-agent-v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?-(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)\.(?:tar\.gz|zip)$'
   foreach ($asset in $assets) {
-    $name = [string]$asset.name
+    if ($null -eq $asset -or $asset.name -isnot [string]) { throw 'Invalid stable Agent asset' }
+    $name = $asset.name
     $known = $false
     foreach ($spec in $specs) {
       if ($name -ceq "remote-control-agent-$tag-$($spec.target).$($spec.ext)") { $known = $true }
@@ -174,10 +183,12 @@ function Resolve-LatestAgentRelease {
     if ($matched.Count -ne 1) { throw 'Latest Agent Release is missing a platform asset' }
     $asset = $matched[0]
     $expectedUri = "https://github.com/lirtual/mcp-workers/releases/download/$tag/$name"
-    if ($asset.digest -cnotmatch '^sha256:[a-f0-9]{64}$') {
+    if ($asset.digest -isnot [string] -or $asset.digest -cnotmatch '^sha256:[a-f0-9]{64}$') {
       throw 'Latest Agent Release is missing an official SHA-256'
     }
-    if ($asset.state -ne 'uploaded' -or $asset.browser_download_url -cne $expectedUri -or
+    if ($asset.state -isnot [string] -or $asset.state -cne 'uploaded' -or
+        $asset.browser_download_url -isnot [string] -or $asset.browser_download_url -cne $expectedUri -or
+        ($asset.size -isnot [int] -and $asset.size -isnot [long]) -or
         $asset.size -lt 100000 -or $asset.size -gt 100000000) {
       throw 'Untrusted GitHub Release asset digest/URL'
     }
@@ -186,6 +197,28 @@ function Resolve-LatestAgentRelease {
   if (-not $windows) { throw 'Windows x64 Agent asset is missing' }
   return @{ Tag = $tag; Sha = $windows.digest.Substring(7); Url = [string]$windows.browser_download_url; Size = [long]$windows.size }
 }
+# Metadata observation only. Preserve the installed label and never select
+# a downgrade, a prerelease or a fallback repository.
+function Get-LatestUpdateStatus([string]$installed) {
+  $result = @{ installed_version = $installed; latest_version = $null; status = 'unknown' }
+  $stable = 'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+  if ($installed -cnotmatch ('^' + $stable + '(?:-rust-candidate\.[1-9][0-9]*)?$')) { return $result }
+  try {
+    $latest = Resolve-LatestAgentRelease
+    $oldNumber = [version](($installed.Substring(1) -split '-')[0])
+    $newNumber = [version]($latest.Tag.Substring(1))
+    $result.latest_version = $latest.Tag
+    $result.status = if ($installed -ceq $latest.Tag) { 'up_to_date' }
+      elseif ($newNumber -lt $oldNumber) { 'older_latest' }
+      else { 'update_available' }
+  } catch {
+    # Never expose signed URL/transport details or continue to installation.
+    $result.latest_version = $null
+    $result.status = 'unknown'
+  }
+  return $result
+}
+
 function Resolve-ReviewedNativeRelease([string]$tag,[string]$sha,[bool]$stable = $false) {
   # Candidate pin or a stable tag selected by the independent upgrade launcher.
   # Never look up Latest a second time or accept an arbitrary URL.
@@ -438,6 +471,15 @@ function Confirm-Upgrade([object]$ui) {
     ($key.Character -ceq 'y' -or $key.Character -ceq 'Y'))
 }
 
+
+# The installed manager passes its validated current Task version here.
+# This branch precedes every directory, archive, identity and Task mutation.
+if ($CheckOnly) {
+  if (-not $Version -or $SelectedTag -or $SelectedReleaseSha256 -or $OfflineArchive -or
+      $ExpectedSha256 -or $StageOnly) { throw 'CheckOnly requires only the installed version' }
+  Get-LatestUpdateStatus $Version | ConvertTo-Json -Compress
+  return
+}
 
 # A Remote Control Shell may schedule the *reviewed official installer* in a
 # separate same-user Windows Task. Never infer approval from missing TTY.

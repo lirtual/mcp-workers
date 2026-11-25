@@ -794,6 +794,13 @@ jobs:
             & 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1' -Root $nativeDir -Version $nativeVersion
             if (Test-Path -LiteralPath (Join-Path $nativeDir 'bin/node.exe')) { throw 'Unexpected Node runtime in native-only installed directory' }
             $nativeStatus = & (Join-Path $nativeDir 'rca.cmd') status | ConvertFrom-Json
+            # The staged CLI must report the actual existing Task target,
+            # rather than its own newer, inactive executable's version.
+            $taskFacts = & (Join-Path $nativeDir 'rca.cmd') task-status | ConvertFrom-Json
+            $expectedTaskVersion = (Split-Path -Leaf $publishedDir) -replace '-windows-x64$',''
+            if ($LASTEXITCODE -ne 0 -or $taskFacts.installed -ne $true -or $taskFacts.version -cne $expectedTaskVersion) {
+              throw 'Read-only Task version did not match actual installed target'
+            }
             if ($LASTEXITCODE -ne 0 -or $nativeStatus.platform -cne 'win32' -or
                 $nativeStatus.identity_present -ne $true -or
                 $nativeStatus.device_id -cne (Get-Content -LiteralPath $device -Raw).Trim() -or

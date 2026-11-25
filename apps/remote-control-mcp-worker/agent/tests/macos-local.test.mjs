@@ -38,6 +38,53 @@ test("#661 macOS owner installer dispatch must not silently skip a symlinked/ali
   assert.match(r.stderr,/macOS local action blocked: Unsupported local action/);
 });
 
+test("#1035 all macOS lifecycle paths recognize only exact owned launcher text",async()=>{
+  const {matchesOwnerCli}=await import("../scripts/macos-local.mjs");
+  const root="/Users/owner/programs/v0.1.60-darwin-arm64";
+  for(const legacy of [true,false]){
+    const launcher=ownerCliText(root,legacy);
+    assert.equal(matchesOwnerCli(launcher,root),true);
+    assert.equal(matchesOwnerCli(launcher+"# foreign\n",root),false);
+    assert.equal(matchesOwnerCli(launcher,root+"-other"),false);
+  }
+});
+test("#1035 macOS Latest check observes the five-platform stable publication only",async()=>{
+  const {checkLatestMacVersion}=await import("../scripts/macos-local.mjs");
+  const {selectLatestAgentRelease}=await import("../../src/github-latest-agent-release.ts");
+  const tag="v0.1.60";
+  const fixture=()=>({tag_name:tag,immutable:true,draft:false,prerelease:false,
+    html_url:"https://github.com/lirtual/mcp-workers/releases/tag/"+tag,
+    assets:["linux-x64-glibc","linux-arm64-glibc","windows-x64","darwin-arm64","darwin-x64"].map(target=>{
+      const name="remote-control-agent-"+tag+"-"+target+(target==="windows-x64"?".zip":".tar.gz");
+      return {name,state:"uploaded",size:7000000,digest:"sha256:"+"a".repeat(64),
+        browser_download_url:"https://github.com/lirtual/mcp-workers/releases/download/"+tag+"/"+name};
+    })});
+  let requests=0;
+  const observe=async(installed,body,status=200)=>checkLatestMacVersion(installed,"arm64",async(url,opts)=>{
+    requests++;
+    assert.equal(url,"https://api.github.com/repos/lirtual/mcp-workers/releases/latest");
+    assert.equal(opts.redirect,"error");
+    return new Response(JSON.stringify(body),{status});
+  });
+  for(const [installed,status] of [["v0.1.59","update_available"],[tag,"up_to_date"],
+      ["v0.1.60-rc.1","update_available"],["v0.1.61","older_latest"]]){
+    assert.deepEqual(await observe(installed,fixture()),{installed_version:installed,latest_version:tag,status});
+  }
+  for(const mutate of [
+    r=>r.immutable="true",r=>r.html_url="https://example.invalid/release",
+    r=>r.assets.pop(),r=>r.assets.push(r.assets[0]),r=>r.assets[0].size="7000000",
+    r=>r.assets[0].digest="bad",r=>r.assets[0].browser_download_url="https://example.invalid/asset",
+  ]){
+    const body=fixture();mutate(body);
+    assert.equal(selectLatestAgentRelease({status:200,body}).ok,false);
+    assert.deepEqual(await observe("v0.1.59",body),{installed_version:"v0.1.59",latest_version:null,status:"unknown"});
+  }
+  for(const code of [403,404,429,503])assert.equal((await observe(tag,{},code)).status,"unknown");
+  assert.equal((await checkLatestMacVersion(tag,"arm64",async()=>{throw Error("offline")})).status,"unknown");
+  assert.equal((await checkLatestMacVersion(tag,"arm64",async()=>new Response(" ".repeat(1048577)))).status,"unknown");
+  assert.equal(requests,15);
+});
+
 test("#660 owner confirmation is case-insensitive, empty input denies",()=>{
   for(const value of ["y","Y","yes","YES"," Yes "])
     assert.equal(acceptsOwnerConfirmation(value),true);
@@ -174,12 +221,12 @@ test("#1035 macOS read-only CLI accepts JSON and doctor without opening mutation
   const file=path.join(root,"rca");
   await writeFile(file,ownerCliText(root),{mode:0o700});
   const invoke=args=>spawnSync("/bin/sh",[file,...args],{encoding:"utf8"});
-  for(const args of [["status","--json"],["doctor"],["doctor","--json"],["--help"],["--version"]]){
+  for(const args of [["status","--json"],["doctor"],["doctor","--json"],["update","--check"],["upgrade","--check"],["--help"],["--version"]]){
     const result=invoke(args);
     assert.equal(result.status,0,result.stderr);
     assert.deepEqual(result.stdout.trim().split("\n").slice(1),args);
   }
-  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["--help","extra"],["--version","extra"],["upgrade"],["install"]])
+  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["--help","extra"],["--version","extra"],["update"],["update","--auto"],["upgrade"],["install"]])
     assert.equal(invoke(args).status,2,args.join(" "));
 });
 
@@ -400,6 +447,15 @@ test("#660 native offline install → stopped state → upgrade without restart"
   const legacy=ownerCliText(firstRoot,true);
   await writeFile(cli,legacy,{mode:0o700});
   assert.deepEqual(await localMacAction("status",{home:f.home,invoke:f.invoke}),state);
+  assert.equal(await readFile(cli,"utf8"),legacy);
+  let checks=0;
+  const observed=await localMacAction("check-update",{home:f.home,
+    invoke:()=>{throw Error("read-only check must not call launchctl");},
+    ask:()=>{throw Error("read-only check must not confirm");},
+    doFetch:async()=>{checks++;return new Response("",{status:429});}});
+  assert.equal(observed.installed_version,f.version);
+  assert.equal(observed.status,"unknown");
+  assert.equal(checks,/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:rc|rust-candidate)\.[1-9]\d*)?$/.test(f.version)?1:0);
   assert.equal(await readFile(cli,"utf8"),legacy);
   let unloaded=false;
   await localMacAction("stop",{...opts,pauseLaunchd:async()=>{},invoke:(command,args)=>{

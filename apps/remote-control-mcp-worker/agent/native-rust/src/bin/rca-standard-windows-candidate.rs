@@ -326,11 +326,21 @@ mod windows {
     }
 
     fn task_command(directory: &Path, args: &[&str]) -> Result<std::process::Output, ()> {
+        owner_script_command(directory, "windows-user-task.ps1", args)
+    }
+
+    fn owner_script_command(
+        directory: &Path,
+        script_name: &str,
+        args: &[&str],
+    ) -> Result<std::process::Output, ()> {
         let system = PathBuf::from(std::env::var_os("SystemRoot").ok_or(())?);
         if !system.is_absolute() {
             return Err(());
         }
-        let script = directory.join("apps/remote-control-agent/scripts/windows-user-task.ps1");
+        let script = directory
+            .join("apps/remote-control-agent/scripts")
+            .join(script_name);
         validate_windows_private_path(&script, false).map_err(|_| ())?;
         let output = Command::new(system.join("System32/WindowsPowerShell/v1.0/powershell.exe"))
             .args([
@@ -349,6 +359,30 @@ mod windows {
             return Err(());
         }
         Ok(output)
+    }
+
+    fn check_latest() -> Result<(), ()> {
+        let (directory, _) = program_root()?;
+        let status = task_command(&directory, &["-Action", "Status"])?;
+        let facts: serde_json::Value = serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+        if facts["installed"] != true {
+            return Err(());
+        }
+        let installed = facts["version"].as_str().ok_or(())?;
+        let observed = owner_script_command(
+            &directory,
+            "windows-stage-install.ps1",
+            &["-CheckOnly", "-Version", installed],
+        )?;
+        let result: serde_json::Value = serde_json::from_slice(&observed.stdout).map_err(|_| ())?;
+        if result["installed_version"] != installed {
+            return Err(());
+        }
+        println!("{result}");
+        if result["status"] == "unknown" {
+            return Err(());
+        }
+        Ok(())
     }
 
     fn foreground(endpoint: &str) -> Result<(), ()> {
@@ -549,7 +583,7 @@ mod windows {
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
                 [_, command] if command == "--help" || command == "help" => {
-                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update --version <staged-tag>|recover|--version|--help]");
+                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update --check|update --version <staged-tag>|recover|--version|--help]");
                     println!("upgrade is an alias for the reviewed staged-version switch. Use the official installer for initial installation and Latest selection.");
                     Ok(())
                 }
@@ -596,6 +630,11 @@ mod windows {
                     )?;
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     Ok(())
+                }
+                [_, command, flag]
+                    if (command == "upgrade" || command == "update") && flag == "--check" =>
+                {
+                    check_latest()
                 }
                 [_, command, flag, version]
                     if (command == "upgrade" || command == "update") && flag == "--version" =>

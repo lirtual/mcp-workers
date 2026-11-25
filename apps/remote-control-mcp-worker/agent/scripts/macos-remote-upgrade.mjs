@@ -8,7 +8,7 @@ import os from "node:os";
 import {realpathSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {
-  checked,checkCandidate,localMacAction,ownerCliText,parsePlist,
+  checked,checkCandidate,localMacAction,matchesOwnerCli,parsePlist,
   launchctlServiceState,verifiedEndpoint,freeze,forwardMacVersion,
 } from "./macos-local.mjs";
 export {forwardMacVersion};
@@ -83,7 +83,7 @@ async function trustedExisting(home,endpoint,bundle,sourceSha,invoke=run){
   const old= parsePlist(await readFile(plist,"utf8"),programs,endpoint);
   const cli=path.join(home,".local","bin","rca");
   await checked(cli,{mode:0o700});
-  if((await readFile(cli,"utf8"))!==ownerCliText(old.root))
+  if(!matchesOwnerCli(await readFile(cli,"utf8"),old.root))
     throw Error("Unrecognized installed local CLI.");
   for(const key of ["stopped","switch.json"]){
     if(await checked(path.join(mac,key),{mode:0o600,optional:true}))
@@ -238,7 +238,7 @@ export async function reconcileFailedRemoteMacUpgrade({
   const cli=path.join(home,".local","bin","rca");
   await checked(cli,{mode:0o700});
   const oldCli=await readFile(cli,"utf8");
-  if(oldCli!==ownerCliText(current.root))throw Error("Old owner CLI mismatch.");
+  if(!matchesOwnerCli(oldCli,current.root))throw Error("Old owner CLI mismatch.");
   if(await checked(path.join(mac,"stopped"),{optional:true,mode:0o600}))
     throw Error("Owner STOP remains active.");
   await checked(path.join(home,".local","state","mcp-workers","remote-control-agent",

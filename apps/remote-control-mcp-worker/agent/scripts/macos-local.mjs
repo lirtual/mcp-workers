@@ -110,6 +110,60 @@ export function forwardMacVersion(current,next){
   }
   return false;
 }
+// Match the release publisher's five-platform metadata contract. Observation
+// never downloads an archive, executes a script or grants update authority.
+export async function checkLatestMacVersion(installed,arch,doFetch=fetch){
+  const result={installed_version:installed,latest_version:null,status:"unknown"};
+  const stable=/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+  if(!["arm64","x64"].includes(arch)||
+     !/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:rc|rust-candidate)\.[1-9]\d*)?$/.test(installed??""))return result;
+  try{
+    const base="https://github.com/lirtual/mcp-workers/releases";
+    const response=await doFetch("https://api.github.com/repos/lirtual/mcp-workers/releases/latest",{
+      redirect:"error",headers:{Accept:"application/vnd.github+json","User-Agent":"rca-macos-latest"},
+      signal:AbortSignal.timeout(30_000)
+    });
+    if(response.status!==200||!response.body){await response.body?.cancel();return result;}
+    const reader=response.body.getReader();
+    let size=0;const chunks=[];
+    try{
+      for(;;){
+        const {done,value}=await reader.read();
+        if(done)break;
+        size+=value.byteLength;
+        if(size>1_048_576)return result;
+        chunks.push(value);
+      }
+    }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+    const release=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const tag=release?.tag_name;
+    if(typeof tag!=="string"||!stable.test(tag)||release.immutable!==true||
+       release.draft!==false||release.prerelease!==false||
+       (release.html_url!==undefined&&release.html_url!==base+"/tag/"+tag)||
+       !Array.isArray(release.assets))return result;
+    const targets=["linux-x64-glibc","linux-arm64-glibc","windows-x64","darwin-arm64","darwin-x64"];
+    const names=new Set(targets.map(t=>"remote-control-agent-"+tag+"-"+t+
+      (t==="windows-x64"?".zip":".tar.gz")));
+    const platformAsset=/^remote-control-agent-v\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?-(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)\.(?:tar\.gz|zip)$/;
+    const seen=new Set();
+    for(const asset of release.assets){
+      if(!asset||typeof asset.name!=="string")return result;
+      if(!names.has(asset.name)){
+        if(platformAsset.test(asset.name))return result;
+        continue;
+      }
+      if(seen.has(asset.name)||asset.state!=="uploaded"||
+        asset.browser_download_url!==base+"/download/"+tag+"/"+asset.name||
+        typeof asset.digest!=="string"||!/^sha256:[a-f0-9]{64}$/.test(asset.digest)||
+        !Number.isSafeInteger(asset.size)||asset.size<1||asset.size>180_000_000)return result;
+      seen.add(asset.name);
+    }
+    if(seen.size!==targets.length)return result;
+    const suffix="-darwin-"+arch;
+    return {installed_version:installed,latest_version:tag,status:installed===tag?"up_to_date":
+      forwardMacVersion(installed+suffix,tag+suffix)?"update_available":"older_latest"};
+  }catch{return result;}
+}
 const SOURCE_COMMIT=/^[a-f0-9]{40}$/;
 /** Old and new source commits may differ after the repository move. Neither commit authorizes a download. */
 export function admitsMacOwnerUpgrade({installedVersion,installedSourceCommit,candidateVersion,candidateSourceCommit}){
@@ -219,9 +273,13 @@ export function ownerCliText(root,legacy=false){
     (legacy
       ?'  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'
       :'  status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n'+
+       '  update|upgrade) [ "$#" -eq 2 ] && [ "$2" = --check ] || exit 2 ;;\n'+
        '  stop|start|--help|--version) [ "$#" -eq 1 ] || exit 2 ;;\n')+
     '  *) echo "Use the reviewed macOS installer for install/upgrade." >&2; exit 2 ;;\n'+
     'esac\nexec '+quote(node)+' '+quote(manager)+(legacy?' "$1"\n':' "$@"\n');
+}
+export function matchesOwnerCli(text,root){
+  return text===ownerCliText(root)||text===ownerCliText(root,true);
 }
 async function approved(key){
   if(!await checked(key,{optional:true,mode:0o600})||
@@ -260,13 +318,13 @@ export async function confirm(question){
 export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,
   invoke=run,ask=confirm,online=observeOnline,freezeAgent=freeze,ownerIntent,
   runTemporary=spawnSync,terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
-  pauseLaunchd=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
-  if(!["install","upgrade","status","doctor","stop","start","temporary"].includes(action))
+  pauseLaunchd=ms=>new Promise(resolve=>setTimeout(resolve,ms)),doFetch=fetch}={}){
+  if(!["install","upgrade","status","doctor","check-update","stop","start","temporary"].includes(action))
     throw Error("Unsupported local action.");
   if(process.platform!=="darwin"||!["arm64","x64"].includes(process.arch)||
     Number.parseInt(os.release(),10)<24||process.getuid?.()===0)
     throw Error("Native unprivileged macOS 15+ ARM64 or x64 required.");
-  const readOnly=action==="status"||action==="doctor";
+  const readOnly=action==="status"||action==="doctor"||action==="check-update";
   if(!readOnly)process.umask(0o077);
   if(action==="temporary"){
     // Reuse the signed 24-hour foreground Agent: no LaunchAgent, no service
@@ -312,7 +370,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     ?await readFile(cli,"utf8"):null;
   // Never replace a foreign executable, symlink or mismatched owner version.
   // Accept the exact previously published launcher until normal upgrade.
-  if(previousCli!==null&&(!current||![ownerCliText(current.root),ownerCliText(current.root,true)].includes(previousCli)))
+  if(previousCli!==null&&(!current||!matchesOwnerCli(previousCli,current.root)))
     throw Error("Foreign or inconsistent local rca executable.");
   if(current){
     for(const rel of ["", "bin", "apps", "apps/remote-control-agent",
@@ -343,6 +401,15 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       last_online:"unconfirmed",receipts:"preserved_unverified",
     };
     if(action==="status")return state;
+    if(action==="check-update"){
+      if(!current)throw Error("No existing managed macOS Agent.");
+      const manifest=path.join(current.root,"bundle.json");
+      await checked(manifest,{mode:0o600});
+      const meta=JSON.parse(await readFile(manifest,"utf8"));
+      if(state.version!==candidateName(meta,meta.source_commit))throw Error("Untrusted installed version.");
+      return checkLatestMacVersion(meta.version,process.arch,doFetch);
+    }
+
     const findings=[];
     findings.push(current?"local_service_unconfirmed":"permanent_service_not_installed");
     findings.push("cloud_authorization_unconfirmed","signed_wss_unconfirmed");
@@ -539,9 +606,12 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   }
 }
 async function main(){
-  const [action,...params]=process.argv.slice(2);
+  let [action,...params]=process.argv.slice(2);
+  if((action==="update"||action==="upgrade")&&params.length===1&&params[0]==="--check"){
+    action="check-update";params=[];
+  }else if(action==="check-update")throw Error("Use update --check.");
   if(action==="--help"&&params.length===0){
-    console.log("Usage: rca [status [--json]|doctor [--json]|start|stop|--version|--help]");
+    console.log("Usage: rca [status [--json]|doctor [--json]|update --check|start|stop|--version|--help]");
     console.log("Use the reviewed macOS installer for install/upgrade; other lifecycle commands are not yet supported.");
     return;
   }
@@ -566,6 +636,7 @@ async function main(){
   const result=await localMacAction(action,{
     bundle:args["--bundle"],sourceSha:args["--source-sha"],endpoint:args["--endpoint"]});
   process.stdout.write(JSON.stringify(result)+"\n");
+  if(action==="check-update"&&result.status==="unknown")process.exitCode=1;
 }
 // On macOS, $TMPDIR commonly starts with /var while Node's ESM loader
 // canonicalizes it to /private/var. Compare canonical paths so a reviewed

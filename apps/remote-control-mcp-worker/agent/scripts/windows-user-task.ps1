@@ -156,7 +156,10 @@ if ($Action -eq 'Status') {
   }
   Check-Existing
   $running = ($task.State -eq 'Running')
-  '{"installed":true,"running":' + $running.ToString().ToLowerInvariant() + ',"autostart":"at-user-logon"}'
+  $launch = Read-TaskLaunch $task.Actions[0]
+  $versionDir = [IO.Path]::GetFullPath($launch.Entry).Substring($root.Length + 1).Split('\')[0]
+  $installed = $versionDir.Substring(0, $versionDir.Length - '-windows-x64'.Length)
+  @{installed=$true;running=$running;autostart='at-user-logon';version=$installed} | ConvertTo-Json -Compress
   exit 0
 }
 if ($Action -eq 'Endpoint') {
