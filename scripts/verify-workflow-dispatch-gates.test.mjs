@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import {runInNewContext} from 'node:vm';
 import { APPLICATIONS, RELEASE_WORKERS } from './select-affected-apps.mjs';
 import { verifyDocumentationContracts, verifyReleaseWorkers, verifyStaticWorkflowReferences } from './verify-workflow-dispatch-gates.mjs';
 
@@ -174,4 +175,23 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.doesNotMatch(release, /weixin-mcp-worker/, 'No Weixin Worker target, D1 migration, or smoke step in old release');
   assert.match(release, /GITHUB_SHA.*git ls-remote origin refs\/heads\/main/, 'Historical reruns must compare to current main');
   assert.match(release, /Stage selected Worker Secrets for every release/);
+});
+
+test('retired fixed Version 143 recovery has no executable release entry',()=>{
+ const job=release.split('  legacy-secret-cleanup:')[1];
+ const expression=job.match(/    if: >-\n([\s\S]*?)    runs-on:/)?.[1];
+ assert.ok(expression);
+ const condition=expression.trim().slice(3,-2).trim();
+ for(const codeOnly of [false,true])for(const uuCleanup of [false,true]){
+   const context={
+    github:{event_name:'workflow_dispatch',ref:'refs/heads/main',actor:'lirtual'},
+    needs:{checks:{result:'success',outputs:{release_ready:'true'}}},
+    inputs:{worker:'workflow-mcp-worker',deploy_to_production:true,
+      legacy_secret_cleanup_mode:'restore',workflow_code_only:codeOnly,
+      uu_session_secret_cleanup:uuCleanup,actions_old_ingress_quiesced:false,
+      actions_migration_prepare:false,actions_gate_reopen:false,uu_cleanup_approved:false}
+   };
+   assert.equal(runInNewContext(condition,context,{timeout:100}),!codeOnly&&uuCleanup);
+ }
+ assert.doesNotMatch(release,/workflow-version-restore\.mjs/);
 });
