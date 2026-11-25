@@ -87,6 +87,8 @@ pub fn signed_session_proof(
     })
 }
 
+// Keep every independently signed challenge field explicit at this protocol boundary.
+#[allow(clippy::too_many_arguments)]
 pub fn signed_secure_input_owner_intent_proof(
     pem: &str,
     request_id: &str,

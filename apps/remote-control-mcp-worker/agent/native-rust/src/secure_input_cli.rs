@@ -17,15 +17,15 @@ impl Drop for EchoGuard {
     }
 }
 #[cfg(unix)]
-fn hide_echo() -> Result<EchoGuard, ()> {
+fn hide_echo() -> Result<EchoGuard, SecureInputCliError> {
     let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
     if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     let mut hidden = original;
     hidden.c_lflag &= !(libc::ECHO | libc::ECHONL);
     if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &hidden) } != 0 {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     Ok(EchoGuard { original })
 }
@@ -44,26 +44,35 @@ impl Drop for EchoGuard {
     }
 }
 #[cfg(windows)]
-fn hide_echo() -> Result<EchoGuard, ()> {
+fn hide_echo() -> Result<EchoGuard, SecureInputCliError> {
     use windows_sys::Win32::System::Console::{
         GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
     };
     let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
     if handle.is_null() {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     let mut original = 0u32;
     if unsafe { GetConsoleMode(handle, &mut original) } == 0
         || unsafe { SetConsoleMode(handle, original & !ENABLE_ECHO_INPUT) } == 0
     {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     Ok(EchoGuard { handle, original })
 }
 
-pub fn confirm(prompt: &str, expected: &str) -> Result<bool, ()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecureInputCliError;
+
+impl From<()> for SecureInputCliError {
+    fn from(_: ()) -> Self {
+        Self
+    }
+}
+
+pub fn confirm(prompt: &str, expected: &str) -> Result<bool, SecureInputCliError> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     print!("{prompt}");
     io::stdout().flush().map_err(|_| ())?;
@@ -75,9 +84,9 @@ pub fn confirm(prompt: &str, expected: &str) -> Result<bool, ()> {
     Ok(response == expected)
 }
 
-pub fn read_hidden_secret() -> Result<Zeroizing<String>, ()> {
+pub fn read_hidden_secret() -> Result<Zeroizing<String>, SecureInputCliError> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     eprint!("Secret (input hidden): ");
     io::stderr().flush().map_err(|_| ())?;
@@ -91,7 +100,7 @@ pub fn read_hidden_secret() -> Result<Zeroizing<String>, ()> {
         value.pop();
     }
     if value.is_empty() || value.len() > 8_192 || value.contains(char::from(0)) {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     Ok(value)
 }
@@ -104,10 +113,10 @@ pub fn run_secure_input_owner_flow(
     pem: &str,
     device_id: &str,
     request_id: &str,
-) -> Result<(), ()> {
+) -> Result<(), SecureInputCliError> {
     use crate::device_pairing::PairingClient;
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     let client = PairingClient::new(endpoint).map_err(|_| ())?;
     let challenge = client
@@ -144,7 +153,7 @@ pub fn run_secure_input_owner_flow(
         "Type CONFIRM TARGET to confirm the exact target above: ",
         "CONFIRM TARGET",
     )? {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     let production = challenge["is_production"] == true;
     if production
@@ -153,7 +162,7 @@ pub fn run_secure_input_owner_flow(
             "AUTHORIZE PRODUCTION",
         )?
     {
-        return Err(());
+        return Err(SecureInputCliError);
     }
     let secret = read_hidden_secret()?;
     match client.secure_input_owner_intent(pem, device_id, &challenge, &secret, true, production) {
@@ -165,7 +174,7 @@ pub fn run_secure_input_owner_flow(
             eprintln!(
                 "No successful confirmation received. Check status for this same request ID; do not submit it again."
             );
-            Err(())
+            Err(SecureInputCliError)
         }
     }
 }

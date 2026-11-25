@@ -325,6 +325,8 @@ struct LocalControl {
     idle_attempt: Option<crate::session_enrollment::SessionPhysicalAttempt>,
 }
 
+// Keep each platform-owned queue explicit; combining them would obscure their distinct lifetimes.
+#[allow(clippy::too_many_arguments)]
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] managed: Option<

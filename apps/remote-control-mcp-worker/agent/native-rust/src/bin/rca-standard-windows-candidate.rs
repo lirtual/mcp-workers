@@ -460,7 +460,7 @@ mod windows {
         }
         let output = task_command(&directory, &["-Action", "Endpoint"])?;
         let endpoint = std::str::from_utf8(&output.stdout).map_err(|_| ())?.trim();
-        run_secure_input_owner_flow(endpoint, &pem, &id, request_id)
+        run_secure_input_owner_flow(endpoint, &pem, &id, request_id).map_err(|_| ())
     }
 
     fn owner_lifecycle(resume: bool) -> Result<(), ()> {

@@ -476,6 +476,7 @@ mod linux {
         rca_native_agent::secure_input_cli::run_secure_input_owner_flow(
             &endpoint, &pem, id, request_id,
         )
+        .map_err(|_| ())
     }
 
     fn owner_intent_local(endpoint: &str, action: &str, fd: i32) -> Result<(), ()> {

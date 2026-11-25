@@ -295,7 +295,7 @@ fn command_env(command: &mut std::process::Command, provider: &str, account: Opt
 fn run_cli(
     provider: &str,
     args: &[String],
-    mut secret: Option<&mut String>,
+    secret: Option<&mut String>,
     timeout: Duration,
     capture: bool,
     account: Option<&str>,
@@ -339,7 +339,7 @@ fn run_cli(
     } else {
         None
     };
-    if let Some(value) = secret.as_deref_mut() {
+    if let Some(value) = secret {
         let mut bytes = value.as_bytes().to_vec();
         bytes.push(b'\n');
         let write_result = child
@@ -715,16 +715,25 @@ impl Drop for SecureInputCommand {
 
 /// Returns None for unrelated WSS frames and rejects malformed secure-input
 /// frames before they can enter the generic operation queue.
-pub fn parse_command(frame: &str) -> Result<Option<SecureInputCommand>, ()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidSecureInputFrame;
+
+impl From<()> for InvalidSecureInputFrame {
+    fn from(_: ()) -> Self {
+        Self
+    }
+}
+
+pub fn parse_command(frame: &str) -> Result<Option<SecureInputCommand>, InvalidSecureInputFrame> {
     if frame.len() > 65_536 {
-        return Err(());
+        return Err(().into());
     }
     let value: Value = serde_json::from_str(frame).map_err(|_| ())?;
     let object = value.as_object().ok_or(())?;
     match object.get("kind").and_then(Value::as_str).ok_or(())? {
         "secure_input_prepare" => {
             if object.len() != 3 {
-                return Err(());
+                return Err(().into());
             }
             let id = object
                 .get("preflight_id")
@@ -732,7 +741,7 @@ pub fn parse_command(frame: &str) -> Result<Option<SecureInputCommand>, ()> {
                 .ok_or(())?;
             let target = parse_target(object.get("target").ok_or(())?).ok_or(())?;
             if !crate::identity::valid_device_id(id) {
-                return Err(());
+                return Err(().into());
             }
             Ok(Some(SecureInputCommand::Prepare {
                 id: id.to_owned(),
@@ -741,14 +750,14 @@ pub fn parse_command(frame: &str) -> Result<Option<SecureInputCommand>, ()> {
         }
         "secure_input" => {
             if object.len() != 5 {
-                return Err(());
+                return Err(().into());
             }
             let id = object.get("request_id").and_then(Value::as_str).ok_or(())?;
             let target = parse_target(object.get("target").ok_or(())?).ok_or(())?;
             let principal = object.get("provider_principal").ok_or(())?.clone();
             let secret = object.get("secret").and_then(Value::as_str).ok_or(())?;
             if !crate::identity::valid_device_id(id) || !valid_secret(secret) {
-                return Err(());
+                return Err(().into());
             }
             Ok(Some(SecureInputCommand::Submit {
                 id: id.to_owned(),
