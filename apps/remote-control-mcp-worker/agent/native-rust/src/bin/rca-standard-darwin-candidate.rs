@@ -1,7 +1,51 @@
 //! Unshipped Standard macOS RCA entrypoint. No installed Agent path uses it.
 //! The only supported state input is an existing owner-paired Node v2 identity.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn owner_stopped(key: &std::path::Path) -> Result<bool, ()> {
+    use std::fs;
+    use std::io::{ErrorKind, Read};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    // The macOS manager already owns this durable OFF state. The service
+    // must not introduce a different marker or restart a deliberately stopped
+    // device, including when cloud Stop could not be confirmed.
+    let directory = key.parent().ok_or(())?.join("macos");
+    let owner = unsafe { libc::geteuid() };
+    match fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Ok(info)
+            if info.is_dir() && info.uid() == owner && info.permissions().mode() & 0o077 == 0 => {}
+        _ => return Err(()),
+    }
+    let marker = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(directory.join("stopped"))
+    {
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Ok(file) => file,
+        Err(_) => return Err(()),
+    };
+    let info = marker.metadata().map_err(|_| ())?;
+    if !info.is_file()
+        || info.nlink() != 1
+        || info.uid() != owner
+        || info.permissions().mode() & 0o777 != 0o600
+        || info.len() != 8
+    {
+        return Err(());
+    }
+    let mut value = Vec::new();
+    marker.take(9).read_to_end(&mut value).map_err(|_| ())?;
+    if value != b"stopped\n" {
+        return Err(());
+    }
+    Ok(true)
+}
+
 #[cfg(target_os = "macos")]
 mod darwin {
+    use super::owner_stopped;
     use rca_native_agent::darwin_managed::DarwinManagedSessions;
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::native_file::{
@@ -53,24 +97,6 @@ mod darwin {
             return path.is_absolute().then_some(path).ok_or(());
         }
         Ok(home.join(".local/share/mcp-workers/remote-control/v2-identity.pem"))
-    }
-
-    fn owner_stopped(key: &Path) -> Result<bool, ()> {
-        let marker = sidecar(key, ".owner-stopped");
-        let info = match fs::symlink_metadata(marker) {
-            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
-            Err(_) => return Err(()),
-            Ok(info) => info,
-        };
-        if !info.is_file()
-            || info.file_type().is_symlink()
-            || info.nlink() != 1
-            || info.uid() != unsafe { libc::geteuid() }
-            || info.permissions().mode() & 0o777 != 0o600
-        {
-            return Err(());
-        }
-        Ok(true)
     }
 
     fn record_connected(identity: &Path, generation: &str) -> Result<(), ()> {
@@ -317,4 +343,38 @@ fn main() {
 fn main() {
     eprintln!("Unshipped Standard macOS Agent is macOS-only.");
     std::process::exit(1);
+}
+
+#[cfg(all(test, unix))]
+mod owner_stop_tests {
+    use super::owner_stopped;
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn macos_service_honors_the_manager_stop_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let key = root.path().join("v2-identity.pem");
+        let macos = root.path().join("macos");
+        fs::create_dir(&macos).unwrap();
+        fs::set_permissions(&macos, fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = macos.join("stopped");
+        assert_eq!(owner_stopped(&key), Ok(false));
+
+        fs::write(&marker, b"stopped\n").unwrap();
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(owner_stopped(&key), Ok(true));
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(owner_stopped(&key).is_err());
+        fs::set_permissions(&marker, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(&marker, b"unknown\n").unwrap();
+        assert!(owner_stopped(&key).is_err());
+        fs::remove_file(&marker).unwrap();
+        symlink("missing", &marker).unwrap();
+        assert!(owner_stopped(&key).is_err());
+        fs::remove_file(&marker).unwrap();
+        fs::remove_dir(&macos).unwrap();
+        symlink("missing", &macos).unwrap();
+        assert!(owner_stopped(&key).is_err());
+    }
 }
