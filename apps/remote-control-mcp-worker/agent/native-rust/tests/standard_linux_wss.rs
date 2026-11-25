@@ -142,6 +142,20 @@ mod linux {
         result
     }
 
+    fn wait_upgrade(socket: &Path, action: &str, expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if socket.exists() && upgrade(socket, action) == expected {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "local upgrade observation did not reach {expected}"
+            );
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
+
     fn reply(socket: &mut WebSocket<TcpStream>, frame: String) -> Value {
         socket.send(Message::Text(frame.into())).unwrap();
         serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap()
@@ -207,13 +221,15 @@ mod linux {
         let server_target = target.clone();
         let upgrade_socket = root.path().join("upgrade.sock");
         let server = thread::spawn(move || {
-            let mut socket = connected(listener);
+            wait_upgrade(&upgrade_socket, "verify-online", "busy\n");
+            let mut socket = connected(listener.try_clone().unwrap());
             let info: Value =
                 serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
             assert_eq!(info["kind"], "device_info");
             assert_eq!(info["agent_version"], "v0.1.57");
             assert_eq!(info["os"], "linux");
             assert_eq!(info["capabilities"], json!(["read", "file_write", "shell"]));
+            wait_upgrade(&upgrade_socket, "verify-online", "ready\n");
             assert_eq!(upgrade(&upgrade_socket, "idle-status"), "");
             assert_eq!(upgrade(&upgrade_socket, "idle-freeze"), "busy\n");
             assert_eq!(upgrade(&upgrade_socket, "freeze"), "ready\n");
@@ -287,6 +303,15 @@ mod linux {
                 .to_string(),
             );
             assert_eq!(status["result"]["receipt"]["state"], "completed");
+            // A lost transport is not continuing authorization. Reconnect
+            // only after observing that the owner-local gate is closed.
+            drop(socket);
+            wait_upgrade(&upgrade_socket, "verify-online", "busy\n");
+            let mut socket = connected(listener);
+            let info: Value =
+                serde_json::from_str(&socket.read().unwrap().into_text().unwrap()).unwrap();
+            assert_eq!(info["kind"], "device_info");
+            wait_upgrade(&upgrade_socket, "verify-online", "ready\n");
             socket
                 .close(Some(CloseFrame {
                     code: CloseCode::Policy,

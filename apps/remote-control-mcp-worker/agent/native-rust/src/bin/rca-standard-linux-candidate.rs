@@ -15,7 +15,7 @@ mod linux {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
     extern "C" fn request_stop(_: libc::c_int) {
@@ -880,6 +880,48 @@ mod linux {
         run_agent(&endpoint, &home, &key)
     }
 
+    struct AutomaticCheckSchedule {
+        next_check: Instant,
+    }
+
+    impl AutomaticCheckSchedule {
+        fn new(now: Instant, jitter_seconds: u64) -> Self {
+            Self {
+                next_check: now + Duration::from_secs(60 + jitter_seconds.min(240)),
+            }
+        }
+
+        fn take_due(&mut self, now: Instant, jitter_seconds: u64) -> bool {
+            if now < self.next_check {
+                return false;
+            }
+            self.next_check = now + Duration::from_secs(6 * 3600 - 900 + jitter_seconds.min(1800));
+            true
+        }
+    }
+
+    fn automatic_jitter(max: u64) -> u64 {
+        let mut bytes = [0u8; 8];
+        if getrandom::fill(&mut bytes).is_err() {
+            return 0;
+        }
+        u64::from_le_bytes(bytes) % (max + 1)
+    }
+
+    fn automatic_manager(home: &Path, key: &Path, executable: &Path) -> Option<PathBuf> {
+        if key != pairing_key(home, false) {
+            return None;
+        }
+        let app = executable.parent()?.parent()?;
+        let root = app.parent()?.parent()?;
+        if root.parent()? != home.join(".local/share/mcp-workers/remote-control/programs") {
+            return None;
+        }
+        let manager = app.join("scripts/manage-v2.py");
+        private_regular(&manager, 1024 * 1024).ok()?;
+        Some(manager)
+    }
+
     fn run_agent(endpoint: &str, home: &Path, key: &Path) -> Result<(), ()> {
         private_regular(key, 8192)?;
         private_regular(&sidecar(key, ".device-id"), 128)?;
@@ -906,11 +948,55 @@ mod linux {
         install_stop_signals()?;
         let stop = Arc::new(AtomicBool::new(false));
         let watch_stop = Arc::clone(&stop);
+        let proof_exe = std::env::current_exe().map_err(|_| ())?;
+        let automatic_manager = automatic_manager(home, key, &proof_exe);
         let monitor = std::thread::spawn(move || {
+            let mut schedule = automatic_manager
+                .as_ref()
+                .map(|_| AutomaticCheckSchedule::new(Instant::now(), automatic_jitter(240)));
+            let mut checker: Option<std::process::Child> = None;
             while !watch_stop.load(Ordering::Acquire) {
                 if SIGNAL_STOP.load(Ordering::Acquire) {
                     watch_stop.store(true, Ordering::Release);
                     break;
+                }
+                if let Some(child) = checker.as_mut() {
+                    match child.try_wait() {
+                        Ok(None) => (),
+                        Ok(Some(_)) => checker = None,
+                        Err(_) => {
+                            // A failed observation must not cause an immediate replay.
+                            checker = None;
+                            eprintln!(
+                                r#"{{"service":"remote-control-agent","event":"automatic_check_unconfirmed"}}"#
+                            );
+                        }
+                    }
+                }
+                if let (Some(manager), Some(schedule)) =
+                    (automatic_manager.as_ref(), schedule.as_mut())
+                {
+                    let now = Instant::now();
+                    if checker.is_none()
+                        && now >= schedule.next_check
+                        && schedule.take_due(now, automatic_jitter(1800))
+                    {
+                        // Manager revalidates the installed permanent identity,
+                        // consent, signed connection and pending transactions.
+                        // Never block the Agent signal or execution loop on I/O.
+                        match std::process::Command::new("/usr/bin/python3")
+                            .args(["-I", "-B"])
+                            .arg(manager)
+                            .args(["update", "--automatic"])
+                            .stdin(std::process::Stdio::null())
+                            .spawn()
+                        {
+                            Ok(child) => checker = Some(child),
+                            Err(_) => eprintln!(
+                                r#"{{"service":"remote-control-agent","event":"automatic_check_launch_failed"}}"#
+                            ),
+                        }
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -919,7 +1005,6 @@ mod linux {
         // parallel receipt ledger when switching the runtime.
         let proof_key = key.to_owned();
         let proof_id = device_id.to_owned();
-        let proof_exe = std::env::current_exe().map_err(|_| ())?;
         let proof_endpoint = endpoint.to_owned();
         let result = run_native_managed_session_with_upgrade(
             endpoint,
@@ -956,6 +1041,19 @@ mod linux {
         const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
 
         const NEW_ID: &str = "123e4567-e89b-42d3-a456-426614174002";
+
+        #[test]
+        fn automatic_check_has_bounded_startup_and_low_frequency_cadence() {
+            let start = std::time::Instant::now();
+            let mut schedule = AutomaticCheckSchedule::new(start, 120);
+            assert!(!schedule.take_due(start + Duration::from_secs(179), 0));
+            assert!(schedule.take_due(start + Duration::from_secs(180), 900));
+            assert!(!schedule.take_due(start + Duration::from_secs(181), 0));
+            assert!(!schedule.take_due(start + Duration::from_secs(180 + 6 * 3600 - 1), 0));
+            assert!(schedule.take_due(start + Duration::from_secs(180 + 6 * 3600), 1800));
+            assert!(!schedule.take_due(start + Duration::from_secs(180 + 12 * 3600), 0));
+            assert!(schedule.take_due(start + Duration::from_secs(180 + 12 * 3600 + 900), 0));
+        }
 
         #[test]
         fn temporary_launcher_is_owner_local_and_never_replaces_existing_command() {

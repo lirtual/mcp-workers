@@ -1351,6 +1351,174 @@ def verify_latest_selection():
     print("NATIVE_LATEST_SELECTION_CONTRACT_PASS")
 
 
+def verify_online_socket_peer():
+    import socket
+    import threading
+    with tempfile.TemporaryDirectory() as tmp:
+        key = Path(tmp) / "identity.pem"
+        endpoint = key.with_name("upgrade.sock")
+        received = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(endpoint))
+            endpoint.chmod(0o600)
+            server.listen(2)
+            server.settimeout(3)
+            def serve():
+                for _ in range(2):
+                    conn, _ = server.accept()
+                    with conn:
+                        conn.settimeout(3)
+                        request = conn.recv(64)
+                        received.append(request)
+                        if request:
+                            conn.sendall(b"ready\n")
+            thread = threading.Thread(target=serve, daemon=True)
+            thread.start()
+            rejected = False
+            with patch.object(bootstrap, "native_main_pid", return_value=os.getpid()+1):
+                try:
+                    bootstrap.native_consent(key, "verify-online")
+                except ValueError:
+                    rejected = True
+            with patch.object(bootstrap, "native_main_pid", return_value=os.getpid()):
+                assert bootstrap.native_consent(key, "verify-online") == "ready"
+            thread.join(4)
+            assert not thread.is_alive()
+            assert rejected and received == [b"", b"verify-online\n"], received
+    print("NATIVE_ONLINE_SOCKET_PEER_PASS")
+
+
+def verify_busy_freeze_does_not_release_another_admission():
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        state, mocks, verify = fake_services(home, old, new)
+        intent = Path(str(key) + ".native-upgrade-intent")
+        before = (unit.read_bytes(), launcher.readlink(), key.read_bytes(), receipts.read_bytes())
+        original = mocks["native_consent"]
+        def busy(key, action):
+            if action == "freeze":
+                state["consents"].append(action)
+                return "busy"
+            return original(key, action)
+        with patch.multiple(bootstrap, **{**mocks, "native_consent": busy}):
+            try:
+                bootstrap.native_cutover(home, new, ENDPOINT, verify)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Busy Agent accepted")
+        assert state["consents"] == ["freeze"], state["consents"]
+        assert not state["commands"] and not intent.exists()
+        assert before == (unit.read_bytes(), launcher.readlink(), key.read_bytes(), receipts.read_bytes())
+    finally:
+        ctx.cleanup()
+    print("NATIVE_BUSY_FREEZE_OWNERSHIP_PASS")
+
+
+def verify_detached_idle_wait():
+    from unittest.mock import Mock
+    for eventually_idle in (True, False):
+        ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+        try:
+            state, mocks, verify = fake_services(home, old, new)
+            original = mocks["native_consent"]
+            def consent(key, action):
+                if action == "freeze" and (not eventually_idle or not state["consents"]):
+                    state["consents"].append(action)
+                    return "busy"
+                return original(key, action)
+            sleep = Mock()
+            clock = (Mock(wraps=bootstrap.time.monotonic) if eventually_idle else Mock(side_effect=[0, 61]))
+            with patch.multiple(bootstrap, **{**mocks, "native_consent": consent}), patch.object(
+                    bootstrap.time, "monotonic", clock), patch.object(bootstrap.time, "sleep", sleep), patch.object(
+                    bootstrap, "native_cutover", wraps=bootstrap.native_cutover) as cutover:
+                # Use the existing transaction and only retry known no-effect Busy.
+                result = bootstrap.native_cutover_when_idle(home, new, ENDPOINT, verify=verify)
+            if eventually_idle:
+                assert cutover.call_count == 2 and result["signed_wss"] is True
+                assert state["consents"][:2] == ["freeze", "freeze"]
+                sleep.assert_called_once()
+            else:
+                assert cutover.call_count == 1 and result == {"status": "waiting_idle"}
+                assert not state["commands"] and state["consents"] == ["freeze"]
+                assert not Path(str(key) + ".native-upgrade-intent").exists()
+        finally:
+            ctx.cleanup()
+    print("NATIVE_DETACHED_IDLE_WAIT_PASS")
+
+
+def verify_automatic_cutover_admission_and_recovery():
+    for case in ("missing-policy", "disabled-at-lock", "offline", "disconnect-before-switch",
+                 "recovered", "unknown-recovery", "success"):
+        ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+        try:
+            state, mocks, verify = fake_services(home, old, new,
+                                                proof_good=case not in ("recovered", "unknown-recovery"))
+            before = unit.read_bytes()
+            history = receipts.read_bytes()
+            policy = Path(str(key) + ".automatic-update")
+            result_path = Path(str(key) + ".native-upgrade-result")
+            intent = Path(str(key) + ".native-upgrade-intent")
+            backup = Path(str(unit) + ".upgrade-backup")
+            if case != "missing-policy":
+                bootstrap.native_update_policy(home, "on")
+            original = mocks["native_consent"]
+            online_checks = []
+            def consent(key, action):
+                if action == "verify-online":
+                    online_checks.append(action)
+                    if case == "offline" or (case == "disconnect-before-switch" and len(online_checks) > 1):
+                        return "busy"
+                    return "ready"
+                return original(key, action)
+            def restored_online(key, pid, executable, seconds=30):
+                assert pid == 100 and executable == old / APP / ".build/rca-standard-linux-candidate"
+                assert state["active"] == "old"
+                return case != "unknown-recovery"
+            original_flock = bootstrap.fcntl.flock
+            def acquire(fd, flags):
+                value = original_flock(fd, flags)
+                if case == "disabled-at-lock":
+                    owned_file(policy, json.dumps({"device_id": ID, "enabled": False}))
+                return value
+            with patch.multiple(bootstrap, **{**mocks, "native_consent": consent,
+                                             "native_wait_online": restored_online}, create=True), patch.object(
+                    bootstrap.fcntl, "flock", side_effect=acquire):
+                try:
+                    response = bootstrap.native_cutover(home, new, ENDPOINT, verify, automatic=True)
+                except ValueError:
+                    assert case != "success"
+                else:
+                    assert case == "success" and response["signed_wss"] is True
+                if case in ("missing-policy", "disabled-at-lock", "offline", "disconnect-before-switch"):
+                    assert state["active"] == "old" and not state["commands"]
+                    assert unit.read_bytes() == before and not intent.exists() and not result_path.exists()
+                elif case == "unknown-recovery":
+                    assert state["active"] == "old" and intent.exists() and backup.exists()
+                    assert not result_path.exists()
+                elif case == "recovered":
+                    assert state["active"] == "old" and unit.read_bytes() == before
+                    assert not intent.exists() and not backup.exists()
+                    final = json.loads(result_path.read_text())
+                    assert final["status"] == "failed_recovered" and final["target_version"] == "v0.1.58"
+                    calls = list(state["commands"])
+                    try:
+                        bootstrap.native_cutover(home, new, ENDPOINT, verify, automatic=True)
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError("Recovered failed target retried automatically")
+                    assert state["commands"] == calls
+                else:
+                    final = json.loads(result_path.read_text())
+                    assert final["status"] == "success" and final["target_version"] == "v0.1.58"
+                    assert state["active"] == "new" and not intent.exists()
+                assert receipts.read_bytes() == history
+        finally:
+            ctx.cleanup()
+    print("NATIVE_AUTOMATIC_CUTOVER_ADMISSION_RECOVERY_PASS")
+
+
 def verify_owner_stop_at_cutover_lock():
     # Reproduce STOP committed by the other owner operation immediately
     # before the upgrade obtains the shared lock. An uncertain systemd stop
@@ -1382,6 +1550,57 @@ def verify_owner_stop_at_cutover_lock():
     finally:
         ctx.cleanup()
     print("NATIVE_OWNER_STOP_LOCK_CONTRACT_PASS")
+
+
+def verify_automatic_detached_admission():
+    import contextlib
+    import io
+    from unittest.mock import Mock
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        command = Mock(return_value=Mock(returncode=0))
+        upgrade = Mock(return_value=0)
+        online = Mock(return_value="ready")
+        with patch.dict(os.environ, {"HOME": str(home)}), patch.multiple(
+                bootstrap, native_main_pid=Mock(return_value=42),
+                native_process_executable=Mock(return_value=old / APP / ".build/rca-standard-linux-candidate"),
+                native_upgrade_latest=upgrade, native_consent=online), patch.object(
+                    bootstrap.subprocess, "run", command):
+            assert bootstrap.native_unattended_upgrade(old, automatic=True) == 0
+            assert not command.called and not upgrade.called and not online.called
+            bootstrap.native_update_policy(home, "on")
+            online.return_value = "busy"
+            try:
+                bootstrap.native_unattended_upgrade(old, automatic=True)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Offline automatic launch accepted")
+            assert not command.called
+            online.return_value = "ready"
+            assert bootstrap.native_unattended_upgrade(old, automatic=True) == 0
+            argv = command.call_args.args[0]
+            unit_name = "rca-upgrade-" + ID.replace("-", "")
+            assert "--unit=" + unit_name in argv
+            assert argv[-2:] == ["update", "--automatic-worker"]
+            command.return_value.returncode = 1
+            out = io.StringIO()
+            with patch.object(bootstrap, "native_systemctl", return_value=
+                    "LoadState=loaded\nActiveState=active\nTransient=yes\nDescription=RCA detached update\n"), contextlib.redirect_stdout(out):
+                assert bootstrap.native_unattended_upgrade(old, automatic=True) == 0
+            assert json.loads(out.getvalue()) == {"status": "existing", "unit": unit_name}
+            assert not upgrade.called
+            with patch.object(bootstrap, "approved_native_detached_worker", return_value=True):
+                assert bootstrap.native_unattended_upgrade(old, worker=True, automatic=True) == 0
+            upgrade.assert_called_once_with(ENDPOINT, detached_upgrade=True, expected_root=old, automatic=True)
+            bootstrap.native_update_policy(home, "off")
+            upgrade.reset_mock()
+            with patch.object(bootstrap, "approved_native_detached_worker", return_value=True):
+                assert bootstrap.native_unattended_upgrade(old, worker=True, automatic=True) == 0
+            assert not upgrade.called
+    finally:
+        ctx.cleanup()
+    print("NATIVE_AUTOMATIC_DETACHED_ADMISSION_PASS")
 
 
 def verify_native_detached_upgrade():
@@ -1430,7 +1649,7 @@ def verify_native_detached_upgrade():
             assert not upgrade.called
             with patch.object(bootstrap, "approved_native_detached_worker", return_value=True):
                 assert bootstrap.native_unattended_upgrade(old, worker=True) == 0
-            upgrade.assert_called_once_with(ENDPOINT, detached_upgrade=True, expected_root=old)
+            upgrade.assert_called_once_with(ENDPOINT, detached_upgrade=True, expected_root=old, automatic=False)
             assert command.call_count == 1
             assert not marker.exists() and b"disposable-receipt-history" in receipts.read_bytes()
     finally:
@@ -1464,6 +1683,11 @@ if __name__ == "__main__":
         verify_automatic_update_policy()
         verify_read_only_update_check()
         verify_latest_selection()
+        verify_online_socket_peer()
+        verify_busy_freeze_does_not_release_another_admission()
+        verify_detached_idle_wait()
+        verify_automatic_cutover_admission_and_recovery()
         verify_owner_stop_at_cutover_lock()
         verify_native_detached_upgrade()
+        verify_automatic_detached_admission()
         verify_isolated()

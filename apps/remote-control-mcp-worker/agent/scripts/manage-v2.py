@@ -177,7 +177,9 @@ def dispatch(command, args, root, info, bootstrap):
             result = bootstrap.native_check_latest(endpoint)
             print(json.dumps(result, ensure_ascii=False))
             return 1 if result["status"] == "unknown" else 0
-        if command == "upgrade" and args in (["--unattended"], ["--unattended-worker"]):
+        if args in (["--automatic"], ["--automatic-worker"]):
+            return bootstrap.native_unattended_upgrade(root, worker=args == ["--automatic-worker"], automatic=True)
+        if args in (["--unattended"], ["--unattended-worker"]):
             return bootstrap.native_unattended_upgrade(root, worker=args == ["--unattended-worker"])
         return upgrade(bootstrap, args)
     if command == "recover":

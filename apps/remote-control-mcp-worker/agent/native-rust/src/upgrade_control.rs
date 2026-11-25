@@ -15,6 +15,8 @@ use std::time::Duration;
 pub enum UpgradeCommand {
     Freeze,
     VerifyFrozen,
+    #[cfg(target_os = "linux")]
+    VerifyOnline,
     Release,
     IdleStatus,
     IdleFreeze,
@@ -90,6 +92,8 @@ fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>
             break match &request[..used] {
                 b"freeze\n" => UpgradeCommand::Freeze,
                 b"verify-frozen\n" => UpgradeCommand::VerifyFrozen,
+                #[cfg(target_os = "linux")]
+                b"verify-online\n" => UpgradeCommand::VerifyOnline,
                 b"release\n" => UpgradeCommand::Release,
                 b"idle-status\n" => UpgradeCommand::IdleStatus,
                 b"idle-freeze\n" => UpgradeCommand::IdleFreeze,
