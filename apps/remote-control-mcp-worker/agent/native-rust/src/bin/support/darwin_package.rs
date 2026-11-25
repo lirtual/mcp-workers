@@ -167,6 +167,7 @@ pub(super) fn verify(root: &Path, target: &str) -> Result<Package, ()> {
             "browser_runtime",
             "session_runtime",
             "upgrade_protocol",
+            "upgrade_profile",
         ]
         .iter()
         .any(|k| m.get(*k).is_some())
@@ -556,6 +557,14 @@ mod tests {
     fn native_package_rejects_legacy_files_wrong_arch_and_linked_binary() {
         let root = tempfile::tempdir().unwrap();
         fixture(root.path(), "darwin-arm64");
+        let manifest = root.path().join("bundle.json");
+        let original = fs::read(&manifest).unwrap();
+        let mut legacy: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        legacy["upgrade_profile"] = serde_json::json!("paired-full-v1");
+        fs::write(&manifest, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        assert!(verify(root.path(), "darwin-arm64").is_err());
+        fs::write(&manifest, original).unwrap();
+        assert!(verify(root.path(), "darwin-arm64").is_ok());
         assert!(verify(root.path(), "darwin-x64").is_err());
         fs::create_dir(root.path().join("bin")).unwrap();
         assert!(verify(root.path(), "darwin-arm64").is_err());

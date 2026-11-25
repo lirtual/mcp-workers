@@ -24,14 +24,14 @@ function macho(cpu) {
 }
 function tar(entries) {
   const chunks=[];
-  for(const {name,data=Buffer.alloc(0),type="0"} of entries) {
+  for(const {name,data=Buffer.alloc(0),type="0",mode=0o600} of entries) {
     const header=Buffer.alloc(512);
     header.write(name,0,"ascii");
     function writeOct(value,start,width){
       const v=value.toString(8).padStart(width-1,"0")+"\0";
       header.write(v,start,width,"ascii");
     }
-    writeOct(0o600,100,8);writeOct(0,108,8);writeOct(0,116,8);
+    writeOct(mode,100,8);writeOct(0,108,8);writeOct(0,116,8);
     writeOct(data.length,124,12);writeOct(0,136,12);
     header.fill(32,148,156);header.write(type,156,"ascii");
     header.write("ustar\0",257,"ascii");
@@ -266,13 +266,19 @@ test("#914 native-only Darwin archive has only the two native binaries and manif
       agent_runtime:"rust-standard-darwin-v1",runtime_profile:"standard-darwin-rust-runtime-v1",
       candidate_profile:"darwin-permanent-local-v1",native_supervisor:"darwin-owned-group-v1",
       source_commit:"a".repeat(40),modules:[]};
-    const fixture=(changes={},extra=[],binary=macho(cpu))=>tar([
-      {name:"bundle.json",data:Buffer.from(JSON.stringify({...manifest,...changes}))},
-      {name:app+"darwin-session-supervisor",data:macho(cpu)},
-      {name:app+"rca-standard-darwin-candidate",data:binary},...extra,
+    const fixture=(changes={},extra=[],binary=macho(cpu),modes={})=>tar([
+      {name:"bundle.json",data:Buffer.from(JSON.stringify({...manifest,...changes})),mode:modes.manifest??0o600},
+      {name:app+"darwin-session-supervisor",data:macho(cpu),mode:modes.helper??0o700},
+      {name:app+"rca-standard-darwin-candidate",data:binary,mode:modes.agent??0o700},...extra,
     ]);
     const opts={tag:version,target};
     assert.equal(inspectTarGzip(fixture(),opts).size,3);
+    for(const modes of [{manifest:0o644},{helper:0o600},{agent:0o4755},{agent:0o755}]) {
+      assert.throws(()=>inspectTarGzip(fixture({},[],macho(cpu),modes),opts),/permission/);
+    }
+    assert.throws(()=>inspectTarGzip(fixture({},[{name:"apps",type:"5",mode:0o755}]),opts),/permission/);
+    assert.throws(()=>inspectTarGzip(fixture({upgrade_profile:"paired-full-v1"}),opts),/identity/);
+    assert.throws(()=>inspectTarGzip(fixture({padding:"x".repeat(65536)}),opts),/manifest size/);
     for(const path of ["bin/node","apps/remote-control-agent/src/macos-permanent.js",
         "apps/remote-control-agent/scripts/macos-local.mjs"]) {
       assert.throws(()=>inspectTarGzip(fixture({},[{name:path,data:Buffer.from("legacy")}]),opts),/unreviewed runtime file/);

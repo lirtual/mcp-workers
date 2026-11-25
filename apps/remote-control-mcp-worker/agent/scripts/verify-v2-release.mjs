@@ -62,6 +62,15 @@ export function inspectTarGzip(gzip,{tag,target}) {
     if(entries.has(safe)) throw new Error("Duplicate tar entry.");
     const size=octal(header.subarray(124,136));
     if(directory && size!==0) throw new Error("Directory contains payload.");
+    if(darwin) {
+      // Match the native package verifier and deterministic Darwin builder.
+      if(octal(header.subarray(100,108))!==(safe==="bundle.json"?0o600:0o700))
+        throw Error("Unexpected native Darwin archive permission.");
+      if(safe==="bundle.json" && (size===0 || size>65536))
+        throw Error("Unexpected native Darwin manifest size.");
+      if(!directory && safe!=="bundle.json" && size>180_000_000)
+        throw Error("Unexpected native Darwin executable size.");
+    }
     if(size>MAX_TAR || cursor+512+size>tar.length) throw new Error("Truncated tar entry.");
     entries.set(safe,{directory, data:Buffer.from(tar.subarray(cursor+512,cursor+512+size))});
     cursor+=512+Math.ceil(size/512)*512;
@@ -85,6 +94,7 @@ export function inspectTarGzip(gzip,{tag,target}) {
         !/^[a-f0-9]{40}$/.test(manifest.source_commit||"") ||
         manifest.node!==undefined || manifest.browser_runtime!==undefined ||
         manifest.session_runtime!==undefined || manifest.upgrade_protocol!==undefined ||
+        manifest.upgrade_profile!==undefined ||
         !Array.isArray(manifest.modules) || manifest.modules.length!==0)
       throw Error("Unexpected native Darwin Release identity.");
     if([...DARWIN_FILES].some(file=>!entries.has(file)||entries.get(file).directory))
