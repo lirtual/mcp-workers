@@ -94,12 +94,23 @@ mod windows {
             Err(_) => return Err(()),
         }
         let (pem, id) = local_identity(&root.join("v2-identity.pem"))?;
+        let policy = match id.as_deref() {
+            Some(id)
+                if optional_private(&root.join("v2-identity.pem.install-mode"), 32)?.as_deref()
+                    == Some(b"permanent\n") =>
+            {
+                rca_native_agent::device_pairing::windows_auto_policy(&root, id)
+            }
+            _ => "off",
+        };
         Ok(serde_json::json!({
             "platform": "win32",
             "mode": "native-user-agent",
             "identity_present": pem.is_some(),
             "device_id": id,
             "remote_connection": "unconfirmed",
+            "automatic_update": policy,
+            "automatic_update_activity": if policy == "off" { "disabled" } else { "unknown" },
             "shell": true,
             "write_file": true
         }))
@@ -361,6 +372,62 @@ mod windows {
         Ok(output)
     }
 
+    fn automatic_policy(action: Option<&str>) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::{
+            lock_windows_permanent_mode, persist_windows_auto_policy, windows_auto_policy,
+        };
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        if optional_private(&root.join("v2-identity.pem.install-mode"), 32)?.as_deref()
+            != Some(b"permanent\n")
+        {
+            return Err(());
+        }
+        let _guard = if action.is_some() {
+            Some(lock_windows_permanent_mode(&root).map_err(|_| ())?)
+        } else {
+            None
+        };
+        let (_, id) = local_identity(&root.join("v2-identity.pem"))?;
+        let id = id.ok_or(())?;
+        let status = task_command(&directory, &["-Action", "Status"])?;
+        let facts: serde_json::Value = serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+        if facts["installed"] != true {
+            return Err(());
+        }
+        if let Some(action) = action {
+            if action == "on" {
+                let tag = facts["version"].as_str().ok_or(())?;
+                let parts: Vec<_> = tag.strip_prefix('v').ok_or(())?.split('.').collect();
+                if parts.len() != 3
+                    || parts.iter().any(|part| {
+                        part.is_empty()
+                            || !part.bytes().all(|b| b.is_ascii_digit())
+                            || (part.len() > 1 && part.starts_with('0'))
+                    })
+                {
+                    return Err(());
+                }
+                for name in [
+                    "windows-native-upgrade.json",
+                    "v2-identity.pem.activation-pending",
+                    "v2-identity.pem.device-id.pending",
+                ] {
+                    if optional_private(&root.join(name), 4096)?.is_some() {
+                        return Err(());
+                    }
+                }
+            }
+            persist_windows_auto_policy(&root, &id, action == "on").map_err(|_| ())?;
+        }
+        let policy = windows_auto_policy(&root, &id);
+        println!("{}", serde_json::json!({"automatic_update":policy}));
+        if action.is_some_and(|expected| expected != policy) {
+            return Err(());
+        }
+        Ok(())
+    }
+
     fn check_latest() -> Result<(), ()> {
         let (directory, _) = program_root()?;
         let status = task_command(&directory, &["-Action", "Status"])?;
@@ -583,7 +650,7 @@ mod windows {
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
                 [_, command] if command == "--help" || command == "help" => {
-                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update [--check|--version <staged-tag>]|recover|--version|--help]");
+                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update [--check|--auto [on|off]|--version <staged-tag>]|recover|--version|--help]");
                     println!("Bare update or upgrade uses the packaged owner installer from rca.cmd. Use the official installer for initial installation.");
                     Ok(())
                 }
@@ -630,6 +697,18 @@ mod windows {
                     )?;
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     Ok(())
+                }
+                [_, command, flag]
+                    if (command == "upgrade" || command == "update") && flag == "--auto" =>
+                {
+                    automatic_policy(None)
+                }
+                [_, command, flag, action]
+                    if (command == "upgrade" || command == "update")
+                        && flag == "--auto"
+                        && (action == "on" || action == "off") =>
+                {
+                    automatic_policy(Some(action))
                 }
                 [_, command, flag]
                     if (command == "upgrade" || command == "update") && flag == "--check" =>

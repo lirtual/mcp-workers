@@ -50,6 +50,14 @@ fn owner_readonly_status_and_doctor_are_json_without_creating_state() {
     let state: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(state["identity_present"], false);
     assert_eq!(state["remote_connection"], "unconfirmed");
+    assert_eq!(state["automatic_update"], "off");
+    assert_eq!(state["automatic_update_activity"], "disabled");
+    assert!(!invoke(&["--cli", "update", "--auto", "on"])
+        .status
+        .success());
+    assert!(!invoke(&["--cli", "update", "--auto", "yes"])
+        .status
+        .success());
     let doctor = invoke(&["--cli", "doctor", "--json"]);
     assert!(doctor.status.success(), "{:?}", doctor);
     let diagnosis: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();

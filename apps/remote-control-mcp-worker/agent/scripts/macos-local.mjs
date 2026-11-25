@@ -272,7 +272,7 @@ export function ownerCliText(root,legacy=false){
     (legacy
       ?'  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'
       :'  status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n'+
-       '  update|upgrade) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --check ]; } || exit 2 ;;\n'+
+       '  update|upgrade) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && { [ "$2" = --check ] || [ "$2" = --auto ]; }; } || { [ "$#" -eq 3 ] && [ "$2" = --auto ] && { [ "$3" = on ] || [ "$3" = off ]; }; } || exit 2 ;;\n'+
        '  stop|start|--help|--version) [ "$#" -eq 1 ] || exit 2 ;;\n')+
     '  *) echo "Use the reviewed macOS installer for install/upgrade." >&2; exit 2 ;;\n'+
     'esac\nexec '+quote(node)+' '+quote(manager)+(legacy?' "$1"\n':' "$@"\n');
@@ -284,6 +284,27 @@ async function approved(key){
   if(!await checked(key,{optional:true,mode:0o600})||
      !await checked(key+".device-id",{optional:true,mode:0o600}))return false;
   return ID.test((await readFile(key+".device-id","utf8")).trim());
+}
+// The same identity-bound consent record as Linux. A missing record is
+// an existing-installation opt-out, never implicit continuing consent.
+export async function readMacAutoPolicy(key,deviceId){
+  const file=key+".automatic-update";
+  try{
+    if(!await checked(file,{optional:true,mode:0o600}))return "off";
+    if((await lstat(file)).size>256)return "unknown";
+    const value=JSON.parse(await readFile(file,"utf8"));
+    if(!value||typeof value!=="object"||Object.keys(value).length!==2||
+       typeof value.device_id!=="string"||typeof value.enabled!=="boolean")return "unknown";
+    return ID.test(deviceId)&&value.device_id===deviceId&&value.enabled?"on":"off";
+  }catch{return "unknown";}
+}
+export async function writeMacAutoPolicy(key,deviceId,enabled){
+  if(!ID.test(deviceId)||typeof enabled!=="boolean"||
+     !await approved(key)||(await readFile(key+".device-id","utf8")).trim()!==deviceId)
+    throw Error("Existing device identity changed.");
+  const file=key+".automatic-update";
+  const replace=await checked(file,{optional:true,mode:0o600});
+  await ownedWrite(file,JSON.stringify({device_id:deviceId,enabled}),replace);
 }
 // Bind the attended operation to the existing local target, not to whatever
 // identity or LaunchAgent happens to be present after confirmation/staging.
@@ -331,18 +352,20 @@ export async function confirm(question){
   });
 }
 /** Host mutation only after local owner consent and a pinned source candidate. */
-export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,
+export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,policyAction,
   invoke=run,ask=confirm,online=observeOnline,freezeAgent=freeze,ownerIntent,
   runTemporary=spawnSync,runUpdate=spawnSync,terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
   pauseLaunchd=ms=>new Promise(resolve=>setTimeout(resolve,ms)),doFetch=fetch}={}){
-  if(!["install","upgrade","status","doctor","check-update","update-latest","stop","start","temporary"].includes(action))
+  if(!["install","upgrade","status","doctor","check-update","update-latest","update-policy","stop","start","temporary"].includes(action))
     throw Error("Unsupported local action.");
   if(process.platform!=="darwin"||!["arm64","x64"].includes(process.arch)||
     Number.parseInt(os.release(),10)<24||process.getuid?.()===0)
     throw Error("Native unprivileged macOS 15+ ARM64 or x64 required.");
   if(expectedBinding!==undefined&&(action!=="upgrade"||!(/^[a-f0-9]{64}$/).test(expectedBinding)))
     throw Error("Invalid expected upgrade binding.");
-  const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest";
+  if(policyAction!==undefined&&(action!=="update-policy"||!["on","off"].includes(policyAction)))
+    throw Error("Invalid automatic update policy action.");
+  const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest"||action==="update-policy";
   if(!readOnly)process.umask(0o077);
   if(action==="temporary"){
     // Reuse the signed 24-hour foreground Agent: no LaunchAgent, no service
@@ -412,11 +435,39 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     return sendSignedOwnerIntent(bound,key,action);
   };
   if(readOnly){
+    let deviceId=null,policy="off";
+    if(current){
+      try{
+        if(await approved(key)){
+          deviceId=(await readFile(key+".device-id","utf8")).trim();
+          policy=await readMacAutoPolicy(key,deviceId);
+        }
+      }catch{policy="unknown";}
+    }
+    if(action==="update-policy"){
+      if(!current||!deviceId)throw Error("Existing managed permanent service required.");
+      if(policyAction!==undefined){
+        const manifest=path.join(current.root,"bundle.json");
+        await checked(manifest,{mode:0o600});
+        const meta=JSON.parse(await readFile(manifest,"utf8"));
+        if(path.basename(current.root)!==candidateName(meta,meta.source_commit))
+          throw Error("Untrusted installed version.");
+        if(policyAction==="on"&&!/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(meta.version))
+          throw Error("Automatic update requires a stable Agent.");
+        if(policyAction==="on"&&await checked(journal,{optional:true,mode:0o600}))
+          throw Error("Unresolved upgrade journal: manual reconciliation required.");
+        await writeMacAutoPolicy(key,deviceId,policyAction==="on");
+        policy=await readMacAutoPolicy(key,deviceId);
+        if(policy!==policyAction)throw Error("Automatic update policy unconfirmed.");
+      }
+      return {automatic_update:policy};
+    }
     const state={
       installed:!!current,version:current?path.basename(current.root):null,
       local_service:current?(stopped?"stopped_requested_unverified":"present_unverified"):"not_installed",
       cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
       last_online:"unconfirmed",receipts:"preserved_unverified",
+      automatic_update:policy,automatic_update_activity:policy==="off"?"disabled":"unknown",
     };
     if(action==="status")return state;
     if(action==="check-update"||action==="update-latest"){
@@ -650,14 +701,17 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   }
 }
 async function main(){
-  let [action,...params]=process.argv.slice(2);
-  if((action==="update"||action==="upgrade")&&params.length===1&&params[0]==="--check"){
+  let [action,...params]=process.argv.slice(2),policyAction;
+  if((action==="update"||action==="upgrade")&&params[0]==="--auto"&&
+     (params.length===1||(params.length===2&&["on","off"].includes(params[1])))){
+    policyAction=params[1];action="update-policy";params=[];
+  }else if((action==="update"||action==="upgrade")&&params.length===1&&params[0]==="--check"){
     action="check-update";params=[];
   }else if((action==="update"||action==="upgrade")&&params.length===0){
     action="update-latest";
-  }else if(action==="check-update"||action==="update-latest")throw Error("Use update [--check].");
+  }else if(action==="check-update"||action==="update-latest"||action==="update-policy")throw Error("Use update [--check].");
   if(action==="--help"&&params.length===0){
-    console.log("Usage: rca [status [--json]|doctor [--json]|update [--check]|start|stop|--version|--help]");
+    console.log("Usage: rca [status [--json]|doctor [--json]|update [--check|--auto [on|off]]|start|stop|--version|--help]");
     console.log("Use the reviewed macOS installer for first installation; update uses the installed package.");
     return;
   }
@@ -681,7 +735,7 @@ async function main(){
   }
   const result=await localMacAction(action,{
     bundle:args["--bundle"],sourceSha:args["--source-sha"],endpoint:args["--endpoint"],
-    expectedBinding:args["--expected-binding"]});
+    expectedBinding:args["--expected-binding"],policyAction});
   if(action!=="update-latest")process.stdout.write(JSON.stringify(result)+"\n");
   if(action==="check-update"&&result.status==="unknown")process.exitCode=1;
 }

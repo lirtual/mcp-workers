@@ -450,6 +450,69 @@ fn lock_windows_mode(
     Ok(guard)
 }
 
+// Same identity-bound record used by the Linux owner manager.
+#[cfg(any(windows, test))]
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutoPolicy {
+    device_id: String,
+    enabled: bool,
+}
+
+#[cfg(any(windows, test))]
+fn parse_auto_policy(value: &str, device_id: &str) -> &'static str {
+    if value.len() > 256 {
+        return "unknown";
+    }
+    match serde_json::from_str::<AutoPolicy>(value) {
+        Ok(policy) if policy.device_id == device_id && policy.enabled => "on",
+        Ok(_) => "off",
+        Err(_) => "unknown",
+    }
+}
+
+#[cfg(windows)]
+pub fn windows_auto_policy(directory: &std::path::Path, device_id: &str) -> &'static str {
+    match read(&directory.join("v2-identity.pem.automatic-update"), 256) {
+        Ok(Some(value)) => parse_auto_policy(&value, device_id),
+        Ok(None) => "off",
+        Err(_) => "unknown",
+    }
+}
+
+/// Caller holds the existing permanent-mode lifecycle guard. The current
+/// approved identity is rechecked before replacing the private consent file.
+#[cfg(windows)]
+pub fn persist_windows_auto_policy(
+    directory: &std::path::Path,
+    device_id: &str,
+    enabled: bool,
+) -> Result<(), SessionRecoveryError> {
+    let invalid = || SessionRecoveryError::InvalidIdentity;
+    let identity = read(&directory.join("v2-identity.pem.device-id"), 128)?.ok_or_else(invalid)?;
+    if !valid_device_id(device_id) || identity.trim() != device_id {
+        return Err(invalid());
+    }
+    let pem = read(&directory.join("v2-identity.pem"), 8192)?.ok_or_else(invalid)?;
+    signing_key(&pem).map_err(|_| invalid())?;
+    let target = directory.join("v2-identity.pem.automatic-update");
+    if present(&target)? {
+        crate::validate_windows_private_path(&target, false).map_err(|_| invalid())?;
+    }
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|_| SessionRecoveryError::Unavailable)?;
+    let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let stage = directory.join(format!(".auto-policy-{suffix}"));
+    let value = json!({"device_id":device_id,"enabled":enabled}).to_string();
+    write_new(&stage, value.as_bytes())?;
+    if std::fs::rename(&stage, &target).is_err() {
+        let _ = std::fs::remove_file(&stage);
+        return Err(SessionRecoveryError::Unavailable);
+    }
+    crate::validate_windows_private_path(&target, false).map_err(|_| invalid())?;
+    Ok(())
+}
+
 #[cfg(windows)]
 pub fn persist_windows_owner_stop(directory: &std::path::Path) -> Result<(), SessionRecoveryError> {
     let marker = directory.join("v2-identity.pem.owner-stopped");
@@ -699,6 +762,59 @@ mod tests {
             "healthy repeat must not schedule activation"
         );
         assert_eq!(std::fs::read_to_string(id).unwrap().trim(), ID);
+    }
+
+    #[test]
+    fn automatic_update_policy_matches_only_the_current_device_and_boolean() {
+        let other = "123e4567-e89b-42d3-a456-426614174002";
+        assert_eq!(
+            parse_auto_policy(&format!(r#"{{"device_id":"{ID}","enabled":true}}"#), ID),
+            "on"
+        );
+        assert_eq!(
+            parse_auto_policy(&format!(r#"{{"device_id":"{ID}","enabled":true}}"#), other),
+            "off"
+        );
+        assert_eq!(
+            parse_auto_policy(&format!(r#"{{"device_id":"{ID}","enabled":false}}"#), ID),
+            "off"
+        );
+        for invalid in [
+            "{".to_owned(),
+            format!(r#"{{"device_id":"{ID}","enabled":1}}"#),
+            format!(r#"{{"device_id":"{ID}","enabled":true,"extra":true}}"#),
+            format!(r#"{{"device_id":"{ID}","enabled":false,"enabled":true}}"#),
+            " ".repeat(257),
+        ] {
+            assert_eq!(parse_auto_policy(&invalid, ID), "unknown");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_auto_policy_uses_existing_lifecycle_lock_and_sealed_file() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::seal_new_windows_private_directory(directory.path()).unwrap();
+        let root = directory.path();
+        pair_windows_identity_with(root, false, |_, _| Ok(ID.to_owned())).unwrap();
+        std::fs::remove_file(root.join("v2-identity.pem.activation-pending")).unwrap();
+        assert_eq!(windows_auto_policy(root, ID), "off");
+        let guard = lock_windows_permanent_mode(root).unwrap();
+        persist_windows_auto_policy(root, ID, true).unwrap();
+        assert_eq!(windows_auto_policy(root, ID), "on");
+        assert_eq!(
+            windows_auto_policy(root, "123e4567-e89b-42d3-a456-426614174002"),
+            "off"
+        );
+        assert!(
+            persist_windows_auto_policy(root, "123e4567-e89b-42d3-a456-426614174002", true)
+                .is_err()
+        );
+        persist_windows_auto_policy(root, ID, false).unwrap();
+        assert_eq!(windows_auto_policy(root, ID), "off");
+        crate::validate_windows_private_path(&root.join("v2-identity.pem.automatic-update"), false)
+            .unwrap();
+        drop(guard);
     }
 
     #[cfg(windows)]

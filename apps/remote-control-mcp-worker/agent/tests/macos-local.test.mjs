@@ -48,6 +48,40 @@ test("#1035 all macOS lifecycle paths recognize only exact owned launcher text",
     assert.equal(matchesOwnerCli(launcher,root+"-other"),false);
   }
 });
+test("#1035 automatic update consent is identity-bound and fail closed",async t=>{
+  const {readMacAutoPolicy,writeMacAutoPolicy}=await import("../scripts/macos-local.mjs");
+  const root=await mkdtemp(path.join(os.tmpdir(),"rca1035-policy-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const key=path.join(root,"v2-identity.pem"),policy=key+".automatic-update";
+  const other="bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee";
+  await writeFile(key,"synthetic-key",{mode:0o600});
+  await writeFile(key+".device-id",ID+"\n",{mode:0o600});
+  assert.equal(await readMacAutoPolicy(key,ID),"off");
+  assert.equal(await readMacAutoPolicy(key,other),"off");
+  await writeMacAutoPolicy(key,ID,true);
+  assert.equal(await readMacAutoPolicy(key,ID),"on");
+  assert.equal(await readMacAutoPolicy(key,other),"off");
+  assert.equal((await lstat(policy)).mode&0o777,0o600);
+  await writeMacAutoPolicy(key,ID,false);
+  assert.equal(await readMacAutoPolicy(key,ID),"off");
+  for(const value of ["{",JSON.stringify({device_id:ID,enabled:1}),
+      JSON.stringify({device_id:ID,enabled:true,extra:true})," ".repeat(257)]){
+    await writeFile(policy,value);
+    assert.equal(await readMacAutoPolicy(key,ID),"unknown");
+  }
+  await chmod(policy,0o644);
+  assert.equal(await readMacAutoPolicy(key,ID),"unknown");
+  await assert.rejects(writeMacAutoPolicy(key,ID,true),/Unsafe/);
+  await rm(policy);
+  await symlink(key,policy);
+  assert.equal(await readMacAutoPolicy(key,ID),"unknown");
+  await assert.rejects(writeMacAutoPolicy(key,ID,true),/Unsafe/);
+  await rm(policy);
+  await writeFile(key+".device-id",other+"\n");
+  await assert.rejects(writeMacAutoPolicy(key,ID,true),/identity changed/);
+  await assert.rejects(lstat(policy),{code:"ENOENT"});
+});
+
 test("#1035 existing macOS upgrade binds exact local identity and configuration",async t=>{
   const {macUpgradeBinding}=await import("../scripts/macos-local.mjs");
   const home=await mkdtemp(path.join(os.tmpdir(),"rca1035-binding-"));
@@ -222,20 +256,28 @@ test("#660 upgrade switch waits for confirmed launchd absence before any bootstr
 });
 
 test("#660 owner-local rca executable quotes paths and refuses unverified commands",async t=>{
-  const root="/Users/o'neill;touch BAD/programs/v0.0.0-ci-darwin-arm64";
-  const script=ownerCliText(root);
   const temp=await mkdtemp(path.join(os.tmpdir(),"rca660-cli-"));
   t.after(()=>rm(temp,{recursive:true,force:true}));
+  const root=path.join(temp,"o'neill;touch BAD","programs","v0.0.0-ci-darwin-arm64");
+  await mkdir(path.join(root,"bin"),{recursive:true,mode:0o700});
+  await writeFile(path.join(root,"bin/node"),'#!/bin/sh\nprintf "%s\\n" "$@"\n',{mode:0o700});
+  const script=ownerCliText(root);
   const file=path.join(temp,"rca");
   await writeFile(file,script,{mode:0o700});
   assert.equal(spawnSync("/bin/sh",["-n",file]).status,0);
   for(const action of ["upgrade","install","status",""]) {
-    const args=action? [action] : [];
-    const r=spawnSync("/bin/sh",[file,...args],{encoding:"utf8"});
-    // Permitted commands point to a nonexistent reviewed test binary.
-    if(action==="status"||action==="upgrade")assert.equal(r.status,127);
-    else assert.equal(r.status,2);
+    const args=action?[action]:[];
+    const r=spawnSync("/bin/sh",[file,...args],{encoding:"utf8",cwd:temp});
+    if(action==="status"||action==="upgrade"){
+      assert.equal(r.status,0,r.stderr);
+      assert.deepEqual(r.stdout.trim().split("\n"),[
+        path.join(root,"apps/remote-control-agent/scripts/macos-local.mjs"),action]);
+    }else{
+      assert.equal(r.status,2);
+      assert.equal(r.stdout,"");
+    }
   }
+  await assert.rejects(lstat(path.join(temp,"BAD")),{code:"ENOENT"});
   assert.match(script,/status\|doctor/);
   assert.match(script,/stop\|start/);
   assert.ok(script.includes("o'\"'\"'neill"));
@@ -249,12 +291,12 @@ test("#1035 macOS CLI routes supported commands and rejects arbitrary options",a
   const file=path.join(root,"rca");
   await writeFile(file,ownerCliText(root),{mode:0o700});
   const invoke=args=>spawnSync("/bin/sh",[file,...args],{encoding:"utf8"});
-  for(const args of [["status","--json"],["doctor"],["doctor","--json"],["update","--check"],["upgrade","--check"],["update"],["upgrade"],["--help"],["--version"]]){
+  for(const args of [["status","--json"],["doctor"],["doctor","--json"],["update","--check"],["upgrade","--check"],["update","--auto"],["update","--auto","on"],["upgrade","--auto","off"],["update"],["upgrade"],["--help"],["--version"]]){
     const result=invoke(args);
     assert.equal(result.status,0,result.stderr);
     assert.deepEqual(result.stdout.trim().split("\n").slice(1),args);
   }
-  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["--help","extra"],["--version","extra"],["update","--auto"],["install"]])
+  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["--help","extra"],["--version","extra"],["update","--auto","yes"],["update","--auto","on","extra"],["install"]])
     assert.equal(invoke(args).status,2,args.join(" "));
 });
 
@@ -470,6 +512,15 @@ test("#660 native offline install → stopped state → upgrade without restart"
     "unattended bare update must be refused");
   const state=await localMacAction("status",{home:f.home,invoke:f.invoke});
   assert.equal(state.installed,true);
+  assert.equal(state.automatic_update,"off");
+  assert.deepEqual(await localMacAction("update-policy",{home:f.home}),{automatic_update:"off"});
+  if(/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(f.version)){
+    assert.deepEqual(await localMacAction("update-policy",{home:f.home,policyAction:"on"}),{automatic_update:"on"});
+    assert.equal((await localMacAction("status",{home:f.home})).automatic_update,"on");
+    assert.deepEqual(await localMacAction("update-policy",{home:f.home,policyAction:"off"}),{automatic_update:"off"});
+  }else{
+    await assert.rejects(localMacAction("update-policy",{home:f.home,policyAction:"on"}),/requires a stable Agent/);
+  }
   // The old published launcher remains valid until an explicit upgrade
   // installs the new launcher; a read-only action must never replace it.
   const legacy=ownerCliText(firstRoot,true);
