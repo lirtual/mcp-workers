@@ -903,7 +903,7 @@ if(withData.executor!==manifest.executor||withData.provider!==manifest.provider|
         throw new PlanError('cloudflare_action_not_reviewed',stepPath+'/with');
       const input=object(withData.input,'invalid_cloudflare_input');
       if(trustedManifests[String(s.id)] && !['dub','bark','litterbox','envshare'].includes(String(manifest.provider))){
-        validateJsonActionInput(manifest.input_schema,input,stepPath+'/with/input',true);
+        validateJsonActionInput(manifest.input_schema,input,stepPath+'/with/input',true,manifest.max_input_bytes);
       }else if(manifest.provider==='dub'){
         keys(input,['url','public_stats'],stepPath+'/with/input');
         const target=input.url;

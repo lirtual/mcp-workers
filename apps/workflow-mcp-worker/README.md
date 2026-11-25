@@ -6,7 +6,7 @@ The compiler and immutable Published Plan determine valid steps, inputs, grants 
 
 **Operational boundaries**
 
-- Validate a definition before creating or updating a Draft. Publish and trigger changes require independent review of the actual effects and explicit authorization.
+- Validate a definition before creating or updating a Draft. Publish and trigger changes require independent review of the actual effects and explicit authorization. For new Cloudflare write effects, submit exactly the independently Owner-approved grants returned as `required_cloudflare_actions` by validation in `workflow_publish.approved_cloudflare_actions`; omit this field for existing automatically reviewed effects. A missing/unconfirmed deployment or changed contract requires fresh review, not a guessed grant.
 - Ordinary known Published runs use `workflow_run` and `workflow_result`; inspect `workflow_get` when the Published input contract is unknown.
 - Find unknown IDs with `workflow_list({query:"name or ID"})` and reviewed Actions with `workflow_action_list({query:"keyword"})`; explicitly use `source:"portal"` for approved MCP tools. Omit query for inventory. Search returns complete matches, retains global Session holders, and rejects oversized results without silent truncation; unfiltered Workflow List covers only the latest 100 non-deleted entries.
 - Durable Run/Step and physical GitHub Session outcomes are distinct. A queued result, cancellation acknowledgment or CI success is not confirmed effect completion.

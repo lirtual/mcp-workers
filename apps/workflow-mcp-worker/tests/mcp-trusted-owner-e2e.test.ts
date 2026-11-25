@@ -140,10 +140,11 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(listed.tools.some(x=>x.name==='workflow_approval'),false);
     const publisher=listed.tools.find(x=>x.name==='workflow_publish')!;
     const publishSchema=(publisher.inputSchema as any).properties;
-    for(const retired of ['approved_actions','approved_cloudflare_actions',
+    for(const retired of ['approved_actions',
       'approved_children','approve_cloudflare_execution','approve_heavy_execution'])
       assert.equal(Object.hasOwn(publishSchema,retired),false,retired);
     assert.ok(publishSchema.approved_operations,'external MCP targets keep independent grants');
+    assert.ok(publishSchema.approved_cloudflare_actions,'new Cloudflare effects require exact grants');
 
     async function call(name:string,args:Record<string,unknown>,error?:string):Promise<any>{
       const output=await client.callTool({name,arguments:args});
@@ -468,6 +469,7 @@ ${session?'    timeout-minutes: 360\n':''}    steps:
     }});
     assert.equal(forged.isError,true,'retired manual-grant parameters are rejected');
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,2);
+    await call('workflow_publish',{...target,approved_cloudflare_actions:[barkGrant]},'cloudflare_action_explicit_authorization_required');
     const barkPublished=await call('workflow_publish',target);
     const frozen=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
       .get(barkPublished.published_version_id) as {plan:string}).plan);
@@ -546,6 +548,7 @@ ${session?'    timeout-minutes: 360\n':''}    steps:
     ]};
     const validated=await call('workflow_validate',{definition:JSON.stringify(jsonDefinition)});
     assert.equal(validated.valid,true,JSON.stringify(validated));
+    assert.equal(validated.required_cloudflare_actions,undefined,'read-only effects require no caller grant');
     const jsonDraft=await call('workflow_create',{definition:JSON.stringify(jsonDefinition)});
     const jsonPublished=await call('workflow_publish',{
       workflow_id:jsonDraft.workflow_id,expected_revision:1,
@@ -576,18 +579,25 @@ ${session?'    timeout-minutes: 360\n':''}    steps:
       new TextEncoder().encode(JSON.stringify(canonical(privilegedManifest))));
     const privilegedDigest=Array.from(new Uint8Array(privilegedHash),
       b=>b.toString(16).padStart(2,'0')).join('');
-    let privilegedCalls=0;
+    let privilegedCalls=0, liveDeployment=jsonDeployment;
     env.ACTIONS={
       listActions:async()=>[{action_id:'json.privileged'}],
       getContract:async()=>({manifest:privilegedManifest,contract_digest:privilegedDigest,
-        deployment_id:jsonDeployment}),
-      execute:async()=>{privilegedCalls++;throw Error('must_not_execute');},
+        deployment_id:liveDeployment}),
+      execute:async(action:string,payload:any)=>{
+        assert.equal(action,'json.privileged');
+        assert.equal(payload.message,'never execute');
+        privilegedCalls++;
+        return {status:'accepted',input_digest:payload.input_digest,report_id:'approved-local-marker'};
+      },
     } as any;
     const privilegedDefinition=JSON.stringify({version:1,name:'privileged',steps:[
       {id:'privileged',uses:'action.run',with:{action_id:'json.privileged',
         input:{message:'never execute'}}},
     ]});
     const privilegedValidation=await call('workflow_validate',{definition:privilegedDefinition});
+    const explicitGrant={executor:'cloudflare',provider:'json',action:'json.privileged',
+      contract_digest:privilegedDigest,deployment_id:jsonDeployment};
     assert.equal(privilegedValidation.valid,true);
     const privilegedDraft=await call('workflow_create',{definition:privilegedDefinition});
     const denied=await client.callTool({name:'workflow_publish',arguments:{
@@ -599,6 +609,50 @@ ${session?'    timeout-minutes: 360\n':''}    steps:
     assert.equal(privilegedCalls,0);
     assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE workflow_id=?')
       .get(privilegedDraft.workflow_id) as {n:number}).n,0);
+    const targetExplicit={workflow_id:privilegedDraft.workflow_id,expected_revision:1};
+    for(const grants of [[],[{...explicitGrant,contract_digest:'0'.repeat(64)}],
+      [{...explicitGrant,action:'json.other'}],[{...explicitGrant,provider:'other'}],
+      [{...explicitGrant,deployment_id:'33333333-3333-4333-8333-333333333333'}],
+      [explicitGrant,explicitGrant],[explicitGrant,barkGrant]]){
+      await call('workflow_publish',{...targetExplicit,approved_cloudflare_actions:grants},
+        'cloudflare_action_explicit_authorization_required');
+    }
+    liveDeployment='33333333-3333-4333-8333-333333333333';
+    await call('workflow_publish',{...targetExplicit,approved_cloudflare_actions:[explicitGrant]},
+      'cloudflare_action_explicit_authorization_required');
+    liveDeployment=jsonDeployment;
+    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE workflow_id=?')
+      .get(privilegedDraft.workflow_id) as {n:number}).n,0);
+    assert.equal(privilegedCalls,0);
+    const explicitPublished=await call('workflow_publish',{
+      ...targetExplicit,approved_cloudflare_actions:[explicitGrant],
+    });
+    assert.deepEqual(privilegedValidation.required_cloudflare_actions,[explicitGrant]);
+    const explicitPlan=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .get(explicitPublished.published_version_id) as {plan:string}).plan);
+    assert.deepEqual(explicitPlan.cloudflare_action_approvals,[explicitGrant]);
+    assert.equal(privilegedCalls,0,'Publish never executes a new effect');
+    // An independently approved JSON effect is not a selected-file capability.
+    const priorInternetCalls=internetCalls;
+    await call('workflow_run',{workflow_id:privilegedDraft.workflow_id,
+      idempotency_key:'local-file-denied',
+      file:{file_id:'file_fixture',file_name:'fixture.txt',
+        download_url:'https://files.oaiusercontent.com/fixture?token=fake-only'}},
+      'litterbox_published_plan_required');
+    assert.equal(internetCalls,priorInternetCalls);
+    assert.equal(privilegedCalls,0);
+
+    const explicitRun=await call('workflow_run',{workflow_id:privilegedDraft.workflow_id});
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({
+      payload:{run_id:explicitRun.run_id},
+    } as WorkflowEvent<{run_id:string}>, {
+      do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
+    } as unknown as WorkflowStep);
+    const explicitResult=await call('workflow_result',{run_id:explicitRun.run_id});
+    assert.equal(explicitResult.status,'succeeded',JSON.stringify(explicitResult));
+    assert.equal(privilegedCalls,1);
+    assert.equal((sqlite.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations WHERE run_id=?')
+      .get(explicitRun.run_id) as {n:number}).n,1);
 
   }finally{
     await client.close();

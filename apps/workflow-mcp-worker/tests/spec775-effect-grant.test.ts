@@ -49,7 +49,7 @@ test('unclassified side effects cannot inherit an automatic Publish grant',async
  assert.equal((f.sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get() as {n:number}).n,0);
  assert.equal((f.sqlite.prepare('SELECT state FROM workflows WHERE id=?').get(workflowId) as {state:string}).state,'draft');
  // Existing lower-level Publish continues to demand an exact, independently
- // supplied grant. This is NOT exposed by the public auto-grant operation.
+ // supplied grant. The public path also needs the exact explicit subset.
  await assert.rejects(f.service.publish(workflowId,1),/cloudflare_action_approval_required/);
  const approved=await f.service.publish(workflowId,1,[],false,false,[],[],[f.approval],true);
  assert.equal(approved.state,'active');

@@ -26,7 +26,7 @@ export async function runGenericJsonAction(env:Env,plan:Plan,step:Step,runId:str
  if(!grant)return failed('cloudflare_action_approval_required');
  let input:Record<string,unknown>;
  try{input=(ctx?evaluateArguments(step.with.input,ctx):step.with.input) as Record<string,unknown>;
-   validateJsonActionInput(manifest.input_schema,input);}
+   validateJsonActionInput(manifest.input_schema,input,undefined,false,manifest.max_input_bytes);}
  catch{return failed('invalid_json_action_input');}
  const provider=env.ACTIONS;if(!provider)return failed('cloudflare_provider_not_configured');
  const db=env.DB;
@@ -54,6 +54,24 @@ export async function runGenericJsonAction(env:Env,plan:Plan,step:Step,runId:str
      const output=await provider.execute(String(step.with.action),{...input,invocation_id,
        deployment_id:deployment,contract_digest:step.with.contract_digest,input_digest});
      if(output.input_digest!==input_digest)return unknown('cloudflare_digest_conflict');
+     const receipt=output as Record<string,unknown>;
+     if((receipt.invocation_id!==undefined&&receipt.invocation_id!==invocation_id)||
+        (receipt.deployment_id!==undefined&&receipt.deployment_id!==deployment))
+       return unknown('cloudflare_digest_conflict');
+     if(output.status==='rejected'||output.status==='unknown'){
+       // Old contracts retain their generic status codes. New structured receipts
+       // must match the exact sealed declaration and the complete invocation identity.
+       if(Array.isArray(manifest.error_codes)){
+         if(Object.keys(receipt).some(k=>!['status','input_digest','invocation_id','deployment_id','error_code'].includes(k)))
+           return unknown();
+         if(receipt.error_code!==undefined){
+           if(receipt.invocation_id!==invocation_id||receipt.deployment_id!==deployment||
+              typeof receipt.error_code!=='string'||!manifest.error_codes.includes(receipt.error_code))
+             return unknown();
+           return output.status==='rejected'?failed(receipt.error_code):unknown(receipt.error_code);
+         }
+       }
+     }
      if(output.status==='accepted'){
        const schema=manifest.output_schema;
        if(schema===undefined)return {status:'succeeded',output:{status:'accepted'}};

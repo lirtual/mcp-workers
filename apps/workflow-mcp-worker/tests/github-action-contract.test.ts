@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {validateStaticOutputReferences,type Step} from '../src/plan.ts';
 import { parseGitHubAction } from '../src/github-action-contract.ts';
 import {parseGitHubSelectedFile} from '../src/selected-file-contract.ts';
 import {reviewedGitHubOutputSource} from '../src/github-action-discovery.ts';
@@ -169,5 +170,24 @@ test('GitHub selected-file source can review bounded alternate transport policy,
  ]){
   assert.throws(()=>parseGitHubSelectedFile(JSON.stringify(invalid),slots,'task','none'),
    /github_action_invalid_selected_file/);
+ }
+});
+
+
+test('generic Action references preserve the source-reviewed web Session output boundary',async()=>{
+ const web=parseGitHubAction(valid.replace('  WORKFLOW_ACTION_TYPE: session',
+  '  WORKFLOW_ACTION_TYPE: session\n  WORKFLOW_ACTION_OUTPUT_KIND: web'));
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/code-server.yml',web),true);
+ const manifest={output_schema:{type:'object',additionalProperties:false,
+  required:['status'],properties:{status:{type:'string'}}}};
+ const steps=(field:string):Step[]=>[
+  {id:'launch',uses:'github.run',needs:[],with:{action:{inputs:{}}}},
+  {id:'report',uses:'action.run',needs:['launch'],with:{provider:'json',action:'json.report',
+    input:{message:{ref:'steps.launch.output.session.'+field}}}},
+ ];
+ await validateStaticOutputReferences(steps('session_url'),{report:manifest},{launch:web});
+ for(const field of ['token','credential','private_hostname','download_url']){
+  await assert.rejects(validateStaticOutputReferences(steps(field),{report:manifest},{launch:web}),
+   /unknown_output_field/);
  }
 });
