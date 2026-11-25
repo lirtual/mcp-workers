@@ -1352,6 +1352,51 @@ def verify_latest_selection():
     print("NATIVE_LATEST_SELECTION_CONTRACT_PASS")
 
 
+def verify_download_binding():
+    import hashlib
+    from unittest.mock import Mock
+    for change in ("identity", "key", "version", "none"):
+        ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+        try:
+            data = b"reviewed archive fixture"
+            state, mocks, verify = fake_services(home, old, new)
+            selected = {"tag": "v0.1.58", "download": "fixture",
+                        "size": len(data), "digest": hashlib.sha256(data).hexdigest()}
+            def fetch(*args):
+                if change == "identity":
+                    owned_file(Path(str(key) + ".device-id"), b"123e4567-e89b-42d3-a456-426614174002\n")
+                elif change == "key":
+                    owned_file(key, b"changed-identity")
+                elif change == "version":
+                    replacement = old.parent / "v0.1.56-linux-x64-glibc"
+                    unit.write_text(bootstrap.native_render_unit(replacement, ENDPOINT, key))
+                    launcher.unlink()
+                    launcher.symlink_to(replacement / APP / "scripts/rca.sh")
+                return data
+            def install(*args, **kwargs):
+                binding = kwargs.get("expected_binding")
+                assert binding is not None, "Download did not preserve its original device binding"
+                return bootstrap.native_cutover(home, new, ENDPOINT, verify,
+                                                expected_binding=binding)
+            with patch.dict(os.environ, {"HOME": str(home)}), patch.object(
+                    sys.stdin, "isatty", return_value=True), patch.object(
+                    sys.stdout, "isatty", return_value=True), patch.multiple(
+                    bootstrap, **mocks, resolve_latest_native=Mock(return_value=selected),
+                    fetch=fetch, preflight=Mock(return_value="linux-x64-glibc"), install=install):
+                try:
+                    result = bootstrap.native_upgrade_latest(ENDPOINT)
+                except ValueError:
+                    assert change != "none"
+                else:
+                    assert change == "none" and result["signed_wss"]
+            if change != "none":
+                assert not state["commands"] and not state["consents"]
+                assert not Path(str(key) + ".native-upgrade-intent").exists()
+        finally:
+            ctx.cleanup()
+    print("NATIVE_DOWNLOAD_BINDING_PASS")
+
+
 def verify_online_socket_peer():
     import socket
     import threading
@@ -1577,6 +1622,18 @@ def verify_detached_idle_wait():
                 assert saved["status"] == "waiting_idle"
                 assert saved["target_version"] == "v0.1.58"
                 assert saved["installed_version"] == "v0.1.57"
+                # A different Latest can be busy without clearing the last
+                # recovered target (e.g. a later re-mark of Latest).
+                bootstrap.native_write_upgrade_result(key, ID, "b" * 32,
+                    "v0.1.59", "v0.1.57", "failed_recovered")
+                with patch.multiple(bootstrap, **{**mocks, "native_consent": consent}), patch.object(
+                        bootstrap.time, "monotonic", Mock(side_effect=[0, 61])):
+                    assert bootstrap.native_cutover_when_idle(
+                        home, new, ENDPOINT, verify=verify, automatic=True)["status"] == "waiting_idle"
+                assert bootstrap.native_upgrade_result(key, ID)["target_version"] == "v0.1.59"
+                assert bootstrap.native_upgrade_result(key, ID)["status"] == "failed_recovered"
+                bootstrap.native_write_upgrade_result(key, ID, "c" * 32,
+                    "v0.1.58", "v0.1.57", "waiting_idle")
                 bootstrap.native_update_policy(home, "off")
                 assert bootstrap.native_upgrade_result(key, ID) is None
         finally:
@@ -1799,6 +1856,10 @@ def verify_native_detached_upgrade():
         with patch.object(bootstrap.pathlib.Path, "read_text",
                           return_value="0::/user.slice/rca-upgrade-" + "a"*32 + ".service\n"):
             assert bootstrap.approved_native_detached_worker()
+            assert not bootstrap.approved_native_detached_worker(ID)
+        with patch.object(bootstrap.pathlib.Path, "read_text",
+                          return_value="0::/user.slice/rca-upgrade-" + ID.replace("-", "") + ".service\n"):
+            assert bootstrap.approved_native_detached_worker(ID)
     print("NATIVE_DETACHED_UPGRADE_CONTRACT_PASS")
 
 
@@ -1820,6 +1881,7 @@ if __name__ == "__main__":
         verify_automatic_update_policy()
         verify_read_only_update_check()
         verify_latest_selection()
+        verify_download_binding()
         verify_online_socket_peer()
         verify_unknown_freeze_never_releases_and_preserves_evidence()
         verify_logs_include_existing_update_worker_journal()
