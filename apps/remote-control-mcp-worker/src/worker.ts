@@ -315,7 +315,11 @@ async function callSecureInputTool(
   const record = args as Record<string, unknown>;
   const requestId = record.request_id;
   if (name === "request_secure_input") {
-    if (Object.keys(record).sort().join(",") !== "execution,purpose,target") return toolError(id, "Invalid secure input request.");
+    const keys = Object.keys(record).sort().join(",");
+    if ((keys !== "execution,purpose,target" && keys !== "execution,is_production,purpose,target") ||
+        (Object.hasOwn(record, "is_production") && typeof record.is_production !== "boolean")) {
+      return toolError(id, "Invalid secure input request.");
+    }
   } else if (Object.keys(record).length !== 1 || typeof requestId !== "string" ||
       !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(requestId)) {
     return toolError(id, "Invalid secure input request.");

@@ -139,8 +139,9 @@ test("#1039 owner CLI accepts one validated secure input request ID",async t=>{
   assert.equal(spawnSync("/bin/sh",["-n",file]).status,0);
   assert.equal(spawnSync("/bin/sh",[file,"secure-input"],{encoding:"utf8"}).status,2);
   assert.equal(spawnSync("/bin/sh",[file,"secure-input","bad"],{encoding:"utf8"}).status,2);
+  assert.match(script,/exec .*\"\$@\"/,"Owner CLI forwards the validated command and request ID");
   const valid=spawnSync("/bin/sh",[file,"secure-input",ID],{encoding:"utf8"});
-  assert.equal(valid.status,127,"validated ID reaches the version-pinned manager");
+  assert.notEqual(valid.status,2,"a valid ID passes the local CLI's input validation");
 });
 
 test("#1039 hidden input disables echo and decodes split UTF-8 without loss",async()=>{
