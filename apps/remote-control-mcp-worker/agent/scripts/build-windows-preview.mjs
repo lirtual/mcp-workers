@@ -87,7 +87,47 @@ export function buildWindowsPreview(args) {
     "apps/remote-control-agent/.build/rca-standard-windows-candidate.exe": rustAgentHash,
   };
   if (rustSessionHash) hashes["apps/remote-control-agent/.build/rca-session-windows-candidate.exe"] = rustSessionHash;
-  const launcherSource = '@echo off\nsetlocal DisableDelayedExpansion\n"%~dp0apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe" --cli %*\nexit /b %ERRORLEVEL%\n';
+  // The local attended installer must not have the old Rust Agent CLI
+  // as a waiting parent when the existing Task controller checks exit.
+  // Only the two bare verbs use this path; all flags stay with Rust.
+  const launcherSource = [
+    '@echo off',
+    'setlocal DisableDelayedExpansion',
+    'if "%~1"=="" goto :menu',
+    'if "%~1"=="uninstall" if "%2"=="" goto :attended_uninstall',
+    'if "%~1"=="update" if "%2"=="" goto :attended_update',
+    'if "%~1"=="upgrade" if "%2"=="" goto :attended_update',
+    '"%~dp0apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe" --cli %*',
+    'exit /b %ERRORLEVEL%',
+    ':menu',
+    '"%~dp0apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe" --menu-choice',
+    'if errorlevel 22 exit /b 1',
+    'if errorlevel 21 goto :menu_restart',
+    'if errorlevel 20 goto :menu_stop',
+    'if errorlevel 19 goto :menu_start',
+    'if errorlevel 18 goto :menu_doctor',
+    'if errorlevel 17 goto :menu_recover',
+    'if errorlevel 16 exit /b 1',
+    'if errorlevel 15 goto :attended_uninstall',
+    'if errorlevel 14 goto :attended_update',
+    'if errorlevel 13 goto :menu_logs',
+    'if errorlevel 12 goto :menu_pair',
+    'if errorlevel 11 goto :menu_status',
+    'if errorlevel 1 exit /b 1',
+    'exit /b 0',
+    ...['restart','stop','start','doctor','recover','logs','pair','status'].flatMap(command=>[
+      ':menu_'+command,
+      '"%~dp0apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe" --cli '+command,
+      'exit /b %ERRORLEVEL%',
+    ]),
+    ':attended_uninstall',
+    '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0apps\\remote-control-agent\\scripts\\windows-user-task.ps1" -Action Uninstall',
+    'exit /b %ERRORLEVEL%',
+    ':attended_update',
+    '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0apps\\remote-control-agent\\scripts\\windows-stage-install.ps1" -UpdateOnly',
+    'exit /b %ERRORLEVEL%',
+    '',
+  ].join('\n');
   const launcherBytes = Buffer.from(launcherSource.replace(/\r?\n/g, "\r\n"));
   writeFileSync(path.join(stage, "rca.cmd"), launcherBytes, { mode: 0o600 });
   hashes["rca.cmd"] = digest(launcherBytes);

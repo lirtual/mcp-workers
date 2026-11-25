@@ -21,8 +21,16 @@ const target=process.arch==="arm64"?"linux-arm64-glibc":"linux-x64-glibc";
 const base=path.join(home,".local/share/mcp-workers/remote-control");
 const key=path.join(base,"v2-identity.pem");
 const deviceId=key+".device-id";
-const oldRoot=path.join(base,"programs/v0.1.58-"+target);
-const nativeRoot=path.join(base,"programs/v0.1.59-rust-candidate.1-"+target);
+// The caller supplies independently reviewed version labels, not values inferred
+// from the archives under test. Reuse this real systemd seam for Stable-to-Stable
+// upgrades as well as unpublished builds.
+const oldVersion=process.env.RCA_TEST_BASELINE_VERSION;
+const nextVersion=process.env.RCA_TEST_TARGET_VERSION;
+assert.match(oldVersion,/^v\d+\.\d+\.\d+$/);
+assert.match(nextVersion,/^v\d+\.\d+\.\d+$/);
+assert.notEqual(oldVersion,nextVersion);
+const oldRoot=path.join(base,"programs",oldVersion+"-"+target);
+const nativeRoot=path.join(base,"programs",nextVersion+"-"+target);
 const rustExe=path.join(nativeRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
 const priorExe=path.join(oldRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
 const unitFile=path.join(home,".config/systemd/user",UNIT);
@@ -55,6 +63,10 @@ for(const [archive,destination] of [[oldArchive,oldRoot],[nativeArchive,nativeRo
     encoding:"utf8",timeout:12000
   });
   assert.equal(result.status,0,result.stderr||String(result.error));
+  const bundle=JSON.parse(readFileSync(path.join(destination,"bundle.json"),"utf8"));
+  assert.equal(bundle.version,destination===oldRoot?oldVersion:nextVersion);
+  assert.equal(bundle.target,target);
+  assert.equal(bundle.artifact_profile,"rust-native-only-v1");
 }
 mkdirSync(base,{recursive:true,mode:0o700});
 const privateKey=generateKeyPairSync("ed25519").privateKey.export({type:"pkcs8",format:"pem"});

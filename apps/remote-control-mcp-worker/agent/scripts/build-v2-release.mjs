@@ -1,3 +1,4 @@
+import { renderPackagedMacUpdateShell } from "../../src/install-macos-latest.ts";
 /**
  * Offline reviewed native-host packaging. Linux emits only the Rust-native
  * profile; Darwin retains Node v2 and its opt-in Rust prototype.
@@ -329,7 +330,7 @@ export function build(args) {
   const lifecycleSource=darwin && !nativeOnly ? readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8") : "";
   if(darwin && !nativeOnly && (!/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
      !/receiptDirectory:\s*options\.receiptDirectory/.test(lifecycleSource) ||
-     !/startUpgradeControl\(execution(?:!)?, keyPath\)/.test(lifecycleSource) ||
+     !/startUpgradeControl\(execution(?:!)?, keyPath, \(\) => authenticatedOnline && !signal\.aborted && !options\.sessionIdle\)/.test(lifecycleSource) ||
      !/executeV2FileOperation\(execution,/.test(lifecycleSource) ||
      !/executeV2SessionRead\(execution,/.test(lifecycleSource))) {
     throw new Error("Reviewed paired full-tools release profile is not proven.");
@@ -352,6 +353,8 @@ export function build(args) {
     copyFileSync(path.join(root,"scripts/macos-remote-upgrade.mjs"),remoteDest);
     chmodSync(localDest,0o600);
     chmodSync(remoteDest,0o600);
+    writeFileSync(path.join(work,"apps/remote-control-agent/scripts/macos-update.sh"),
+      renderPackagedMacUpdateShell(),{mode:0o600});
   }
   if (!darwin) {
     for (const name of ["bootstrap-v2.py", "manage-v2.py", "rca.sh"]) {

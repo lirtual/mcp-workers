@@ -42,7 +42,8 @@ awk '
     $0 ~ /^apps\/remote-control-agent\/src\/[a-z0-9-]+\.js$/ ||
     $0 ~ /^apps\/remote-control-agent\/scripts\/?$/ ||
     ($0=="apps/remote-control-agent/scripts/macos-local.mjs" ||
-     $0=="apps/remote-control-agent/scripts/macos-remote-upgrade.mjs") ||
+     $0=="apps/remote-control-agent/scripts/macos-remote-upgrade.mjs" ||
+     $0=="apps/remote-control-agent/scripts/macos-update.sh") ||
     $0 ~ /^apps\/remote-control-agent\/\.build\/?$/ ||
     $0=="apps/remote-control-agent/.build/darwin-session-supervisor" ||
     $0=="apps/remote-control-agent/package.json" || $0=="bundle.json") {bad=1}

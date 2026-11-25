@@ -8,10 +8,12 @@ import os from "node:os";
 import {realpathSync} from "node:fs";
 import {fileURLToPath} from "node:url";
 import {
-  checked,checkCandidate,localMacAction,ownerCliText,parsePlist,
+  checked,checkCandidate,localMacAction,matchesOwnerCli,parsePlist,
   launchctlServiceState,verifiedEndpoint,freeze,forwardMacVersion,
+  macUpgradeBinding,macBindingDigest,stableMacTag,requireMacAutomatic,
+  remoteJobLabel,remoteJobPlist,reconcileAutomaticMacJob,
 } from "./macos-local.mjs";
-export {forwardMacVersion};
+export {forwardMacVersion,remoteJobLabel,remoteJobPlist,reconcileAutomaticMacJob};
 
 const ROOT=path.join(".local","share","mcp-workers","remote-control");
 const LABEL="org.mcp-workers.remote-control-agent";
@@ -26,34 +28,6 @@ async function ownedDirectory(dir){
 function nativeOwner(){
   return process.platform==="darwin" && ["arm64","x64"].includes(process.arch) &&
     Number.parseInt(os.release(),10)>=24 && process.getuid?.()>0;
-}
-export function remoteJobLabel(id){
-  if(!ID.test(id))throw Error("Invalid one-shot upgrade operation.");
-  return "org.mcp-workers.rca-upgrade-"+id.replaceAll("-","");
-}
-// launchctl submit restarts failed jobs (confirmed by the real Mac incident).
-// A private, launch-on-load plist with LaunchOnlyOnce prevents any replay even
-// when the detached worker exits nonzero or when the same owner logs in again.
-export function remoteJobPlist(id,node,worker,dir){
-  const label=remoteJobLabel(id);
-  const escape=s=>s.replaceAll("&","&amp;").replaceAll("<","&lt;")
-    .replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&apos;");
-  if(![node,worker,dir].every(s=>path.isAbsolute(s)))
-    throw Error("Absolute owner-private job paths required.");
-  const arg=x=>"<string>"+escape(x)+"</string>";
-  return '<?xml version="1.0" encoding="UTF-8"?>\n'+
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '+
-    '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'+
-    '<plist version="1.0"><dict>\n'+
-    '<key>Label</key>'+arg(label)+'\n'+
-    '<key>ProgramArguments</key><array>'+
-    [node,worker,"worker",id].map(arg).join("")+'</array>\n'+
-    '<key>RunAtLoad</key><true/>\n'+
-    '<key>KeepAlive</key><false/>\n'+
-    '<key>LaunchOnlyOnce</key><true/>\n'+
-    '<key>StandardOutPath</key>'+arg(path.join(dir,"stdout.log"))+'\n'+
-    '<key>StandardErrorPath</key>'+arg(path.join(dir,"stderr.log"))+'\n'+
-    '</dict></plist>\n';
 }
 export function verifiedLaunchdJob(id,uid,pid,invoke=run,parentPid=process.ppid){
   if(!ID.test(id)||!Number.isInteger(uid)||uid<=0||
@@ -83,7 +57,7 @@ async function trustedExisting(home,endpoint,bundle,sourceSha,invoke=run){
   const old= parsePlist(await readFile(plist,"utf8"),programs,endpoint);
   const cli=path.join(home,".local","bin","rca");
   await checked(cli,{mode:0o700});
-  if((await readFile(cli,"utf8"))!==ownerCliText(old.root))
+  if(!matchesOwnerCli(await readFile(cli,"utf8"),old.root))
     throw Error("Unrecognized installed local CLI.");
   for(const key of ["stopped","switch.json"]){
     if(await checked(path.join(mac,key),{mode:0o600,optional:true}))
@@ -128,11 +102,30 @@ export async function awaitCallerQuiescence(freezeAgent,key,{
   return "busy";
 }
 async function record(file,contents){
-  await writeFile(file,JSON.stringify(contents)+"\n",{flag:"wx",mode:0o600});
+  await writeFile(file,JSON.stringify(contents)+"\n",{flag:"wx",mode:0o600,flush:true});
 }
-export async function dispatchRemoteMacUpgrade({home=os.homedir(),bundle,sourceSha,endpoint,invoke=run}={}){
+async function automaticBinding(home){
+  const identity=path.join(home,ROOT),mac=path.join(identity,"macos");
+  return macUpgradeBinding({key:path.join(identity,"v2-identity.pem"),
+    plist:path.join(home,"Library","LaunchAgents",LABEL+".plist"),
+    cli:path.join(home,".local/bin/rca"),endpointFile:path.join(mac,"endpoint"),
+    stopMark:path.join(mac,"stopped"),journal:path.join(mac,"switch.json")});
+}
+export async function dispatchRemoteMacUpgrade({home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,invoke=run}={}){
   process.umask(0o077);
+  const automatic=expectedBinding!==undefined;
+  if(automatic){
+    if(!/^[a-f0-9]{64}$/.test(expectedBinding))throw Error("Invalid automatic target binding.");
+    await reconcileAutomaticMacJob(home,invoke);
+  }
   const t=await trustedExisting(home,endpoint,bundle,sourceSha,invoke);
+  if(automatic){
+    if(macBindingDigest(await automaticBinding(home))!==expectedBinding)
+      throw Error("Existing automatic upgrade target changed.");
+    const target=stableMacTag(t.version);
+    if(!target)throw Error("Automatic target must be Stable.");
+    await requireMacAutomatic(path.join(t.base,"v2-identity.pem"),stableMacTag(path.basename(t.old.root)),target);
+  }
   const id=randomUUID(),label=remoteJobLabel(id);
   const tasks=path.join(t.mac,"remote-upgrades");
   await ownedDirectory(tasks);
@@ -142,13 +135,13 @@ export async function dispatchRemoteMacUpgrade({home=os.homedir(),bundle,sourceS
   await mkdir(dir,{mode:0o700});await checked(dir,{dir:true});
   const staged=path.join(dir,"bundle");
   // Write the single durable idempotency marker before staging and submission.
-  await record(active,{id,label,version:t.version,state:"preparing"});
+  await record(active,{id,label,version:t.version,state:"preparing",...(automatic?{automatic:true}:{})});
   await cp(bundle,staged,{recursive:true,force:false,errorOnExist:true});
   await checked(staged,{dir:true});
   if(await checkCandidate(staged,sourceSha)!==t.version)
     throw Error("Staged candidate identity mismatch.");
   await record(path.join(dir,"context.json"),{id,label,version:t.version,
-    sourceSha,endpoint,state:"owner_authorized_remote_upgrade"});
+    sourceSha,endpoint,state:"owner_authorized_remote_upgrade",...(automatic?{automatic:true,expectedBinding}:{})});
   const node=path.join(staged,"bin","node");
   const worker=path.join(staged,"apps","remote-control-agent","scripts","macos-remote-upgrade.mjs");
   await checked(node,{mode:0o700});await checked(worker,{mode:0o600});
@@ -178,7 +171,9 @@ export async function runRemoteMacUpgrade(id,{home=os.homedir(),invoke=run,ppid=
   const plan=JSON.parse(await readFile(context,"utf8"));
   if(state.id!==id||state.label!==remoteJobLabel(id)||
      plan.id!==id||plan.label!==state.label||plan.version!==state.version||
-     plan.state!=="owner_authorized_remote_upgrade"||!SHA.test(plan.sourceSha))
+     plan.state!=="owner_authorized_remote_upgrade"||!SHA.test(plan.sourceSha)||
+     (state.automatic===true)!==(plan.automatic===true)||
+     (plan.automatic===true&&!/^[a-f0-9]{64}$/.test(plan.expectedBinding)))
     throw Error("One-shot upgrade context is inconsistent.");
   const bundle=path.join(dir,"bundle");
   // The existing approved native upgrade freezes operations and rolls back
@@ -190,15 +185,29 @@ export async function runRemoteMacUpgrade(id,{home=os.homedir(),invoke=run,ppid=
       :awaitCallerQuiescence(existingFreeze,key);
     const out=await localMacAction("upgrade",{home,bundle,
       sourceSha:plan.sourceSha,endpoint:plan.endpoint,invoke,online,
-      freezeAgent:handoff,ask:async()=>true});
-    if(out.status!=="connected_observed"||out.version!==plan.version)
+      freezeAgent:handoff,ask:async()=>true,
+      ...(plan.automatic?{automaticOperation:id,expectedBinding:plan.expectedBinding}:{})});
+    if(out.version!==plan.version||!(plan.automatic
+      ?["connected_observed","waiting_idle","failed_recovered"].includes(out.status)
+      :out.status==="connected_observed"))
       throw Error("Signed activation not confirmed.");
-    await record(resultFile,{status:"connected_observed",version:out.version,id});
+    await record(resultFile,{status:out.status,version:out.version,id});
+    // The next managed check reaps the completed automatic job; never
+    // bootout a still-running worker or lose an unknown admission marker.
+    if(plan.automatic)return {status:out.status,version:out.version,id};
     // A verified completed worker may clear the admission marker. Audited
     // per-operation result and task files remain for independent review.
     if((JSON.parse(await readFile(marker,"utf8"))).id===id)await rm(marker);
     return {status:"connected_observed",version:out.version,id};
   }catch{
+    if(plan.automatic){
+      let unchanged=false;
+      try{unchanged=macBindingDigest(await automaticBinding(home))===plan.expectedBinding;}catch{}
+      if(unchanged){
+        await record(resultFile,{status:"deferred",version:plan.version,id});
+        return {status:"deferred",version:plan.version,id};
+      }
+    }
     await record(resultFile,{status:"needs_attention",id});
     throw Error("Detached upgrade needs inspection; no blind retry.");
   }
@@ -238,7 +247,7 @@ export async function reconcileFailedRemoteMacUpgrade({
   const cli=path.join(home,".local","bin","rca");
   await checked(cli,{mode:0o700});
   const oldCli=await readFile(cli,"utf8");
-  if(oldCli!==ownerCliText(current.root))throw Error("Old owner CLI mismatch.");
+  if(!matchesOwnerCli(oldCli,current.root))throw Error("Old owner CLI mismatch.");
   if(await checked(path.join(mac,"stopped"),{optional:true,mode:0o600}))
     throw Error("Owner STOP remains active.");
   await checked(path.join(home,".local","state","mcp-workers","remote-control-agent",
@@ -350,10 +359,11 @@ async function main(){
   if(action==="worker"&&args.length===1){
     process.stdout.write(JSON.stringify(await runRemoteMacUpgrade(args[0]))+"\n");return;
   }
-  if(action==="dispatch"&&args.length===6&&args[0]==="--bundle"&&
-     args[2]==="--source-sha"&&args[4]==="--endpoint"){
+  if(((action==="dispatch"&&args.length===6)||
+      (action==="dispatch-automatic"&&args.length===8&&args[6]==="--expected-binding"))&&
+     args[0]==="--bundle"&&args[2]==="--source-sha"&&args[4]==="--endpoint"){
     process.stdout.write(JSON.stringify(await dispatchRemoteMacUpgrade({
-      bundle:args[1],sourceSha:args[3],endpoint:args[5]}))+"\n");return;
+      bundle:args[1],sourceSha:args[3],endpoint:args[5],expectedBinding:args[7]}))+"\n");return;
   }
   throw Error("Unsupported remote upgrade action.");
 }

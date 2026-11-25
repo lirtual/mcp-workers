@@ -15,7 +15,7 @@ test("MCP remote Agent upgrade dispatch is absent; local upgrade freeze stays",a
   assert.doesNotMatch(lifecycle,/upgrade_agent|parseRemoteUpgradeDispatch|launchLinuxUpgrade/);
   assert.doesNotMatch(engine,/admitOwnerApprovedUpgrade|stageAndLaunchApprovedWindowsUpgrade|readLinuxUpgradeOutcome/);
   assert.equal(Object.hasOwn(collectDeviceInfo(),"upgrade_protocol"),false);
-  assert.match(lifecycle,/startUpgradeControl\(execution(?:!)?, keyPath\)/);
+  assert.match(lifecycle,/startUpgradeControl\(execution(?:!)?, keyPath, /);
 });
 
 class FakeSocket extends EventTarget {

@@ -48,6 +48,35 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     assert.equal(result.status,0,result.stderr);
     assert.match(result.stdout,/"cli_version": "v0.1.1"/);
     assert.match(result.stdout,/"local_permanent_service": "not_installed"/);
+    const structured=run(["status","--json"]);
+    assert.equal(structured.status,0,structured.stderr);
+    const state=JSON.parse(structured.stdout);
+    assert.equal(state.cli_version,"v0.1.1");
+    assert.equal(state.local_permanent_service,"not_installed");
+    assert.equal(state.cloud_authorization,"unconfirmed");
+    assert.equal(state.platform,"linux");
+    assert.equal(state.arch,"x64");
+    assert.equal(state.installed_version,null);
+    assert.equal(state.local_service,"not_installed");
+    assert.equal(state.identity_present,false);
+    assert.equal(state.device_id,null);
+    const diagnosis=run(["doctor","--json"]);
+    assert.equal(diagnosis.status,0,diagnosis.stderr);
+    const checked=JSON.parse(diagnosis.stdout);
+    assert.deepEqual(checked.status,state);
+    assert.ok(checked.findings.includes("permanent_service_not_installed"));
+    assert.ok(checked.findings.includes("cloud_authorization_unconfirmed"));
+    assert.notEqual(run(["status","--json","extra"]).status,0);
+    assert.notEqual(run(["doctor","--repair"]).status,0);
+    await assert.rejects(lstat(path.join(f.home,".config")),{code:"ENOENT"});
+    const help=run(["--help"]);
+    assert.equal(help.status,0,help.stderr);
+    assert.match(help.stdout,/status\|doctor/);
+    assert.match(help.stdout,/--version\|--help/);
+    assert.match(help.stdout,/browser authorization link/);
+    assert.match(help.stdout,/provide the approved HTTPS origin explicitly/);
+    for(const args of [["--version","extra"],["--help","extra"]])
+      assert.notEqual(run(args).status,0);
     const version=run(["--version"]);
     assert.equal(version.status,0,version.stderr);
     assert.equal(version.stdout.trim(),"v0.1.1");
@@ -57,7 +86,7 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     const python=args=>spawnSync("/usr/bin/python3",
       ["-I","-B",path.join(f.script,"manage-v2.py"),...args],
       {encoding:"utf8",env,timeout:10000});
-    for(const args of [[],["pair"],["upgrade"],["uninstall"]])
+    for(const args of [[],["pair"],["upgrade"],["update"],["update","--check"],["uninstall"]])
       assert.notEqual(python(args).status,0,"Rust Python manager must reject "+args.join(" "));
     await assert.rejects(
       lstat(path.join(f.home,".local/share/mcp-workers/remote-control/v2-identity.pem")),

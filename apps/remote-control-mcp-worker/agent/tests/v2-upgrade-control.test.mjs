@@ -107,3 +107,24 @@ test("freeze refuses an operation still awaiting async receipt admission",async(
     await rm(dir,{recursive:true,force:true});
   }
 });
+
+test("local online observation follows current authenticated state without freezing",async()=>{
+  const dir=await mkdtemp(path.join(os.tmpdir(),"rc-upgrade-online-"));
+  const keyPath=path.join(dir,"identity.pem");
+  const execution=createAgentExecutionEngine({receiptDirectory:path.join(dir,"receipts")});
+  let online=false,control;
+  try{
+    control=await startUpgradeControl(execution,keyPath,()=>online);
+    assert.equal(await requestUpgradeConsent(keyPath,"verify-online"),"busy");
+    online=true;
+    assert.equal(await requestUpgradeConsent(keyPath,"verify-online"),"ready");
+    assert.equal(await requestUpgradeConsent(keyPath,"freeze"),"ready");
+    online=false;
+    assert.equal(await requestUpgradeConsent(keyPath,"verify-online"),"busy");
+    assert.equal(await requestUpgradeConsent(keyPath,"release"),"released");
+  }finally{
+    await control?.close();
+    await execution.close();
+    await rm(dir,{recursive:true,force:true});
+  }
+});

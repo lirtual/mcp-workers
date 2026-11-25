@@ -372,10 +372,11 @@ export async function maintainAuthenticatedDeviceSession(
     receiptDirectory: options.receiptDirectory,
     sessionIdle: options.sessionIdle,
   });
+  let authenticatedOnline = false;
   let upgradeControl: Awaited<ReturnType<typeof startUpgradeControl>> | undefined;
   if (full && (process.platform === "linux" ||
       (process.platform === "darwin" && options.enableLocalUpgrade === true))) {
-    try { upgradeControl = await startUpgradeControl(execution!, keyPath); }
+    try { upgradeControl = await startUpgradeControl(execution!, keyPath, () => authenticatedOnline && !signal.aborted && !options.sessionIdle); }
     catch (error) { await execution!.close(); throw error; }
   }
   let failures = 0;
@@ -393,6 +394,7 @@ export async function maintainAuthenticatedDeviceSession(
       const runtimeInfo = collectDeviceInfo(full && execution ? "full" : "read-only");
       connection.socket.send(JSON.stringify(runtimeInfo));
       const connectedAt = performance.now();
+      authenticatedOnline = true;
       options.onState?.("connected");
       // Search cursors are scoped to one authenticated WSS incarnation.
       // Reconnect never inherits a stale/other-device cursor or replays a call.
@@ -410,6 +412,7 @@ export async function maintainAuthenticatedDeviceSession(
           shellAvailable,
           full && execution ? () => execution.stopOwnedForRevocation() : undefined);
       } finally {
+        authenticatedOnline = false;
         await execution.resetReadSessions();
       }
       if (outcome === "aborted" || outcome === "closed") return;
@@ -420,6 +423,7 @@ export async function maintainAuthenticatedDeviceSession(
       const intervalMs = options.heartbeat?.intervalMs ?? HEARTBEAT_INTERVAL_MS;
       if (performance.now() - connectedAt >= intervalMs * 2) failures = 0;
     } catch (error) {
+      authenticatedOnline = false;
       if (signal.aborted) break;
       if (error instanceof DeviceSessionRejectedError) {
         options.onState?.("rejected");
@@ -435,6 +439,7 @@ export async function maintainAuthenticatedDeviceSession(
     await delay(capped, signal);
   }
   } finally {
+    authenticatedOnline = false;
     await upgradeControl?.close();
     await execution?.close();
   }
