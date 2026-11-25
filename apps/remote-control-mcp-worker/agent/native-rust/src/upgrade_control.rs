@@ -51,6 +51,18 @@ fn private_directory(parent: &Path) -> io::Result<()> {
 /// Query the existing owner-local execution gate without freezing or
 /// changing any service state. A historical connection marker is not proof.
 pub fn verify_online(key: &Path) -> io::Result<bool> {
+    owner_gate(key, UpgradeCommand::VerifyOnline)
+}
+
+/// Use only the existing bounded owner-local protocol; no new endpoint.
+pub fn owner_gate(key: &Path, command: UpgradeCommand) -> io::Result<bool> {
+    let (request, accepted): (&[u8], &[u8]) = match command {
+        UpgradeCommand::Freeze => (b"freeze\n", b"ready\n"),
+        UpgradeCommand::VerifyFrozen => (b"verify-frozen\n", b"ready\n"),
+        UpgradeCommand::VerifyOnline => (b"verify-online\n", b"ready\n"),
+        UpgradeCommand::Release => (b"release\n", b"released\n"),
+        _ => return Err(io::Error::from(ErrorKind::InvalidInput)),
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let parent = key
         .parent()
@@ -70,11 +82,11 @@ pub fn verify_online(key: &Path) -> io::Result<bool> {
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(3), async {
             let mut stream = tokio::net::UnixStream::connect(&path).await?;
-            stream.write_all(b"verify-online\n").await?;
+            stream.write_all(request).await?;
             let mut reply = Vec::new();
             stream.take(33).read_to_end(&mut reply).await?;
             match reply.as_slice() {
-                b"ready\n" => Ok(true),
+                reply if reply == accepted => Ok(true),
                 b"busy\n" => Ok(false),
                 _ => Err(io::Error::from(ErrorKind::InvalidData)),
             }
@@ -210,6 +222,36 @@ impl Drop for UpgradeServer {
 #[cfg(test)]
 mod online_tests {
     use super::*;
+
+    #[test]
+    fn owner_gate_preserves_exact_freeze_verify_release_protocol() {
+        let home = tempfile::tempdir().unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let key = home.path().join("fixture.pem");
+        let (sender, receiver) = sync_channel(4);
+        let server = UpgradeServer::bind(&key, sender).unwrap();
+        let worker = thread::spawn(move || {
+            for (command, reply) in [
+                (UpgradeCommand::Freeze, "busy\n"),
+                (UpgradeCommand::Freeze, "ready\n"),
+                (UpgradeCommand::VerifyFrozen, "ready\n"),
+                (UpgradeCommand::Release, "released\n"),
+                (UpgradeCommand::Release, "ready\n"),
+            ] {
+                let request = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(request.command, command);
+                request.reply.send(reply.into()).unwrap();
+            }
+        });
+        assert!(!owner_gate(&key, UpgradeCommand::Freeze).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Freeze).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::VerifyFrozen).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Release).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Release).is_err());
+        assert!(owner_gate(&key, UpgradeCommand::IdleFreeze).is_err());
+        worker.join().unwrap();
+        drop(server);
+    }
 
     #[test]
     fn online_query_uses_existing_private_socket_and_exact_read_only_reply() {

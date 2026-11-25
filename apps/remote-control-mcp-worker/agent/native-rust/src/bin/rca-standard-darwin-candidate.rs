@@ -254,12 +254,13 @@ fn record_connection(
 mod darwin {
     use super::darwin_lifecycle::{
         connection_time, installed_generation, iso_time, native_cli, native_plist, new_generation,
-        registration, resume_owned, stop_owned, unregister_owned, Registration, LABEL,
+        no_other_programs, registration, resume_owned, stop_owned, switch_outcome,
+        unregister_owned, Registration, SwitchOutcome, SwitchRecord, LABEL,
     };
     use super::darwin_package;
     use super::unix_pairing::{
-        exists_owned_path, move_owned_exclusive, pair_or_repair, read_private, sidecar,
-        write_executable, write_new,
+        exists_owned_path, move_owned_exclusive, pair_or_repair, read_executable, read_private,
+        replace_owned, sidecar, write_executable, write_new,
     };
     use super::{
         identity_directory, lock_identity_directory, owner_stopped, pairing_store,
@@ -410,10 +411,18 @@ mod darwin {
 
     // Drain both pipes while the bounded launchctl request runs.
     fn launchctl(args: &[&str]) -> Result<(Option<i32>, String, String), ()> {
+        bounded_command("/bin/launchctl", args, 65536)
+    }
+
+    fn bounded_command(
+        program: &str,
+        args: &[&str],
+        limit: u64,
+    ) -> Result<(Option<i32>, String, String), ()> {
         use std::io::Read;
         use std::process::{Command, Stdio};
         use std::time::Instant;
-        let mut child = Command::new("/bin/launchctl")
+        let mut child = Command::new(program)
             .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -424,18 +433,22 @@ mod darwin {
         let stderr = child.stderr.take().ok_or(())?;
         fn collect(
             input: impl Read + Send + 'static,
+            limit: u64,
         ) -> std::thread::JoinHandle<Result<String, ()>> {
             std::thread::spawn(move || {
                 let mut data = Vec::new();
-                input.take(65537).read_to_end(&mut data).map_err(|_| ())?;
-                if data.len() > 65536 {
+                input
+                    .take(limit + 1)
+                    .read_to_end(&mut data)
+                    .map_err(|_| ())?;
+                if data.len() as u64 > limit {
                     return Err(());
                 }
                 String::from_utf8(data).map_err(|_| ())
             })
         }
-        let out = collect(stdout);
-        let err = collect(stderr);
+        let out = collect(stdout, limit);
+        let err = collect(stderr, limit);
         let deadline = Instant::now() + Duration::from_secs(3);
         let status = loop {
             match child.try_wait() {
@@ -483,68 +496,89 @@ mod darwin {
         plist: PathBuf,
     }
 
-    fn installed(home: &Path, base: &Path) -> Result<Installed, ()> {
-        let bundle = current_bundle()?;
-        let exe = bundle.join(darwin_package::ENTRY);
-        let version = darwin_package::verify(&bundle, native_target())?.version;
-        let arch = if cfg!(target_arch = "aarch64") {
-            "arm64"
-        } else {
-            "x64"
-        };
-        let mut expected = base.to_path_buf();
-        for part in [
-            "macos",
-            "programs",
-            &format!("{version}-darwin-{arch}"),
-            "apps",
-            "remote-control-agent",
-            ".build",
-        ] {
-            expected.push(part);
-            let info = fs::symlink_metadata(&expected).map_err(|_| ())?;
-            if !info.is_dir()
-                || info.uid() != unsafe { libc::geteuid() }
-                || info.mode() & 0o077 != 0
-            {
-                return Err(());
-            }
-        }
-        expected.push("rca-standard-darwin-candidate");
-        if exe != expected {
-            return Err(());
-        }
-        let info = fs::symlink_metadata(&exe).map_err(|_| ())?;
-        if !info.is_file()
+    fn owner_directory(parent: &Path, name: &str, private: bool) -> Result<PathBuf, ()> {
+        let path = parent.join(name);
+        let info = fs::symlink_metadata(&path).map_err(|_| ())?;
+        if !info.is_dir()
             || info.uid() != unsafe { libc::geteuid() }
-            || info.nlink() != 1
-            || info.mode() & 0o777 != 0o700
+            || info.mode() & (if private { 0o077 } else { 0o022 }) != 0
         {
             return Err(());
         }
-        let mut agents = fs::canonicalize(home).map_err(|_| ())?;
-        for part in ["Library", "LaunchAgents"] {
-            agents.push(part);
-            let info = fs::symlink_metadata(&agents).map_err(|_| ())?;
-            if !info.is_dir()
-                || info.uid() != unsafe { libc::geteuid() }
-                || info.mode() & 0o022 != 0
-            {
+        Ok(path)
+    }
+
+    fn program_directory(base: &Path) -> Result<PathBuf, ()> {
+        owner_directory(&owner_directory(base, "macos", true)?, "programs", true)
+    }
+
+    fn startup_paths(home: &Path) -> Result<(PathBuf, PathBuf), ()> {
+        let home = fs::canonicalize(home).map_err(|_| ())?;
+        let agents = owner_directory(
+            &owner_directory(&home, "Library", false)?,
+            "LaunchAgents",
+            false,
+        )?;
+        let bin = owner_directory(&owner_directory(&home, ".local", false)?, "bin", false)?;
+        Ok((agents.join(format!("{LABEL}.plist")), bin.join("rca")))
+    }
+
+    // Resolve the previous service from the exact canonical plist rather
+    // than treating the newly downloaded executable as the installed one.
+    fn resolve_installation(
+        programs: &Path,
+        plist: &Path,
+        raw: &str,
+        endpoint: &str,
+    ) -> Result<Installed, ()> {
+        let mut found = None;
+        for entry in fs::read_dir(programs).map_err(|_| ())? {
+            let entry = entry.map_err(|_| ())?;
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let suffix = format!("-{}", native_target());
+            let Some(version) = name.strip_suffix(&suffix) else {
+                continue;
+            };
+            if !darwin_package::valid_version(version) {
+                continue;
+            }
+            let executable = entry.path().join(darwin_package::ENTRY);
+            let Ok(generation) = installed_generation(raw, &executable, endpoint) else {
+                continue;
+            };
+            if found.is_some() {
                 return Err(());
             }
+            let package = darwin_package::verify(&entry.path(), native_target())?;
+            if package.version != version {
+                return Err(());
+            }
+            found = Some(Installed {
+                executable,
+                endpoint: endpoint.to_owned(),
+                version: version.to_owned(),
+                generation,
+                plist: plist.to_owned(),
+            });
         }
+        found.ok_or(())
+    }
+
+    fn installed(home: &Path, base: &Path) -> Result<Installed, ()> {
+        let programs = program_directory(base)?;
+        let (plist, cli) = startup_paths(home)?;
         let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
-        let endpoint = endpoint.trim().to_owned();
-        let plist = agents.join(format!("{LABEL}.plist"));
         let raw = read_private(&plist, 65536)?.ok_or(())?;
-        let generation = installed_generation(&raw, &exe, &endpoint)?;
-        Ok(Installed {
-            executable: exe,
-            endpoint,
-            version,
-            generation,
-            plist,
-        })
+        let current = resolve_installation(&programs, &plist, &raw, endpoint.trim())?;
+        if current.executable != current_bundle()?.join(darwin_package::ENTRY)
+            || read_executable(&cli)?.as_deref() != Some(native_cli(&current.executable)?.as_str())
+        {
+            return Err(());
+        }
+        Ok(current)
     }
 
     fn now_ms() -> Result<u64, ()> {
@@ -774,14 +808,7 @@ mod darwin {
             Err(error) if error.kind() == ErrorKind::AlreadyExists => (),
             Err(_) => return Err(()),
         }
-        let info = fs::symlink_metadata(&path).map_err(|_| ())?;
-        if !info.is_dir()
-            || info.uid() != unsafe { libc::geteuid() }
-            || info.mode() & (if private { 0o077 } else { 0o022 }) != 0
-        {
-            return Err(());
-        }
-        Ok(path)
+        owner_directory(parent, name, private)
     }
 
     fn sync_remove(path: &Path) -> Result<(), ()> {
@@ -862,11 +889,8 @@ mod darwin {
         let plist = agents.join(format!("{LABEL}.plist"));
         let cli = ensure_owner_directory(&home.join(".local"), "bin", false)?.join("rca");
         let journal = macos.join("switch.json");
-        if owner_stopped(&key)?
-            || exists_owned_path(&plist)?
-            || exists_owned_path(&cli)?
-            || exists_owned_path(&journal)?
-        {
+        let stopped = owner_stopped(&key)?;
+        if exists_owned_path(&plist)? || exists_owned_path(&cli)? || exists_owned_path(&journal)? {
             return Err(());
         }
         service_absent()?;
@@ -887,7 +911,15 @@ mod darwin {
             }
             move_owned_exclusive(&stage, &destination)?;
         }
-        pair_identity(&key, &client, name, false)?;
+        if stopped {
+            // Uninstall is distinct from revocation. A retained OFF identity
+            // must not be silently re-paired or resumed by reinstall.
+            let pem = read_private(&key, 8192)?.ok_or(())?;
+            let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+            signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        } else {
+            pair_identity(&key, &client, name, false)?;
+        }
         let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
         client.verify_permanent_grant(id.trim()).map_err(|_| ())?;
         service_absent()?;
@@ -898,7 +930,7 @@ mod darwin {
         let raw = native_plist(&executable, endpoint, &generation)?;
         let cli_text = native_cli(&executable)?;
         let record = serde_json::json!({"version":format!("{}-{}",package.version,package.target),
-            "previous":null,"generation":generation,"stopped":false,"phase":"switch_pending"});
+            "previous":null,"generation":generation,"stopped":stopped,"phase":"switch_pending"});
         write_new(&journal, format!("{record}\n").as_bytes())?;
         if stored.is_none() {
             write_new(&endpoint_file, format!("{endpoint}\n").as_bytes())?;
@@ -911,12 +943,10 @@ mod darwin {
             generation,
             plist,
         };
-        let after = now_ms()?;
-        let domain = format!("gui/{}", unsafe { libc::geteuid() });
-        let launched = current.plist.to_str().is_some_and(|path| {
-            launchctl(&["bootstrap", &domain, path]).is_ok_and(|(code, _, _)| code == Some(0))
-        });
-        if !launched || !await_online(&current, &key, after) {
+        if stopped && observe_registration(&current.executable) != Registration::Absent {
+            return Err(());
+        }
+        if !stopped && !activate(&current, &key) {
             unregister_owned(
                 || observe_registration(&current.executable),
                 || {
@@ -939,9 +969,434 @@ mod darwin {
         write_executable(&cli, cli_text.as_bytes())?;
         sync_remove(&journal)?;
         println!(
-            "Installed {version}. Use {} status to inspect the Agent.",
-            cli.display()
+            "{}",
+            serde_json::json!({"status":if stopped {"stopped_preserved"}else{"connected_observed"},
+            "version":version,"cli":cli})
         );
+        Ok(())
+    }
+
+    fn gate(
+        key: &Path,
+        command: rca_native_agent::upgrade_control::UpgradeCommand,
+    ) -> Result<bool, ()> {
+        rca_native_agent::upgrade_control::owner_gate(key, command).map_err(|_| ())
+    }
+
+    fn unregister(current: &Installed) -> Result<(), ()> {
+        unregister_owned(
+            || observe_registration(&current.executable),
+            || launchctl(&["bootout", &service_target()]).is_ok_and(|(code, _, _)| code == Some(0)),
+            || std::thread::sleep(Duration::from_millis(250)),
+            true,
+        )
+    }
+
+    fn activate(current: &Installed, key: &Path) -> bool {
+        let Ok(after) = now_ms() else {
+            return false;
+        };
+        let domain = format!("gui/{}", unsafe { libc::geteuid() });
+        current.plist.to_str().is_some_and(|path| {
+            launchctl(&["bootstrap", &domain, path]).is_ok_and(|(code, _, _)| code == Some(0))
+        }) && await_online(current, key, after)
+    }
+
+    fn upgrade_local(endpoint: &str, version: &str, source: &str) -> Result<(), ()> {
+        use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
+        let bundle = current_bundle()?;
+        let package = darwin_package::verify(&bundle, native_target())?;
+        if package.version != version || package.source != source {
+            return Err(());
+        }
+        let _supervisor = checked_supervisor()?;
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        let base = identity_directory(&home, false)?;
+        let _lock = lock_identity_directory(&base)?;
+        let key = base.join("v2-identity.pem");
+        let journal = base.join("macos/switch.json");
+        for path in [
+            &journal,
+            &base.join("macos/remote-upgrades/active.json"),
+            &sidecar(&key, ".re-pair-transition"),
+        ] {
+            if exists_owned_path(path)? {
+                return Err(());
+            }
+        }
+        let programs = program_directory(&base)?;
+        let (plist, cli) = startup_paths(&home)?;
+        let stored = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
+        if stored.trim() != endpoint {
+            return Err(());
+        }
+        let previous = read_private(&plist, 65536)?.ok_or(())?;
+        let old = resolve_installation(&programs, &plist, &previous, endpoint)?;
+        let old_cli = native_cli(&old.executable)?;
+        if read_executable(&cli)?.as_deref() != Some(old_cli.as_str())
+            || !darwin_package::forward_version(&old.version, version)
+        {
+            return Err(());
+        }
+        let stopped = owner_stopped(&key)?;
+        let prior = observe_registration(&old.executable);
+        if !matches!(
+            (&prior, stopped),
+            (Registration::Absent, true) | (Registration::Present(Some(_)), false)
+        ) {
+            return Err(());
+        }
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        owner_confirm(&format!(
+            "Upgrade {} to {version}, retaining identity and receipts?",
+            old.version
+        ))?;
+        let destination = programs.join(format!("{}-{}", package.version, package.target));
+        if exists_owned_path(&destination)? {
+            if !darwin_package::same_package(&bundle, &destination, &package)? {
+                return Err(());
+            }
+        } else {
+            let stage = darwin_package::stage(&bundle, &programs, &package)?;
+            if !darwin_package::same_package(&bundle, &stage, &package)? {
+                return Err(());
+            }
+            move_owned_exclusive(&stage, &destination)?;
+        }
+        let next = Installed {
+            executable: destination.join(darwin_package::ENTRY),
+            endpoint: endpoint.to_owned(),
+            version: version.to_owned(),
+            generation: new_generation()?,
+            plist: plist.clone(),
+        };
+        let next_raw = native_plist(&next.executable, endpoint, &next.generation)?;
+        let next_cli = native_cli(&next.executable)?;
+        let unchanged = || -> Result<(), ()> {
+            if read_private(&plist, 65536)?.as_deref() != Some(previous.as_str())
+                || read_executable(&cli)?.as_deref() != Some(old_cli.as_str())
+                || owner_stopped(&key)? != stopped
+                || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
+                || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+                || observe_registration(&old.executable) != prior
+            {
+                return Err(());
+            }
+            Ok(())
+        };
+        unchanged()?;
+        let record = SwitchRecord {
+            version: format!("{version}-{}", package.target),
+            previous: Some(previous.clone()),
+            generation: next.generation.clone(),
+            stopped,
+            phase: "switch_pending".to_owned(),
+        };
+        let raw = format!("{}\n", serde_json::to_string(&record).map_err(|_| ())?);
+        write_new(&journal, raw.as_bytes())?;
+        if !stopped {
+            // Busy is a confirmed refusal; an uncertain freeze retains the journal.
+            if !gate(&key, Gate::Freeze)? {
+                if read_private(&journal, 65536)?.as_deref() == Some(raw.as_str()) {
+                    sync_remove(&journal)?;
+                }
+                return Err(());
+            }
+            if unchanged().is_err() || !gate(&key, Gate::VerifyFrozen)? {
+                return Err(());
+            }
+            unregister(&old)?;
+        }
+        if observe_registration(&old.executable) != Registration::Absent
+            || read_private(&journal, 65536)?.as_deref() != Some(raw.as_str())
+        {
+            return Err(());
+        }
+        replace_owned(&plist, &previous, &next_raw, 0o600)?;
+        if !stopped && !activate(&next, &key) {
+            // Only restore the prior plist after replacement registration
+            // has been confirmed absent. Never bootstrap over unknown state.
+            unregister(&next)?;
+            replace_owned(&plist, &next_raw, &previous, 0o600)?;
+            if !activate(&old, &key) {
+                return Err(());
+            }
+            if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
+                return Err(());
+            }
+            sync_remove(&journal)?;
+            eprintln!("Replacement activation failed; original version is confirmed online.");
+            return Err(());
+        }
+        if stopped && observe_registration(&next.executable) != Registration::Absent {
+            return Err(());
+        }
+        replace_owned(&cli, &old_cli, &next_cli, 0o700)?;
+        if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
+            return Err(());
+        }
+        sync_remove(&journal)?;
+        println!(
+            "{}",
+            serde_json::json!({"status":if stopped {"stopped_preserved"}else{"connected_observed"},"version":version})
+        );
+        Ok(())
+    }
+
+    fn uninstall_local() -> Result<(), ()> {
+        use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        let base = identity_directory(&home, false)?;
+        let _lock = lock_identity_directory(&base)?;
+        let key = base.join("v2-identity.pem");
+        let journal = base.join("macos/switch.json");
+        for path in [
+            &journal,
+            &base.join("macos/remote-upgrades/active.json"),
+            &sidecar(&key, ".re-pair-transition"),
+        ] {
+            if exists_owned_path(path)? {
+                return Err(());
+            }
+        }
+        let current = installed(&home, &base)?;
+        let programs = program_directory(&base)?;
+        let roots = darwin_package::reviewed_programs(&programs, native_target())?;
+        if !roots
+            .iter()
+            .any(|root| root.join(darwin_package::ENTRY) == current.executable)
+        {
+            return Err(());
+        }
+        let (plist, cli) = startup_paths(&home)?;
+        let previous = native_plist(&current.executable, &current.endpoint, &current.generation)?;
+        let launcher = native_cli(&current.executable)?;
+        let stopped = owner_stopped(&key)?;
+        let prior = observe_registration(&current.executable);
+        if !matches!(
+            (&prior, stopped),
+            (Registration::Absent, true) | (Registration::Present(Some(_)), false)
+        ) {
+            return Err(());
+        }
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        owner_confirm(&format!("Uninstall {} reviewed version(s)? Identity, receipts and cloud authorization are retained.",roots.len()))?;
+        let unchanged = || -> Result<(), ()> {
+            if read_private(&plist, 65536)?.as_deref() != Some(previous.as_str())
+                || read_executable(&cli)?.as_deref() != Some(launcher.as_str())
+                || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
+                || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+                || owner_stopped(&key)? != stopped
+                || darwin_package::reviewed_programs(&programs, native_target())? != roots
+                || exists_owned_path(&base.join("macos/remote-upgrades/active.json"))?
+            {
+                return Err(());
+            }
+            Ok(())
+        };
+        unchanged()?;
+        if observe_registration(&current.executable) != prior {
+            return Err(());
+        }
+        // The existing journal reserves the entire lifecycle mutation.
+        let record = serde_json::json!({"phase":"uninstall_pending","version":format!("{}-{}",current.version,native_target()),"generation":current.generation});
+        let raw = format!("{record}\n");
+        write_new(&journal, raw.as_bytes())?;
+        if !stopped {
+            if !gate(&key, Gate::Freeze)? {
+                if read_private(&journal, 65536)?.as_deref() == Some(raw.as_str()) {
+                    sync_remove(&journal)?;
+                }
+                return Err(());
+            }
+            unchanged()?;
+            if observe_registration(&current.executable) != prior
+                || !gate(&key, Gate::VerifyFrozen)?
+            {
+                return Err(());
+            }
+        }
+        unregister(&current)?;
+        let (code, output, _) = bounded_command(
+            "/bin/ps",
+            &["-axww", "-o", "pid=,uid=,command="],
+            2 * 1024 * 1024,
+        )?;
+        if code != Some(0)
+            || !no_other_programs(
+                &output,
+                &programs,
+                unsafe { libc::geteuid() },
+                std::process::id(),
+            )
+        {
+            return Err(());
+        }
+        unchanged()?;
+        if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
+            return Err(());
+        }
+        sync_remove(&plist)?;
+        sync_remove(&cli)?;
+        for root in &roots {
+            darwin_package::remove_package(root, native_target())?;
+        }
+        if exists_owned_path(&plist)?
+            || exists_owned_path(&cli)?
+            || !darwin_package::reviewed_programs(&programs, native_target())?.is_empty()
+            || observe_registration(&current.executable) != Registration::Absent
+            || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
+            || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+            || read_private(&journal, 65536)?.as_deref() != Some(raw.as_str())
+        {
+            return Err(());
+        }
+        sync_remove(&journal)?;
+        println!(
+            "{}",
+            serde_json::json!({"status":"uninstalled","removed_versions":roots.len(),
+            "identity_preserved":true,"receipts_preserved":true,"cloud_revocation":"not_performed"})
+        );
+        Ok(())
+    }
+
+    fn recover_switch() -> Result<(), ()> {
+        use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        let base = identity_directory(&home, false)?;
+        let _lock = lock_identity_directory(&base)?;
+        let key = base.join("v2-identity.pem");
+        let journal = base.join("macos/switch.json");
+        for path in [
+            base.join("macos/remote-upgrades/active.json"),
+            sidecar(&key, ".re-pair-transition"),
+        ] {
+            if exists_owned_path(&path)? {
+                return Err(());
+            }
+        }
+        let Some(raw) = read_private(&journal, 65536)? else {
+            println!("No unresolved switch.");
+            return Ok(());
+        };
+        let record = SwitchRecord::parse(&raw, native_target())?;
+        if owner_stopped(&key)? != record.stopped {
+            return Err(());
+        }
+        let programs = program_directory(&base)?;
+        let (plist, cli) = startup_paths(&home)?;
+        let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
+        let endpoint = endpoint.trim();
+        let root = programs.join(&record.version);
+        let package = darwin_package::verify(&root, native_target())?;
+        if record.version != format!("{}-{}", package.version, package.target) {
+            return Err(());
+        }
+        let next = Installed {
+            executable: root.join(darwin_package::ENTRY),
+            endpoint: endpoint.to_owned(),
+            version: package.version,
+            generation: record.generation,
+            plist: plist.clone(),
+        };
+        let next_raw = native_plist(&next.executable, endpoint, &next.generation)?;
+        let next_cli = native_cli(&next.executable)?;
+        let previous = record
+            .previous
+            .as_deref()
+            .map(|old| resolve_installation(&programs, &plist, old, endpoint))
+            .transpose()?;
+        if previous
+            .as_ref()
+            .is_some_and(|old| !darwin_package::forward_version(&old.version, &next.version))
+        {
+            return Err(());
+        }
+        let previous_cli = previous
+            .as_ref()
+            .map(|old| native_cli(&old.executable))
+            .transpose()?;
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        let current_cli = read_executable(&cli)?;
+        if current_cli != previous_cli && current_cli.as_deref() != Some(next_cli.as_str()) {
+            return Err(());
+        }
+        let evidence = || -> Result<SwitchOutcome, ()> {
+            if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str())
+                || owner_stopped(&key)? != record.stopped
+                || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
+                || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+                || read_executable(&cli)? != current_cli
+            {
+                return Err(());
+            }
+            let configuration = read_private(&plist, 65536)?;
+            let next_registration = observe_registration(&next.executable);
+            let old_registration = previous
+                .as_ref()
+                .map(|old| observe_registration(&old.executable))
+                .unwrap_or(Registration::Unknown);
+            let online = |current: &Installed, registration: &Registration| match registration {
+                Registration::Present(Some(pid)) => {
+                    connection_evidence(current, &key, *pid).is_some_and(|(_, _, online)| online)
+                }
+                _ => false,
+            };
+            Ok(switch_outcome(
+                configuration.as_deref() == Some(next_raw.as_str()),
+                previous.is_some() && configuration.as_deref() == record.previous.as_deref(),
+                record.stopped,
+                &next_registration,
+                &old_registration,
+                online(&next, &next_registration),
+                previous
+                    .as_ref()
+                    .is_some_and(|old| online(old, &old_registration)),
+            ))
+        };
+        let outcome = evidence()?;
+        if outcome == SwitchOutcome::Unknown {
+            eprintln!("Switch outcome unconfirmed; journal and both packages retained.");
+            return Err(());
+        }
+        owner_confirm("Reconcile the proven service configuration and local command?")?;
+        if evidence()? != outcome {
+            return Err(());
+        }
+        let (desired, old) = match outcome {
+            SwitchOutcome::Complete => (&next_cli, None),
+            SwitchOutcome::Rollback => (previous_cli.as_ref().ok_or(())?, previous.as_ref()),
+            SwitchOutcome::Unknown => return Err(()),
+        };
+        if let Some(old) = old {
+            // A crash before bootout may leave the original service frozen.
+            // This journal holds the exclusive owner lifecycle transaction.
+            if !record.stopped
+                && (!gate(&key, Gate::Release)?
+                    || !matches!(
+                        observe_registration(&old.executable),
+                        Registration::Present(Some(_))
+                    ))
+            {
+                return Err(());
+            }
+        }
+        match current_cli.as_deref() {
+            Some(current) if current != desired => replace_owned(&cli, current, desired, 0o700)?,
+            None => write_executable(&cli, desired.as_bytes())?,
+            _ => (),
+        }
+        if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
+            return Err(());
+        }
+        sync_remove(&journal)?;
+        println!("Switch reconciled; identity and receipts retained.");
         Ok(())
     }
 
@@ -991,6 +1446,12 @@ mod darwin {
             .map(|value| value.into_string().map_err(|_| ()))
             .collect::<Result<_, _>>()?;
         if let [action] = arguments.as_slice() {
+            if action == "uninstall" {
+                return uninstall_local();
+            }
+            if action == "recover" {
+                return recover_switch();
+            }
             if matches!(action.as_str(), "status" | "stop" | "start") {
                 return manage(action);
             }
@@ -998,6 +1459,11 @@ mod darwin {
         if let [action, endpoint, name, version, source] = arguments.as_slice() {
             if action == "--install-local" {
                 return install_local(endpoint, name, version, source);
+            }
+        }
+        if let [action, endpoint, version, source] = arguments.as_slice() {
+            if action == "--upgrade-local" {
+                return upgrade_local(endpoint, version, source);
             }
         }
         if let [action, endpoint, name] = arguments.as_slice() {

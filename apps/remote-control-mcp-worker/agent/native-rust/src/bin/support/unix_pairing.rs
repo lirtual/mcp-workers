@@ -46,6 +46,10 @@ pub(super) fn pair_identity_at(
 }
 
 pub(super) fn read_private(path: &Path, limit: u64) -> Result<Option<String>, ()> {
+    read_owned(path, limit, 0o600)
+}
+
+fn read_owned(path: &Path, limit: u64, mode: u32) -> Result<Option<String>, ()> {
     use std::io::Read;
     let file = match fs::OpenOptions::new()
         .read(true)
@@ -60,7 +64,7 @@ pub(super) fn read_private(path: &Path, limit: u64) -> Result<Option<String>, ()
     if !info.is_file()
         || info.uid() != unsafe { libc::geteuid() }
         || info.nlink() != 1
-        || info.mode() & 0o777 != 0o600
+        || info.mode() & 0o7777 != mode
         || info.len() == 0
         || info.len() > limit
     {
@@ -77,10 +81,10 @@ pub(super) fn read_private(path: &Path, limit: u64) -> Result<Option<String>, ()
 }
 
 pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ()> {
-    write_new_mode(path, bytes, 0o600)
+    write_owned(path, bytes, 0o600, None)
 }
 
-fn write_new_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), ()> {
+fn write_owned(path: &Path, bytes: &[u8], mode: u32, expected: Option<&str>) -> Result<(), ()> {
     let directory = path.parent().ok_or(())?;
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| ())?;
@@ -95,7 +99,17 @@ fn write_new_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), ()> {
     let result = (|| {
         file.write_all(bytes).map_err(|_| ())?;
         file.sync_all().map_err(|_| ())?;
-        move_owned_exclusive(&temp, path)
+        if let Some(expected) = expected {
+            if read_owned(path, 65536, mode)?.as_deref() != Some(expected) {
+                return Err(());
+            }
+            fs::rename(&temp, path).map_err(|_| ())?;
+            fs::File::open(directory)
+                .and_then(|f| f.sync_all())
+                .map_err(|_| ())
+        } else {
+            move_owned_exclusive(&temp, path)
+        }
     })();
     if result.is_err() && temp.exists() {
         let _ = fs::remove_file(&temp);
@@ -105,7 +119,19 @@ fn write_new_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), ()> {
 
 #[cfg(target_os = "macos")]
 pub(super) fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), ()> {
-    write_new_mode(path, bytes, 0o700)
+    write_owned(path, bytes, 0o700, None)
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn read_executable(path: &Path) -> Result<Option<String>, ()> {
+    read_owned(path, 65536, 0o700)
+}
+
+// The owner lifecycle lock must cover this entire compare and replacement.
+// It is not a general filesystem compare-and-swap against external writers.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn replace_owned(path: &Path, expected: &str, value: &str, mode: u32) -> Result<(), ()> {
+    write_owned(path, value.as_bytes(), mode, Some(expected))
 }
 
 pub(super) fn exists_owned_path(path: &Path) -> Result<bool, ()> {
@@ -325,6 +351,19 @@ mod tests {
     use super::*;
     const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
     const NEW_ID: &str = "123e4567-e89b-42d3-a456-426614174002";
+
+    #[test]
+    fn replacement_checks_exact_prior_content_and_mode() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("fixture");
+        write_new(&path, b"old").unwrap();
+        assert!(replace_owned(&path, "foreign", "new", 0o600).is_err());
+        assert!(replace_owned(&path, "old", "new", 0o700).is_err());
+        assert_eq!(read_private(&path, 32).unwrap().as_deref(), Some("old"));
+        replace_owned(&path, "old", "new", 0o600).unwrap();
+        assert_eq!(read_private(&path, 32).unwrap().as_deref(), Some("new"));
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn exclusive_identity_publication_never_overwrites_existing_file() {

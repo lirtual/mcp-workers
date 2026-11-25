@@ -57,7 +57,7 @@ fn exact_children(path: &Path, expected: &[&str]) -> Result<(), ()> {
     Ok(())
 }
 
-fn valid_version(version: &str) -> bool {
+pub(super) fn valid_version(version: &str) -> bool {
     let Some(number) = version.strip_prefix('v') else {
         return false;
     };
@@ -81,6 +81,33 @@ fn valid_version(version: &str) -> bool {
             })
         })
         && version.len() <= 48
+}
+
+pub(super) fn forward_version(current: &str, next: &str) -> bool {
+    fn order(value: &str) -> Option<(u64, u64, u64)> {
+        if !valid_version(value) {
+            return None;
+        }
+        let (base, suffix) = value
+            .split_once('-')
+            .map_or((value, None), |(a, b)| (a, Some(b)));
+        let mut parts = base.split('.');
+        parts.next()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        let candidate = match suffix {
+            None => u64::MAX,
+            Some(s) => {
+                let number = s.strip_prefix("rust-candidate.")?.parse::<u64>().ok()?;
+                if number == u64::MAX {
+                    return None;
+                }
+                number
+            }
+        };
+        Some((minor, patch, candidate))
+    }
+    matches!((order(current),order(next)),(Some(a),Some(b)) if b>a)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -253,6 +280,37 @@ pub(super) fn same_package(left: &Path, right: &Path, package: &Package) -> Resu
     Ok(true)
 }
 
+pub(super) fn reviewed_programs(programs: &Path, target: &str) -> Result<Vec<PathBuf>, ()> {
+    private_dir(programs)?;
+    let mut roots = Vec::new();
+    for entry in fs::read_dir(programs).map_err(|_| ())? {
+        let entry = entry.map_err(|_| ())?;
+        let root = entry.path();
+        let package = verify(&root, target)?;
+        if entry.file_name() != std::ffi::OsString::from(format!("{}-{}", package.version, target))
+        {
+            return Err(());
+        }
+        roots.push(root);
+    }
+    roots.sort();
+    Ok(roots)
+}
+
+// Remove only the reviewed inventory, never a recursively discovered tree.
+pub(super) fn remove_package(root: &Path, target: &str) -> Result<(), ()> {
+    verify(root, target)?;
+    for path in FILES {
+        fs::remove_file(root.join(path)).map_err(|_| ())?;
+    }
+    for path in [BUILD, APP, "apps", ""] {
+        fs::remove_dir(root.join(path)).map_err(|_| ())?;
+    }
+    File::open(root.parent().ok_or(())?)
+        .and_then(|f| f.sync_all())
+        .map_err(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +343,54 @@ mod tests {
         for path in [ENTRY, HELPER] {
             fs::write(root.join(path), bytes).unwrap();
             fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    #[test]
+    fn reviewed_removal_preserves_unrelated_files_and_identity() {
+        let home = tempfile::tempdir().unwrap();
+        let programs = home.path().join("programs");
+        fs::DirBuilder::new().mode(0o700).create(&programs).unwrap();
+        let root = programs.join("v0.1.60-darwin-arm64");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        fixture(&root, "darwin-arm64");
+        let identity = home.path().join("identity");
+        fs::write(&identity, b"synthetic identity").unwrap();
+        assert_eq!(
+            reviewed_programs(&programs, "darwin-arm64").unwrap(),
+            vec![root.clone()]
+        );
+        let foreign = root.join("unrelated");
+        fs::write(&foreign, b"unrelated").unwrap();
+        assert!(reviewed_programs(&programs, "darwin-arm64").is_err());
+        assert!(remove_package(&root, "darwin-arm64").is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"unrelated");
+        fs::remove_file(&foreign).unwrap();
+        remove_package(&root, "darwin-arm64").unwrap();
+        assert!(reviewed_programs(&programs, "darwin-arm64")
+            .unwrap()
+            .is_empty());
+        assert_eq!(fs::read(identity).unwrap(), b"synthetic identity");
+    }
+
+    #[test]
+    fn upgrade_requires_strict_forward_version() {
+        for (old, new, expected) in [
+            ("v0.1.60", "v0.1.61", true),
+            ("v0.1.60", "v0.1.60", false),
+            ("v0.1.60", "v0.1.59", false),
+            ("v0.1.60", "v0.1.60-rust-candidate.2", false),
+            (
+                "v0.1.60-rust-candidate.2",
+                "v0.1.60-rust-candidate.10",
+                true,
+            ),
+            ("v0.1.60-rust-candidate.10", "v0.1.60", true),
+            ("v0.1.60", "v0.2.0", true),
+            ("v0.1.60", "v0.01.61", false),
+            ("v0.1.60", "v0.1.61-node", false),
+        ] {
+            assert_eq!(forward_version(old, new), expected);
         }
     }
 

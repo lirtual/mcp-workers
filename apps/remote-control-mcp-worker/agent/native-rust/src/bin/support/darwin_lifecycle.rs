@@ -237,7 +237,7 @@ pub(super) fn native_cli(executable: &Path) -> Result<String, ()> {
         return Err(());
     }
     let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
-    Ok(format!("#!/bin/sh\nset -eu\n[ \"$#\" -eq 1 ] || exit 2\ncase \"$1\" in status|stop|start) ;; *) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;; esac\nexec {quoted} \"$@\"\n"))
+    Ok(format!("#!/bin/sh\nset -eu\n[ \"$#\" -eq 1 ] || exit 2\ncase \"$1\" in status|stop|start|recover|uninstall) ;; *) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;; esac\nexec {quoted} \"$@\"\n"))
 }
 
 pub(super) fn new_generation() -> Result<String, ()> {
@@ -254,6 +254,99 @@ pub(super) fn new_generation() -> Result<String, ()> {
         &hex[16..20],
         &hex[20..]
     ))
+}
+
+// A switch can finish only at one of the two independently established
+// configurations. Recovery never guesses which service is running.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SwitchOutcome {
+    Complete,
+    Rollback,
+    Unknown,
+}
+
+pub(super) fn switch_outcome(
+    next_config: bool,
+    previous_config: bool,
+    stopped: bool,
+    next_registration: &Registration,
+    previous_registration: &Registration,
+    next_online: bool,
+    previous_online: bool,
+) -> SwitchOutcome {
+    if next_config
+        && !previous_config
+        && ((stopped && *next_registration == Registration::Absent)
+            || (!stopped
+                && matches!(next_registration, Registration::Present(Some(_)))
+                && next_online))
+    {
+        SwitchOutcome::Complete
+    } else if previous_config
+        && !next_config
+        && ((stopped && *previous_registration == Registration::Absent)
+            || (!stopped
+                && matches!(previous_registration, Registration::Present(Some(_)))
+                && previous_online))
+    {
+        SwitchOutcome::Rollback
+    } else {
+        SwitchOutcome::Unknown
+    }
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SwitchRecord {
+    pub version: String,
+    pub previous: Option<String>,
+    pub generation: String,
+    pub stopped: bool,
+    pub phase: String,
+}
+
+impl SwitchRecord {
+    pub fn parse(raw: &str, target: &str) -> Result<Self, ()> {
+        let record: Self = serde_json::from_str(raw).map_err(|_| ())?;
+        let version = record
+            .version
+            .strip_suffix(&format!("-{target}"))
+            .ok_or(())?;
+        if record.phase != "switch_pending"
+            || !valid_device_id(&record.generation)
+            || !super::darwin_package::valid_version(version)
+        {
+            return Err(());
+        }
+        Ok(record)
+    }
+}
+
+pub(super) fn no_other_programs(raw: &str, programs: &Path, uid: u32, own_pid: u32) -> bool {
+    let Some(root) = programs.to_str() else {
+        return false;
+    };
+    let prefix = format!("{root}/");
+    if raw.trim().is_empty() {
+        return false;
+    }
+    for line in raw.lines() {
+        let Some((pid, rest)) = line.trim_start().split_once(char::is_whitespace) else {
+            return false;
+        };
+        let Some((owner, command)) = rest.trim_start().split_once(char::is_whitespace) else {
+            return false;
+        };
+        let (Ok(pid), Ok(owner)) = (pid.parse::<u32>(), owner.parse::<u32>()) else {
+            return false;
+        };
+        if command.trim().is_empty()
+            || (pid != own_pid && owner == uid && command.contains(&prefix))
+        {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -359,6 +452,80 @@ mod tests {
             ),
             Some((false, 1000))
         );
+    }
+
+    #[test]
+    fn removal_requires_readable_process_inventory_and_no_other_owner_program() {
+        let root = Path::new("/Users/owner name/programs");
+        assert!(no_other_programs(
+            "  2   0 /sbin/launchd\n  42  501 /Users/owner name/programs/rca\n",
+            root,
+            501,
+            42
+        ));
+        assert!(!no_other_programs(
+            "  2   0 /sbin/launchd\n  43  501 /Users/owner name/programs/rca\n",
+            root,
+            501,
+            42
+        ));
+        assert!(!no_other_programs("  invalid  501 /bin/sh", root, 501, 42));
+        assert!(!no_other_programs("", root, 501, 42));
+        assert!(no_other_programs(
+            "  43  502 /Users/owner name/programs/rca\n",
+            root,
+            501,
+            42
+        ));
+    }
+
+    #[test]
+    fn switch_evidence_distinguishes_complete_rollback_and_unknown() {
+        let absent = Registration::Absent;
+        let active = Registration::Present(Some(42));
+        let unknown = Registration::Unknown;
+        assert_eq!(
+            switch_outcome(true, false, false, &active, &unknown, true, false),
+            SwitchOutcome::Complete
+        );
+        assert_eq!(
+            switch_outcome(true, false, false, &active, &unknown, false, false),
+            SwitchOutcome::Unknown
+        );
+        assert_eq!(
+            switch_outcome(false, true, false, &unknown, &active, false, true),
+            SwitchOutcome::Rollback
+        );
+        assert_eq!(
+            switch_outcome(true, false, true, &absent, &absent, false, false),
+            SwitchOutcome::Complete
+        );
+        assert_eq!(
+            switch_outcome(false, true, true, &absent, &absent, false, false),
+            SwitchOutcome::Rollback
+        );
+        assert_eq!(
+            switch_outcome(true, false, true, &unknown, &absent, false, false),
+            SwitchOutcome::Unknown
+        );
+        assert_eq!(
+            switch_outcome(true, true, false, &active, &active, true, true),
+            SwitchOutcome::Unknown
+        );
+        let raw = serde_json::json!({"phase":"switch_pending","version":"v0.1.61-darwin-arm64",
+            "previous":null,"generation":ID,"stopped":false})
+        .to_string();
+        assert!(SwitchRecord::parse(&raw, "darwin-arm64").is_ok());
+        assert!(SwitchRecord::parse(&raw, "darwin-x64").is_err());
+        assert!(
+            SwitchRecord::parse(&raw.replace("v0.1.61", "../../foreign"), "darwin-arm64").is_err()
+        );
+        assert!(SwitchRecord::parse(&raw.replace("false", "true"), "darwin-arm64").is_ok());
+        assert!(SwitchRecord::parse(
+            &raw.replace("switch_pending", "uninstall_pending"),
+            "darwin-arm64"
+        )
+        .is_err());
     }
 
     #[test]
