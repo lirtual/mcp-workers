@@ -32,6 +32,33 @@ fn stderr(output: &std::process::Output) -> String {
 }
 
 #[test]
+fn owner_readonly_status_and_doctor_are_json_without_creating_state() {
+    let disposable = root();
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_rca-standard-windows-candidate"))
+            .args(args)
+            .env("LOCALAPPDATA", disposable.path())
+            .output()
+            .unwrap()
+    };
+    let status = invoke(&["--cli", "status", "--json"]);
+    assert!(status.status.success(), "{:?}", status);
+    let state: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(state["identity_present"], false);
+    assert_eq!(state["remote_connection"], "unconfirmed");
+    let doctor = invoke(&["--cli", "doctor", "--json"]);
+    assert!(doctor.status.success(), "{:?}", doctor);
+    let diagnosis: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    assert_eq!(diagnosis["status"], state);
+    assert!(diagnosis["findings"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("cloud_authorization_unconfirmed")));
+    assert!(!invoke(&["--cli", "doctor", "--repair"]).status.success());
+    assert!(!disposable.path().join("mcp-workers").exists());
+}
+
+#[test]
 fn cli_rejects_regular_agent_path_and_invalid_uuid_before_wss() {
     let normal = std::env::temp_dir().canonicalize().unwrap();
     let invalid_root = launch("--local", DEVICE, &normal);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
-import {chmod,cp,lstat,mkdir,mkdtemp,readFile,rm,symlink,writeFile} from "node:fs/promises";
+import {chmod,cp,lstat,mkdir,mkdtemp,readFile,readdir,rm,symlink,writeFile} from "node:fs/promises";
 import {spawnSync} from "node:child_process";
 import os from "node:os";
 import path from "node:path";
@@ -126,8 +126,43 @@ test("#660 owner-local rca executable quotes paths and refuses unverified comman
     if(action==="status")assert.notEqual(r.status,0);
     else assert.equal(r.status,2);
   }
-  assert.match(script,/status\|stop\|start/);
+  assert.match(script,/status\|doctor/);
+  assert.match(script,/stop\|start/);
   assert.ok(script.includes("o'\"'\"'neill"));
+});
+
+test("#1035 macOS read-only CLI accepts JSON and doctor without opening mutation entry points",async t=>{
+  const root=await mkdtemp(path.join(os.tmpdir(),"rca1035-cli-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  await mkdir(path.join(root,"bin"),{mode:0o700});
+  await writeFile(path.join(root,"bin/node"),'#!/bin/sh\nprintf "%s\\n" "$@"\n',{mode:0o700});
+  const file=path.join(root,"rca");
+  await writeFile(file,ownerCliText(root),{mode:0o700});
+  const invoke=args=>spawnSync("/bin/sh",[file,...args],{encoding:"utf8"});
+  for(const args of [["status","--json"],["doctor"],["doctor","--json"]]){
+    const result=invoke(args);
+    assert.equal(result.status,0,result.stderr);
+    assert.deepEqual(result.stdout.trim().split("\n").slice(1),args);
+  }
+  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["upgrade"],["install"]])
+    assert.equal(invoke(args).status,2,args.join(" "));
+});
+
+test("#1035 macOS status and doctor do not create absent directories",{skip:process.platform!=="darwin"},async t=>{
+  const home=await mkdtemp(path.join(os.tmpdir(),"rca1035-readonly-"));
+  t.after(()=>rm(home,{recursive:true,force:true}));
+  const fail=()=>{throw Error("read-only action invoked a service or consent");};
+  const opts={home,invoke:fail,ask:fail,ownerIntent:fail};
+  const state=await localMacAction("status",opts);
+  assert.equal(state.local_service,"not_installed");
+  const diagnosis=await localMacAction("doctor",opts);
+  assert.deepEqual(diagnosis.status,state);
+  assert.ok(diagnosis.findings.includes("permanent_service_not_installed"));
+  assert.ok(diagnosis.findings.includes("cloud_authorization_unconfirmed"));
+  assert.deepEqual(await readdir(home),[]);
+  await symlink(home,path.join(home,".local"));
+  await assert.rejects(localMacAction("status",opts),/Unsafe owner/);
+  assert.deepEqual(await readdir(home),[".local"]);
 });
 
 test("#660 permanent service accepts only exact approved existing grant and managed generation",()=>{
@@ -319,6 +354,12 @@ test("#660 native offline install → stopped state → upgrade without restart"
     "raw, unpinned local CLI upgrade must be refused");
   const state=await localMacAction("status",{home:f.home,invoke:f.invoke});
   assert.equal(state.installed,true);
+  // The old published launcher remains valid until an explicit upgrade
+  // installs the new launcher; a read-only action must never replace it.
+  const legacy=ownerCliText(firstRoot,true);
+  await writeFile(cli,legacy,{mode:0o700});
+  assert.deepEqual(await localMacAction("status",{home:f.home,invoke:f.invoke}),state);
+  assert.equal(await readFile(cli,"utf8"),legacy);
   let unloaded=false;
   await localMacAction("stop",{...opts,pauseLaunchd:async()=>{},invoke:(command,args)=>{
     f.commands.push(args[0]);

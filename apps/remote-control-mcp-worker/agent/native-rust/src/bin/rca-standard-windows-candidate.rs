@@ -86,7 +86,7 @@ mod windows {
         Ok((pem, id))
     }
 
-    fn local_status() -> Result<(), ()> {
+    fn local_status_facts() -> Result<serde_json::Value, ()> {
         let root = store_root()?;
         match fs::symlink_metadata(&root) {
             Ok(_) => validate_windows_private_path(&root, true).map_err(|_| ())?,
@@ -94,18 +94,36 @@ mod windows {
             Err(_) => return Err(()),
         }
         let (pem, id) = local_identity(&root.join("v2-identity.pem"))?;
-        println!(
-            "{}",
-            serde_json::json!({
-                "platform": "win32",
-                "mode": "native-user-agent",
-                "identity_present": pem.is_some(),
-                "device_id": id,
-                "remote_connection": "unconfirmed",
-                "shell": true,
-                "write_file": true
-            })
-        );
+        Ok(serde_json::json!({
+            "platform": "win32",
+            "mode": "native-user-agent",
+            "identity_present": pem.is_some(),
+            "device_id": id,
+            "remote_connection": "unconfirmed",
+            "shell": true,
+            "write_file": true
+        }))
+    }
+
+    fn local_status(doctor: bool) -> Result<(), ()> {
+        let state = local_status_facts()?;
+        if doctor {
+            let mut findings = Vec::new();
+            if state["identity_present"] == false || state["device_id"].is_null() {
+                findings.push("local_identity_unconfirmed");
+            }
+            findings.extend([
+                "local_service_unconfirmed",
+                "cloud_authorization_unconfirmed",
+                "signed_wss_unconfirmed",
+            ]);
+            println!(
+                "{}",
+                serde_json::json!({"status": state, "findings": findings})
+            );
+        } else {
+            println!("{state}");
+        }
         Ok(())
     }
 
@@ -530,7 +548,14 @@ mod windows {
         }
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
-                [_, command] if command == "status" => local_status(),
+                [_, command] if command == "status" || command == "doctor" => {
+                    local_status(command == "doctor")
+                }
+                [_, command, flag]
+                    if (command == "status" || command == "doctor") && flag == "--json" =>
+                {
+                    local_status(command == "doctor")
+                }
                 [_, command] if command == "logs" => {
                     print!(
                         "{}",

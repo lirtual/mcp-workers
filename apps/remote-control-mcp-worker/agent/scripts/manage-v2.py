@@ -58,11 +58,37 @@ def installed_endpoint(bootstrap):
     return lines[0]
 
 
-def status(bootstrap, info):
+def status_facts(bootstrap, info):
     state = bootstrap.local_status(str(Path.home()))
     state["cli_version"] = info["version"]
-    print(json.dumps(state, ensure_ascii=False, indent=2))
-    print("Local service state is NOT proof of signed WSS, cloud approval or Shell rights.")
+    return state
+
+
+def status(bootstrap, info, structured=False):
+    state = status_facts(bootstrap, info)
+    print(json.dumps(state, ensure_ascii=False, indent=None if structured else 2))
+    if not structured:
+        print("Local service state is NOT proof of signed WSS, cloud approval or Shell rights.")
+
+
+def doctor(bootstrap, info, structured=False):
+    state = status_facts(bootstrap, info)
+    findings = []
+    service = state["local_permanent_service"]
+    if service == "not_installed":
+        findings.append("permanent_service_not_installed")
+    elif service != "active":
+        findings.append("local_service_unconfirmed")
+    if state["cloud_authorization"] == "unconfirmed":
+        findings.append("cloud_authorization_unconfirmed")
+    if state["signed_wss"] == "unconfirmed":
+        findings.append("signed_wss_unconfirmed")
+    if state["automatic_update_activity"] in ("unknown", "needs_attention"):
+        findings.append("update_state_needs_review")
+    print(json.dumps({"status": state, "findings": findings},
+                     ensure_ascii=False, indent=None if structured else 2))
+    if not structured:
+        print("Read-only local diagnosis. No cloud or Latest check was performed.")
 
 
 def logs(bootstrap):
@@ -141,11 +167,12 @@ def upgrade(bootstrap, arguments):
 
 def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
-        print("Usage: rca [status|pair|logs|stop|start|update|recover|uninstall]")
+        print("Usage: rca [status|doctor|pair|logs|stop|start|update|recover|uninstall]")
         print("Permanent pairing / re-pair and pair --temporary are supported.")
         print("Without arguments: open the interactive local Agent manager.")
         print("Check the reviewed stable Latest without installing: rca update --check.")
         print("Automatic update consent: rca update --auto [on|off].")
+        print("status [--json] and doctor [--json] inspect local state without changing it.")
         print("Status reports local update activity/result; Latest refresh uses update --check.")
         print("Update from the reviewed stable Latest: rca update (upgrade is an alias).")
         print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
@@ -153,10 +180,10 @@ def dispatch(command, args, root, info, bootstrap):
     if command in ("--version", "version"):
         print(info["version"])
         return 0
-    if command == "status":
-        if args:
-            raise ValueError("status takes no arguments")
-        status(bootstrap, info)
+    if command in ("status", "doctor"):
+        if args not in ([], ["--json"]):
+            raise ValueError(command + " accepts only --json")
+        (status if command == "status" else doctor)(bootstrap, info, structured=bool(args))
         return 0
     if command == "logs":
         if args:
@@ -209,15 +236,16 @@ def main():
         print("\nRemote Control Agent " + info["version"])
         print("1. Status   2. " + "Pair / repair" + "   3. Logs")
         print("4. Update   5. Uninstall       6. Exit")
-        print("7. Recover interrupted installation/upgrade")
+        print("7. Recover interrupted installation/upgrade   8. Doctor")
         choice = input("Choose an option: ").strip()
         if choice in ("6", "q", "Q"):
             return 0
         mapping = {"1": "status", "2": "pair", "3": "logs", "4": "upgrade",
                    "5": "uninstall"}
         mapping["7"] = "recover"
+        mapping["8"] = "doctor"
         if choice not in mapping:
-            print("Choose 1–7.")
+            print("Choose 1–8.")
             continue
         action = mapping[choice]
         if action == "pair" and not installed_endpoint(bootstrap):

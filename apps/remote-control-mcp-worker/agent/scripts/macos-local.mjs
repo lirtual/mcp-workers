@@ -29,12 +29,14 @@ export async function checked(name,{dir=false,mode,optional=false,privateOnly=tr
     throw Error("Unsafe owner, type or mode.");
   return true;
 }
-async function directories(home,parts){
+async function directories(home,parts,create=true){
   let cursor=home;
   for(const [i,part] of parts.entries()){
     cursor=path.join(cursor,part);
-    try{await mkdir(cursor,{mode:0o700});}catch(e){if(e.code!=="EEXIST")throw e;}
-    await checked(cursor,{dir:true,privateOnly:i>=2});
+    if(create){
+      try{await mkdir(cursor,{mode:0o700});}catch(e){if(e.code!=="EEXIST")throw e;}
+    }
+    await checked(cursor,{dir:true,privateOnly:i>=2,optional:!create});
   }
   return cursor;
 }
@@ -208,14 +210,17 @@ export async function ownedWrite(file,content,replace=false,mode=0o600,parentPri
 }
 // Local CLI is a version-pinned, owner-private dispatch only. Upgrades must
 // still use the separately reviewed, SHA-pinned offline installer.
-export function ownerCliText(root){
+export function ownerCliText(root,legacy=false){
   const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
   const node=path.join(root,"bin/node");
   const manager=path.join(root,"apps/remote-control-agent/scripts/macos-local.mjs");
   return '#!/bin/sh\nset -eu\ncase "${1:-}" in\n'+
-    '  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'+
+    (legacy
+      ?'  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'
+      :'  status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n'+
+       '  stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n')+
     '  *) echo "Use the reviewed macOS installer for install/upgrade." >&2; exit 2 ;;\n'+
-    'esac\nexec '+quote(node)+' '+quote(manager)+' "$1"\n';
+    'esac\nexec '+quote(node)+' '+quote(manager)+(legacy?' "$1"\n':' "$@"\n');
 }
 async function approved(key){
   if(!await checked(key,{optional:true,mode:0o600})||
@@ -254,12 +259,13 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   invoke=run,ask=confirm,online=observeOnline,freezeAgent=freeze,ownerIntent,
   runTemporary=spawnSync,terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
   pauseLaunchd=ms=>new Promise(resolve=>setTimeout(resolve,ms))}={}){
-  if(!["install","upgrade","status","stop","start","temporary"].includes(action))
+  if(!["install","upgrade","status","doctor","stop","start","temporary"].includes(action))
     throw Error("Unsupported local action.");
   if(process.platform!=="darwin"||!["arm64","x64"].includes(process.arch)||
     Number.parseInt(os.release(),10)<24||process.getuid?.()===0)
     throw Error("Native unprivileged macOS 15+ ARM64 or x64 required.");
-  process.umask(0o077);
+  const readOnly=action==="status"||action==="doctor";
+  if(!readOnly)process.umask(0o077);
   if(action==="temporary"){
     // Reuse the signed 24-hour foreground Agent: no LaunchAgent, no service
     // state mutation and no extra permanent identity or registration.
@@ -277,14 +283,14 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     return {status:"temporary_session_ended"};
   }
   await checked(home,{dir:true,privateOnly:false});
-  const identity=await directories(home,ROOT);
-  const receipts=await directories(home,[".local","state","mcp-workers","remote-control-agent"]);
+  const identity=await directories(home,ROOT,!readOnly);
+  const receipts=await directories(home,[".local","state","mcp-workers","remote-control-agent"],!readOnly);
   await checked(path.join(receipts,"operation-receipts.sqlite"),{optional:true,mode:0o600});
-  const macos=await directories(home,[...ROOT,"macos"]);
-  const programs=await directories(home,[...ROOT,"macos","programs"]);
-  const localBin=await directories(home,[".local","bin"]);
+  const macos=await directories(home,[...ROOT,"macos"],!readOnly);
+  const programs=await directories(home,[...ROOT,"macos","programs"],!readOnly);
+  const localBin=await directories(home,[".local","bin"],!readOnly);
   const cli=path.join(localBin,"rca");
-  const agents=await directories(home,["Library","LaunchAgents"]);
+  const agents=await directories(home,["Library","LaunchAgents"],!readOnly);
   const plist=path.join(agents,LABEL+".plist");
   const stopMark=path.join(macos,"stopped"), journal=path.join(macos,"switch.json");
   if(await checked(journal,{optional:true,mode:0o600}))
@@ -303,7 +309,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   const previousCli=await checked(cli,{optional:true,mode:0o700})
     ?await readFile(cli,"utf8"):null;
   // Never replace a foreign executable, symlink or mismatched owner version.
-  if(previousCli!==null&&(!current||previousCli!==ownerCliText(current.root)))
+  // Accept the exact previously published launcher until normal upgrade.
+  if(previousCli!==null&&(!current||![ownerCliText(current.root),ownerCliText(current.root,true)].includes(previousCli)))
     throw Error("Foreign or inconsistent local rca executable.");
   if(current){
     for(const rel of ["", "bin", "apps", "apps/remote-control-agent",
@@ -326,12 +333,19 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     if(typeof sendSignedOwnerIntent!=="function")throw Error("Candidate does not support owner intent.");
     return sendSignedOwnerIntent(bound,key,action);
   };
-  if(action==="status")return {
-    installed:!!current,version:current?path.basename(current.root):null,
-    local_service:current?(stopped?"stopped_requested_unverified":"present_unverified"):"not_installed",
-    cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
-    last_online:"unconfirmed",receipts:"preserved_unverified",
-  };
+  if(readOnly){
+    const state={
+      installed:!!current,version:current?path.basename(current.root):null,
+      local_service:current?(stopped?"stopped_requested_unverified":"present_unverified"):"not_installed",
+      cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
+      last_online:"unconfirmed",receipts:"preserved_unverified",
+    };
+    if(action==="status")return state;
+    const findings=[];
+    findings.push(current?"local_service_unconfirmed":"permanent_service_not_installed");
+    findings.push("cloud_authorization_unconfirmed","signed_wss_unconfirmed");
+    return {status:state,findings};
+  }
   if(action==="stop"){
     if(!current||!await approved(key))throw Error("Existing approved LaunchAgent required.");
     if(!await ask("Intentionally stop this user LaunchAgent?"))throw Error("Owner declined.");
@@ -524,6 +538,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
 }
 async function main(){
   const [action,...params]=process.argv.slice(2);
+  if((action==="status"||action==="doctor")&&params.length===1&&params[0]==="--json")params.pop();
+  if(action==="doctor"&&params.length)throw Error("Doctor accepts only --json.");
   const args={};
   for(let i=0;i<params.length;i+=2){
     if(!["--bundle","--source-sha","--endpoint"].includes(params[i])||
