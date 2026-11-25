@@ -4,6 +4,10 @@
 #[path = "support/darwin_lifecycle.rs"]
 mod darwin_lifecycle;
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
+#[path = "support/darwin_package.rs"]
+mod darwin_package;
+
 #[cfg(target_os = "macos")]
 #[path = "support/unix_pairing.rs"]
 mod unix_pairing;
@@ -249,11 +253,13 @@ fn record_connection(
 #[cfg(target_os = "macos")]
 mod darwin {
     use super::darwin_lifecycle::{
-        connection_time, installed_generation, iso_time, registration, resume_owned, stop_owned,
-        unregister_owned, Registration, LABEL,
+        connection_time, installed_generation, iso_time, native_cli, native_plist, new_generation,
+        registration, resume_owned, stop_owned, unregister_owned, Registration, LABEL,
     };
+    use super::darwin_package;
     use super::unix_pairing::{
-        exists_owned_path, pair_or_repair, read_private, sidecar, write_new,
+        exists_owned_path, move_owned_exclusive, pair_or_repair, read_private, sidecar,
+        write_executable, write_new,
     };
     use super::{
         identity_directory, lock_identity_directory, owner_stopped, pairing_store,
@@ -294,7 +300,7 @@ mod darwin {
 
     fn checked_supervisor() -> Result<Arc<DarwinManagedSessions>, ()> {
         // Candidate bundle layout only. The installed Node release is untouched.
-        let helper = std::env::current_exe()
+        let helper = fs::canonicalize(std::env::current_exe().map_err(|_| ())?)
             .map_err(|_| ())?
             .with_file_name("darwin-session-supervisor");
         let meta = fs::symlink_metadata(&helper).map_err(|_| ())?;
@@ -478,8 +484,9 @@ mod darwin {
     }
 
     fn installed(home: &Path, base: &Path) -> Result<Installed, ()> {
-        let exe = std::env::current_exe().map_err(|_| ())?;
-        let version = rca_native_agent::installed_version(&exe).ok_or(())?;
+        let bundle = current_bundle()?;
+        let exe = bundle.join(darwin_package::ENTRY);
+        let version = darwin_package::verify(&bundle, native_target())?.version;
         let arch = if cfg!(target_arch = "aarch64") {
             "arm64"
         } else {
@@ -587,7 +594,6 @@ mod darwin {
     }
 
     fn manage(action: &str) -> Result<(), ()> {
-        use std::io::{IsTerminal, Write};
         let home = home()?;
         let base = identity_directory(&home, false)?;
         let _lock = if action != "status" {
@@ -655,21 +661,12 @@ mod darwin {
         signed_session_proof(&pem, id, "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
         let client = rca_native_agent::device_pairing::PairingClient::new(&current.endpoint)
             .map_err(|_| ())?;
-        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            return Err(());
-        }
         let prompt = if action == "start" {
             "Resume the previously stopped LaunchAgent?"
         } else {
             "Intentionally stop this user LaunchAgent?"
         };
-        print!("{prompt} Confirm [y/N]: ");
-        std::io::stdout().flush().map_err(|_| ())?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer).map_err(|_| ())?;
-        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            return Err(());
-        }
+        owner_confirm(prompt)?;
         let rechecked = installed(&home, &base)?;
         if rechecked.executable != current.executable
             || rechecked.endpoint != current.endpoint
@@ -751,6 +748,203 @@ mod darwin {
         Ok(())
     }
 
+    fn native_target() -> &'static str {
+        if cfg!(target_arch = "aarch64") {
+            "darwin-arm64"
+        } else {
+            "darwin-x64"
+        }
+    }
+
+    fn current_bundle() -> Result<PathBuf, ()> {
+        let executable =
+            fs::canonicalize(std::env::current_exe().map_err(|_| ())?).map_err(|_| ())?;
+        let root = executable.ancestors().nth(4).ok_or(())?;
+        if executable != root.join(darwin_package::ENTRY) {
+            return Err(());
+        }
+        Ok(root.to_owned())
+    }
+
+    fn ensure_owner_directory(parent: &Path, name: &str, private: bool) -> Result<PathBuf, ()> {
+        use std::os::unix::fs::DirBuilderExt;
+        let path = parent.join(name);
+        match fs::DirBuilder::new().mode(0o700).create(&path) {
+            Ok(()) => (),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => (),
+            Err(_) => return Err(()),
+        }
+        let info = fs::symlink_metadata(&path).map_err(|_| ())?;
+        if !info.is_dir()
+            || info.uid() != unsafe { libc::geteuid() }
+            || info.mode() & (if private { 0o077 } else { 0o022 }) != 0
+        {
+            return Err(());
+        }
+        Ok(path)
+    }
+
+    fn sync_remove(path: &Path) -> Result<(), ()> {
+        fs::remove_file(path).map_err(|_| ())?;
+        fs::File::open(path.parent().ok_or(())?)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| ())
+    }
+
+    fn owner_confirm(prompt: &str) -> Result<(), ()> {
+        use std::io::{IsTerminal, Write};
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        print!("{prompt} Confirm [y/N]: ");
+        std::io::stdout().flush().map_err(|_| ())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).map_err(|_| ())?;
+        matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+            .then_some(())
+            .ok_or(())
+    }
+
+    fn pair_identity(
+        key: &Path,
+        client: &rca_native_agent::device_pairing::PairingClient,
+        name: &str,
+        temporary: bool,
+    ) -> Result<(), ()> {
+        let mode = if temporary { "temporary" } else { "permanent" };
+        pair_or_repair(
+            key,
+            client,
+            |pem, existing| {
+                let id = client
+                    .pair(pem, existing, name, temporary, |pending| {
+                        println!("{}", client.approval_instruction(pending, mode))
+                    })
+                    .map_err(|_| ())?;
+                if !temporary {
+                    client.verify_permanent_grant(&id).map_err(|_| ())?;
+                }
+                Ok(id)
+            },
+            false,
+        )
+    }
+
+    // Bootstrap verifies the pinned release archive before executing this
+    // entrypoint; independently check the extracted private inventory.
+    fn install_local(endpoint: &str, name: &str, version: &str, source: &str) -> Result<(), ()> {
+        let bundle = current_bundle()?;
+        let package = darwin_package::verify(&bundle, native_target())?;
+        if package.version != version || package.source != source {
+            return Err(());
+        }
+        let client =
+            rca_native_agent::device_pairing::PairingClient::new(endpoint).map_err(|_| ())?;
+        let generation = new_generation()?;
+        native_plist(&bundle.join(darwin_package::ENTRY), endpoint, &generation)?;
+        let _supervisor = checked_supervisor()?;
+        owner_confirm(&format!(
+            "Install {version} as this user's login LaunchAgent?"
+        ))?;
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        unsafe {
+            libc::umask(0o077);
+        }
+        let (key, _lock) = pairing_store(&home, false)?;
+        let base = key.parent().ok_or(())?;
+        let macos = ensure_owner_directory(base, "macos", true)?;
+        let programs = ensure_owner_directory(&macos, "programs", true)?;
+        let agents = ensure_owner_directory(
+            &ensure_owner_directory(&home, "Library", false)?,
+            "LaunchAgents",
+            false,
+        )?;
+        let plist = agents.join(format!("{LABEL}.plist"));
+        let cli = ensure_owner_directory(&home.join(".local"), "bin", false)?.join("rca");
+        let journal = macos.join("switch.json");
+        if owner_stopped(&key)?
+            || exists_owned_path(&plist)?
+            || exists_owned_path(&cli)?
+            || exists_owned_path(&journal)?
+        {
+            return Err(());
+        }
+        service_absent()?;
+        let endpoint_file = macos.join("endpoint");
+        let stored = read_private(&endpoint_file, 2048)?;
+        if stored.as_ref().is_some_and(|s| s.trim() != endpoint) {
+            return Err(());
+        }
+        let destination = programs.join(format!("{}-{}", package.version, package.target));
+        if exists_owned_path(&destination)? {
+            if !darwin_package::same_package(&bundle, &destination, &package)? {
+                return Err(());
+            }
+        } else {
+            let stage = darwin_package::stage(&bundle, &programs, &package)?;
+            if !darwin_package::same_package(&bundle, &stage, &package)? {
+                return Err(());
+            }
+            move_owned_exclusive(&stage, &destination)?;
+        }
+        pair_identity(&key, &client, name, false)?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        client.verify_permanent_grant(id.trim()).map_err(|_| ())?;
+        service_absent()?;
+        if exists_owned_path(&plist)? || exists_owned_path(&cli)? {
+            return Err(());
+        }
+        let executable = destination.join(darwin_package::ENTRY);
+        let raw = native_plist(&executable, endpoint, &generation)?;
+        let cli_text = native_cli(&executable)?;
+        let record = serde_json::json!({"version":format!("{}-{}",package.version,package.target),
+            "previous":null,"generation":generation,"stopped":false,"phase":"switch_pending"});
+        write_new(&journal, format!("{record}\n").as_bytes())?;
+        if stored.is_none() {
+            write_new(&endpoint_file, format!("{endpoint}\n").as_bytes())?;
+        }
+        write_new(&plist, raw.as_bytes())?;
+        let current = Installed {
+            executable,
+            endpoint: endpoint.to_owned(),
+            version: version.to_owned(),
+            generation,
+            plist,
+        };
+        let after = now_ms()?;
+        let domain = format!("gui/{}", unsafe { libc::geteuid() });
+        let launched = current.plist.to_str().is_some_and(|path| {
+            launchctl(&["bootstrap", &domain, path]).is_ok_and(|(code, _, _)| code == Some(0))
+        });
+        if !launched || !await_online(&current, &key, after) {
+            unregister_owned(
+                || observe_registration(&current.executable),
+                || {
+                    launchctl(&["bootout", &service_target()])
+                        .is_ok_and(|(code, _, _)| code == Some(0))
+                },
+                || std::thread::sleep(Duration::from_millis(250)),
+                true,
+            )?;
+            if read_private(&current.plist, 65536)?.as_deref() != Some(raw.as_str()) {
+                return Err(());
+            }
+            sync_remove(&current.plist)?;
+            sync_remove(&journal)?;
+            eprintln!(
+                "Initial activation failed; approved identity and verified package retained."
+            );
+            return Err(());
+        }
+        write_executable(&cli, cli_text.as_bytes())?;
+        sync_remove(&journal)?;
+        println!(
+            "Installed {version}. Use {} status to inspect the Agent.",
+            cli.display()
+        );
+        Ok(())
+    }
+
     fn pair_local(endpoint: &str, name: &str, temporary: bool) -> Result<(), ()> {
         use rca_native_agent::device_pairing::PairingClient;
         use std::io::IsTerminal;
@@ -779,23 +973,7 @@ mod darwin {
                 return Err(());
             }
         }
-        let mode = if temporary { "temporary" } else { "permanent" };
-        pair_or_repair(
-            &key,
-            &client,
-            |pem, existing| {
-                let id = client
-                    .pair(pem, existing, name, temporary, |pending| {
-                        println!("{}", client.approval_instruction(pending, mode));
-                    })
-                    .map_err(|_| ())?;
-                if !temporary {
-                    client.verify_permanent_grant(&id).map_err(|_| ())?;
-                }
-                Ok(id)
-            },
-            false,
-        )?;
+        pair_identity(&key, &client, name, temporary)?;
         if temporary {
             println!("Starting temporary foreground Agent; the Worker enforces the original 24h grant. Terminal exit disconnects, not revokes.");
             return run_agent(endpoint, &home, &key, None);
@@ -817,7 +995,20 @@ mod darwin {
                 return manage(action);
             }
         }
+        if let [action, endpoint, name, version, source] = arguments.as_slice() {
+            if action == "--install-local" {
+                return install_local(endpoint, name, version, source);
+            }
+        }
         if let [action, endpoint, name] = arguments.as_slice() {
+            if action == "--verify-bundle" {
+                let package = darwin_package::verify(&current_bundle()?, native_target())?;
+                if package.version != *endpoint || package.target != *name {
+                    return Err(());
+                }
+                println!("{}", package.source);
+                return Ok(());
+            }
             return match action.as_str() {
                 "--pair-local" => pair_local(endpoint, name, false),
                 "--temporary-local" => pair_local(endpoint, name, true),

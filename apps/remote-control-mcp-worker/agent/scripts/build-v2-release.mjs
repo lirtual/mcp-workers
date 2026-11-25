@@ -44,9 +44,9 @@ export function parseArgs(argv) {
       !/^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(params.version) ||
       !absolute(params.native) || !absolute(params.out) ||
       !/^[a-f0-9]{64}$/.test(params.nativeSha256) ||
-      (linux && (params.nodeBin !== undefined || params.nodeSha256 !== undefined)) ||
-      (!linux && (!absolute(params.nodeBin) || !/^[a-f0-9]{64}$/.test(params.nodeSha256))) ||
-      (params.artifactProfile !== undefined && (!nativeOnly || !linux)) ||
+      (nativeOnly && (params.nodeBin !== undefined || params.nodeSha256 !== undefined)) ||
+      (!nativeOnly && (!absolute(params.nodeBin) || !/^[a-f0-9]{64}$/.test(params.nodeSha256))) ||
+      (params.artifactProfile !== undefined && !nativeOnly) ||
       (nativeOnly && !hasRustCandidate) ||
       (hasRustCandidate && (!absolute(params.rustAgentBin) ||
         !/^[a-f0-9]{64}$/.test(params.rustAgentSha256) ||
@@ -128,7 +128,7 @@ export function requiredGlibcVersion(binary, invoke = spawnSync) {
   return versions.at(-1).join(".");
 }
 
-export function ensureNativeTarget({ target, nodeBin, native, nodeSha256, nativeSha256 }) {
+export function ensureNativeTarget({ target, nodeBin, native, nodeSha256, nativeSha256, artifactProfile }) {
   if (target === "darwin-arm64" || target === "darwin-x64") {
     const arch = target.slice("darwin-".length);
     // Never count a Rosetta-translated x64 process as an Intel build host.
@@ -139,23 +139,30 @@ export function ensureNativeTarget({ target, nodeBin, native, nodeSha256, native
         Number(os.release().split(".")[0]) < 24) {
       throw new Error("Darwin candidate requires a native macOS 15+ build host matching the target CPU.");
     }
-    const st = statSync(nodeBin);
-    if (!st.isFile() || (st.mode & 0o111) === 0 ||
-        machOMachine(readFileSync(nodeBin)) !== arch ||
-        createHash("sha256").update(readFileSync(nodeBin)).digest("hex") !== nodeSha256) {
-      throw new Error("Pinned native Mach-O Node checksum or architecture mismatch.");
+    let nodeVersion;
+    if (artifactProfile === "rust-native-only-v1") {
+      if (nodeBin !== undefined || nodeSha256 !== undefined)
+        throw Error("Native-only packaging must not depend on Node.");
+    } else {
+      const st = statSync(nodeBin);
+      if (!st.isFile() || (st.mode & 0o111) === 0 ||
+          machOMachine(readFileSync(nodeBin)) !== arch ||
+          createHash("sha256").update(readFileSync(nodeBin)).digest("hex") !== nodeSha256) {
+        throw new Error("Pinned native Mach-O Node checksum or architecture mismatch.");
+      }
+      const version = spawnSync(nodeBin, ["--version"], { encoding:"utf8", timeout:5000 });
+      if (version.error || version.status !== 0 || !/^v24\.[0-9]+\.[0-9]+\s*$/.test(version.stdout)) {
+        throw new Error("Candidate requires native Node 24.");
+      }
+      nodeVersion=version.stdout.trim();
     }
-    const version = spawnSync(nodeBin, ["--version"], { encoding:"utf8", timeout:5000 });
-    if (version.error || version.status !== 0 || !/^v24\.[0-9]+\.[0-9]+\s*$/.test(version.stdout)) {
-      throw new Error("Candidate requires native Node 24.");
-    }
-    const helper=statSync(native);
-    if (!helper.isFile() || (helper.mode & 0o111)===0 ||
+    const helper=lstatSync(native);
+    if (!helper.isFile() || helper.isSymbolicLink() || (helper.mode & 0o111)===0 ||
         machOMachine(readFileSync(native))!==arch ||
         createHash("sha256").update(readFileSync(native)).digest("hex")!==nativeSha256) {
       throw new Error("Darwin owned-group supervisor Mach-O architecture or digest mismatch.");
     }
-    return { arch, nodeVersion:version.stdout.trim(), libc:undefined, glibcMin:undefined };
+    return { arch, nodeVersion, libc:undefined, glibcMin:undefined };
   }
   const arch = target === "linux-x64-glibc" ? "x64" : "arm64";
   const id = arch === "x64" ? 62 : 183;
@@ -272,8 +279,8 @@ export function build(args) {
     ? ensureRustCandidate({...args,maxGlibcMin:glibcMin}) : null;
   const darwin = args.target === "darwin-arm64" || args.target === "darwin-x64";
   const nativeOnly = args.artifactProfile === "rust-native-only-v1";
-  if ((!darwin && !nativeOnly) || (nativeOnly && (!rustCandidate || darwin)))
-    throw Error("Linux packaging requires reviewed native-only Rust.");
+  if ((!darwin && !nativeOnly) || (nativeOnly && !rustCandidate))
+    throw Error("Native-only packaging requires reviewed Rust binaries.");
   const hasSession = Boolean(args.rustSessionBin || args.rustSessionSha256);
   if (hasSession && (!nativeOnly || args.target !== "linux-x64-glibc"))
     throw Error("Packaged Session entry requires reviewed Linux x64 native-only archive.");
@@ -282,7 +289,7 @@ export function build(args) {
     rustAgentSha256:args.rustSessionSha256,maxGlibcMin:glibcMin,
   }) : null;
   // No runtime Node symbols may determine the ABI floor of a Node-free archive.
-  const effectiveGlibcMin = nativeOnly
+  const effectiveGlibcMin = nativeOnly && !darwin
     ? [requiredGlibcVersion(args.native),rustCandidate.glibcMin,
       ...(sessionCandidate ? [sessionCandidate.glibcMin] : [])].sort((a,b)=>{
       const [am,an]=a.split(".").map(Number),[bm,bn]=b.split(".").map(Number);
@@ -297,7 +304,7 @@ export function build(args) {
     mkdirSync(path.join(work, "bin"), {recursive:true,mode:0o700});
     mkdirSync(path.join(work, "apps/remote-control-agent/src"), {recursive:true,mode:0o700});
   }
-  mkdirSync(path.join(work, "apps/remote-control-agent/scripts"), {recursive:true,mode:0o700});
+  if (!darwin || !nativeOnly) mkdirSync(path.join(work, "apps/remote-control-agent/scripts"), {recursive:true,mode:0o700});
   mkdirSync(path.join(work, "apps/remote-control-agent/.build"), {recursive:true,mode:0o700});
   if (!nativeOnly) copyFileSync(args.nodeBin, path.join(work, "bin/node"));
   const helperFile=darwin ? "darwin-session-supervisor" : "session-supervisor";
@@ -319,8 +326,8 @@ export function build(args) {
     chmodSync(path.join(work,relative),0o700);
   }
   // Retain the actual shared macOS full-tool and freeze gate, without depending on the retired Linux entry.
-  const lifecycleSource=darwin ? readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8") : "";
-  if(darwin && (!/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
+  const lifecycleSource=darwin && !nativeOnly ? readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8") : "";
+  if(darwin && !nativeOnly && (!/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
      !/receiptDirectory:\s*options\.receiptDirectory/.test(lifecycleSource) ||
      !/startUpgradeControl\(execution(?:!)?, keyPath\)/.test(lifecycleSource) ||
      !/executeV2FileOperation\(execution,/.test(lifecycleSource) ||
@@ -337,7 +344,7 @@ export function build(args) {
     writeFileSync(path.join(work,"apps/remote-control-agent/src",file.replace(/\.ts$/,".js")),
       rewriteExtensions(compiled.outputText),{mode:0o600});
   }
-  if (darwin) {
+  if (darwin && !nativeOnly) {
     const local=path.join(root,"scripts/macos-local.mjs");
     const localDest=path.join(work,"apps/remote-control-agent/scripts/macos-local.mjs");
     const remoteDest=path.join(work,"apps/remote-control-agent/scripts/macos-remote-upgrade.mjs");

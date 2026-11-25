@@ -1,4 +1,4 @@
-/** Independent in-memory inspection of the current native Linux release archive.
+/** Independent in-memory inspection of the native Linux and Darwin release archives.
  * Used by CI before release; installation/download are owned by bootstrap-v2.py.
  */
 import { gunzipSync } from "node:zlib";
@@ -10,6 +10,8 @@ const NATIVE_FILES=new Set(["bundle.json",APP+"/.build/session-supervisor",
   APP+"/.build/rca-standard-linux-candidate",APP+"/scripts/bootstrap-v2.py",
   APP+"/scripts/manage-v2.py",APP+"/scripts/rca.sh"]);
 const SESSION_ENTRY=APP+"/.build/rca-session-linux-candidate";
+const DARWIN_FILES=new Set(["bundle.json",APP+"/.build/darwin-session-supervisor",
+  APP+"/.build/rca-standard-darwin-candidate"]);
 function octal(bytes) {
   const s=Buffer.from(bytes).toString("ascii").replace(/\0.*$/,"").trim();
   if(!/^[0-7]+$/.test(s)) throw new Error("Invalid tar numeric field.");
@@ -21,14 +23,14 @@ function ascii(bytes) {
   if(bytes.some(x=>x>127)) throw new Error("Invalid tar pathname.");
   return Buffer.from(bytes).toString("ascii").replace(/\0.*$/,"");
 }
-function safePath(name,directory) {
+function safePath(name,directory,darwin) {
   const n=directory && name.endsWith("/") ? name.slice(0,-1) : name;
   if(n.length<1 || n.length>160 || n.startsWith("/") || n.includes("\\") ||
     n.split("/").some(part=>part==="" || part==="." || part==="..") ||
     !/^[A-Za-z0-9._/-]+$/.test(n)) throw new Error("Unsafe tar entry path.");
-  if(!directory && !NATIVE_FILES.has(n) && n!==SESSION_ENTRY)
+  if(!directory && !(darwin ? DARWIN_FILES.has(n) : NATIVE_FILES.has(n) || n===SESSION_ENTRY))
     throw new Error("Native-only archive contains an unreviewed runtime file.");
-  if(directory && !["apps",APP,APP+"/scripts",APP+"/.build"].includes(n))
+  if(directory && !(darwin ? ["apps",APP,APP+"/.build"] : ["apps",APP,APP+"/scripts",APP+"/.build"]).includes(n))
     throw new Error("Unreviewed archive directory.");
   return n;
 }
@@ -39,6 +41,7 @@ export function inspectTarGzip(gzip,{tag,target}) {
   let tar;
   try { tar=gunzipSync(gzip,{maxOutputLength:MAX_TAR}); }
   catch { throw new Error("Invalid or oversized gzip stream."); }
+  const darwin=/^darwin-(?:arm64|x64)$/.test(target);
   const entries=new Map();
   let cursor=0,end=false;
   while(cursor+512<=tar.length) {
@@ -55,7 +58,7 @@ export function inspectTarGzip(gzip,{tag,target}) {
     if(header.subarray(157,257).some(x=>x!==0)) throw new Error("Tar link target refused.");
     const prefix=ascii(header.subarray(345,500));
     const name=(prefix ? prefix+"/" : "")+ascii(header.subarray(0,100));
-    const safe=safePath(name,directory);
+    const safe=safePath(name,directory,darwin);
     if(entries.has(safe)) throw new Error("Duplicate tar entry.");
     const size=octal(header.subarray(124,136));
     if(directory && size!==0) throw new Error("Directory contains payload.");
@@ -70,6 +73,31 @@ export function inspectTarGzip(gzip,{tag,target}) {
   let manifest;
   try { manifest=JSON.parse(entries.get("bundle.json").data.toString("utf8")); }
   catch { throw new Error("Invalid Release manifest."); }
+  if(darwin) {
+    if(!manifest || manifest.name!=="remote-control-agent" || manifest.version!==tag ||
+        manifest.target!==target || !/^v0\.[1-9][0-9]*\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$/.test(tag) ||
+        manifest.artifact_schema!==1 || manifest.device_protocol!==2 || manifest.receipt_schema!==1 ||
+        manifest.artifact_profile!=="rust-native-only-v1" ||
+        manifest.agent_runtime!=="rust-standard-darwin-v1" ||
+        manifest.runtime_profile!=="standard-darwin-rust-runtime-v1" ||
+        manifest.candidate_profile!=="darwin-permanent-local-v1" ||
+        manifest.native_supervisor!=="darwin-owned-group-v1" ||
+        !/^[a-f0-9]{40}$/.test(manifest.source_commit||"") ||
+        manifest.node!==undefined || manifest.browser_runtime!==undefined ||
+        manifest.session_runtime!==undefined || manifest.upgrade_protocol!==undefined ||
+        !Array.isArray(manifest.modules) || manifest.modules.length!==0)
+      throw Error("Unexpected native Darwin Release identity.");
+    if([...DARWIN_FILES].some(file=>!entries.has(file)||entries.get(file).directory))
+      throw Error("Incomplete native Darwin release artifact.");
+    const cpu=target==="darwin-arm64" ? 0x0100000c : 0x01000007;
+    for(const file of DARWIN_FILES) {
+      if(file==="bundle.json")continue;
+      const b=entries.get(file).data;
+      if(b.length<32||b.readUInt32LE(0)!==0xfeedfacf||b.readUInt32LE(4)!==cpu||b.readUInt32LE(12)!==2)
+        throw Error("Release binary architecture mismatch.");
+    }
+    return entries;
+  }
   if(!manifest || manifest.version!==tag || manifest.target!==target ||
       !/^linux-(?:x64|arm64)-glibc$/.test(target) ||
       !(/^v0\.[1-9][0-9]*\.[0-9]+$/.test(tag) ||

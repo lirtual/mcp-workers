@@ -231,6 +231,31 @@ pub(super) fn iso_time(ms: u64) -> Option<String> {
     ))
 }
 
+pub(super) fn native_cli(executable: &Path) -> Result<String, ()> {
+    let path = executable.to_str().ok_or(())?;
+    if !executable.is_absolute() || path.chars().any(|c| c.is_control()) {
+        return Err(());
+    }
+    let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
+    Ok(format!("#!/bin/sh\nset -eu\n[ \"$#\" -eq 1 ] || exit 2\ncase \"$1\" in status|stop|start) ;; *) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;; esac\nexec {quoted} \"$@\"\n"))
+}
+
+pub(super) fn new_generation() -> Result<String, ()> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|_| ())?;
+    bytes[6] = (bytes[6] & 15) | 0x40;
+    bytes[8] = (bytes[8] & 63) | 0x80;
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -334,6 +359,17 @@ mod tests {
             ),
             Some((false, 1000))
         );
+    }
+
+    #[test]
+    fn native_cli_quotes_owner_path_and_generation_is_unique() {
+        let command = native_cli(Path::new("/Users/o'wner/rca")).unwrap();
+        assert!(command.contains("status|stop|start"));
+        assert!(command.ends_with("exec '/Users/o'\"'\"'wner/rca' \"$@\"\n"));
+        assert!(native_cli(Path::new("/tmp/bad\npath")).is_err());
+        let generation = new_generation().unwrap();
+        assert!(valid_device_id(&generation));
+        assert_ne!(generation, new_generation().unwrap());
     }
 
     #[test]

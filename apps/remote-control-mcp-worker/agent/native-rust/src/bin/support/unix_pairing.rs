@@ -77,6 +77,10 @@ pub(super) fn read_private(path: &Path, limit: u64) -> Result<Option<String>, ()
 }
 
 pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ()> {
+    write_new_mode(path, bytes, 0o600)
+}
+
+fn write_new_mode(path: &Path, bytes: &[u8], mode: u32) -> Result<(), ()> {
     let directory = path.parent().ok_or(())?;
     let mut random = [0u8; 16];
     getrandom::fill(&mut random).map_err(|_| ())?;
@@ -85,18 +89,23 @@ pub(super) fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ()> {
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(0o600)
+        .mode(mode)
         .open(&temp)
         .map_err(|_| ())?;
     let result = (|| {
         file.write_all(bytes).map_err(|_| ())?;
         file.sync_all().map_err(|_| ())?;
-        move_identity_file(&temp, path)
+        move_owned_exclusive(&temp, path)
     })();
     if result.is_err() && temp.exists() {
         let _ = fs::remove_file(&temp);
     }
     result
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), ()> {
+    write_new_mode(path, bytes, 0o700)
 }
 
 pub(super) fn exists_owned_path(path: &Path) -> Result<bool, ()> {
@@ -107,7 +116,7 @@ pub(super) fn exists_owned_path(path: &Path) -> Result<bool, ()> {
     }
 }
 
-fn move_identity_file(from: &Path, to: &Path) -> Result<(), ()> {
+pub(super) fn move_owned_exclusive(from: &Path, to: &Path) -> Result<(), ()> {
     use std::os::unix::ffi::OsStrExt;
     let src = std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|_| ())?;
     let dst = std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|_| ())?;
@@ -298,7 +307,7 @@ pub(super) fn repair_identity(
         (stage_id.as_path(), id_path.as_path()),
     ];
     for (from, to) in steps.iter().skip(phase) {
-        move_identity_file(from, to)?;
+        move_owned_exclusive(from, to)?;
     }
     // The previous service must be absent before permanent promotion.
     // On interruption, the ordinary installer recovers the same approved

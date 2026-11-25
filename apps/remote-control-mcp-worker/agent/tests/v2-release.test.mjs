@@ -216,7 +216,7 @@ test("#914 native-only Rust archive excludes bundled Node and every JS runtime f
     {name:"bin/node",data:elf(62)}]),{tag:stableTag,target}),/unreviewed runtime file/);
 });
 
-test("#914 native-only packaging is explicit and cannot target Node or Darwin",()=>{
+test("#914 native-only packaging is explicit and rejects Node inputs",()=>{
   const args=["--version","v0.1.57-rust-candidate.1","--target",target,
     "--native","/opt/supervisor","--out","/tmp/release",
     "--native-sha256","b".repeat(64),
@@ -233,7 +233,12 @@ test("#914 native-only packaging is explicit and cannot target Node or Darwin",(
   assert.throws(()=>parseArgs([...args.map(x=>x===target?"linux-arm64-glibc":x),...sessionArgs]));
   assert.throws(()=>parseArgs([...args.slice(0,-2),...sessionArgs]));
 
-  assert.throws(()=>parseArgs(args.map(x=>x===target?"darwin-arm64":x)));
+  for(const darwin of ["darwin-arm64","darwin-x64"]) {
+    const nativeDarwin=args.map(x=>x===target?darwin:x);
+    assert.equal(parseArgs(nativeDarwin).artifactProfile,"rust-native-only-v1");
+    assert.throws(()=>parseArgs([...nativeDarwin,"--node-bin","/opt/node","--node-sha256","f".repeat(64)]));
+    assert.throws(()=>parseArgs([...nativeDarwin,...sessionArgs]));
+  }
   assert.throws(()=>parseArgs(args.slice(0,-2).concat("--artifact-profile","anything")));
   assert.throws(()=>parseArgs(args.filter((_,i)=>i<args.length-4 ||
     i>=args.length-2)),"missing Rust signature must not pass");
@@ -250,4 +255,33 @@ test("#914 Windows packaging accepts only reviewed native Rust inputs",()=>{
   assert.throws(()=>parseWindowsPreviewBuildArgs(session.map((x,i)=>i===1?"v0.1.58-other.1":x)));
   assert.throws(()=>parseWindowsPreviewBuildArgs([...native,"--node-bin","/opt/node.exe","--node-sha256","f".repeat(64)]));
   assert.throws(()=>parseWindowsPreviewBuildArgs(native.map(x=>x==="c".repeat(64)?"wrong":x)));
+});
+
+test("#914 native-only Darwin archive has only the two native binaries and manifest",()=>{
+  const version="v0.1.60";
+  const app="apps/remote-control-agent/.build/";
+  for(const [target,cpu] of [["darwin-arm64",0x0100000c],["darwin-x64",0x01000007]]) {
+    const manifest={name:"remote-control-agent",version,target,artifact_schema:1,
+      device_protocol:2,receipt_schema:1,artifact_profile:"rust-native-only-v1",
+      agent_runtime:"rust-standard-darwin-v1",runtime_profile:"standard-darwin-rust-runtime-v1",
+      candidate_profile:"darwin-permanent-local-v1",native_supervisor:"darwin-owned-group-v1",
+      source_commit:"a".repeat(40),modules:[]};
+    const fixture=(changes={},extra=[],binary=macho(cpu))=>tar([
+      {name:"bundle.json",data:Buffer.from(JSON.stringify({...manifest,...changes}))},
+      {name:app+"darwin-session-supervisor",data:macho(cpu)},
+      {name:app+"rca-standard-darwin-candidate",data:binary},...extra,
+    ]);
+    const opts={tag:version,target};
+    assert.equal(inspectTarGzip(fixture(),opts).size,3);
+    for(const path of ["bin/node","apps/remote-control-agent/src/macos-permanent.js",
+        "apps/remote-control-agent/scripts/macos-local.mjs"]) {
+      assert.throws(()=>inspectTarGzip(fixture({},[{name:path,data:Buffer.from("legacy")}]),opts),/unreviewed runtime file/);
+    }
+    assert.throws(()=>inspectTarGzip(fixture({node:"v24.0.0"}),opts),/identity/);
+    assert.throws(()=>inspectTarGzip(fixture({modules:["macos-permanent.ts"]}),opts),/identity/);
+    assert.throws(()=>inspectTarGzip(fixture({source_commit:"unknown"}),opts),/identity/);
+    assert.throws(()=>inspectTarGzip(fixture({},[],macho(cpu===0x0100000c?0x01000007:0x0100000c)),opts),/architecture/);
+    assert.throws(()=>inspectTarGzip(fixture({},[{name:app+"rca-standard-darwin-candidate",data:macho(cpu)}]),opts),/Duplicate/);
+    assert.throws(()=>inspectTarGzip(fixture({},[{name:"apps",type:"2"}]),opts),/Symlink/);
+  }
 });
