@@ -824,11 +824,60 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
        evidence.attempts.some(a=>a.attempt_id===invocation.source_attempt_id&&
          ['succeeded','failed','cancelled'].includes(a.state))),
       'retired invocation identity or execution proof unresolved');
-  }else require(evidence.invocations.length===0,'invocation requires related terminal evidence');
+  }
+  const plannedStep=id=>{
+    const plan=evidence.plan?.plan;
+    require(evidence.plan?.id===run.version_id&&Array.isArray(plan?.steps),'immutable Plan unavailable or mismatched');
+    const step=plan.steps.find(s=>s.id===id);
+    require(step,'related Plan Step '+id+' missing');
+    return step;
+  };
+  const receipt=id=>evidence.steps.find(s=>s.step_id===id);
+  if(!native.retired_invocation)for(const invocation of evidence.invocations){
+    const step=plannedStep(invocation.step_id);
+    const result=receipt(invocation.step_id);
+    // A reservation alone is not a receipt. A successful, persisted Step
+    // from the executor follows an accepted response bound to this fence.
+    // More complex source-bound invocations remain closed until verified.
+    require(step.uses==='action.run'&&step.with?.executor==='cloudflare'&&
+      typeof invocation.invocation_id==='string'&&invocation.invocation_id.length>0&&
+      invocation.source_attempt_id===invocation.invocation_id&&
+      typeof invocation.deployment_id==='string'&&invocation.deployment_id.length>0&&
+      invocation.binding_generation===0&&/^[a-f0-9]{64}$/.test(invocation.contract_digest)&&
+      invocation.contract_digest===step.with.contract_digest&&
+      result?.status==='succeeded','invocation '+invocation.step_id+' requires related terminal evidence');
+  }
+  for(const fence of evidence.mcpFences){
+    const step=plannedStep(fence.step_id),result=receipt(fence.step_id);
+    const plan=evidence.plan.plan;
+    const generation=step.uses==='mcp.call'?(plan.mcp_connection_generation??0):
+      step.uses==='http.request'?(plan.http_connection_generation??0):null;
+    require(Number.isSafeInteger(generation)&&generation>=0&&fence.generation===generation&&
+      (result?.status==='succeeded'||(step.uses==='http.request'&&
+        ['GET','HEAD'].includes(step.with?.method)&&result?.status==='failed'&&
+        ['http_response_error','http_redirect_rejected'].includes(result.error_code))),
+      'external call '+fence.step_id+' requires related terminal evidence');
+  }
+  for(const gate of evidence.gates){
+    const step=plannedStep(gate.step_id),result=receipt(gate.step_id);
+    const approval=evidence.approvals.find(a=>a.step_id===gate.step_id);
+    require(step.uses==='github.run'&&step.approval?.required===true&&
+      gate.version_id===run.version_id&&positive(gate.deadline_at)&&
+      (approval?.decision==='approved'?positive(approval.consumed_at)&&
+        ['succeeded','failed','cancelled'].includes(result?.status):
+        result?.status==='failed'&&['approval_denied','approval_timeout'].includes(result.error_code)),
+      'runtime approval '+gate.step_id+' unresolved');
+  }
+  for(const approval of evidence.approvals)
+    require(approval.version_id===run.version_id&&
+      evidence.gates.some(g=>g.step_id===approval.step_id&&g.version_id===approval.version_id)&&
+      ['approved','denied'].includes(approval.decision),'runtime approval identity mismatch');
+  for(const wait of evidence.waits)
+    require(plannedStep(wait.step_id).uses==='flow.wait_event'&&
+      receipt(wait.step_id)?.status==='succeeded','event wait '+wait.step_id+' unresolved');
   // Until their evidence-specific slices are implemented, refuse all related
   // dependencies rather than inferring their terminal state from native alone.
-  for(const key of ['children','mcpFences','cloudflareCancellations',
-    'childCancellations','gates','approvals','waits'])
+  for(const key of ['children','cloudflareCancellations','childCancellations'])
     require(evidence[key].length===0,key+' requires related terminal evidence');
   return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at,
     ...(native.historical_source?{historical_source:native.historical_source}:{}),

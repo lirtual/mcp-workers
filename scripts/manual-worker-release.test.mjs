@@ -1696,3 +1696,44 @@ test('#1046 v22 to v23 adds only the nullable bounded terminal proof column',()=
     assert.deepEqual(db.prepare('SELECT * FROM run_steps').all(),originalSteps);
   }finally{db.close();}
 });
+
+// Current durable receipts, not their mere existence, establish closure.
+// A native terminal alone does not settle a lost external effect.
+test('#1046 current effect and wait receipts do not block after independently known completion',async()=>{
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const run={id:'r',instance_id:'i',version_id:'v',start_state:'started',outcome:'indeterminate'};
+  const native={instance_id:'i',status:'complete',observed_at:1000};
+  const digest='a'.repeat(64);
+  const plan={mcp_connection_generation:2,http_connection_generation:3,steps:[
+    {id:'mcp',uses:'mcp.call',with:{scope:'write'}},
+    {id:'task',uses:'github.run',with:{action:{type:'task'}},approval:{required:true}},
+    {id:'http',uses:'http.request',with:{method:'GET'}},
+    {id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'bark',action:'bark.send_notification',contract_digest:digest}},
+    {id:'wait',uses:'flow.wait_event',with:{}},
+    {id:'last',uses:'result.emit',with:{}}
+  ]};
+  const steps=plan.steps.map(s=>({run_id:'r',step_id:s.id,status:s.id==='last'?'indeterminate':s.id==='http'?'failed':'succeeded',
+    error_code:s.id==='http'?'http_response_error':null}));
+  const invocation={run_id:'r',step_id:'notify',invocation_id:'invoke',source_attempt_id:'invoke',deployment_id:'provider-version',contract_digest:digest,binding_generation:0};
+  const e={plan:{id:'v',plan},steps,attempts:[{run_id:'r',step_id:'task',attempt_id:'task-a',capability_id:'github.action',state:'succeeded',candidate_run_id:12,candidate_run_attempt:1,owner_run_id:12,owner_run_attempt:1}],sessions:[],callbacks:[],children:[],invocations:[invocation],
+    mcpFences:[{run_id:'r',step_id:'mcp',generation:2},{run_id:'r',step_id:'http',generation:3}],
+    githubCancellations:[],cloudflareCancellations:[],childCancellations:[],
+    gates:[{run_id:'r',step_id:'task',version_id:'v',deadline_at:500}],
+    approvals:[{run_id:'r',step_id:'task',version_id:'v',decision:'approved',created_at:100,consumed_at:200}],
+    waits:[{run_id:'r',step_id:'wait',last_sent_at:100}]};
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
+  const changeStep=(id,status,error_code)=>({...e,steps:steps.map(s=>s.step_id===id?{...s,status,error_code}:s)});
+  for(const bad of [
+    {...e,plan:undefined},{...e,plan:{...e.plan,id:'wrong'}},
+    {...e,invocations:[{...invocation,contract_digest:'different'}]},
+    {...e,invocations:[{...invocation,source_attempt_id:'other'}]},
+    changeStep('notify','indeterminate','cloudflare_outcome_unknown'),
+    changeStep('mcp','indeterminate','external_outcome_unknown'),
+    changeStep('http','indeterminate','http_outcome_unknown'),
+    {...e,mcpFences:[{...e.mcpFences[0],generation:1},e.mcpFences[1]]},
+    {...e,approvals:[{...e.approvals[0],version_id:'old'}]},
+    {...e,approvals:[{...e.approvals[0],consumed_at:null}]},
+    {...e,waits:[{...e.waits[0],step_id:'last'}]},
+    changeStep('wait','waiting',null),
+  ])assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
+});
