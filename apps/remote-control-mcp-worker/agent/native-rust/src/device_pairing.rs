@@ -230,6 +230,179 @@ impl PairingClient {
         Ok(())
     }
 
+    /// A challenge is request-bound and short-lived. The caller must display
+    /// its exact target metadata before collecting a secret.
+    pub fn secure_input_challenge(
+        &self,
+        pem: &str,
+        device_id: &str,
+        request_id: &str,
+    ) -> Result<Value, SessionRecoveryError> {
+        if !valid_device_id(device_id) || !valid_device_id(request_id) {
+            return Err(SessionRecoveryError::InvalidIdentity);
+        }
+        let result = post_bounded(
+            &self.client,
+            &self.origin,
+            "/agent/owner/intent/challenge",
+            json!({"action":"secure_input","device_id":device_id,"request_id":request_id}),
+            200,
+            false,
+        )?;
+        let nonce = result["nonce"]
+            .as_str()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let generation = result["generation"]
+            .as_u64()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let expiry = result["expires_at"]
+            .as_u64()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let binding = result["target_binding"]
+            .as_str()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let purpose = result["purpose"]
+            .as_str()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let target = &result["target"];
+        let execution = &result["execution"];
+        let valid_binding = binding.len() == 43
+            && binding
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-');
+        let principal_valid = result
+            .get("provider_principal")
+            .map(|value| {
+                value.is_object()
+                    && serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= 4_096)
+            })
+            .unwrap_or(true);
+        let session_execution = execution["grant_type"] == "session"
+            && execution["session_attempt_id"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty() && v.len() <= 128)
+            && execution["session_run_id"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty() && v.len() <= 128)
+            && execution["session_run_attempt"]
+                .as_u64()
+                .is_some_and(|v| v > 0 && v < 9_007_199_254_740_991)
+            && execution["session_workflow_name"]
+                .as_str()
+                .is_some_and(|v| !v.trim().is_empty() && v.len() <= 128)
+            && execution["expires_at"].as_u64().is_some_and(|v| v > 0);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| SessionRecoveryError::Unavailable)?
+            .as_millis() as u64;
+        if result["action"] != "secure_input"
+            || result["device_id"] != device_id
+            || result["request_id"] != request_id
+            || nonce.len() != 24
+            || !nonce
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+            || generation >= 9_007_199_254_740_991
+            || expiry <= now
+            || !valid_binding
+            || purpose.trim().is_empty()
+            || purpose.len() > 256
+            || crate::secure_input::parse_target(target).is_none()
+            || !result["is_production"].is_boolean()
+            || !valid_device_id(execution["device_id"].as_str().unwrap_or_default())
+            || !matches!(
+                execution["grant_type"].as_str(),
+                Some("permanent" | "session")
+            )
+            || (execution["grant_type"] == "session"
+                && (!session_execution
+                    || execution["expires_at"].as_u64().is_some_and(|v| v <= now)))
+            || !principal_valid
+        {
+            return Err(SessionRecoveryError::Rejected);
+        }
+        // Fail before showing challenge details if local key material is unreadable.
+        crate::identity::signed_secure_input_owner_intent_proof(
+            pem, request_id, device_id, nonce, generation, binding, false, false,
+        )
+        .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
+        Ok(result)
+    }
+
+    /// Submit exactly once. The JSON request body is the only delivery path;
+    /// callers must not retry when this method reports a transport error.
+    pub fn secure_input_owner_intent(
+        &self,
+        pem: &str,
+        device_id: &str,
+        challenge: &Value,
+        secret: &str,
+        target_confirmed: bool,
+        production_authorized: bool,
+    ) -> Result<(), SessionRecoveryError> {
+        let request_id = challenge["request_id"]
+            .as_str()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let nonce = challenge["nonce"]
+            .as_str()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let generation = challenge["generation"]
+            .as_u64()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let expiry = challenge["expires_at"]
+            .as_u64()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let binding = challenge["target_binding"]
+            .as_str()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let is_production = challenge["is_production"]
+            .as_bool()
+            .ok_or(SessionRecoveryError::Rejected)?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| SessionRecoveryError::Unavailable)?
+            .as_millis() as u64;
+        if challenge["device_id"] != device_id
+            || !valid_device_id(request_id)
+            || nonce.len() != 24
+            || expiry <= now
+            || !target_confirmed
+            || (is_production && !production_authorized)
+            || secret.is_empty()
+            || secret.len() > 8_192
+            || secret.contains(char::from(0))
+        {
+            return Err(SessionRecoveryError::Rejected);
+        }
+        let proof = crate::identity::signed_secure_input_owner_intent_proof(
+            pem,
+            request_id,
+            device_id,
+            nonce,
+            generation,
+            binding,
+            target_confirmed,
+            production_authorized,
+        )
+        .map_err(|_| SessionRecoveryError::Rejected)?;
+        let result = post_bounded(
+            &self.client,
+            &self.origin,
+            "/agent/owner/intent",
+            json!({
+                "action":"secure_input", "device_id":device_id, "request_id":request_id,
+                "nonce":nonce, "generation":generation, "target_confirmed":true,
+                "production_authorized":production_authorized, "proof":proof, "secret":secret,
+            }),
+            200,
+            false,
+        )?;
+        if result["request_id"] != request_id || result["state"] != "unknown" {
+            return Err(SessionRecoveryError::Rejected);
+        }
+        Ok(())
+    }
+
     /// At most one pending registration per explicit pairing. Never rotate
     /// or re-register a confirmed ID or treat a network error as pending.
     pub fn pair(
@@ -645,6 +818,89 @@ mod tests {
                 server.join().unwrap();
             }
         }
+    }
+
+    #[test]
+    fn secure_input_owner_flow_binds_exact_challenge_and_submits_secret_once() {
+        const REQUEST: &str = "123e4567-e89b-42d3-a456-426614174002";
+        const TARGET: &str = "123e4567-e89b-42d3-a456-426614174003";
+        const BINDING: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
+        const SECRET: &str = "synthetic-secure-input-value";
+        let (client, listener) = fixture();
+        let pem = generate_private_pem().unwrap();
+        let expected_pem = pem.clone();
+        let principal_identity = "p".repeat(1_200);
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60_000;
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let (route, request) = recv_request(&mut socket);
+            assert_eq!(route, "POST /agent/owner/intent/challenge HTTP/1.1");
+            assert_eq!(
+                request,
+                json!({"action":"secure_input","device_id":ID,"request_id":REQUEST})
+            );
+            reply(
+                &mut socket,
+                "200 OK",
+                json!({
+                    "action":"secure_input","device_id":ID,"request_id":REQUEST,
+                    "nonce":NONCE,"generation":3,"expires_at":expiry,"target_binding":BINDING,
+                    "purpose":"Set repository token",
+                    "target":{"kind":"github_repository_secret","repository":"owner/repo","name":"TOKEN"},
+                    "execution":{"device_id":TARGET,"grant_type":"permanent"},
+                    "provider_principal":{"provider":"github","identity":principal_identity},
+                    "is_production":true
+                }),
+            );
+
+            let (mut socket, _) = listener.accept().unwrap();
+            let (route, request) = recv_request(&mut socket);
+            assert_eq!(route, "POST /agent/owner/intent HTTP/1.1");
+            let expected_proof = crate::identity::signed_secure_input_owner_intent_proof(
+                &expected_pem,
+                REQUEST,
+                ID,
+                NONCE,
+                3,
+                BINDING,
+                true,
+                true,
+            )
+            .unwrap();
+            assert_eq!(
+                request,
+                json!({
+                    "action":"secure_input","device_id":ID,"request_id":REQUEST,
+                    "nonce":NONCE,"generation":3,"target_confirmed":true,
+                    "production_authorized":true,"proof":expected_proof,"secret":SECRET
+                })
+            );
+            reply(
+                &mut socket,
+                "200 OK",
+                json!({"request_id":REQUEST,"state":"unknown"}),
+            );
+        });
+
+        let challenge = client.secure_input_challenge(&pem, ID, REQUEST).unwrap();
+        assert_eq!(challenge["expires_at"], expiry);
+        assert_eq!(challenge["is_production"], true);
+        assert_eq!(challenge["execution"]["device_id"], TARGET);
+        assert_ne!(challenge["device_id"], challenge["execution"]["device_id"]);
+        assert!(client
+            .secure_input_owner_intent(&pem, ID, &challenge, SECRET, false, false)
+            .is_err());
+        assert!(client
+            .secure_input_owner_intent(&pem, ID, &challenge, SECRET, true, false)
+            .is_err());
+        client
+            .secure_input_owner_intent(&pem, ID, &challenge, SECRET, true, true)
+            .unwrap();
+        server.join().unwrap();
     }
 
     #[cfg(windows)]

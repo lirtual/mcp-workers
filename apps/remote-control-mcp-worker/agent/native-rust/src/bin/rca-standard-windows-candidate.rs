@@ -444,6 +444,25 @@ mod windows {
         Ok(())
     }
 
+    fn secure_input_local(request_id: &str) -> Result<(), ()> {
+        use rca_native_agent::secure_input_cli::run_secure_input_owner_flow;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        let key = root.join("v2-identity.pem");
+        let (pem, id) = local_identity(&key)?;
+        let pem = pem.ok_or(())?;
+        let id = id.ok_or(())?;
+        if stopped(&key)? {
+            return Err(());
+        }
+        let output = task_command(&directory, &["-Action", "Endpoint"])?;
+        let endpoint = std::str::from_utf8(&output.stdout).map_err(|_| ())?.trim();
+        run_secure_input_owner_flow(endpoint, &pem, &id, request_id)
+    }
+
     fn owner_lifecycle(resume: bool) -> Result<(), ()> {
         use rca_native_agent::device_pairing::{
             lock_windows_permanent_mode, persist_windows_owner_stop, PairingClient,
@@ -540,6 +559,9 @@ mod windows {
                 }
                 [_, command] if command == "stop" => owner_lifecycle(false),
                 [_, command] if command == "start" => owner_lifecycle(true),
+                [_, command, request_id] if command == "secure-input" => {
+                    secure_input_local(request_id)
+                }
                 [_, command, flag, endpoint] if command == "re-pair" && flag == "--endpoint" => {
                     let name =
                         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows".to_owned());

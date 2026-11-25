@@ -33,6 +33,7 @@ pub mod native_write;
 mod receipt_boundary;
 pub mod receipts;
 pub mod secure_input;
+pub mod secure_input_cli;
 pub mod session;
 pub mod session_enrollment;
 mod session_idle;

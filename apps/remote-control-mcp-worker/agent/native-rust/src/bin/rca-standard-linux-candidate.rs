@@ -55,6 +55,47 @@ mod linux {
         Ok(home.join(".local/share/mcp-workers/remote-control/v2-identity.pem"))
     }
 
+    fn installed_endpoint(home: &Path) -> Result<String, ()> {
+        let directory = home.join(".config/systemd/user");
+        if fs::canonicalize(home).ok().as_deref() != Some(home)
+            || fs::canonicalize(&directory).ok().as_deref() != Some(directory.as_path())
+        {
+            return Err(());
+        }
+        let unit = directory.join("remote-control-agent.service");
+        private_regular(&unit, 16 * 1024)?;
+        if fs::symlink_metadata(&unit).map_err(|_| ())?.nlink() != 1 {
+            return Err(());
+        }
+        let contents = fs::read_to_string(unit).map_err(|_| ())?;
+        if !contents
+            .lines()
+            .any(|line| line == "# Managed by Remote Control Agent installer.")
+        {
+            return Err(());
+        }
+        let endpoints: Vec<&str> = contents
+            .lines()
+            .filter_map(|line| line.strip_prefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
+            .collect();
+        if endpoints.len() != 1 {
+            return Err(());
+        }
+        let endpoint = endpoints[0];
+        let parsed = url::Url::parse(endpoint).map_err(|_| ())?;
+        if parsed.scheme() != "https"
+            || parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.path() != "/"
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(());
+        }
+        Ok(endpoint.to_owned())
+    }
+
     fn owner_stopped(key: &Path) -> Result<bool, ()> {
         let marker = sidecar(key, ".owner-stopped");
         let info = match fs::symlink_metadata(marker) {
@@ -408,6 +449,33 @@ mod linux {
             return Err(());
         }
         Ok(())
+    }
+
+    fn secure_input_local(request_id: &str) -> Result<(), ()> {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let home = home()?;
+        let key = key_path(&home)?;
+        if fs::canonicalize(&home).ok().as_deref() != Some(home.as_path())
+            || fs::canonicalize(&key).ok().as_deref() != Some(key.as_path())
+        {
+            return Err(());
+        }
+        private_regular(&key, 8192)?;
+        let id_path = sidecar(&key, ".device-id");
+        private_regular(&id_path, 128)?;
+        let pem = fs::read_to_string(&key).map_err(|_| ())?;
+        let id = fs::read_to_string(id_path).map_err(|_| ())?;
+        let id = id.trim();
+        if !valid_device_id(id) || owner_stopped(&key)? {
+            return Err(());
+        }
+        let endpoint = installed_endpoint(&home)?;
+        rca_native_agent::secure_input_cli::run_secure_input_owner_flow(
+            &endpoint, &pem, id, request_id,
+        )
     }
 
     fn owner_intent_local(endpoint: &str, action: &str, fd: i32) -> Result<(), ()> {
@@ -845,6 +913,11 @@ mod linux {
             return Err(());
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
+        if let [flag, command, request_id] = args.as_slice() {
+            if flag == "--cli" && command == "secure-input" {
+                return secure_input_local(request_id);
+            }
+        }
         if let [command, endpoint, name] = args.as_slice() {
             match command.as_str() {
                 "--pair-local" => return pair_local(endpoint, name, false, None),
