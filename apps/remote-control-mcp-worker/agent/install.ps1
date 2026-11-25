@@ -493,6 +493,13 @@ function Complete-NativeInstall([string]$directory) {
     if ($LASTEXITCODE -ne 0) { throw 'Native authorization reconciliation incomplete; existing identity retained' }
     return
   }
+  # Missing policy on an existing or interrupted identity is never migration consent.
+  $newStablePolicy = $mode -ceq 'permanent' -and -not $state.installed -and
+    -not (Test-Path -LiteralPath $identityFile) -and -not (Test-Path -LiteralPath $idFile) -and
+    $Version -cmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$'
+  if ($newStablePolicy) {
+    Write-Output 'Automatic updates for this new permanent device default to on after signed activation; disable with rca update --auto off.'
+  }
   $name = [Environment]::MachineName
   if (-not (Test-Path -LiteralPath $idFile)) {
     $entered = Read-Host ('Device name [' + $name + ']')
@@ -512,6 +519,10 @@ function Complete-NativeInstall([string]$directory) {
   }
   & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action ActivateNative -Version $Version -Endpoint $origin
   if ($LASTEXITCODE -ne 0) { throw 'Native initial activation incomplete; identity and intent retained' }
+  if ($newStablePolicy) {
+    & $entry --initialize-auto-policy
+    if ($LASTEXITCODE -ne 0) { throw 'Signed activation complete; automatic update consent unconfirmed; inspect rca status' }
+  }
 }
 
 # Read a console key directly: PromptForChoice renders system-localized

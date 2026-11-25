@@ -33,7 +33,7 @@ async function clearOnlyStaleOwnedSocket(file: string): Promise<void> {
   await unlink(file);
 }
 
-export async function startUpgradeControl(execution: AgentExecutionEngine, keyPath: string):
+export async function startUpgradeControl(execution: AgentExecutionEngine, keyPath: string, isOnline=()=>false):
   Promise<{ close(): Promise<void> }> {
   const socketPath = upgradeSocketPath(keyPath);
   {
@@ -64,6 +64,8 @@ export async function startUpgradeControl(execution: AgentExecutionEngine, keyPa
         // Read-only check: the remote owner admission must already have
         // frozen the original Agent before the one-shot watchdog switches.
         socket.end(execution.verifyUpgradeFreeze() ? "ready\n" : "busy\n");
+      } else if (buffer === "verify-online\n") {
+        socket.end(isOnline() ? "ready\n" : "busy\n");
       } else if (buffer === "release\n") {
         execution.releaseUpgradeFreeze();
         socket.end("released\n");

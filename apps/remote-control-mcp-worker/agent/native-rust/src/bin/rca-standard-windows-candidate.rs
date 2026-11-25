@@ -396,7 +396,7 @@ mod windows {
             return Err(());
         }
         if let Some(action) = action {
-            if action == "on" {
+            if action == "on" || action == "initialize" {
                 let tag = facts["version"].as_str().ok_or(())?;
                 let parts: Vec<_> = tag.strip_prefix('v').ok_or(())?.split('.').collect();
                 if parts.len() != 3
@@ -418,11 +418,19 @@ mod windows {
                     }
                 }
             }
-            persist_windows_auto_policy(&root, &id, action == "on").map_err(|_| ())?;
+            // The installer default may only create missing consent, never
+            // replace a policy the owner has already explicitly selected.
+            if action != "initialize"
+                || optional_private(&root.join("v2-identity.pem.automatic-update"), 256)?.is_none()
+            {
+                persist_windows_auto_policy(&root, &id, action != "off").map_err(|_| ())?;
+            }
         }
         let policy = windows_auto_policy(&root, &id);
         println!("{}", serde_json::json!({"automatic_update":policy}));
-        if action.is_some_and(|expected| expected != policy) {
+        if action.is_some_and(|expected| {
+            policy == "unknown" || (expected != "initialize" && expected != policy)
+        }) {
             return Err(());
         }
         Ok(())
@@ -643,6 +651,9 @@ mod windows {
             if command == "--pair-local" {
                 return pair_local(endpoint, name, mode);
             }
+        }
+        if args.as_slice() == ["--initialize-auto-policy"] {
+            return automatic_policy(Some("initialize"));
         }
         if args.as_slice() == ["--verify-upgrade-state"] {
             return verify_upgrade_state();

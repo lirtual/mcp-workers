@@ -644,7 +644,11 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   if(await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite. " +
     "Inspect existing state and use a separately verified newer candidate; " +
     "the existing permanent identity and receipts remain unchanged.");
-  if(!await ask("Install "+version+" into this personal Mac account?"))throw Error("Owner declined.");
+  const newStablePolicy=action==="install"&&!current&&!await statMaybe(key)&&
+    !await statMaybe(key+".device-id")&&/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-darwin-(?:arm64|x64)$/.test(version);
+  const notice=newStablePolicy
+    ?" Automatic updates default to on after signed activation; disable with rca update --auto off.":"";
+  if(!await ask("Install "+version+" into this personal Mac account?"+notice))throw Error("Owner declined.");
   await recheckBinding();
   // Stage the verified candidate side by side; never overwrite old binaries.
   const stage=path.join(programs,".staging-"+randomUUID());
@@ -720,6 +724,22 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     failureStage="write-cli";
     await ownedWrite(cli,ownerCliText(nextRoot),previousCli!==null,0o700,false);
     cliWritten=true;
+    if(newStablePolicy){
+      failureStage="automatic-update-consent";
+      if(!await approved(key))throw Error("New device identity unconfirmed.");
+      const deviceId=(await readFile(key+".device-id","utf8")).trim();
+      if(!ID.test(deviceId))throw Error("New device identity unconfirmed.");
+      // Exclusive creation preserves any explicit owner choice made during
+      // initial activation, including a concurrent opt-out.
+      const policyFile=key+".automatic-update";
+      if(!await checked(policyFile,{optional:true,mode:0o600})){
+        try{
+          await writeFile(policyFile,JSON.stringify({device_id:deviceId,enabled:true}),
+            {flag:"wx",mode:0o600,flush:true});
+        }catch(error){if(error.code!=="EEXIST")throw error;}
+      }
+      if(await readMacAutoPolicy(key,deviceId)==="unknown")throw Error("Automatic update consent unconfirmed.");
+    }
     failureStage="finalize-journal";
     await rm(journal);
     return {status:stopped?"stopped_preserved":"connected_observed",version,generation,

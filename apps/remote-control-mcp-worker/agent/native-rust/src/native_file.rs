@@ -316,7 +316,7 @@ impl NativeFileError {
 struct LocalControl {
     requests: Receiver<UpgradeRequest>,
     idle_attempt: Option<crate::session_enrollment::SessionPhysicalAttempt>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     connected: Arc<AtomicBool>,
 }
 
@@ -391,7 +391,7 @@ fn execute_native_file(
                             "ready\n".into()
                         }
                         UpgradeCommand::VerifyFrozen => "busy\n".into(),
-                        #[cfg(target_os = "linux")]
+                        #[cfg(any(target_os = "linux", windows))]
                         UpgradeCommand::VerifyOnline => {
                             if healthy
                                 && control.idle_attempt.is_none()
@@ -848,16 +848,16 @@ fn run_native_managed_session_inner(
     let writes =
         NativeWriteExecutor::open_runtime(receipt_directory, options.on_diagnostic.clone())?;
     let health = writes.health();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     let connected = Arc::new(AtomicBool::new(false));
     let on_connected = {
         let health = Arc::clone(&health);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         let connected = Arc::clone(&connected);
         let callback = options.on_connected;
         Some(Arc::new(move || {
             if health.load(Ordering::Acquire) {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", windows))]
                 connected.store(true, Ordering::Release);
                 if let Some(callback) = &callback {
                     callback();
@@ -866,11 +866,11 @@ fn run_native_managed_session_inner(
         }) as Arc<dyn Fn() + Send + Sync>)
     };
     let on_disconnected = {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         let connected = Arc::clone(&connected);
         let callback = options.on_disconnected;
         Some(Arc::new(move || {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", windows))]
             connected.store(false, Ordering::Release);
             if let Some(callback) = &callback {
                 callback();
@@ -888,7 +888,7 @@ fn run_native_managed_session_inner(
             Some(LocalControl {
                 requests,
                 idle_attempt: options.idle_attempt,
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", windows))]
                 connected: Arc::clone(&connected),
             }),
         )

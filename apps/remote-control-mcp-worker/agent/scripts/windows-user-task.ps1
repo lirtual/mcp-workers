@@ -2,10 +2,11 @@
 # Does not create an elevated service, use a password or touch cloud grants.
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative','EnableNative','ConfirmStopped')][string]$Action,
+  [Parameter(Mandatory=$true)][ValidateSet('Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative','EnableNative','ConfirmStopped','VerifyAutomatic')][string]$Action,
   [string]$Endpoint,
   [string]$Version, [ValidateSet('Upgrade')][string]$Direction,
-  [string]$Generation
+  [string]$Generation,
+  [switch]$Automatic
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -85,6 +86,7 @@ function Check-Existing {
     throw 'Unexpected task trigger'
   }
 }
+if ($Automatic -and $Action -ne 'Switch') { throw 'Automatic authority is only valid for Switch' }
 if ($Action -ne 'VerifyActivation' -and $Generation) { throw 'Unexpected generation argument' }
 function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
@@ -192,7 +194,7 @@ function Read-AgentUpgradeReply($reader) {
 }
 
 function Invoke-AgentUpgradeFreeze([string]$keyPath,[string]$action,[bool]$allowBusy=$false) {
-  if ($action -cnotin @('freeze','verify-frozen','release')) { throw 'Invalid upgrade action' }
+  if ($action -cnotin @('freeze','verify-frozen','verify-online','release')) { throw 'Invalid upgrade action' }
   $canonical = $keyPath.Replace('/','\').ToLowerInvariant()
   $sha = [Security.Cryptography.SHA256]::Create()
   try {
@@ -374,6 +376,33 @@ function Check-UpgradeStore {
     throw 'Existing permanent owner Agent required'
   }
 }
+# Reuse the installed Rust identity/policy reader and the live owner-local
+# signed-connection observation. Running Task or historical proof is not enough.
+function Assert-AutomaticEligibility($program,$expectedAction) {
+  Check-UpgradeStore
+  if ($program.Tag -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+    throw 'Automatic update requires Stable'
+  }
+  foreach ($suffix in @('.owner-stopped','.activation-pending','.device-id.pending')) {
+    if (Test-Path -LiteralPath ($identityFile + $suffix)) { throw 'Automatic update blocked by lifecycle state' }
+  }
+  $current = Read-OwnedTask
+  if ($current.State -ne 'Running' -or -not (Test-SameAction $current.Actions[0] $expectedAction)) {
+    throw 'Automatic update target changed'
+  }
+  $before = Get-OwnedAgentProcess $program
+  $raw = & $program.Entry --cli status
+  if ($LASTEXITCODE -ne 0) { throw 'Automatic update policy unconfirmed' }
+  $facts = $raw | ConvertFrom-Json
+  if ($facts.identity_present -ne $true -or $facts.automatic_update -cne 'on') {
+    throw 'Automatic update policy is not enabled'
+  }
+  Invoke-AgentUpgradeFreeze $identityFile 'verify-online'
+  $after = Get-OwnedAgentProcess $program
+  if ($after.ProcessId -ne $before.ProcessId -or $after.CreationDate -ne $before.CreationDate) {
+    throw 'Automatic update Agent changed'
+  }
+}
 function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false,[bool]$allowBusy=$false) {
   $observed = Read-OwnedTask
   if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $expectedAction)) {
@@ -469,6 +498,10 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $oldAction)) {
     throw 'Existing reviewed running Task required'
   }
+  if ($Automatic) {
+    if ($newVersion -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') { throw 'Automatic target must be Stable' }
+    Assert-AutomaticEligibility $original $oldAction
+  }
   Wait-VersionExited $target $managementCaller
   $raw = & $target.Entry --cli status
   if ($LASTEXITCODE -ne 0) { throw 'Candidate local identity validation failed' }
@@ -489,6 +522,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   $restored = $false
   $frozen = $false
   $deferred = $false
+  $switchStarted = $false
   $stage = 'freeze'
   try {
     $saved = Read-NativeJournal $stream
@@ -499,8 +533,24 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     }
     $frozen = $true
     Assert-UpgradeIdentity $record
-    $stage = 'stop original'
-    Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+    if ($Automatic) {
+      # Serialize the final consent observation with the existing policy lock.
+      # OFF can proceed after the switch has been admitted, not before it.
+      $modeGuard = [IO.File]::Open(($identityFile + '.install-mode'),
+        [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+      try {
+        Assert-AutomaticEligibility $original $oldAction
+        Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
+        Assert-UpgradeIdentity $record
+        $switchStarted = $true
+        $stage = 'stop original'
+        Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+      } finally { $modeGuard.Dispose() }
+    } else {
+      $switchStarted = $true
+      $stage = 'stop original'
+      Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+    }
     Wait-VersionExited $original $managementCaller
     Assert-UpgradeState $target $record
     $observed = Read-OwnedTask
@@ -535,8 +585,31 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     # A lost freeze response is uncertain. Preserve the journal rather than
     # changing the task or releasing somebody else's possible freeze.
     if ($frozen) {
-      try { Restore-NativeOriginal $record $original $target $oldAction $newAction $managementCaller; $restored = $true }
-      catch { Write-Verbose ('Native restore refused: ' + $_.Exception.Message) }
+      try {
+        if (-not $switchStarted) {
+          Assert-UpgradeIdentity $record
+          $current = Read-OwnedTask
+          if ($current.State -ne 'Running' -or -not (Test-SameAction $current.Actions[0] $oldAction)) {
+            throw 'Original Task changed before release'
+          }
+          Invoke-AgentUpgradeFreeze $identityFile 'release'
+          $deferred = $true
+        } else {
+          Restore-NativeOriginal $record $original $target $oldAction $newAction $managementCaller
+          if ($Automatic) {
+            $deadline = [Diagnostics.Stopwatch]::StartNew()
+            $confirmed = $false
+            while ($deadline.Elapsed.TotalSeconds -lt 90) {
+              try { $confirmed = Confirm-NativeActivation $oldVersion $launch.Generation } catch { $confirmed = $false }
+              if ($confirmed) { break }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $confirmed) { throw 'Previous signed WSS not confirmed' }
+            Invoke-AgentUpgradeFreeze $identityFile 'verify-online'
+          }
+          $restored = $true
+        }
+      } catch { Write-Verbose ('Native restore refused: ' + $_.Exception.Message) }
     }
   } finally {
     $stream.Dispose()
@@ -706,6 +779,20 @@ if ($Action -eq 'ActivateNative') {
   exit 0
 }
 
+if ($Action -eq 'VerifyAutomatic') {
+  if ($Endpoint -or $Direction -or $Version) { throw 'Unexpected automatic eligibility arguments' }
+  Check-Existing
+  if (Test-Path -LiteralPath $nativeJournal) { throw 'Unresolved native upgrade' }
+  $launch = Read-TaskLaunch $task.Actions[0]
+  $relative = [IO.Path]::GetFullPath([string]$task.Actions[0].Execute).Substring($root.Length + 1)
+  $directory = ($relative -split '\\')[0]
+  $installed = $directory.Substring(0,$directory.Length - '-windows-x64'.Length)
+  $program = Get-ReviewedProgram $installed
+  $expected = New-ReviewedAction $program $launch.Endpoint $launch.Generation
+  Assert-AutomaticEligibility $program $expected
+  'automatic-eligible'
+  exit 0
+}
 if ($Action -eq 'Switch') {
   Check-Existing
   if ($Endpoint -or $Direction -cne 'Upgrade' -or
