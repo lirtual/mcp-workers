@@ -561,10 +561,8 @@ def native_unattended_upgrade(root, *, worker=False, automatic=False):
     native_owned_file(key, 8192)
     if native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]:
         raise ValueError("Existing device identity has changed")
-    pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
-    pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
-        ".owner-stopped", ".native-upgrade-intent", ".native-upgrade-proof",
-        ".activation-pending", ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+    pending = (*native_pending_lifecycle(key, unit_file),
+               pathlib.Path(str(key) + ".owner-stopped"))
     if any(os.path.lexists(path) for path in pending):
         raise ValueError("Owner STOP or unreconciled lifecycle blocks detached upgrade")
     endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
@@ -894,19 +892,21 @@ def native_update_job_state(device_id):
     return "unknown"
 
 
+def native_pending_lifecycle(key, unit_file):
+    """One set of unresolved records for update admission and diagnosis."""
+    return (pathlib.Path(str(unit_file) + ".upgrade-backup"), *(
+        pathlib.Path(str(key) + suffix) for suffix in (
+            ".native-upgrade-intent", ".native-upgrade-proof",
+            ".activation-pending", ".re-pair-transition",
+            ".re-pair-new", ".re-pair-new.device-id")))
+
+
 def native_update_activity(home, key, device_id, policy, result):
     job = native_update_job_state(device_id)
     if job in ("upgrading", "needs_attention", "unknown"):
         return job
-    pending = (
-        pathlib.Path(str(key) + ".native-upgrade-intent"),
-        pathlib.Path(str(key) + ".native-upgrade-proof"),
-        pathlib.Path(str(key) + ".activation-pending"),
-        pathlib.Path(str(key) + ".re-pair-transition"),
-        pathlib.Path(str(key) + ".re-pair-new"),
-        pathlib.Path(str(key) + ".re-pair-new.device-id"),
-        pathlib.Path(home) / ".config/systemd/user" / (UNIT + ".upgrade-backup"),
-    )
+    pending = native_pending_lifecycle(
+        key, pathlib.Path(home) / ".config/systemd/user" / UNIT)
     if any(os.path.lexists(path) for path in pending):
         return "needs_attention"
     if result:
@@ -974,10 +974,7 @@ def native_update_policy(home, action=None):
             manifest = json.loads((root / "bundle.json").read_text("utf8"))
             if native_latest_status(manifest["version"], manifest["version"]) != "up_to_date":
                 raise ValueError("Automatic update requires a stable native Agent")
-            pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
-            pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
-                ".native-upgrade-intent", ".native-upgrade-proof", ".activation-pending",
-                ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+            pending = native_pending_lifecycle(key, unit_file)
             if any(os.path.lexists(path) for path in pending):
                 raise ValueError("Unreconciled lifecycle; recover before enabling automatic update")
         native_write_auto_policy(key, device_id, action == "on")
@@ -1726,7 +1723,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automa
     backup = pathlib.Path(str(unit_file) + ".upgrade-backup")
     intent = pathlib.Path(str(key) + ".native-upgrade-intent")
     proof = pathlib.Path(str(key) + ".native-upgrade-proof")
-    if any(os.path.lexists(item) for item in (backup, intent, proof)):
+    if any(os.path.lexists(item) for item in native_pending_lifecycle(key, unit_file)):
         raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
     # The Node installer owns this existing lock. Never race its pairing/repair.
     lock_path = home / STORE / "v2-installer.lock"
@@ -1749,7 +1746,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automa
                 or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
             raise ValueError("Installed Agent or identity changed before upgrade lock")
         # Recheck pending transaction after acquiring the shared installer lock.
-        if any(os.path.lexists(item) for item in (backup, intent, proof)):
+        if any(os.path.lexists(item) for item in native_pending_lifecycle(key, unit_file)):
             raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
         pid = native_main_pid()
         # The service entrypoint must be the version whose socket we freeze.
@@ -1861,25 +1858,14 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automa
                     # Only fixed stage names are safe to disclose; no raw exception.
                     raise ValueError("Native upgrade failed; rollback uncertain; backup retained "
                                      "(upgrade=" + stage + ", rollback=" + rollback_stage + ")") from None
-            # Busy did not acquire a freeze. A lost reply requires a positive
-            # VerifyFrozen observation before release; unknown ownership keeps
-            # the executor frozen and retains intent for attended recovery.
+            # Only an affirmative reply to this request establishes that
+            # this transaction owns Freeze. A subsequent state observation
+            # cannot attribute ownership or rule out a queued request.
             if not switched and not backup.exists():
-                release_owned_freeze = freeze_answer == "ready"
-                if freeze_answer is None:
-                    # The request may have reached the Agent even if its reply
-                    # was lost. Only a positive frozen-state observation proves
-                    # this transaction acquired the freeze; unknown stays frozen.
-                    try:
-                        observed_freeze = native_consent(key, "verify-frozen")
-                    except Exception:
-                        observed_freeze = "unknown"
-                    if observed_freeze == "ready":
-                        release_owned_freeze = True
-                    elif observed_freeze != "busy":
-                        raise ValueError(
-                            "Native upgrade refused; freeze ownership unknown; intent retained") from error
-                if release_owned_freeze:
+                if freeze_answer not in ("ready", "busy"):
+                    raise ValueError(
+                        "Native upgrade refused; freeze ownership unknown; intent retained") from error
+                if freeze_answer == "ready":
                     try:
                         if native_consent(key, "release") != "released":
                             raise ValueError("Freeze release unconfirmed")

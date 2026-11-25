@@ -1453,7 +1453,9 @@ def verify_online_socket_peer():
 
 
 def verify_unknown_freeze_never_releases_and_preserves_evidence():
-    for recovered_freeze in (False, True):
+    # A reply can be lost after admission. Observation alone cannot prove
+    # who acquired Freeze, including when another operation already owns it.
+    for observed in ("ready", "busy", "unknown"):
         ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
         try:
             state, mocks, verify = fake_services(home, old, new)
@@ -1461,18 +1463,10 @@ def verify_unknown_freeze_never_releases_and_preserves_evidence():
             def lost_reply(key, action):
                 if action == "freeze":
                     state["consents"].append(action)
-                    if recovered_freeze:
-                        state["frozen"] = True
                     raise ValueError("Simulated lost freeze response")
                 if action == "verify-frozen":
                     state["consents"].append(action)
-                    if recovered_freeze:
-                        return "ready"
-                    raise ValueError("Simulated unknown freeze observation")
-                if action == "release":
-                    state["consents"].append(action)
-                    state["frozen"] = False
-                    return "released"
+                    return observed
                 return original(key, action)
             with patch.multiple(bootstrap, **{**mocks, "native_consent": lost_reply}):
                 try:
@@ -1482,16 +1476,43 @@ def verify_unknown_freeze_never_releases_and_preserves_evidence():
                 else:
                     raise AssertionError("Lost freeze response accepted")
             assert state["commands"] == []
-            if recovered_freeze:
-                assert state["consents"] == ["freeze", "verify-frozen", "release"]
-                assert state["frozen"] is False
-                assert not Path(str(key) + ".native-upgrade-intent").exists()
-            else:
-                assert state["consents"] == ["freeze", "verify-frozen"]
-                assert Path(str(key) + ".native-upgrade-intent").exists()
+            assert state["consents"] == ["freeze"], state["consents"]
+            assert Path(str(key) + ".native-upgrade-intent").exists()
+            assert launcher.resolve() == old / APP / "scripts/rca.sh"
         finally:
             ctx.cleanup()
     print("NATIVE_UNKNOWN_FREEZE_OWNERSHIP_PASS")
+
+
+def verify_cutover_rechecks_pending_identity_lifecycle():
+    for suffix in (".activation-pending", ".re-pair-transition", ".re-pair-new",
+                   ".re-pair-new.device-id"):
+        for during_lock in (False, True):
+            ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+            try:
+                state, mocks, verify = fake_services(home, old, new)
+                marker = Path(str(key) + suffix)
+                original_lock = bootstrap.fcntl.flock
+                def lock(fd, flags):
+                    result = original_lock(fd, flags)
+                    if during_lock:
+                        owned_file(marker, b"unresolved fixture")
+                    return result
+                if not during_lock:
+                    owned_file(marker, b"unresolved fixture")
+                with patch.multiple(bootstrap, **mocks), patch.object(bootstrap.fcntl, "flock", side_effect=lock):
+                    try:
+                        bootstrap.native_cutover(home, new, ENDPOINT, verify)
+                    except ValueError as error:
+                        assert "Unreconciled" in str(error), str(error)
+                    else:
+                        raise AssertionError("Pending lifecycle admitted: " + suffix)
+                assert state["consents"] == [] and state["commands"] == []
+                assert marker.exists()
+                assert not Path(str(key) + ".native-upgrade-intent").exists()
+            finally:
+                ctx.cleanup()
+    print("NATIVE_PENDING_IDENTITY_LIFECYCLE_PASS")
 
 
 def verify_logs_include_existing_update_worker_journal():
@@ -1919,6 +1940,7 @@ if __name__ == "__main__":
         verify_download_binding()
         verify_online_socket_peer()
         verify_unknown_freeze_never_releases_and_preserves_evidence()
+        verify_cutover_rechecks_pending_identity_lifecycle()
         verify_logs_include_existing_update_worker_journal()
         verify_status_reports_upgrade_result_and_identity_purge_removes_it()
         verify_busy_freeze_does_not_release_another_admission()
