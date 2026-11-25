@@ -430,6 +430,11 @@ mod linux {
             );
             assert_eq!(upgrade(&upgrade_socket, "freeze"), "busy\n");
             assert_eq!(upgrade(&upgrade_socket, "verify-frozen"), "busy\n");
+            assert_eq!(
+                unsafe { libc::kill(pid, 0) },
+                0,
+                "busy upgrade admission must preserve the running managed process"
+            );
             let ack = reply(
                 &mut socket,
                 json!({
