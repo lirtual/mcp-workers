@@ -481,6 +481,10 @@ function Complete-NativeInstall([string]$directory) {
   }
   & (Join-Path $scripts 'verify-windows-native.ps1') -Root $directory -Version $Version | Out-Null
   & (Join-Path $scripts 'windows-private-store.ps1') -Action Check -Directory $root
+  $managerCommand = "& '{0}'" -f ((Join-Path $directory 'rca.cmd').Replace("'", "''"))
+  if (-not $detachedUpgrade) {
+    Write-Host "Local manager for this verified package: $managerCommand --help"
+  }
   if (Test-Path -LiteralPath ($identityFile + '.owner-stopped')) {
     if ($detachedUpgrade) { throw 'Owner STOP blocks detached native upgrade' }
     if ($UpdateOnly) { throw 'Owner STOP blocks attended native upgrade' }
@@ -538,7 +542,7 @@ function Complete-NativeInstall([string]$directory) {
     -not (Test-Path -LiteralPath $identityFile) -and -not (Test-Path -LiteralPath $idFile) -and
     $Version -cmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$'
   if ($newStablePolicy) {
-    Write-Output 'Automatic updates for this new permanent device default to on after signed activation; disable with rca update --auto off.'
+    Write-Output "Automatic updates for this new permanent device default to on after signed activation; disable with: $managerCommand update --auto off"
   }
   $name = [Environment]::MachineName
   if (-not (Test-Path -LiteralPath $idFile)) {
@@ -561,7 +565,7 @@ function Complete-NativeInstall([string]$directory) {
   if ($LASTEXITCODE -ne 0) { throw 'Native initial activation incomplete; identity and intent retained' }
   if ($newStablePolicy) {
     & $entry --initialize-auto-policy
-    if ($LASTEXITCODE -ne 0) { throw 'Signed activation complete; automatic update consent unconfirmed; inspect rca status' }
+    if ($LASTEXITCODE -ne 0) { throw "Signed activation complete; automatic update consent unconfirmed; inspect with: $managerCommand status" }
   }
 }
 

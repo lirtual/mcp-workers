@@ -90,3 +90,15 @@ test("automatic dispatch and result use one operation ID and uncertain outcomes 
   assert.match(text,/Write-Output 'automatic-pre-switch-refused'/);
   assert.match(task,/\[bool\]\$Automatic -ne \[bool\]\$AutomaticOperation/);
 });
+
+
+test("attended Windows installer identifies the verified package manager without changing PATH",()=>{
+  const complete=text.slice(text.indexOf("function Complete-NativeInstall"),text.indexOf("function Confirm-Upgrade"));
+  const verified=complete.indexOf("verify-windows-native.ps1");
+  const manager=complete.indexOf("Join-Path $directory 'rca.cmd'");
+  const hint=complete.indexOf('Write-Host "Local manager for this verified package: $managerCommand --help');
+  assert.ok(verified>=0&&manager>verified&&hint>manager);
+  assert.ok(complete.includes('if (-not $detachedUpgrade) {\n    Write-Host "Local manager for this verified package: $managerCommand --help'));
+  assert.ok(complete.includes('$managerCommand update --auto off'));
+  assert.ok(complete.includes('$managerCommand status'));
+});
