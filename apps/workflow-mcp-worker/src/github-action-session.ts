@@ -367,7 +367,9 @@ export async function runPublishedGitHubActionSession(
    await releaseVerifiedSessionSlot(db,runId,stepPlan.id);
    return {status:'failed',error_code:'github_session_ended_before_ready'};
   }
-  if(!snapshot||['terminated','stopping'].includes(snapshot.state))
+  // Cancellation intent fences Ready, but is not physical termination. Keep
+  // reconciling a stopping Session within the existing bounded Ready window.
+  if(!snapshot||snapshot.state==='terminated')
    return {status:'indeterminate',error_code:'github_session_no_ready'};
   const physical=await step.do('github-session-check-'+stepPlan.id+'-'+i,{
    retries:{limit:0,delay:'1 second'},timeout:'45 seconds',
