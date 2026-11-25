@@ -1125,7 +1125,8 @@ def verify_automatic_update_policy():
             assert cli("--auto") == "off"
             assert cli("--auto", "on") == "on"
             assert cli("--auto") == "on"
-            with patch.object(bootstrap.subprocess, "run", return_value=Mock(returncode=0)):
+            with patch.object(bootstrap.subprocess, "run", return_value=Mock(returncode=0)), patch.object(
+                    bootstrap, "native_update_job_state", return_value="absent"):
                 assert bootstrap.local_status(home)["automatic_update"] == "on"
             assert cli("--auto", "off") == "off"
             assert cli("--auto") == "off"
@@ -1388,6 +1389,103 @@ def verify_online_socket_peer():
     print("NATIVE_ONLINE_SOCKET_PEER_PASS")
 
 
+def verify_unknown_freeze_never_releases_and_preserves_evidence():
+    for recovered_freeze in (False, True):
+        ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+        try:
+            state, mocks, verify = fake_services(home, old, new)
+            original = mocks["native_consent"]
+            def lost_reply(key, action):
+                if action == "freeze":
+                    state["consents"].append(action)
+                    if recovered_freeze:
+                        state["frozen"] = True
+                    raise ValueError("Simulated lost freeze response")
+                if action == "verify-frozen":
+                    state["consents"].append(action)
+                    if recovered_freeze:
+                        return "ready"
+                    raise ValueError("Simulated unknown freeze observation")
+                if action == "release":
+                    state["consents"].append(action)
+                    state["frozen"] = False
+                    return "released"
+                return original(key, action)
+            with patch.multiple(bootstrap, **{**mocks, "native_consent": lost_reply}):
+                try:
+                    bootstrap.native_cutover(home, new, ENDPOINT, verify)
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Lost freeze response accepted")
+            assert state["commands"] == []
+            if recovered_freeze:
+                assert state["consents"] == ["freeze", "verify-frozen", "release"]
+                assert state["frozen"] is False
+                assert not Path(str(key) + ".native-upgrade-intent").exists()
+            else:
+                assert state["consents"] == ["freeze", "verify-frozen"]
+                assert Path(str(key) + ".native-upgrade-intent").exists()
+        finally:
+            ctx.cleanup()
+    print("NATIVE_UNKNOWN_FREEZE_OWNERSHIP_PASS")
+
+
+def verify_status_reports_upgrade_result_and_identity_purge_removes_it():
+    from unittest.mock import Mock
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        policy = Path(str(key) + ".automatic-update")
+        result_path = bootstrap.native_upgrade_result_path(key)
+        bootstrap.native_write_auto_policy(key, ID, True)
+        bootstrap.native_write_upgrade_result(key, ID, "a" * 32, "v0.1.58", "v0.1.56", "failed_recovered")
+        absent = Mock(returncode=0, stdout=b"LoadState=not-found\n")
+        with patch.object(bootstrap.subprocess, "run", side_effect=[
+                Mock(returncode=0), absent]):
+            state = bootstrap.local_status(home)
+        assert state["automatic_update"] == "on"
+        assert state["automatic_update_activity"] == "recovered"
+        assert state["automatic_update_result"] == {
+            "status": "failed_recovered", "target_version": "v0.1.58",
+            "installed_version": "v0.1.56"}
+        active = Mock(returncode=0, stdout=(
+            b"LoadState=loaded\nActiveState=active\nTransient=yes\n"
+            b"Description=RCA detached update\n"))
+        with patch.object(bootstrap.subprocess, "run", side_effect=[
+                Mock(returncode=0), active]):
+            state = bootstrap.local_status(home)
+        assert state["automatic_update_activity"] == "upgrading"
+        failed = Mock(returncode=0, stdout=(
+            b"LoadState=loaded\nActiveState=failed\nTransient=yes\n"
+            b"Description=RCA detached update\n"))
+        with patch.object(bootstrap.subprocess, "run", side_effect=[
+                Mock(returncode=0), failed]):
+            state = bootstrap.local_status(home)
+        assert state["automatic_update_activity"] == "needs_attention"
+        owned_file(Path(str(key) + ".native-upgrade-intent"), b"pending")
+        with patch.object(bootstrap.subprocess, "run", side_effect=[
+                Mock(returncode=0), absent]):
+            state = bootstrap.local_status(home)
+        assert state["automatic_update_activity"] == "needs_attention"
+        with patch.object(bootstrap.subprocess, "run", side_effect=[
+                Mock(returncode=0), Mock(returncode=1, stdout=b""),
+                Mock(returncode=1, stdout=b"")]):
+            state = bootstrap.local_status(home)
+        assert state["automatic_update_activity"] == "unknown"
+        Path(str(key) + ".native-upgrade-intent").unlink()
+        bootstrap.native_update_policy(home, "off")
+        assert bootstrap.native_upgrade_result(key, ID)["status"] == "failed_recovered"
+        assert result_path in bootstrap.local_identity_purge_plan(
+            (lambda: (bootstrap.local_uninstall(home, True, systemctl=lambda args: None,
+                                               process_check=lambda _: True), home)[1])())[0]
+        bootstrap.local_identity_purge(home, True, process_check=lambda: True)
+        assert not policy.exists() and not result_path.exists()
+        assert receipts.read_bytes().find(b"disposable-receipt-history") >= 0
+    finally:
+        ctx.cleanup()
+    print("NATIVE_STATUS_RESULT_AND_PURGE_PASS")
+
+
 def verify_busy_freeze_does_not_release_another_admission():
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
     try:
@@ -1422,7 +1520,11 @@ def verify_detached_idle_wait():
         try:
             state, mocks, verify = fake_services(home, old, new)
             original = mocks["native_consent"]
+            if not eventually_idle:
+                bootstrap.native_update_policy(home, "on")
             def consent(key, action):
+                if action == "verify-online":
+                    return "ready"
                 if action == "freeze" and (not eventually_idle or not state["consents"]):
                     state["consents"].append(action)
                     return "busy"
@@ -1433,15 +1535,24 @@ def verify_detached_idle_wait():
                     bootstrap.time, "monotonic", clock), patch.object(bootstrap.time, "sleep", sleep), patch.object(
                     bootstrap, "native_cutover", wraps=bootstrap.native_cutover) as cutover:
                 # Use the existing transaction and only retry known no-effect Busy.
-                result = bootstrap.native_cutover_when_idle(home, new, ENDPOINT, verify=verify)
+                result = bootstrap.native_cutover_when_idle(
+                    home, new, ENDPOINT, verify=verify, automatic=not eventually_idle)
             if eventually_idle:
                 assert cutover.call_count == 2 and result["signed_wss"] is True
                 assert state["consents"][:2] == ["freeze", "freeze"]
                 sleep.assert_called_once()
             else:
-                assert cutover.call_count == 1 and result == {"status": "waiting_idle"}
+                assert cutover.call_count == 1 and result == {
+                    "status": "waiting_idle", "installed_version": "v0.1.57",
+                    "target_version": "v0.1.58"}
                 assert not state["commands"] and state["consents"] == ["freeze"]
                 assert not Path(str(key) + ".native-upgrade-intent").exists()
+                saved = bootstrap.native_upgrade_result(key, ID)
+                assert saved["status"] == "waiting_idle"
+                assert saved["target_version"] == "v0.1.58"
+                assert saved["installed_version"] == "v0.1.57"
+                bootstrap.native_update_policy(home, "off")
+                assert bootstrap.native_upgrade_result(key, ID) is None
         finally:
             ctx.cleanup()
     print("NATIVE_DETACHED_IDLE_WAIT_PASS")
@@ -1684,6 +1795,8 @@ if __name__ == "__main__":
         verify_read_only_update_check()
         verify_latest_selection()
         verify_online_socket_peer()
+        verify_unknown_freeze_never_releases_and_preserves_evidence()
+        verify_status_reports_upgrade_result_and_identity_purge_removes_it()
         verify_busy_freeze_does_not_release_another_admission()
         verify_detached_idle_wait()
         verify_automatic_cutover_admission_and_recovery()

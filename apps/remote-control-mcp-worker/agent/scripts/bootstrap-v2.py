@@ -817,9 +817,81 @@ def native_upgrade_result(key, device_id):
             or not all(isinstance(result[field], str) and
                        native_latest_status(result[field], result[field]) == "up_to_date"
                        for field in ("target_version", "installed_version"))
-            or result["status"] not in ("success", "failed_recovered")):
+            or result["status"] not in ("success", "failed_recovered", "waiting_idle")
+            or (result["status"] == "success"
+                and result["installed_version"] != result["target_version"])
+            or (result["status"] in ("failed_recovered", "waiting_idle")
+                and result["installed_version"] == result["target_version"])):
         raise ValueError("Unrecognized final upgrade evidence")
     return result if result["device_id"] == device_id else None
+
+
+def native_update_job_state(device_id):
+    unit = "rca-upgrade-" + device_id.replace("-", "") + ".service"
+    try:
+        observed = subprocess.run([
+            "systemctl", "--user", "show", unit, "-p", "LoadState",
+            "-p", "ActiveState", "-p", "Transient", "-p", "Description"
+        ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+        if observed.returncode:
+            listed = subprocess.run([
+                "systemctl", "--user", "list-units", "--all", "--no-legend",
+                "--plain", "--no-pager", unit
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+            if listed.returncode or listed.stdout.strip():
+                return "unknown"
+            return "absent"
+        if not isinstance(observed.stdout, bytes):
+            return "unknown"
+        state = dict(line.split("=", 1) for line in
+                     observed.stdout.decode("ascii", errors="strict").splitlines() if "=" in line)
+        if not state.get("LoadState"):
+            listed = subprocess.run([
+                "systemctl", "--user", "list-units", "--all", "--no-legend",
+                "--plain", "--no-pager", unit
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+            if listed.returncode or not isinstance(listed.stdout, bytes):
+                return "unknown"
+            return "absent" if not listed.stdout.strip() else "unknown"
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return "unknown"
+    if state.get("LoadState") == "not-found":
+        return "absent"
+    if (state.get("LoadState") != "loaded" or state.get("Transient") != "yes"
+            or state.get("Description") != "RCA detached update"):
+        return "unknown"
+    if state.get("ActiveState") in ("activating", "active", "deactivating", "reloading"):
+        return "upgrading"
+    if state.get("ActiveState") == "failed":
+        return "needs_attention"
+    if state.get("ActiveState") == "inactive":
+        return "absent"
+    return "unknown"
+
+
+def native_update_activity(home, key, device_id, policy, result):
+    job = native_update_job_state(device_id)
+    if job in ("upgrading", "needs_attention", "unknown"):
+        return job
+    pending = (
+        pathlib.Path(str(key) + ".native-upgrade-intent"),
+        pathlib.Path(str(key) + ".native-upgrade-proof"),
+        pathlib.Path(str(key) + ".activation-pending"),
+        pathlib.Path(str(key) + ".re-pair-transition"),
+        pathlib.Path(str(key) + ".re-pair-new"),
+        pathlib.Path(str(key) + ".re-pair-new.device-id"),
+        pathlib.Path(home) / ".config/systemd/user" / (UNIT + ".upgrade-backup"),
+    )
+    if any(os.path.lexists(path) for path in pending):
+        return "needs_attention"
+    if result:
+        if result["status"] == "waiting_idle" and policy == "off":
+            return "disabled"
+        return {"success": "success", "failed_recovered": "recovered",
+                "waiting_idle": "waiting_idle"}.get(result["status"], "unknown")
+    if policy == "unknown":
+        return "unknown"
+    return "disabled" if policy == "off" else "idle"
 
 
 def native_write_upgrade_result(key, device_id, operation, target, installed, status):
@@ -883,6 +955,14 @@ def native_update_policy(home, action=None):
             if any(os.path.lexists(path) for path in pending):
                 raise ValueError("Unreconciled lifecycle; recover before enabling automatic update")
         native_write_auto_policy(key, device_id, action == "on")
+        if action == "off":
+            try:
+                previous = native_upgrade_result(key, device_id)
+            except (OSError, ValueError):
+                previous = None
+            if previous and previous["status"] == "waiting_idle":
+                native_upgrade_result_path(key).unlink()
+                native_sync_parent(native_upgrade_result_path(key))
         return {"automatic_update": action}
 
 
@@ -1568,6 +1648,55 @@ class NativeUpgradeBusy(ValueError):
     """Confirmed no-effect admission refusal, safe for a bounded later check."""
 
 
+def native_record_waiting_idle(home, new_root, endpoint):
+    home = pathlib.Path(home)
+    key = home / STORE / "v2-identity.pem"
+    lock_path = home / STORE / "v2-installer.lock"
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    except OSError:
+        return None
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            return None
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        _, versions, unit_file, unit, ids = local_inventory(home)
+        old_root = owned_unit_root(unit, versions)
+        if (old_root is None or old_root == new_root or new_root not in versions
+                or "permanent" not in ids
+                or os.path.lexists(pathlib.Path(str(key) + ".owner-stopped"))
+                or unit != native_render_unit(old_root, endpoint, key)):
+            return None
+        validated_owned_version(old_root)
+        validated_owned_version(new_root)
+        device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+        if device_id != ids["permanent"] or native_auto_policy(key, device_id) != "on":
+            return None
+        pending = (pathlib.Path(str(key) + suffix) for suffix in (
+            ".native-upgrade-intent", ".native-upgrade-proof", ".activation-pending",
+            ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+        if any(os.path.lexists(path) for path in pending) or os.path.lexists(
+                pathlib.Path(str(unit_file) + ".upgrade-backup")):
+            return None
+        old_manifest = json.loads((old_root / "bundle.json").read_text("utf8"))
+        target_manifest = json.loads((new_root / "bundle.json").read_text("utf8"))
+        old_version, target_version = old_manifest["version"], target_manifest["version"]
+        if (old_manifest.get("artifact_profile") != "rust-native-only-v1"
+                or target_manifest.get("artifact_profile") != "rust-native-only-v1"
+                or native_latest_status(old_version, old_version) != "up_to_date"
+                or native_latest_status(old_version, target_version) != "update_available"):
+            return None
+        native_write_upgrade_result(key, device_id, secrets.token_hex(16),
+                                    target_version, old_version, "waiting_idle")
+        return {"status": "waiting_idle", "installed_version": old_version,
+                "target_version": target_version}
+
+
 def native_cutover_when_idle(home, new_root, endpoint, verify=native_wait_proof, *, automatic=False):
     deadline = time.monotonic() + 60
     while True:
@@ -1576,7 +1705,9 @@ def native_cutover_when_idle(home, new_root, endpoint, verify=native_wait_proof,
         except NativeUpgradeBusy:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return {"status": "waiting_idle"}
+                result = (native_record_waiting_idle(home, new_root, endpoint)
+                          if automatic else None)
+                return result or {"status": "waiting_idle"}
             time.sleep(min(2, remaining))
 
 
@@ -1749,15 +1880,31 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automa
                     # Only fixed stage names are safe to disclose; no raw exception.
                     raise ValueError("Native upgrade failed; rollback uncertain; backup retained "
                                      "(upgrade=" + stage + ", rollback=" + rollback_stage + ")") from None
-            # A confirmed Busy did not acquire a freeze. In particular it
-            # must not release an independently frozen executor. Unknown
-            # or acquired freezes still require a confirmed release.
-            if not switched and not backup.exists() and freeze_answer != "busy":
-                try:
-                    if native_consent(key, "release") != "released":
-                        raise ValueError("Freeze release unconfirmed")
-                except Exception:
-                    raise ValueError("Native upgrade refused; freeze release uncertain; intent retained") from error
+            # Busy did not acquire a freeze. A lost reply requires a positive
+            # VerifyFrozen observation before release; unknown ownership keeps
+            # the executor frozen and retains intent for attended recovery.
+            if not switched and not backup.exists():
+                release_owned_freeze = freeze_answer == "ready"
+                if freeze_answer is None:
+                    # The request may have reached the Agent even if its reply
+                    # was lost. Only a positive frozen-state observation proves
+                    # this transaction acquired the freeze; unknown stays frozen.
+                    try:
+                        observed_freeze = native_consent(key, "verify-frozen")
+                    except Exception:
+                        observed_freeze = "unknown"
+                    if observed_freeze == "ready":
+                        release_owned_freeze = True
+                    elif observed_freeze != "busy":
+                        raise ValueError(
+                            "Native upgrade refused; freeze ownership unknown; intent retained") from error
+                if release_owned_freeze:
+                    try:
+                        if native_consent(key, "release") != "released":
+                            raise ValueError("Freeze release unconfirmed")
+                    except Exception:
+                        raise ValueError(
+                            "Native upgrade refused; freeze release uncertain; intent retained") from error
             # No service switch or a verified old unit: evidence can be retired.
             for item in (proof, intent, backup):
                 if os.path.lexists(item):
@@ -2008,11 +2155,24 @@ def local_status(home):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 timeout=5, check=False)
         service = "active" if result.returncode == 0 else "inactive_or_unconfirmed"
-    policy = (native_auto_policy(pathlib.Path(home) / STORE / "v2-identity.pem", ids["permanent"])
-              if "permanent" in ids else "off")
+    key = pathlib.Path(home) / STORE / "v2-identity.pem"
+    policy = native_auto_policy(key, ids["permanent"]) if "permanent" in ids else "off"
+    update_result = None
+    activity = "disabled"
+    if "permanent" in ids:
+        try:
+            result = native_upgrade_result(key, ids["permanent"])
+            if result is not None:
+                update_result = {field: result[field] for field in (
+                    "status", "target_version", "installed_version")}
+            activity = native_update_activity(home, key, ids["permanent"], policy, result)
+        except (OSError, ValueError):
+            update_result = {"status": "unknown"}
+            activity = "unknown"
     return {"installed_versions": sorted(x.name for x in versions),
             "local_permanent_service": service, "device_ids": ids,
-            "automatic_update": policy,
+            "automatic_update": policy, "automatic_update_activity": activity,
+            "automatic_update_result": update_result,
             "cloud_authorization": "unconfirmed", "signed_wss": "unconfirmed",
             "read_only_access": "unconfirmed", "cloud_revoke": "not_performed",
             "temporary_expires_at": "server_authoritative_unconfirmed",
@@ -2255,6 +2415,7 @@ def local_identity_purge_plan(home):
     files = []
     for relative in ("v2-identity.pem", "v2-identity.pem.device-id",
                      "v2-identity.pem.automatic-update",
+                     "v2-identity.pem.native-upgrade-result",
                      "temporary/v2-identity.pem",
                      "temporary/v2-identity.pem.device-id"):
         file = base / relative

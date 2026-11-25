@@ -141,6 +141,7 @@ def dispatch(command, args, root, info, bootstrap):
         print("Without arguments: open the interactive local Agent manager.")
         print("Check the reviewed stable Latest without installing: rca update --check.")
         print("Automatic update consent: rca update --auto [on|off].")
+        print("Status reports local update activity/result; Latest refresh uses update --check.")
         print("Update from the reviewed stable Latest: rca update (upgrade is an alias).")
         print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
         return 0
