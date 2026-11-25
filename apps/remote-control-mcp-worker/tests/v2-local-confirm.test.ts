@@ -6,6 +6,7 @@ import test from "node:test";
 import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../agent/src/pair-device.ts";
 import { recoverDeviceId } from "../agent/src/v2-session-client.ts";
+import { approvalArgs, lookupOwnerPairing, approveOwnerPairing } from "../src/pairing-owner.ts";
 import worker, { V2OwnerCoordinator } from "../src/worker.ts";
 
 interface StorageFixture {
@@ -54,16 +55,23 @@ function setup() {
   };
   const value = (result: Awaited<ReturnType<typeof rpc>>) =>
     JSON.parse(result.data.result?.content[0]?.text ?? "{}") as Record<string, unknown>;
-  return { rows, env, site, send, rpc, value, storage };
+  const ownerStub=V2_OWNER.get(V2_OWNER.idFromName("owner"));
+  const lookup=(code:string)=>lookupOwnerPairing(ownerStub,code);
+  const approve=async(input:object)=>{
+    const args=approvalArgs(input);
+    assert.ok(args);
+    return approveOwnerPairing(ownerStub,args);
+  };
+  return { rows, env, site, send, rpc, value, storage, lookup, approve };
 }
 
 test("#97 old pairing_prepare and public /agent/pair/complete cannot approve a device",async()=>{
-  const {rows,site,send,rpc,value}=setup();
+  const {rows,site,send,rpc,value,lookup,approve:ownerApprove}=setup();
   const pending=newEnrollment("no-legacy-fallback");
   assert.equal((await send(site+"agent/pair/start",{
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(pending.request),
   })).status,202);
-  const looked=value(await rpc("pairing_lookup",{code:pending.code}));
+  const looked=await (await lookup(pending.code)).json() as Record<string,unknown>;
   assert.match(String(looked.pairing_id),/^[a-f0-9-]{36}$/);
   for(const name of ["pairing_prepare","pairing_confirm","approve_device"]){
     const result=await rpc(name,{pairing_id:looked.pairing_id,
@@ -80,17 +88,17 @@ test("#97 old pairing_prepare and public /agent/pair/complete cannot approve a d
   assert.equal([...rows.keys()].filter(k=>k.startsWith("pending:")).length,1);
 });
 
-test("#97 revoked ID can only be replaced after distinct explicit MCP approval and new-key proof",async()=>{
-  const {rows,site,send,rpc,value}=setup();
+test("#97 revoked ID can only be replaced after distinct explicit owner approval and new-key proof",async()=>{
+  const {rows,site,send,rpc,value,lookup,approve:ownerApprove}=setup();
   const dir=await mkdtemp(path.join(os.tmpdir(),"v2-single-repair-"));
   const oldKey=path.join(dir,"v2-identity.pem");
   const stage=oldKey+".re-pair-new";
   const approve=async(code:string)=>{
-    const pending=value(await rpc("pairing_lookup",{code}));
-    const approved=value(await rpc("pairing_approve",{
+    const pending=await (await lookup(code)).json() as Record<string,unknown>;
+    const approved=await (await ownerApprove({
       pairing_id:pending.pairing_id,expected_fingerprint:pending.fingerprint,
       expected_grant_type:pending.grant_type,
-    }));
+    })).json() as Record<string,unknown>;
     assert.equal(approved.status,"approved");
     return String(approved.device_id);
   };
@@ -111,8 +119,7 @@ test("#97 revoked ID can only be replaced after distinct explicit MCP approval a
     const retry=await beginDeviceEnrollment("office-linux",site,stage,send,true);
     assert.notEqual(retry.code,original.code);
     assert.equal(await readFile(stage,"utf8"),stagedPem);
-    assert.match((await rpc("pairing_lookup",{code:original.code})).data.result?.content[0]?.text??"",
-      /not found/i);
+    assert.equal((await lookup(original.code)).status,404);
     const newGrant=await approve(retry.code);
     let dropped=false;
     const unreliable:typeof fetch=async(input,init)=>{
@@ -137,13 +144,13 @@ test("#97 revoked ID can only be replaced after distinct explicit MCP approval a
   } finally {await rm(dir,{recursive:true,force:true});}
 });
 
-test("#97 pairing lookup and approval cannot bypass Portal Bearer or Origin checks",async()=>{
-  const {rows,site,send,rpc,value}=setup();
+test("#1018 retired pairing calls remain denied even with valid Portal Bearer",async()=>{
+  const {rows,site,send,rpc,value,lookup,approve:ownerApprove}=setup();
   const material=newEnrollment("one-code-auth");
   assert.equal((await send(site+"agent/pair/start",{
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(material.request),
   })).status,202);
-  const identity=value(await rpc("pairing_lookup",{code:material.code}));
+  const identity=await (await lookup(material.code)).json() as Record<string,unknown>;
   const lookupArgs={code:material.code};
   const approveArgs={pairing_id:identity.pairing_id,
     expected_fingerprint:identity.fingerprint,expected_grant_type:"permanent"};
@@ -167,6 +174,9 @@ test("#97 pairing lookup and approval cannot bypass Portal Bearer or Origin chec
       assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,0);
     }
   }
-  const approved=value(await rpc("pairing_approve",approveArgs));
-  assert.equal(approved.status,"approved");
+  for(const [name,args] of [["pairing_lookup",lookupArgs],["pairing_approve",approveArgs]] as const){
+    const denied=await rpc(name,args);
+    assert.match(denied.data.result?.content[0]?.text??"",/rejected|unavailable/i);
+  }
+  assert.equal([...rows.keys()].filter(k=>k.startsWith("device:")).length,0);
 });

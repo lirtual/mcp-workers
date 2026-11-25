@@ -259,7 +259,7 @@ export async function approvePendingKey(
         {idle_expires_at: approvedAt + idleMs, idle_window_ms: idleMs}),
     } satisfies ApprovedDevice);
     await txn.delete(key);
-    // Do not return the pairing code, verifier or public key to MCP.
+    // Do not return the pairing code, verifier or public key to the owner page.
     return {status: 200, body: {status: "approved", device_id: deviceId, grant_type: mode}};
   });
 }
