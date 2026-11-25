@@ -332,12 +332,15 @@ mod tests {
         use std::os::unix::fs::DirBuilderExt;
         for prefix in 0..=4 {
             let dir = tempfile::tempdir().unwrap();
-            let key = dir.path().join("v2-identity.pem");
+            // The entrypoint supplies a canonical identity parent. macOS
+            // TMPDIR may instead be spelled through /var -> /private/var.
+            let parent = fs::canonicalize(dir.path()).unwrap();
+            let key = parent.join("v2-identity.pem");
             let id = sidecar(&key, ".device-id");
             let stage = sidecar(&key, ".re-pair-new");
             let stage_id = sidecar(&stage, ".device-id");
             let marker = sidecar(&key, ".re-pair-transition");
-            let archive = dir.path().join(format!("revoked-{ID}"));
+            let archive = parent.join(format!("revoked-{ID}"));
             let archived = archive.join("identity.pem");
             let archived_id = sidecar(&archived, ".device-id");
             fs::DirBuilder::new().mode(0o700).create(&archive).unwrap();
@@ -355,6 +358,19 @@ mod tests {
                 format!(r#"{{"version":1,"old_id":"{ID}","new_id":"{NEW_ID}"}}"#).as_bytes(),
             )
             .unwrap();
+            // A redirected spelling must still fail rather than weaken the
+            // production archive check to make the temporary fixture pass.
+            let link_root = tempfile::tempdir().unwrap();
+            let alias = link_root.path().join("alias");
+            std::os::unix::fs::symlink(&parent, &alias).unwrap();
+            assert!(repair_identity(
+                &alias.join("v2-identity.pem"),
+                false,
+                |_, _| panic!("redirected archive must be rejected before remote checks"),
+                |_, _| panic!("unexpected pairing"),
+                |_, _| panic!("redirected archive must be rejected before approval"),
+            )
+            .is_err());
             repair_identity(
                 &key,
                 false,

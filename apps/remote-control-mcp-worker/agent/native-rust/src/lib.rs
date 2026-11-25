@@ -9,6 +9,7 @@ pub mod darwin_output;
 #[cfg(target_os = "macos")]
 pub mod darwin_supervisor;
 mod device_info;
+pub use device_info::installed_version;
 pub mod device_pairing;
 pub mod digest;
 pub mod gate0_probe;

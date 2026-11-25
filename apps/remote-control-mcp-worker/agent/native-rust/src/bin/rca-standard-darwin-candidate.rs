@@ -143,10 +143,75 @@ fn owner_stopped(key: &std::path::Path) -> Result<bool, ()> {
     Ok(true)
 }
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn record_connection(
+    identity: &std::path::Path,
+    generation: &str,
+    version: Option<&str>,
+    connected: bool,
+) -> Result<(), ()> {
+    use std::fs;
+    use std::io::{ErrorKind, Write};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    let directory = fs::symlink_metadata(identity).map_err(|_| ())?;
+    if !directory.is_dir()
+        || directory.file_type().is_symlink()
+        || directory.uid() != unsafe { libc::geteuid() }
+        || directory.permissions().mode() & 0o077 != 0
+    {
+        return Err(());
+    }
+    let marker = identity.join("macos-connection.json");
+    match fs::symlink_metadata(&marker) {
+        Ok(info)
+            if info.is_file()
+                && !info.file_type().is_symlink()
+                && info.nlink() == 1
+                && info.uid() == unsafe { libc::geteuid() }
+                && info.permissions().mode() & 0o777 == 0o600 => {}
+        Ok(_) => return Err(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(_) => return Err(()),
+    }
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|_| ())?;
+    let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let temporary = identity.join(format!(".connection-{suffix}"));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_millis();
+    let record = serde_json::json!({
+        "generation": generation,
+        "version": version,
+        "pid": std::process::id(),
+        "state": if connected { "connected" } else { "disconnected" },
+        "at": now
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|_| ())?;
+    if file.write_all(record.to_string().as_bytes()).is_err()
+        || file.write_all(b"\n").is_err()
+        || file.sync_all().is_err()
+    {
+        let _ = fs::remove_file(&temporary);
+        return Err(());
+    }
+    if fs::rename(&temporary, &marker).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(());
+    }
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 mod darwin {
     use super::unix_pairing::{pair_or_repair, read_private, sidecar};
-    use super::{owner_stopped, pairing_store};
+    use super::{owner_stopped, pairing_store, record_connection};
     use rca_native_agent::darwin_managed::DarwinManagedSessions;
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::native_file::{
@@ -155,8 +220,8 @@ mod darwin {
     };
     use rca_native_agent::session::{HeartbeatTiming, SessionError};
     use std::fs;
-    use std::io::{ErrorKind, Write};
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::io::ErrorKind;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -178,55 +243,6 @@ mod darwin {
             return path.is_absolute().then_some(path).ok_or(());
         }
         Ok(home.join(".local/share/mcp-workers/remote-control/v2-identity.pem"))
-    }
-
-    fn record_connected(identity: &Path, generation: &str) -> Result<(), ()> {
-        let directory = fs::symlink_metadata(identity).map_err(|_| ())?;
-        if !directory.is_dir()
-            || directory.file_type().is_symlink()
-            || directory.uid() != unsafe { libc::geteuid() }
-            || directory.permissions().mode() & 0o077 != 0
-        {
-            return Err(());
-        }
-        let marker = identity.join("macos-connection.json");
-        match fs::symlink_metadata(&marker) {
-            Ok(info)
-                if info.is_file()
-                    && !info.file_type().is_symlink()
-                    && info.nlink() == 1
-                    && info.uid() == unsafe { libc::geteuid() }
-                    && info.permissions().mode() & 0o777 == 0o600 => {}
-            Ok(_) => return Err(()),
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(_) => return Err(()),
-        }
-        let temporary = identity.join(format!(".connection-{generation}-{}", std::process::id()));
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| ())?
-            .as_millis();
-        let record = serde_json::json!({
-            "generation": generation,
-            "version": "rust-candidate",
-            "pid": std::process::id(),
-            "state": "connected",
-            "at": now
-        });
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|_| ())?;
-        if file.write_all(record.to_string().as_bytes()).is_err()
-            || file.write_all(b"\n").is_err()
-            || file.sync_all().is_err()
-        {
-            let _ = fs::remove_file(&temporary);
-            return Err(());
-        }
-        fs::rename(&temporary, &marker).map_err(|_| ())
     }
 
     fn checked_supervisor() -> Result<Arc<DarwinManagedSessions>, ()> {
@@ -503,12 +519,29 @@ mod darwin {
         });
         // Exactly the existing Node default receipt location; never create a
         // parallel receipt ledger when switching the runtime.
+        let marker_failed = Arc::new(AtomicBool::new(false));
         let result = if let Some(generation) = generation {
             let marker_identity = key.parent().ok_or(())?.to_path_buf();
             let marker_generation = generation.to_owned();
-            let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-                let _ = record_connected(&marker_identity, &marker_generation);
-            });
+            let version = std::env::current_exe()
+                .ok()
+                .as_deref()
+                .and_then(rca_native_agent::installed_version);
+            let callback = |connected| {
+                let identity = marker_identity.clone();
+                let generation = marker_generation.clone();
+                let version = version.clone();
+                let stop = Arc::clone(&stop);
+                let marker_failed = Arc::clone(&marker_failed);
+                Arc::new(move || {
+                    if record_connection(&identity, &generation, version.as_deref(), connected)
+                        .is_err()
+                    {
+                        marker_failed.store(true, Ordering::Release);
+                        stop.store(true, Ordering::Release);
+                    }
+                }) as Arc<dyn Fn() + Send + Sync>
+            };
             run_native_managed_session_with_upgrade(
                 endpoint,
                 &private_pem,
@@ -517,10 +550,10 @@ mod darwin {
                 managed,
                 &stop,
                 UpgradeRuntimeOptions {
-                    on_disconnected: None,
+                    on_disconnected: Some(callback(false)),
                     on_diagnostic: None,
                     key_path: key,
-                    on_connected: Some(on_connected),
+                    on_connected: Some(callback(true)),
                 },
             )
         } else {
@@ -537,6 +570,9 @@ mod darwin {
         };
         stop.store(true, Ordering::Release);
         monitor.join().map_err(|_| ())?;
+        if marker_failed.load(Ordering::Acquire) {
+            return Err(());
+        }
         if let Err(error) = &result {
             if !matches!(error, NativeFileError::Session(_)) {
                 rca_native_agent::session::report_diagnostic(error.diagnostic_event());
@@ -545,33 +581,6 @@ mod darwin {
         match result {
             Ok(()) | Err(NativeFileError::Session(SessionError::Policy)) => Ok(()),
             Err(_) => Err(()),
-        }
-    }
-    #[cfg(test)]
-    mod connection_marker_tests {
-        use super::*;
-
-        #[test]
-        fn rust_connection_marker_is_owner_private_json_with_a_newline() {
-            let dir = tempfile::tempdir().unwrap();
-            // The installed Node identity is owner-private. macOS test tmp
-            // directories do not necessarily inherit that mode.
-            fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
-            let info = fs::symlink_metadata(dir.path()).unwrap();
-            assert_eq!(info.uid(), unsafe { libc::geteuid() });
-            assert_eq!(info.permissions().mode() & 0o077, 0);
-            let marker = dir.path().join("macos-connection.json");
-            record_connected(dir.path(), "candidate-generation").unwrap();
-            let raw = fs::read_to_string(&marker).unwrap();
-            assert!(raw.ends_with('\n'));
-            let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            assert_eq!(value["state"], "connected");
-            assert_eq!(value["generation"], "candidate-generation");
-            assert!(value["at"].as_u64().is_some());
-            assert_eq!(
-                fs::symlink_metadata(marker).unwrap().permissions().mode() & 0o777,
-                0o600
-            );
         }
     }
 }
@@ -680,5 +689,54 @@ mod pairing_admission_tests {
         fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
         symlink("missing", dir.path().join(".local")).unwrap();
         assert!(pairing_store(dir.path(), true).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod connection_marker_tests {
+    use super::record_connection;
+    use std::fs;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    #[test]
+    fn rust_connection_marker_is_owner_private_json_with_a_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        // The installed Node identity is owner-private. macOS test tmp
+        // directories do not necessarily inherit that mode.
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let info = fs::symlink_metadata(dir.path()).unwrap();
+        assert_eq!(info.uid(), unsafe { libc::geteuid() });
+        assert_eq!(info.permissions().mode() & 0o077, 0);
+        let marker = dir.path().join("macos-connection.json");
+        record_connection(dir.path(), "candidate-generation", Some("v0.1.60"), true).unwrap();
+        let raw = fs::read_to_string(&marker).unwrap();
+        assert!(raw.ends_with('\n'));
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["state"], "connected");
+        assert_eq!(value["generation"], "candidate-generation");
+        assert!(value["at"].as_u64().is_some());
+        assert_eq!(value["version"], "v0.1.60");
+        assert_eq!(value["pid"], std::process::id());
+        record_connection(dir.path(), "candidate-generation", Some("v0.1.60"), false).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
+        assert_eq!(value["state"], "disconnected");
+        assert_eq!(value["version"], "v0.1.60");
+        record_connection(dir.path(), "candidate-generation", None, true).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&marker).unwrap()).unwrap();
+        assert!(value["version"].is_null());
+        assert_eq!(value["state"], "connected");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+        assert_eq!(
+            fs::symlink_metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        fs::remove_file(&marker).unwrap();
+        let foreign = dir.path().join("foreign");
+        fs::write(&foreign, b"unrelated").unwrap();
+        std::os::unix::fs::symlink(&foreign, &marker).unwrap();
+        assert!(record_connection(dir.path(), "candidate-generation", None, false).is_err());
+        assert_eq!(fs::read(foreign).unwrap(), b"unrelated");
     }
 }
