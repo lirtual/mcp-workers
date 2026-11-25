@@ -148,13 +148,24 @@ test("#1039 hidden input disables echo and decodes split UTF-8 without loss",asy
   const input=new EventEmitter(),written=[],raw=[];
   input.isTTY=true;input.isRaw=false;input.setRawMode=value=>{input.isRaw=value;raw.push(value);};
   input.resume=()=>{};input.pause=()=>{};
-  const output={isTTY:true,write:value=>written.push(value)};
+  const output={isTTY:true,write:value=>{if(value!=="\n")assert.equal(input.isRaw,true,"prompt must follow echo suppression");written.push(value);}};
   const pending=readHiddenSecret({input,output});
   const bytes=Buffer.from("päss🔑\n");
   const split=bytes.indexOf(Buffer.from("🔑"))+2;
   input.emit("data",bytes.subarray(0,split));input.emit("data",bytes.subarray(split));
   assert.equal(await pending,"päss🔑");
-  assert.deepEqual(raw,[true,false]);assert.deepEqual(written,["\n"]);
+  assert.deepEqual(raw,[true,false]);assert.deepEqual(written,["Credential value (hidden): ","\n"]);
+});
+
+test("#1039 hidden input refuses unavailable echo suppression without prompting",async()=>{
+  const input=new EventEmitter(),written=[];
+  input.isTTY=true;input.isRaw=false;
+  input.setRawMode=()=>{throw Error("terminal unavailable");};
+  input.resume=()=>{};input.pause=()=>{};
+  const output={isTTY:true,write:value=>written.push(value)};
+  await assert.rejects(readHiddenSecret({input,output}),/Hidden input unavailable/);
+  assert.deepEqual(written,[]);
+  assert.equal(input.listenerCount("data"),0);
 });
 
 test("#660 permanent service accepts only exact approved existing grant and managed generation",()=>{

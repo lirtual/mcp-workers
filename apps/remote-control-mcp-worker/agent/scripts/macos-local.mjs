@@ -285,7 +285,15 @@ export function readHiddenSecret({input=process.stdin,output=process.stdout}={})
         buffer[length++]=byte;
       }
     };
-    input.setRawMode(true);input.resume();input.on("data",onData);input.once("error",onError);
+    try{
+      input.setRawMode(true);
+      input.on("data",onData);input.once("error",onError);
+      output.write("Credential value (hidden): ");
+      input.resume();
+    }catch{
+      settled=true;cleanup();buffer.fill(0);
+      reject(Error("Hidden input unavailable."));
+    }
   });
 }
 
@@ -339,7 +347,6 @@ export async function secureInputMacAction(requestId,{home=os.homedir(),terminal
   }
   let secret="";
   try{
-    process.stdout.write("Credential value (hidden): ");
     secret=await readSecret();
     const result=await sendIntent(endpoint,key,challenge,secret,true,productionAuthorized);
     return {status:"unknown",request_id:result.request_id,

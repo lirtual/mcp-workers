@@ -88,9 +88,9 @@ pub fn read_hidden_secret() -> Result<Zeroizing<String>, SecureInputCliError> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(SecureInputCliError);
     }
+    let guard = hide_echo()?;
     eprint!("Secret (input hidden): ");
     io::stderr().flush().map_err(|_| ())?;
-    let guard = hide_echo()?;
     let mut value = Zeroizing::new(String::new());
     let read = io::stdin().read_line(&mut value).map_err(|_| ());
     drop(guard);
@@ -99,7 +99,7 @@ pub fn read_hidden_secret() -> Result<Zeroizing<String>, SecureInputCliError> {
     while value.ends_with(['\r', '\n']) {
         value.pop();
     }
-    if value.is_empty() || value.len() > 8_192 || value.contains(char::from(0)) {
+    if value.trim().is_empty() || value.len() > 8_192 || value.contains(char::from(0)) {
         return Err(SecureInputCliError);
     }
     Ok(value)
@@ -204,5 +204,116 @@ pub fn run_secure_input_owner_flow(
             );
             Err(SecureInputCliError)
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod terminal_tests {
+    use super::*;
+    use std::fs::File;
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    const MARKER: &str = "synthetic-pty-marker-é";
+
+    #[test]
+    fn hidden_input_fixture() {
+        if std::env::var_os("RCA_TEST_HIDDEN_INPUT_FIXTURE").is_some() {
+            assert!(read_hidden_secret().is_ok_and(|value| value.as_str() == MARKER));
+        }
+    }
+
+    struct ScopedChild(Child);
+    impl Drop for ScopedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn terminal_flags(file: &File) -> libc::tcflag_t {
+        let mut settings = unsafe { std::mem::zeroed::<libc::termios>() };
+        assert_eq!(
+            unsafe { libc::tcgetattr(file.as_raw_fd(), &mut settings) },
+            0
+        );
+        settings.c_lflag
+    }
+
+    #[test]
+    fn real_pty_prompt_is_hidden_and_terminal_is_restored() {
+        let (mut master_fd, mut slave_fd) = (-1, -1);
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master_fd,
+                    &mut slave_fd,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                )
+            },
+            0
+        );
+        let mut master = unsafe { File::from_raw_fd(master_fd) };
+        let slave = unsafe { File::from_raw_fd(slave_fd) };
+        let original = terminal_flags(&slave);
+        assert_ne!(original & libc::ECHO, 0);
+        let mut child = ScopedChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "secure_input_cli::terminal_tests::hidden_input_fixture",
+                    "--nocapture",
+                ])
+                .env("RCA_TEST_HIDDEN_INPUT_FIXTURE", "1")
+                .stdin(Stdio::from(slave.try_clone().unwrap()))
+                .stdout(Stdio::from(slave.try_clone().unwrap()))
+                .stderr(Stdio::from(slave.try_clone().unwrap()))
+                .spawn()
+                .unwrap(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut output = Vec::new();
+        let mut submitted = false;
+        loop {
+            assert!(Instant::now() < deadline, "synthetic PTY test timed out");
+            let mut poll = libc::pollfd {
+                fd: master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut poll, 1, 50) };
+            if ready > 0 && poll.revents & libc::POLLIN != 0 {
+                let mut buffer = [0; 4096];
+                let count = master.read(&mut buffer).unwrap();
+                output.extend_from_slice(&buffer[..count]);
+                assert!(output.len() < 64 * 1024);
+                if !submitted
+                    && output
+                        .windows(b"Secret (input hidden): ".len())
+                        .any(|window| window == b"Secret (input hidden): ")
+                {
+                    assert_eq!(terminal_flags(&slave) & (libc::ECHO | libc::ECHONL), 0);
+                    master.write_all(MARKER.as_bytes()).unwrap();
+                    master.write_all(b"\n").unwrap();
+                    submitted = true;
+                }
+            }
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                // Drain any final output before checking the synthetic marker.
+                if ready == 0 {
+                    break;
+                }
+            }
+        }
+        assert!(submitted);
+        assert_eq!(terminal_flags(&slave), original);
+        assert!(!output
+            .windows(MARKER.len())
+            .any(|window| window == MARKER.as_bytes()));
     }
 }
