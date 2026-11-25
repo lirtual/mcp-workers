@@ -350,6 +350,7 @@ test("#1035 Windows normal restart keeps owner intent and refuses busy or change
   const command=fn+String.raw`
 $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
+Import-Module (Join-Path $PSHOME 'Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
 $dir=Join-Path ([IO.Path]::GetTempPath()) ('rca-restart-contract-'+[guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($dir)
 try {
@@ -389,19 +390,25 @@ try {
     $script:task.State='Running';$script:pidValue=101
   }
   function Start-Sleep {}
-  function Refused {
-    $failed=$false
-    try { Invoke-TestRestart | Out-Null } catch { $failed=$true }
-    if (-not $failed) { throw 'Unexpected restart success' }
+  function Refused([string]$expectedMessage) {
+    try { Invoke-TestRestart | Out-Null }
+    catch {
+      if ($_.Exception.Message -cne $expectedMessage) {
+        throw ('Expected refusal: '+$expectedMessage+'; actual: '+$_.Exception.Message+
+          '; events: '+($script:events -join ','))
+      }
+      return
+    }
+    throw 'Unexpected restart success'
   }
   [IO.File]::WriteAllText($identityFile+'.owner-stopped','stopped')
-  Refused
+  Refused 'Owner STOP or lifecycle pending blocks restart'
   if($script:events.Count){throw 'STOP reached freeze'}
   Remove-Item -LiteralPath ($identityFile+'.owner-stopped')
-  $script:busy=$true;Refused
-  if(($script:events -join ',') -ne 'verify-online,freeze'){throw 'Busy reached mutation'}
+  $script:busy=$true;Refused 'Agent busy; restart deferred'
+  if(($script:events -join ',') -ne 'verify-online,freeze'){throw ('Wrong busy trace: '+($script:events -join ','))}
   $script:busy=$false;$script:failure=$true;$script:events=@()
-  Refused
+  Refused 'Fixture stop failed'
   if(($script:events -join ',') -ne 'verify-online,freeze,verify-frozen,stop-task,release'){throw 'Wrong failed restart cleanup'}
   $script:failure=$false;$script:events=@()
   $result=Invoke-TestRestart | ConvertFrom-Json

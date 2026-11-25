@@ -715,8 +715,9 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
         }
         return {automatic_update:policy};
       }
-      const state={installed:null,version:null,platform:"darwin",arch:process.arch,local_service:"unconfirmed",
-        cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
+      const state={installed:null,version:null,installed_version:null,platform:"darwin",arch:process.arch,
+        device_id:deviceId,identity_present:deviceId!==null,local_service:"unconfirmed",
+        cloud_authorization:"unconfirmed",cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
         last_online:"unconfirmed",receipts:"preserved_unverified",
         automatic_update:policy,automatic_update_activity:"needs_attention"};
       return action==="status"||action==="logs"?state:{status:state,findings:[
@@ -891,9 +892,11 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     }
     const state={
       installed:!!current,version:current?macInstalledVersion(path.basename(current.root)):null,
+      installed_version:current?macInstalledVersion(path.basename(current.root)):null,
+      device_id:deviceId,identity_present:deviceId!==null,
       platform:"darwin",arch:process.arch,
       local_service:current?(stopped?"stopped_requested_unverified":"present_unverified"):"not_installed",
-      cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
+      cloud_authorization:"unconfirmed",cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
       last_online:"unconfirmed",receipts:"preserved_unverified",
       automatic_update:policy,automatic_update_activity:policy==="off"?"disabled":"unknown",
     };
@@ -1318,7 +1321,9 @@ async function main(argv=process.argv.slice(2)){
     console.log(meta.version);
     return;
   }
-  if((action==="status"||action==="doctor")&&params.length===1&&params[0]==="--json")params.pop();
+  const diagnostic=action==="status"||action==="doctor";
+  const structured=diagnostic&&params.length===1&&params[0]==="--json";
+  if(structured)params.pop();
   if(["status","doctor","logs","pair","recover","stop","start","restart","uninstall"].includes(action)&&params.length)
     throw Error("Unexpected local action arguments.");
   const args={};
@@ -1330,7 +1335,7 @@ async function main(argv=process.argv.slice(2)){
   const result=await localMacAction(action,{
     bundle:args["--bundle"],sourceSha:args["--source-sha"],endpoint:args["--endpoint"],
     expectedBinding:args["--expected-binding"],policyAction});
-  if(action!=="update-latest")process.stdout.write(JSON.stringify(result)+"\n");
+  if(action!=="update-latest")process.stdout.write(JSON.stringify(result,null,diagnostic&&!structured?2:0)+"\n");
   if(action==="check-update"&&result.status==="unknown")process.exitCode=1;
 }
 // On macOS, $TMPDIR commonly starts with /var while Node's ESM loader

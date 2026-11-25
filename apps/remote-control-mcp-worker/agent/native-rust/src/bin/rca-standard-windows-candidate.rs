@@ -139,6 +139,8 @@ mod windows {
             "identity_present": pem.is_some(),
             "device_id": id,
             "remote_connection": signed,
+            "cloud_authorization": "unconfirmed",
+            "read_only_access": "unconfirmed",
             "automatic_update": policy,
             "automatic_update_activity": activity,
             "automatic_update_result": task.as_ref().map(|value| &value["automatic_update_result"]),
@@ -148,9 +150,9 @@ mod windows {
         }))
     }
 
-    fn local_status(doctor: bool) -> Result<(), ()> {
+    fn local_status(doctor: bool, structured: bool) -> Result<(), ()> {
         let state = local_status_facts()?;
-        if doctor {
+        let result = if doctor {
             let mut findings = Vec::new();
             if state["identity_present"] == false || state["device_id"].is_null() {
                 findings.push("local_identity_unconfirmed");
@@ -168,12 +170,14 @@ mod windows {
             ) {
                 findings.push("update_state_needs_review");
             }
-            println!(
-                "{}",
-                serde_json::json!({"status": state, "findings": findings})
-            );
+            serde_json::json!({"status": state, "findings": findings})
         } else {
-            println!("{state}");
+            state
+        };
+        if structured {
+            println!("{result}");
+        } else {
+            println!("{}", serde_json::to_string_pretty(&result).map_err(|_| ())?);
         }
         Ok(())
     }
@@ -741,12 +745,12 @@ mod windows {
                     Ok(())
                 }
                 [_, command] if command == "status" || command == "doctor" => {
-                    local_status(command == "doctor")
+                    local_status(command == "doctor", false)
                 }
                 [_, command, flag]
                     if (command == "status" || command == "doctor") && flag == "--json" =>
                 {
-                    local_status(command == "doctor")
+                    local_status(command == "doctor", true)
                 }
                 [_, command] if command == "logs" => {
                     print!(

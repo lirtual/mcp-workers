@@ -2173,6 +2173,7 @@ def local_status(home):
     policy = native_auto_policy(key, ids["permanent"]) if "permanent" in ids else "off"
     update_result = None
     activity = "disabled"
+    installed_version = None
     if "permanent" in ids:
         try:
             result = native_upgrade_result(key, ids["permanent"])
@@ -2190,7 +2191,11 @@ def local_status(home):
         except (OSError, ValueError):
             update_result = {"status": "unknown"}
             activity = "unknown"
+    local_service = {"active": "running_unverified",
+                     "inactive_or_unconfirmed": "unconfirmed",
+                     "not_installed": "not_installed"}[service]
     return {"installed_versions": sorted(x.name for x in versions),
+            "installed_version": installed_version, "local_service": local_service,
             "local_permanent_service": service, "device_ids": ids,
             "automatic_update": policy, "automatic_update_activity": activity,
             "automatic_update_result": update_result,

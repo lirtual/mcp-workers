@@ -54,6 +54,12 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     assert.equal(state.cli_version,"v0.1.1");
     assert.equal(state.local_permanent_service,"not_installed");
     assert.equal(state.cloud_authorization,"unconfirmed");
+    assert.equal(state.platform,"linux");
+    assert.equal(state.arch,"x64");
+    assert.equal(state.installed_version,null);
+    assert.equal(state.local_service,"not_installed");
+    assert.equal(state.identity_present,false);
+    assert.equal(state.device_id,null);
     const diagnosis=run(["doctor","--json"]);
     assert.equal(diagnosis.status,0,diagnosis.stderr);
     const checked=JSON.parse(diagnosis.stdout);

@@ -62,6 +62,10 @@ def installed_endpoint(bootstrap):
 def status_facts(bootstrap, info):
     state = bootstrap.local_status(str(Path.home()))
     state["cli_version"] = info["version"]
+    state["platform"] = "linux"
+    state["arch"] = {"linux-x64-glibc": "x64", "linux-arm64-glibc": "arm64"}.get(info["target"])
+    state["device_id"] = state["device_ids"].get("permanent")
+    state["identity_present"] = state["device_id"] is not None
     return state
 
 
