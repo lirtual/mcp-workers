@@ -13,7 +13,7 @@ import {
   type AgentReleaseTarget,
   type SelectedAgentRelease,
 } from "../src/github-latest-agent-release.ts";
-import { handleLatestMacInstallRequest, renderLatestMacInstallShell } from "../src/install-macos-latest.ts";
+import { handleLatestMacInstallRequest, renderLatestMacInstallShell, renderPackagedMacUpdateShell } from "../src/install-macos-latest.ts";
 import { LATEST_MANIFEST_URL } from "../src/release-manifest-shell.ts";
 
 const ORIGIN = "https://rca.lirtual.dpdns.org";
@@ -123,7 +123,7 @@ function sha256(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function packArchive(target: "darwin-arm64" | "darwin-x64", version = TAG): Buffer {
+function packArchive(target: "darwin-arm64" | "darwin-x64", version = TAG, packaged = false): Buffer {
   const root = mkdtempSync(path.join(tmpdir(), "rca809-pack-"));
   try {
     const dirs = [
@@ -164,6 +164,8 @@ printf '%s\\n' '{"status":"launched","operation_id":"aaaaaaaa-bbbb-cccc-dddd-eee
     writeFileSync(path.join(root, "apps/remote-control-agent/src/macos-permanent.js"), "export {}\n", { mode: 0o600 });
     writeFileSync(path.join(root, "apps/remote-control-agent/scripts/macos-local.mjs"), "export {}\n", { mode: 0o600 });
     writeFileSync(path.join(root, "apps/remote-control-agent/scripts/macos-remote-upgrade.mjs"), "export {}\n", { mode: 0o600 });
+    if(packaged) writeFileSync(path.join(root,"apps/remote-control-agent/scripts/macos-update.sh"),
+      renderPackagedMacUpdateShell(),{mode:0o600});
     const helper = path.join(root, "apps/remote-control-agent/.build/darwin-session-supervisor");
     writeFileSync(helper, "owned-group\n", { mode: 0o700 });
     chmodSync(helper, 0o700);
@@ -189,7 +191,7 @@ function shellFor(bytes: { arm: Buffer; intel: Buffer }, body?: string): string 
   return renderLatestMacInstallShell(ORIGIN);
 }
 
-function runInstaller(script: string, arch: "arm64" | "x86_64", bytes: { arm: Buffer; intel: Buffer }, extra: Record<string, string> = {}, action = "--remote-upgrade", tty = false) {
+function runInstaller(script: string, arch: "arm64" | "x86_64", bytes: { arm: Buffer; intel: Buffer }, extra: Record<string, string> = {}, action = "--remote-upgrade", tty = false, packagedVersion?: string) {
   const root = mkdtempSync(path.join(tmpdir(), "rca809-run-"));
   const bin = path.join(root, "bin");
   mkdirSync(bin, { mode: 0o755 });
@@ -243,7 +245,8 @@ echo Darwin
   const scriptFile = path.join(root, "test-installer.sh");
   writeFileSync(scriptFile, script, {mode:0o700});
   const result = spawnSync(tty ? "script" : "sh", tty
-    ? ["-q","-e","-c",'sh "$RCA_TEST_SCRIPT" --upgrade',"/dev/null"]
+    ? ["-q","-e","-c",packagedVersion===undefined?'sh "$RCA_TEST_SCRIPT" --upgrade':
+      'sh "$RCA_TEST_SCRIPT" "$RCA_TEST_ENDPOINT" "$RCA_TEST_INSTALLED" "$RCA_TEST_BINDING"',"/dev/null"]
     : ["-c", script, "macos-script", action], {
     encoding: "utf8",
     timeout: 15000,
@@ -252,6 +255,9 @@ echo Darwin
       PATH: bin + ":" + process.env.PATH,
       TMPDIR: root,
       RCA_TEST_SCRIPT: scriptFile,
+      RCA_TEST_ENDPOINT: ORIGIN+"/",
+      RCA_TEST_INSTALLED: packagedVersion??"",
+      RCA_TEST_BINDING: "a".repeat(64),
       RCA_NODE_LOG: nodeLog,
       RCA_CURL_LOG: curlLog,
       RCA_MANIFEST_URL: LATEST_MANIFEST_URL,
@@ -317,6 +323,33 @@ test("#1035 attended macOS installer preserves both owner terminal streams", {sk
   assert.equal(failed.left.length,0);
 });
 
+test("#1035 public installer accepts the exact new packaged updater and historical archives",()=>{
+  const bytes={arm:packArchive("darwin-arm64",TAG,true),intel:packArchive("darwin-x64",TAG,true)};
+  const generated=renderPackagedMacUpdateShell();
+  assert.equal(spawnSync("sh",["-n"],{input:generated,encoding:"utf8"}).status,0);
+  const next=runInstaller(shellFor(bytes),"arm64",bytes);
+  assert.equal(next.result.status,0,next.result.stderr);
+  assert.equal(next.curls.length,2);
+  const old={arm:packArchive("darwin-arm64"),intel:packArchive("darwin-x64")};
+  assert.equal(runInstaller(shellFor(old),"arm64",old).result.status,0);
+  const noTerminal=runInstaller(generated,"arm64",bytes,{},"--upgrade");
+  assert.notEqual(noTerminal.result.status,0);
+  assert.deepEqual(noTerminal.curls,[]);
+});
+
+test("#1035 packaged updater uses one manifest and binds the verified next package", {skip:process.platform!=="linux"},()=>{
+  const bytes={arm:packArchive("darwin-arm64",TAG,true),intel:packArchive("darwin-x64",TAG,true)};
+  const script=renderPackagedMacUpdateShell();
+  const same=runInstaller(script,"arm64",bytes,{},"--upgrade",true,TAG);
+  assert.equal(same.result.status,0,same.result.stdout);
+  assert.deepEqual(same.curls,[LATEST_MANIFEST_URL]);
+  assert.equal(same.nodes,"");
+  const newer=runInstaller(script,"arm64",bytes,{RCA_NODE_MODE:"tty"},"--upgrade",true,"v0.1.60");
+  assert.equal(newer.result.status,0,newer.result.stdout);
+  assert.equal(newer.curls.length,2);
+  assert.match(newer.nodes,/--expected-binding a{64}/);
+  assert.equal(newer.left.length,0);
+});
 test("#809 corrupt, redirected, wrong-arch, failed, and unknown upgrades stop once", () => {
   const bytes = { arm: packArchive("darwin-arm64"), intel: packArchive("darwin-x64") };
   const script = shellFor(bytes);

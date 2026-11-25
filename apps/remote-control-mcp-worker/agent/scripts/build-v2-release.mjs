@@ -1,3 +1,4 @@
+import { renderPackagedMacUpdateShell } from "../../src/install-macos-latest.ts";
 /**
  * Offline reviewed native-host packaging. Linux emits only the Rust-native
  * profile; Darwin retains Node v2 and its opt-in Rust prototype.
@@ -345,6 +346,8 @@ export function build(args) {
     copyFileSync(path.join(root,"scripts/macos-remote-upgrade.mjs"),remoteDest);
     chmodSync(localDest,0o600);
     chmodSync(remoteDest,0o600);
+    writeFileSync(path.join(work,"apps/remote-control-agent/scripts/macos-update.sh"),
+      renderPackagedMacUpdateShell(),{mode:0o600});
   }
   if (!darwin) {
     for (const name of ["bootstrap-v2.py", "manage-v2.py", "rca.sh"]) {

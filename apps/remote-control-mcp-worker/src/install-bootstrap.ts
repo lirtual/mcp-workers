@@ -1,3 +1,4 @@
+import { validInstallerOrigin } from "./installer-origin.ts";
 import windowsInstallerSource from "../agent/install.ps1";
 import { renderClientReleaseManifestShell } from "./release-manifest-shell.ts";
 import { renderInstallHome } from "./install-home.ts";
@@ -14,17 +15,7 @@ export function renderAgentInstallPowerShell(origin: string): string {
   return windowsInstallerSource.endsWith("\n") ? windowsInstallerSource : `${windowsInstallerSource}\n`;
 }
 
-// Never trust request Host alone: the allowed origin is supplied by the
-// deployment's validated Custom Domain binding, not a source-code hostname.
-export function validInstallerOrigin(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 255) return false;
-  try {
-    const u = new URL(value);
-    return u.protocol === "https:" && !!u.hostname && !u.port &&
-      !u.username && !u.password && !u.search && !u.hash &&
-      u.pathname === "/" && u.origin === value;
-  } catch { return false; }
-}
+export { validInstallerOrigin } from "./installer-origin.ts";
 
 const INSTALLER_PATHS = ["/", "/install.sh", "/install.ps1", "/install-macos.sh"];
 

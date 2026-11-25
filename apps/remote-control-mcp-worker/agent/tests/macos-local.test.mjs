@@ -232,8 +232,8 @@ test("#660 owner-local rca executable quotes paths and refuses unverified comman
   for(const action of ["upgrade","install","status",""]) {
     const args=action? [action] : [];
     const r=spawnSync("/bin/sh",[file,...args],{encoding:"utf8"});
-    // 'status' is permitted but points to a nonexistent reviewed test binary.
-    if(action==="status")assert.notEqual(r.status,0);
+    // Permitted commands point to a nonexistent reviewed test binary.
+    if(action==="status"||action==="upgrade")assert.equal(r.status,127);
     else assert.equal(r.status,2);
   }
   assert.match(script,/status\|doctor/);
@@ -241,7 +241,7 @@ test("#660 owner-local rca executable quotes paths and refuses unverified comman
   assert.ok(script.includes("o'\"'\"'neill"));
 });
 
-test("#1035 macOS read-only CLI accepts JSON and doctor without opening mutation entry points",async t=>{
+test("#1035 macOS CLI routes supported commands and rejects arbitrary options",async t=>{
   const root=await mkdtemp(path.join(os.tmpdir(),"rca1035-cli-"));
   t.after(()=>rm(root,{recursive:true,force:true}));
   await mkdir(path.join(root,"bin"),{mode:0o700});
@@ -249,12 +249,12 @@ test("#1035 macOS read-only CLI accepts JSON and doctor without opening mutation
   const file=path.join(root,"rca");
   await writeFile(file,ownerCliText(root),{mode:0o700});
   const invoke=args=>spawnSync("/bin/sh",[file,...args],{encoding:"utf8"});
-  for(const args of [["status","--json"],["doctor"],["doctor","--json"],["update","--check"],["upgrade","--check"],["--help"],["--version"]]){
+  for(const args of [["status","--json"],["doctor"],["doctor","--json"],["update","--check"],["upgrade","--check"],["update"],["upgrade"],["--help"],["--version"]]){
     const result=invoke(args);
     assert.equal(result.status,0,result.stderr);
     assert.deepEqual(result.stdout.trim().split("\n").slice(1),args);
   }
-  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["--help","extra"],["--version","extra"],["update"],["update","--auto"],["upgrade"],["install"]])
+  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["--help","extra"],["--version","extra"],["update","--auto"],["install"]])
     assert.equal(invoke(args).status,2,args.join(" "));
 });
 
@@ -466,8 +466,8 @@ test("#660 native offline install → stopped state → upgrade without restart"
   const version=spawnSync("/bin/sh",[cli,"--version"],{encoding:"utf8"});
   assert.equal(version.status,0,version.stderr);
   assert.equal(version.stdout.trim(),f.version);
-  assert.equal(spawnSync("/bin/sh",[cli,"upgrade"]).status,2,
-    "raw, unpinned local CLI upgrade must be refused");
+  assert.notEqual(spawnSync("/bin/sh",[cli,"upgrade"],{encoding:"utf8"}).status,0,
+    "unattended bare update must be refused");
   const state=await localMacAction("status",{home:f.home,invoke:f.invoke});
   assert.equal(state.installed,true);
   // The old published launcher remains valid until an explicit upgrade
@@ -476,6 +476,23 @@ test("#660 native offline install → stopped state → upgrade without restart"
   await writeFile(cli,legacy,{mode:0o700});
   assert.deepEqual(await localMacAction("status",{home:f.home,invoke:f.invoke}),state);
   assert.equal(await readFile(cli,"utf8"),legacy);
+  const launches=[];
+  const {macUpgradeBinding,macBindingDigest}=await import("../scripts/macos-local.mjs");
+  const scripts=path.join(firstRoot,"apps/remote-control-agent/scripts");
+  const updater=path.join(scripts,"macos-update.sh");
+  const {renderPackagedMacUpdateShell}=await import("../../src/install-macos-latest.ts");
+  assert.equal(await readFile(updater,"utf8"),renderPackagedMacUpdateShell());
+  assert.equal((await lstat(updater)).mode&0o777,0o600);
+  const update=await localMacAction("update-latest",{home:f.home,invoke:f.invoke,terminal:()=>true,
+    ask:()=>{throw Error("No redundant confirmation before verified manager");},
+    runUpdate:(command,args,options)=>{launches.push({command,args,options});return {status:0};}});
+  assert.equal(update.status,"installer_completed");
+  const mac=path.join(f.identity,"macos");
+  const binding=await macUpgradeBinding({key:path.join(f.identity,"v2-identity.pem"),
+    plist:path.join(f.home,"Library/LaunchAgents/org.mcp-workers.remote-control-agent.plist"),
+    cli,endpointFile:path.join(mac,"endpoint"),stopMark:path.join(mac,"stopped"),journal:path.join(mac,"switch.json")});
+  assert.deepEqual(launches,[{command:"/bin/sh",args:[updater,ENDPOINT,f.version,macBindingDigest(binding)],
+    options:{stdio:"inherit"}}]);
   let checks=0;
   const observed=await localMacAction("check-update",{home:f.home,
     invoke:()=>{throw Error("read-only check must not call launchctl");},
@@ -543,6 +560,10 @@ test("#1035 identity changed during owner confirmation refuses existing upgrade 
   meta.version=nextCandidateVersion(meta.version);
   await writeFile(manifestFile,JSON.stringify(meta)+"\n",{mode:0o600});
   const next=path.join(f.identity,"macos/programs",meta.version+"-darwin-"+process.arch);
+  await assert.rejects(localMacAction("upgrade",{...opts,bundle:alt,expectedBinding:"0".repeat(64),
+    ask:async()=>{throw Error("Changed download target must not confirm");}
+  }),/Existing upgrade target changed during download/);
+  await assert.rejects(lstat(next),{code:"ENOENT"});
   await assert.rejects(localMacAction("upgrade",{...opts,bundle:alt,
     ask:async()=>{await writeFile(path.join(f.identity,"v2-identity.pem"),"changed-synthetic-key");return true;},
     freezeAgent:async()=>{throw Error("Changed target must not freeze");}

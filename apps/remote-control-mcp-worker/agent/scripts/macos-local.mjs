@@ -263,8 +263,7 @@ export async function ownedWrite(file,content,replace=false,mode=0o600,parentPri
   await writeFile(temp,content,{flag:"wx",mode});
   try{await rename(temp,file);}catch(e){await rm(temp,{force:true});throw e;}
 }
-// Local CLI is a version-pinned, owner-private dispatch only. Upgrades must
-// still use the separately reviewed, SHA-pinned offline installer.
+// Local CLI dispatches only to the version-pinned, owner-private manager.
 export function ownerCliText(root,legacy=false){
   const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
   const node=path.join(root,"bin/node");
@@ -273,7 +272,7 @@ export function ownerCliText(root,legacy=false){
     (legacy
       ?'  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'
       :'  status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n'+
-       '  update|upgrade) [ "$#" -eq 2 ] && [ "$2" = --check ] || exit 2 ;;\n'+
+       '  update|upgrade) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --check ]; } || exit 2 ;;\n'+
        '  stop|start|--help|--version) [ "$#" -eq 1 ] || exit 2 ;;\n')+
     '  *) echo "Use the reviewed macOS installer for install/upgrade." >&2; exit 2 ;;\n'+
     'esac\nexec '+quote(node)+' '+quote(manager)+(legacy?' "$1"\n':' "$@"\n');
@@ -299,6 +298,9 @@ export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,jou
     endpoint:(await read(endpointFile,0o600,true))?.trim()??null,
     stop:await read(stopMark,0o600,true),
     keyHash:await hash(key),idHash:await hash(key+".device-id")};
+}
+export function macBindingDigest(binding){
+  return createHash("sha256").update(JSON.stringify(binding)).digest("hex");
 }
 export async function observeOnline(identity,generation,now=Date.now){
   const start=now(),file=path.join(identity,"macos-connection.json");
@@ -329,16 +331,18 @@ export async function confirm(question){
   });
 }
 /** Host mutation only after local owner consent and a pinned source candidate. */
-export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,
+export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,
   invoke=run,ask=confirm,online=observeOnline,freezeAgent=freeze,ownerIntent,
-  runTemporary=spawnSync,terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
+  runTemporary=spawnSync,runUpdate=spawnSync,terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
   pauseLaunchd=ms=>new Promise(resolve=>setTimeout(resolve,ms)),doFetch=fetch}={}){
-  if(!["install","upgrade","status","doctor","check-update","stop","start","temporary"].includes(action))
+  if(!["install","upgrade","status","doctor","check-update","update-latest","stop","start","temporary"].includes(action))
     throw Error("Unsupported local action.");
   if(process.platform!=="darwin"||!["arm64","x64"].includes(process.arch)||
     Number.parseInt(os.release(),10)<24||process.getuid?.()===0)
     throw Error("Native unprivileged macOS 15+ ARM64 or x64 required.");
-  const readOnly=action==="status"||action==="doctor"||action==="check-update";
+  if(expectedBinding!==undefined&&(action!=="upgrade"||!(/^[a-f0-9]{64}$/).test(expectedBinding)))
+    throw Error("Invalid expected upgrade binding.");
+  const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest";
   if(!readOnly)process.umask(0o077);
   if(action==="temporary"){
     // Reuse the signed 24-hour foreground Agent: no LaunchAgent, no service
@@ -415,13 +419,27 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       last_online:"unconfirmed",receipts:"preserved_unverified",
     };
     if(action==="status")return state;
-    if(action==="check-update"){
+    if(action==="check-update"||action==="update-latest"){
       if(!current)throw Error("No existing managed macOS Agent.");
       const manifest=path.join(current.root,"bundle.json");
       await checked(manifest,{mode:0o600});
       const meta=JSON.parse(await readFile(manifest,"utf8"));
       if(state.version!==candidateName(meta,meta.source_commit))throw Error("Untrusted installed version.");
-      return checkLatestMacVersion(meta.version,process.arch,doFetch);
+      if(action==="check-update")return checkLatestMacVersion(meta.version,process.arch,doFetch);
+      if(!terminal())throw Error("Owner terminal required for update.");
+      if(stopped||!bound||launchctlServiceState(service,invoke)!=="present")
+        throw Error("Existing running owner service required for update.");
+      const binding=await macUpgradeBinding({key,plist,cli,endpointFile,stopMark,journal});
+      if(binding.plist!==old||binding.cli!==previousCli||binding.endpoint!==stored||binding.stop!==null)
+        throw Error("Existing upgrade target changed.");
+      const scripts=path.join(current.root,"apps/remote-control-agent/scripts");
+      await checked(scripts,{dir:true});
+      const updater=path.join(scripts,"macos-update.sh");
+      await checked(updater,{mode:0o600});
+      const result=runUpdate("/bin/sh",[updater,bound,meta.version,macBindingDigest(binding)],{stdio:"inherit"});
+      if(result.error||result.signal||result.status!==0)
+        throw Error("Update stopped; inspect local status.");
+      return {status:"installer_completed"};
     }
 
     const findings=[];
@@ -494,6 +512,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   }
   const bindingFiles={key,plist,cli,endpointFile,stopMark,journal};
   const binding=action==="upgrade"?await macUpgradeBinding(bindingFiles):null;
+  if(expectedBinding!==undefined&&(!binding||macBindingDigest(binding)!==expectedBinding))
+    throw Error("Existing upgrade target changed during download.");
   if(binding&&(binding.plist!==old||binding.cli!==previousCli||
     binding.endpoint!==stored||(binding.stop!==null)!==stopped||
     (binding.stop!==null&&binding.stop!=="stopped\n")))
@@ -633,10 +653,12 @@ async function main(){
   let [action,...params]=process.argv.slice(2);
   if((action==="update"||action==="upgrade")&&params.length===1&&params[0]==="--check"){
     action="check-update";params=[];
-  }else if(action==="check-update")throw Error("Use update --check.");
+  }else if((action==="update"||action==="upgrade")&&params.length===0){
+    action="update-latest";
+  }else if(action==="check-update"||action==="update-latest")throw Error("Use update [--check].");
   if(action==="--help"&&params.length===0){
-    console.log("Usage: rca [status [--json]|doctor [--json]|update --check|start|stop|--version|--help]");
-    console.log("Use the reviewed macOS installer for install/upgrade; other lifecycle commands are not yet supported.");
+    console.log("Usage: rca [status [--json]|doctor [--json]|update [--check]|start|stop|--version|--help]");
+    console.log("Use the reviewed macOS installer for first installation; update uses the installed package.");
     return;
   }
   if(action==="--version"&&params.length===0){
@@ -653,13 +675,14 @@ async function main(){
   if(action==="doctor"&&params.length)throw Error("Doctor accepts only --json.");
   const args={};
   for(let i=0;i<params.length;i+=2){
-    if(!["--bundle","--source-sha","--endpoint"].includes(params[i])||
+    if(!["--bundle","--source-sha","--endpoint","--expected-binding"].includes(params[i])||
       !params[i+1]||Object.hasOwn(args,params[i]))throw Error("Invalid local action parameters.");
     args[params[i]]=params[i+1];
   }
   const result=await localMacAction(action,{
-    bundle:args["--bundle"],sourceSha:args["--source-sha"],endpoint:args["--endpoint"]});
-  process.stdout.write(JSON.stringify(result)+"\n");
+    bundle:args["--bundle"],sourceSha:args["--source-sha"],endpoint:args["--endpoint"],
+    expectedBinding:args["--expected-binding"]});
+  if(action!=="update-latest")process.stdout.write(JSON.stringify(result)+"\n");
   if(action==="check-update"&&result.status==="unknown")process.exitCode=1;
 }
 // On macOS, $TMPDIR commonly starts with /var while Node's ESM loader
