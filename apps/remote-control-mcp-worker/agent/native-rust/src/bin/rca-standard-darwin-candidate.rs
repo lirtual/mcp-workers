@@ -717,11 +717,19 @@ mod darwin {
         Ok(state)
     }
 
-    fn diagnose(action: &str) -> Result<(), ()> {
+    fn diagnose(action: &str, compact: bool) -> Result<(), ()> {
         let state = diagnostic_state().unwrap_or_else(|_| serde_json::json!({"installed":null,"version":null,
             "installed_version":null,"platform":"darwin","local_service":"unconfirmed","signed_wss":"unconfirmed",
             "cloud_authorization":"unconfirmed","last_online":"unconfirmed","automatic_update_activity":"unknown"}));
-        println!("{}", diagnostic_response(action, &state));
+        let response = diagnostic_response(action, &state);
+        println!(
+            "{}",
+            if compact {
+                response.to_string()
+            } else {
+                serde_json::to_string_pretty(&response).map_err(|_| ())?
+            }
+        );
         Ok(())
     }
 
@@ -2038,13 +2046,72 @@ mod darwin {
         .map_err(|_| ())
     }
 
+    fn public_help() {
+        println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|recover|uninstall|secure-input REQUEST_ID|--version|--help]");
+        println!("Use the reviewed installer for installation and upgrade. This candidate does not yet provide installed re-pair or automatic update commands.");
+    }
+
+    fn interactive_menu() -> Result<Option<String>, ()> {
+        use std::io::{IsTerminal, Write};
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!(
+                "Interactive menu requires a local terminal; use rca status --json or rca --help."
+            );
+            return Err(());
+        }
+        let actions = [
+            "status",
+            "doctor",
+            "logs",
+            "start",
+            "stop",
+            "restart",
+            "recover",
+            "uninstall",
+        ];
+        for (index, action) in actions.iter().enumerate() {
+            println!("{}. {action}", index + 1);
+        }
+        println!("0. Exit");
+        print!("Select an action: ");
+        std::io::stdout().flush().map_err(|_| ())?;
+        let mut choice = String::new();
+        if std::io::stdin().read_line(&mut choice).map_err(|_| ())? == 0
+            || matches!(choice.trim(), "" | "0")
+        {
+            return Ok(None);
+        }
+        let index = choice
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| ())?
+            .checked_sub(1)
+            .ok_or(())?;
+        Ok(Some(actions.get(index).ok_or(())?.to_string()))
+    }
+
     pub fn run() -> Result<(), ()> {
         native_host()?;
-        let arguments: Vec<String> = std::env::args_os()
+        let mut arguments: Vec<String> = std::env::args_os()
             .skip(1)
             .map(|value| value.into_string().map_err(|_| ()))
             .collect::<Result<_, _>>()?;
+        if arguments.is_empty() {
+            let Some(action) = interactive_menu()? else {
+                return Ok(());
+            };
+            arguments.push(action);
+        }
         if let [action] = arguments.as_slice() {
+            if action == "--help" {
+                public_help();
+                return Ok(());
+            }
+            if matches!(action.as_str(), "version" | "--version") {
+                let package = darwin_package::verify(&current_bundle()?, native_target())?;
+                println!("{}", package.version);
+                return Ok(());
+            }
             if action == "uninstall" {
                 return uninstall_local();
             }
@@ -2055,7 +2122,7 @@ mod darwin {
                 return restart_local();
             }
             if matches!(action.as_str(), "status" | "doctor" | "logs") {
-                return diagnose(action);
+                return diagnose(action, false);
             }
             if matches!(action.as_str(), "stop" | "start") {
                 return manage(action);
@@ -2063,7 +2130,7 @@ mod darwin {
         }
         if let [action, request_id] = arguments.as_slice() {
             if matches!(action.as_str(), "status" | "doctor") && request_id == "--json" {
-                return diagnose(action);
+                return diagnose(action, true);
             }
             if action == "secure-input" {
                 return secure_input_local(request_id);

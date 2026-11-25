@@ -274,7 +274,7 @@ pub(super) fn native_cli(executable: &Path) -> Result<String, ()> {
         return Err(());
     }
     let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
-    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|doctor) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && [ \"$2\" = --json ]; }} || exit 2 ;;\nlogs|stop|start|restart|recover|uninstall) [ \"$#\" -eq 1 ] || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
+    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|doctor) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && [ \"$2\" = --json ]; }} || exit 2 ;;\n\"\") [ \"$#\" -eq 0 ] || exit 2 ;;\nlogs|stop|start|restart|recover|uninstall|--help|--version|version) [ \"$#\" -eq 1 ] || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
 }
 
 pub(super) fn new_generation() -> Result<String, ()> {
@@ -1013,6 +1013,12 @@ mod tests {
             &["stop"],
             &["start"],
             &["restart"],
+            &["--help"],
+            &["--version"],
+            &["version"],
+            &["recover"],
+            &["uninstall"],
+            &[],
         ] {
             let output = invoke(args);
             assert!(output.status.success(), "{args:?}");
@@ -1030,6 +1036,9 @@ mod tests {
             &["secure-input", ID, "extra"],
             &["stop", "extra"],
             &["--service", ID],
+            &["--help", "extra"],
+            &["--version", "extra"],
+            &["", "restart"],
         ] {
             assert_eq!(invoke(args).status.code(), Some(2));
         }
