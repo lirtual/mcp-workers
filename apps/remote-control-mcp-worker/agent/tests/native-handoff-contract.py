@@ -1522,6 +1522,19 @@ def verify_status_reports_upgrade_result_and_identity_purge_removes_it():
             "installed_version": "v0.1.56"}
         assert type(result["updated_at_unix_ms"]) is int
         assert 0 <= bootstrap.time.time_ns() // 1_000_000 - result["updated_at_unix_ms"] <= 5_000
+        valid_result = json.loads(bootstrap.native_owned_file(result_path, 512))
+        for invalid_timestamp in (True, -1, 9_007_199_254_740_992, None):
+            corrupted = dict(valid_result)
+            if invalid_timestamp is None:
+                corrupted.pop("updated_at_unix_ms")
+            else:
+                corrupted["updated_at_unix_ms"] = invalid_timestamp
+            bootstrap.native_atomic_file(result_path, json.dumps(corrupted).encode())
+            with patch.object(bootstrap.subprocess, "run", side_effect=[Mock(returncode=0), absent]):
+                unknown = bootstrap.local_status(home)
+            assert unknown["automatic_update_activity"] == "unknown"
+            assert unknown["automatic_update_result"] == {"status": "unknown"}
+        bootstrap.native_atomic_file(result_path, json.dumps(valid_result, separators=(",", ":")).encode())
         active = Mock(returncode=0, stdout=(
             b"LoadState=loaded\nActiveState=active\nTransient=yes\n"
             b"Description=RCA detached update\n"))
