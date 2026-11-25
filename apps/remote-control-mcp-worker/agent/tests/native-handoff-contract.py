@@ -1431,6 +1431,32 @@ def verify_unknown_freeze_never_releases_and_preserves_evidence():
     print("NATIVE_UNKNOWN_FREEZE_OWNERSHIP_PASS")
 
 
+def verify_logs_include_existing_update_worker_journal():
+    import contextlib
+    import importlib.util
+    import io
+    from unittest.mock import Mock
+    manager_spec = importlib.util.spec_from_file_location("rca_logs_manager", SCRIPT.with_name("manage-v2.py"))
+    manager = importlib.util.module_from_spec(manager_spec)
+    manager_spec.loader.exec_module(manager)
+    calls = []
+    def run(args, **kwargs):
+        calls.append(args)
+        return Mock(returncode=0)
+    class TTYBuffer(io.StringIO):
+        def isatty(self):
+            return True
+    with patch.object(bootstrap, "local_inventory", return_value=(
+            Path("/tmp"), [], None, "managed unit", {"permanent": ID})), patch.object(
+                manager.subprocess, "run", side_effect=run), patch.object(
+                    manager.sys, "stdout", TTYBuffer()):
+        manager.logs(bootstrap)
+    expected = "rca-upgrade-" + ID.replace("-", "") + ".service"
+    assert calls[0][calls[0].index("--unit") + 1] == "remote-control-agent.service"
+    assert calls[1][calls[1].index("--unit") + 1] == expected
+    print("NATIVE_UPDATE_LOG_JOURNAL_PASS")
+
+
 def verify_status_reports_upgrade_result_and_identity_purge_removes_it():
     from unittest.mock import Mock
     ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
@@ -1796,6 +1822,7 @@ if __name__ == "__main__":
         verify_latest_selection()
         verify_online_socket_peer()
         verify_unknown_freeze_never_releases_and_preserves_evidence()
+        verify_logs_include_existing_update_worker_journal()
         verify_status_reports_upgrade_result_and_identity_purge_removes_it()
         verify_busy_freeze_does_not_release_another_admission()
         verify_detached_idle_wait()

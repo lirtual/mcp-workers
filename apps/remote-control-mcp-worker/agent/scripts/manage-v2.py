@@ -66,7 +66,7 @@ def status(bootstrap, info):
 
 
 def logs(bootstrap):
-    _, _, _, unit, _ = bootstrap.local_inventory(str(Path.home()))
+    _, _, _, unit, ids = bootstrap.local_inventory(str(Path.home()))
     if not unit:
         print("No installer-owned v2 user service. Temporary mode has no journal service.")
         return
@@ -75,6 +75,11 @@ def logs(bootstrap):
     print("Showing local systemd logs only. Review/redact before sharing any excerpts.")
     subprocess.run(["journalctl", "--user", "--unit", UNIT, "--no-pager",
                     "--lines", "40", "--output", "short-iso"], check=False)
+    if "permanent" in ids:
+        update_unit = "rca-upgrade-" + ids["permanent"].replace("-", "") + ".service"
+        print("Showing the existing detached update worker journal, if present.")
+        subprocess.run(["journalctl", "--user", "--unit", update_unit, "--no-pager",
+                        "--lines", "40", "--output", "short-iso"], check=False)
 
 
 def pair(root, bootstrap, arguments):
