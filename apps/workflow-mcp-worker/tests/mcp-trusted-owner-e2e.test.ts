@@ -45,8 +45,12 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
   for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0017_http_connection_auth.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql',
      '0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+  for(const name of ['0003_s3_attempt_claim.sql','0007_session_executions.sql','0009_fixed_sessions.sql'])
+    sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+  let listSql:string|undefined;
   let beforeAdmissionInsert:(()=>void)|undefined;
   function prepare(sql:string){
+    if(sql.includes('FROM workflows WHERE deleted_at IS NULL'))listSql=sql;
     let args:any[]=[];
     return {
       bind(...values:any[]){args=values;return this;},
@@ -173,6 +177,51 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     }
     assert.deepEqual(await call('workflow_action_list',{query:'session'}),{actions:[]});
     assert.equal(internetCalls,0);
+    assert.deepEqual(await call('workflow_list',{query:'not-present'}),{workflows:[],active_sessions:[]});
+    assert.ok(listSql);
+    assert.doesNotMatch(listSql,/SELECT \*|\bdraft\b/);
+    const portalFetch=globalThis.fetch;
+    const repo='lirtual/github-actions';
+    const names=['ubuntu','windows','chrome','code-server','openlist','report'];
+    env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({repository:repo,repositoryId:1430925009,ciWorkflowId:901});
+    env.WORKFLOW_GITHUB_DISPATCH_TOKEN='fixture-token';
+    globalThis.fetch=(async(input:RequestInfo|URL)=>{
+      const path=new URL(input instanceof Request?input.url:String(input)).pathname;
+      if(path===`/repos/${repo}`)return Response.json({id:1430925009,full_name:repo,default_branch:'main'});
+      if(path.endsWith('/commits/main'))return Response.json({sha:'a'.repeat(40)});
+      if(path.endsWith('/actions/workflows'))return Response.json({workflows:names.map((n,i)=>({id:810+i,path:'.github/workflows/'+n+'.yml',state:'active'}))});
+      const n=names.find(n=>path.endsWith('/'+n+'.yml'));
+      if(!n)throw Error('unexpected fixture request');
+      const session=n!=='report';
+      const declaration=`name: ${n}
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id: {type: string, required: true}
+      dispatch_id: {type: string, required: true}
+      capability_id: {type: string, required: true}
+${session?'      duration_minutes: {type: number, default: 300}\n':''}env:
+  WORKFLOW_ACTION_TYPE: ${session?'session':'task'}
+  WORKFLOW_ACTION_PUBLIC: "true"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+${session?'    timeout-minutes: 360\n':''}    steps:
+      - run: echo verified
+`;
+      return Response.json({path:'.github/workflows/'+n+'.yml',encoding:'base64',content:btoa(declaration)});
+    }) as typeof fetch;
+    try{
+      const all=await call('workflow_action_list',{});
+      const sessions=await call('workflow_action_list',{query:'SESSION'});
+      assert.deepEqual(sessions.actions.map((a:any)=>a.action_id),['github.chrome','github.code-server','github.openlist','github.ubuntu','github.windows']);
+      assert.deepEqual((await call('workflow_action_list',{query:'task'})).actions,[all.actions.find((a:any)=>a.action_id==='github.report')]);
+      assert.equal(all.actions.length,6);
+    }finally{
+      globalThis.fetch=portalFetch;
+      delete env.WORKFLOW_GITHUB_ACTION_IDENTITY;
+      delete env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+    }
     const portal=await call('workflow_action_list',{source:'portal'});
     assert.equal(portal.source,'portal_mcp');
     assert.equal(portal.read.availability,'verified_contract');
@@ -267,6 +316,11 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
       published.published_version_id);
     assert.equal(JSON.stringify(stillPublished.published_run_interface)
       .includes('different-UNPUBLISHED-sensitive-value'),false);
+    const currentList=await call('workflow_list',{query:'  NEW UNPUBLISHED  '});
+    assert.deepEqual(currentList.workflows,[{workflow_id:created.workflow_id,name:draftOnly.name,
+      draft_revision:2,published_version_id:published.published_version_id,state:'active'}]);
+    assert.deepEqual((await call('workflow_list',{query:definition.name})).workflows,[]);
+    assert.deepEqual(await call('workflow_list',{query:created.workflow_id}),currentList);
     const badVersion='11111111-1111-4111-8111-111111111111';
     await call('workflow_run',{workflow_id:created.workflow_id,inputs:{message:'no dispatch'},
       expected_published_version_id:badVersion},'published_version_changed');
