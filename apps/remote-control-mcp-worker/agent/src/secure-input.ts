@@ -18,6 +18,7 @@ const ENV = /^[A-Za-z0-9_.-]{1,64}$/;
 const WORKER = /^[a-z0-9][a-z0-9-]{0,62}$/;
 const ACCOUNT = /^[a-f0-9]{32}$/;
 const MAX_SECRET_BYTES = 8_192;
+const PROVIDER_PREFLIGHT_BUDGET_MS = 3_500;
 const object = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, keys: string[]) =>
@@ -246,7 +247,7 @@ export async function prepareSecureInputProvider(
 ): Promise<AgentSecureInputPrincipal | SecureInputOutcome | undefined> {
   if (target.kind === "task_process") return undefined;
   if (signal.aborted) return { status: "failed", error_code: "execution_interrupted" };
-  const deadline = Date.now() + 25_000;
+  const deadline = Date.now() + PROVIDER_PREFLIGHT_BUDGET_MS;
   if (target.kind === "github_repository_secret" || target.kind === "github_repository_variable" ||
       target.kind === "github_environment_secret" || target.kind === "github_environment_variable") {
     return prepareGitHub(target, signal, deadline);

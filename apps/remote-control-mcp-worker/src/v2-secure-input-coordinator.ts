@@ -12,6 +12,8 @@ type PrepareResult = { status: "ready" | "failed"; provider_principal?: SecureIn
 type PendingPrepare = { socket: WebSocket; resolve: (result: PrepareResult) => void };
 const MAX_BODY = 65_536;
 const MAX_FRAME = 65_536;
+// Keep read-only provider identity preflight within the Durable Object request budget.
+const PROVIDER_PREFLIGHT_TIMEOUT_MS = 4_000;
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const OWNER = /^[A-Za-z0-9_-]{1,128}$/;
 const ERROR_CODES = new Set(["provider_auth_unavailable", "target_not_accessible", "provider_cli_unavailable",
@@ -106,7 +108,7 @@ export class V2SecureInputCoordinator {
         this.pendingPrepare.delete(id);
         resolve(result ?? { status: "failed", error_code: "unknown" });
       };
-      const timer = setTimeout(() => finish(null), 30_000);
+      const timer = setTimeout(() => finish(null), PROVIDER_PREFLIGHT_TIMEOUT_MS);
       this.pendingPrepare.set(id, { socket, resolve: result => finish(result) });
       try { socket.send(JSON.stringify({ kind: "secure_input_prepare", preflight_id: id, target })); }
       catch { finish(null); }
