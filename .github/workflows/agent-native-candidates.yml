@@ -72,11 +72,14 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: linux-x64-glibc
-            baseline_sha256: 89e02e259cea8c66f4637a4c9ec5ee8cb469ec5f4a64d18f660832f92b0c93d1
+            baseline_sha256: 55c63755b361561ea769eef517c7515d8d42ea5f2cb918f3f6b77b5296e7bf11
           - runner: ubuntu-24.04-arm
             target: linux-arm64-glibc
-            baseline_sha256: ea88fa52cb0ca4733db64f73d9a41302f734f618c9775c5ee6ea8c1d07009aac
+            baseline_sha256: 44d2cfad132b507f457c8224fd4ac137d5546a9237b3dc8051d28995891551c7
     env:
+      RCA_TEST_BASELINE_VERSION: v0.1.60
+      # Unpublished fixture label only; release remains separately authorized.
+      RCA_TEST_TARGET_VERSION: v0.1.61
       SPEC914_TARGET: ${{ matrix.target }}
       SPEC914_BASELINE_SHA256: ${{ matrix.baseline_sha256 }}
     steps:
@@ -104,8 +107,8 @@ jobs:
           set -euo pipefail
           temp_dir="$(mktemp -d "$RUNNER_TEMP/spec914.XXXXXX")"
           echo "SPEC914_TEMP=$temp_dir" >> "$GITHUB_ENV"
-          archive="$temp_dir/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz"
-          gh release download v0.1.58 --repo lirtual/mcp-workers \
+          archive="$temp_dir/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$SPEC914_TARGET.tar.gz"
+          gh release download "$RCA_TEST_BASELINE_VERSION" --repo lirtual/mcp-workers \
             --pattern "$(basename "$archive")" --dir "$temp_dir"
           echo "$SPEC914_BASELINE_SHA256  $archive" | sha256sum --check
           mkdir "$temp_dir/old"
@@ -114,7 +117,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version=v0.1.59-rust-candidate.1
+          version="$RCA_TEST_TARGET_VERSION"
           mkdir -p "$SPEC914_TEMP"/{cargo,rustup,target,build}
           docker run --rm --network bridge \
             -v "$GITHUB_WORKSPACE:/src:ro" \
@@ -166,12 +169,12 @@ jobs:
             echo 'Node/JavaScript slipped into native-only archive' >&2
             exit 1
           fi
-          chmod 0644 "$pure" "$SPEC914_TEMP/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz"
+          chmod 0644 "$pure" "$SPEC914_TEMP/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$SPEC914_TARGET.tar.gz"
       - name: Verify actual Node-free Linux archive without development tools
         shell: bash
         run: |
           set -euo pipefail
-          version=v0.1.59-rust-candidate.1
+          version="$RCA_TEST_TARGET_VERSION"
           archive="$SPEC914_TEMP/native-only/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
           agent=apps/remote-control-mcp-worker/agent
           python3 -B "$agent/scripts/validate-local-archive.py" "$archive" "$version" "$SPEC914_TARGET"
@@ -240,17 +243,18 @@ jobs:
           sudo -u "$test_user" test -r "$source_dir/tests/linux-native-only-systemd.integration.mjs"
           fixture_dir="$(mktemp -d /tmp/spec914-fixtures.XXXXXX)"
           chmod 0755 "$fixture_dir"
-          old_archive="$fixture_dir/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz"
-          install -m 0644 "$SPEC914_TEMP/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz" "$old_archive"
+          old_archive="$fixture_dir/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$SPEC914_TARGET.tar.gz"
+          install -m 0644 "$SPEC914_TEMP/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$SPEC914_TARGET.tar.gz" "$old_archive"
           sudo -u "$test_user" test -r "$old_archive"
           # Real published Rust systemd service -> new Rust attempt with NO signed
           # Worker WSS. The real old service must be restored without replaying
           # existing Unknown receipts; no production endpoint or grant involved.
-          native_archive="$fixture_dir/native-only-v0.1.59-rust-candidate.1-$SPEC914_TARGET.tar.gz"
-          install -m 0644 "$SPEC914_TEMP/native-only/remote-control-agent-v0.1.59-rust-candidate.1-$SPEC914_TARGET.tar.gz" "$native_archive"
+          native_archive="$fixture_dir/native-only-${RCA_TEST_TARGET_VERSION}-$SPEC914_TARGET.tar.gz"
+          install -m 0644 "$SPEC914_TEMP/native-only/remote-control-agent-${RCA_TEST_TARGET_VERSION}-$SPEC914_TARGET.tar.gz" "$native_archive"
           sudo -u "$test_user" test -r "$native_archive"
           sudo -u "$test_user" "${user_env[@]}" \
             RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_NATIVE_ARCHIVE="$native_archive" \
+            RCA_TEST_BASELINE_VERSION="$RCA_TEST_BASELINE_VERSION" RCA_TEST_TARGET_VERSION="$RCA_TEST_TARGET_VERSION" \
             "$(node -p 'process.execPath')" --experimental-strip-types \
             "$source_dir/tests/linux-native-only-systemd.integration.mjs"
       - name: Assemble unpublished Linux Node-free artifact
