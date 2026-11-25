@@ -372,6 +372,91 @@ impl SwitchRecord {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum UninstallRecovery {
+    RetainOnline,
+    RetainStopped,
+    Restore,
+    Unknown,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct UninstallRecord {
+    pub phase: String,
+    pub version: String,
+    pub generation: String,
+    pub stopped: bool,
+    pub binding: String,
+    pub inventory:
+        Option<std::collections::BTreeMap<String, super::darwin_package::RemovalInventory>>,
+}
+
+impl UninstallRecord {
+    pub fn parse(raw: &str, target: &str) -> Result<Self, ()> {
+        let record: Self = serde_json::from_str(raw).map_err(|_| ())?;
+        let version = record
+            .version
+            .strip_suffix(&format!("-{target}"))
+            .ok_or(())?;
+        let valid_digest = |s: &str| {
+            s.len() == 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        };
+        let valid_phase = match (&*record.phase, &record.inventory) {
+            ("uninstall_pending", None) => true,
+            ("uninstall_removing", Some(inventory)) => {
+                inventory.contains_key(&record.version)
+                    && inventory.iter().all(|(name, files)| {
+                        name.strip_suffix(&format!("-{target}"))
+                            .is_some_and(super::darwin_package::valid_version)
+                            && files.iter().all(|digest| valid_digest(digest))
+                    })
+            }
+            _ => false,
+        };
+        if !valid_phase
+            || !valid_device_id(&record.generation)
+            || !super::darwin_package::valid_version(version)
+            || record.binding.len() != 64
+            || !record
+                .binding
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(());
+        }
+        Ok(record)
+    }
+
+    // Callers reject foreign configuration and unreviewed packages before
+    // classifying their presence. Partial removal is not success.
+    pub fn recovery(
+        &self,
+        configuration: bool,
+        launcher: bool,
+        empty: bool,
+        registration: &Registration,
+        signed: bool,
+    ) -> UninstallRecovery {
+        use UninstallRecovery::*;
+        match (
+            configuration,
+            launcher,
+            empty,
+            self.stopped,
+            registration,
+            signed,
+        ) {
+            (true, true, false, true, Registration::Absent, _) => RetainStopped,
+            (true, true, false, false, Registration::Absent, _) => Restore,
+            (true, true, false, false, Registration::Present(Some(_)), true) => RetainOnline,
+            _ => Unknown,
+        }
+    }
+}
+
 // Same-config restart reuses the switch journal; a changed PID alone is
 // not evidence that the replacement has the same identity and signed WSS.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -464,6 +549,88 @@ mod tests {
     use super::*;
     const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
     const ENDPOINT: &str = "https://example.invalid/";
+
+    #[test]
+    fn uninstall_recovery_distinguishes_intact_completed_and_partial() {
+        let mut record = UninstallRecord {
+            phase: "uninstall_pending".into(),
+            version: "v0.1.61-darwin-arm64".into(),
+            generation: ID.into(),
+            stopped: false,
+            binding: "a".repeat(64),
+            inventory: None,
+        };
+        let raw = serde_json::to_string(&record).unwrap();
+        assert!(UninstallRecord::parse(&raw, "darwin-arm64").is_ok());
+        assert!(UninstallRecord::parse(&raw, "darwin-x64").is_err());
+        let active = Registration::Present(Some(42));
+        let absent = Registration::Absent;
+        let unknown = Registration::Unknown;
+        assert_eq!(
+            record.recovery(true, true, false, &active, true),
+            UninstallRecovery::RetainOnline
+        );
+        assert_eq!(
+            record.recovery(true, true, false, &active, false),
+            UninstallRecovery::Unknown
+        );
+        assert_eq!(
+            record.recovery(true, true, false, &absent, false),
+            UninstallRecovery::Restore
+        );
+        assert_eq!(
+            record.recovery(true, true, false, &unknown, false),
+            UninstallRecovery::Unknown
+        );
+        assert_eq!(
+            record.recovery(false, false, true, &absent, false),
+            UninstallRecovery::Unknown
+        );
+        assert_eq!(
+            record.recovery(false, false, true, &unknown, false),
+            UninstallRecovery::Unknown
+        );
+        assert_eq!(
+            record.recovery(false, true, false, &absent, false),
+            UninstallRecovery::Unknown
+        );
+        assert_eq!(
+            record.recovery(false, false, false, &absent, false),
+            UninstallRecovery::Unknown
+        );
+        record.phase = "uninstall_removing".into();
+        assert!(
+            UninstallRecord::parse(&serde_json::to_string(&record).unwrap(), "darwin-arm64")
+                .is_err()
+        );
+        record.inventory = Some(std::collections::BTreeMap::from([(
+            record.version.clone(),
+            ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+        )]));
+        assert!(
+            UninstallRecord::parse(&serde_json::to_string(&record).unwrap(), "darwin-arm64")
+                .is_ok()
+        );
+        record.inventory.as_mut().unwrap().insert(
+            "../foreign-darwin-arm64".into(),
+            ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+        );
+        assert!(
+            UninstallRecord::parse(&serde_json::to_string(&record).unwrap(), "darwin-arm64")
+                .is_err()
+        );
+        record.phase = "uninstall_pending".into();
+        record.inventory = None;
+        record.stopped = true;
+        assert_eq!(
+            record.recovery(true, true, false, &absent, false),
+            UninstallRecovery::RetainStopped
+        );
+        assert_eq!(
+            record.recovery(true, true, false, &active, true),
+            UninstallRecovery::Unknown
+        );
+    }
 
     #[test]
     fn restart_requires_same_binding_and_distinct_signed_process() {

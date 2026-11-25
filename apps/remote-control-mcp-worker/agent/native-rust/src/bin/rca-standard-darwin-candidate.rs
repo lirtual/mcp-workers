@@ -263,7 +263,7 @@ mod darwin {
         connection_time, diagnostic_response, installed_generation, iso_time, native_cli,
         native_plist, new_generation, no_other_programs, registration, resume_owned, stop_owned,
         switch_outcome, unregister_owned, Registration, RestartRecord, SwitchOutcome, SwitchRecord,
-        LABEL,
+        UninstallRecord, UninstallRecovery, LABEL,
     };
     use super::darwin_package;
     use super::unix_pairing::{
@@ -1060,8 +1060,17 @@ mod darwin {
         }) && await_online(current, key, after)
     }
 
-    fn restart_binding(home: &Path, base: &Path, current: &Installed) -> Result<String, ()> {
+    fn binding_digest(fields: &[&str]) -> String {
         use sha2::{Digest, Sha256};
+        let mut digest = Sha256::new();
+        for field in fields {
+            digest.update((field.len() as u64).to_be_bytes());
+            digest.update(field.as_bytes());
+        }
+        format!("{:x}", digest.finalize())
+    }
+
+    fn restart_binding(home: &Path, base: &Path, current: &Installed) -> Result<String, ()> {
         let key = base.join("v2-identity.pem");
         let checked = installed(home, base)?;
         if checked.executable != current.executable
@@ -1084,12 +1093,7 @@ mod darwin {
             read_executable(&cli)?.ok_or(())?,
             read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?,
         ];
-        let mut digest = Sha256::new();
-        for field in fields {
-            digest.update((field.len() as u64).to_be_bytes());
-            digest.update(field.as_bytes());
-        }
-        Ok(format!("{:x}", digest.finalize()))
+        Ok(binding_digest(&fields.each_ref().map(String::as_str)))
     }
 
     fn restart_local() -> Result<(), ()> {
@@ -1478,8 +1482,15 @@ mod darwin {
             return Err(());
         }
         // The existing journal reserves the entire lifecycle mutation.
-        let record = serde_json::json!({"phase":"uninstall_pending","version":format!("{}-{}",current.version,native_target()),"generation":current.generation});
-        let raw = format!("{record}\n");
+        let mut record = UninstallRecord {
+            phase: "uninstall_pending".to_owned(),
+            version: format!("{}-{}", current.version, native_target()),
+            generation: current.generation.clone(),
+            stopped,
+            binding: binding_digest(&[&pem, &id, &current.endpoint]),
+            inventory: None,
+        };
+        let raw = format!("{}\n", serde_json::to_string(&record).map_err(|_| ())?);
         write_new(&journal, raw.as_bytes())?;
         if !stopped {
             if !gate(&key, Gate::Freeze)? {
@@ -1501,27 +1512,248 @@ mod darwin {
         if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
             return Err(());
         }
-        sync_remove(&plist)?;
-        sync_remove(&cli)?;
-        for root in &roots {
-            darwin_package::remove_package(root, native_target())?;
+        let inventory = roots
+            .iter()
+            .map(|root| {
+                Ok((
+                    root.file_name()
+                        .and_then(|n| n.to_str())
+                        .ok_or(())?
+                        .to_owned(),
+                    darwin_package::removal_inventory(root, native_target())?,
+                ))
+            })
+            .collect::<Result<std::collections::BTreeMap<_, _>, ()>>()?;
+        unchanged()?;
+        ensure_no_other_programs(&programs)?;
+        service_absent()?;
+        record.phase = "uninstall_removing".into();
+        record.inventory = Some(inventory);
+        let next_raw = format!("{}\n", serde_json::to_string(&record).map_err(|_| ())?);
+        if next_raw.len() > 65536 {
+            return Err(());
         }
-        if exists_owned_path(&plist)?
-            || exists_owned_path(&cli)?
-            || !darwin_package::reviewed_programs(&programs, native_target())?.is_empty()
-            || observe_registration(&current.executable) != Registration::Absent
-            || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
-            || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
-            || read_private(&journal, 65536)?.as_deref() != Some(raw.as_str())
+        replace_owned(&journal, &raw, &next_raw, 0o600)?;
+        finish_uninstall(&home, &base, &next_raw, &record, false)
+    }
+
+    // The existing lock is held by the caller. Cleanup never expands beyond
+    // the inventory captured before the first removal.
+    fn finish_uninstall(
+        home: &Path,
+        base: &Path,
+        raw: &str,
+        record: &UninstallRecord,
+        attended: bool,
+    ) -> Result<(), ()> {
+        let inventory = record.inventory.as_ref().ok_or(())?;
+        if attended {
+            let bundle = current_bundle()?;
+            let verified = darwin_package::removal_inventory(&bundle, native_target());
+            if verified.as_ref().ok() != inventory.get(&record.version) || verified.is_err() {
+                eprintln!("Recovery requires the exact reviewed original package; use its independently verified extracted bundle.");
+                return Err(());
+            }
+        }
+        let programs = program_directory(base)?;
+        let (plist, cli) = startup_paths(home)?;
+        let key = base.join("v2-identity.pem");
+        let journal = base.join("macos/switch.json");
+        let endpoint_file = base.join("macos/endpoint");
+        let endpoint_raw = read_private(&endpoint_file, 2048)?.ok_or(())?;
+        let endpoint = endpoint_raw.trim();
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        if binding_digest(&[&pem, &id, endpoint]) != record.binding {
+            return Err(());
+        }
+        let executable = programs.join(&record.version).join(darwin_package::ENTRY);
+        let expected = native_plist(&executable, endpoint, &record.generation)?;
+        let launcher = native_cli(&executable)?;
+        let unchanged = || -> Result<(), ()> {
+            if read_private(&journal, 65536)?.as_deref() != Some(raw)
+                || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
+                || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+                || read_private(&endpoint_file, 2048)?.as_deref() != Some(endpoint_raw.as_str())
+                || owner_stopped(&key)? != record.stopped
+                || exists_owned_path(&base.join("macos/remote-upgrades/active.json"))?
+                || exists_owned_path(&sidecar(&key, ".re-pair-transition"))?
+            {
+                return Err(());
+            }
+            service_absent()?;
+            ensure_no_other_programs(&programs)
+        };
+        let inspect = || -> Result<(bool, bool), ()> {
+            unchanged()?;
+            let configuration = read_private(&plist, 65536)?;
+            let command = read_executable(&cli)?;
+            if configuration.as_ref().is_some_and(|v| v != &expected)
+                || command.as_ref().is_some_and(|v| v != &launcher)
+            {
+                return Err(());
+            }
+            for entry in fs::read_dir(&programs).map_err(|_| ())? {
+                let entry = entry.map_err(|_| ())?;
+                let name = entry.file_name();
+                let files = inventory.get(name.to_str().ok_or(())?).ok_or(())?;
+                darwin_package::verify_remaining(&entry.path(), files)?;
+            }
+            Ok((configuration.is_some(), command.is_some()))
+        };
+        if attended {
+            inspect()?;
+            owner_confirm("Complete the interrupted uninstall of the reviewed packages? Identity and receipts are retained.")?;
+        }
+        let (configuration, _) = inspect()?;
+        if configuration {
+            sync_remove(&plist)?;
+        }
+        for (name, files) in inventory {
+            unchanged()?;
+            darwin_package::remove_remaining(&programs.join(name), files)?;
+        }
+        let (_, command) = inspect()?;
+        if command {
+            sync_remove(&cli)?;
+        }
+        if inspect()? != (false, false) || fs::read_dir(&programs).map_err(|_| ())?.next().is_some()
         {
             return Err(());
         }
         sync_remove(&journal)?;
         println!(
             "{}",
-            serde_json::json!({"status":"uninstalled","removed_versions":roots.len(),
-            "identity_preserved":true,"receipts_preserved":true,"cloud_revocation":"not_performed"})
+            serde_json::json!({"status":"uninstalled","removed_versions":inventory.len(),"identity_preserved":true,"receipts_preserved":true,"cloud_revocation":"not_performed"})
         );
+        Ok(())
+    }
+
+    fn recover_uninstall(
+        home: &Path,
+        base: &Path,
+        key: &Path,
+        journal: &Path,
+        raw: &str,
+        record: &UninstallRecord,
+    ) -> Result<(), ()> {
+        use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
+        if record.phase == "uninstall_removing" {
+            return finish_uninstall(home, base, raw, record, true);
+        }
+        let programs = program_directory(base)?;
+        let (plist, cli) = startup_paths(home)?;
+        let root = programs.join(&record.version);
+        let executable = root.join(darwin_package::ENTRY);
+        let endpoint_file = base.join("macos/endpoint");
+        let endpoint_raw = read_private(&endpoint_file, 2048)?.ok_or(())?;
+        let endpoint = endpoint_raw.trim();
+        let expected = native_plist(&executable, endpoint, &record.generation)?;
+        let launcher = native_cli(&executable)?;
+        let pem = read_private(key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        if binding_digest(&[&pem, &id, endpoint]) != record.binding {
+            return Err(());
+        }
+        let unchanged = || -> Result<(), ()> {
+            if read_private(journal, 65536)?.as_deref() != Some(raw)
+                || read_private(key, 8192)?.as_deref() != Some(pem.as_str())
+                || read_private(&sidecar(key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+                || read_private(&endpoint_file, 2048)?.as_deref() != Some(endpoint_raw.as_str())
+                || owner_stopped(key)? != record.stopped
+                || exists_owned_path(&base.join("macos/remote-upgrades/active.json"))?
+                || exists_owned_path(&sidecar(key, ".re-pair-transition"))?
+            {
+                return Err(());
+            }
+            Ok(())
+        };
+        let observe = || -> Result<UninstallRecovery, ()> {
+            unchanged()?;
+            let configuration = read_private(&plist, 65536)?;
+            let command = read_executable(&cli)?;
+            if configuration.as_ref().is_some_and(|v| v != &expected)
+                || command.as_ref().is_some_and(|v| v != &launcher)
+            {
+                return Err(());
+            }
+            let roots = darwin_package::reviewed_programs(&programs, native_target())?;
+            let registration = observe_registration(&executable);
+            let online = if configuration.is_some() && command.is_some() {
+                let current = installed(home, base)?;
+                if current.executable != executable
+                    || current.generation != record.generation
+                    || !roots.contains(&root)
+                {
+                    return Err(());
+                }
+                match &registration {
+                    Registration::Present(Some(pid)) => connection_evidence(&current, key, *pid)
+                        .is_some_and(|(_, _, online)| online),
+                    _ => false,
+                }
+            } else {
+                false
+            };
+            if registration == Registration::Absent {
+                ensure_no_other_programs(&programs)?;
+            }
+            Ok(record.recovery(
+                configuration.is_some(),
+                command.is_some(),
+                roots.is_empty(),
+                &registration,
+                online,
+            ))
+        };
+        let outcome = observe()?;
+        let prompt = match outcome {
+            UninstallRecovery::RetainOnline | UninstallRecovery::RetainStopped => {
+                "Abandon the interrupted uninstall and retain the original installation?"
+            }
+            UninstallRecovery::Restore => {
+                "Abandon the interrupted uninstall and restore the original Owner-ON service?"
+            }
+            UninstallRecovery::Unknown => {
+                eprintln!("Partial or unconfirmed uninstall; journal retained.");
+                return Err(());
+            }
+        };
+        owner_confirm(prompt)?;
+        if observe()? != outcome {
+            return Err(());
+        }
+        match outcome {
+            UninstallRecovery::Restore => {
+                let current = installed(home, base)?;
+                let client = rca_native_agent::device_pairing::PairingClient::new(endpoint)
+                    .map_err(|_| ())?;
+                client.verify_permanent_grant(id.trim()).map_err(|_| ())?;
+                if observe()? != outcome
+                    || !activate(&current, key)
+                    || observe()? != UninstallRecovery::RetainOnline
+                {
+                    return Err(());
+                }
+            }
+            UninstallRecovery::RetainOnline => {
+                if !gate(key, Gate::Release)? || observe()? != outcome {
+                    return Err(());
+                }
+            }
+            UninstallRecovery::RetainStopped => {
+                std::thread::sleep(Duration::from_millis(250));
+                if observe()? != outcome {
+                    return Err(());
+                }
+            }
+            UninstallRecovery::Unknown => return Err(()),
+        }
+        unchanged()?;
+        sync_remove(journal)?;
+        println!("Uninstall reconciled; identity and receipts retained.");
         Ok(())
     }
 
@@ -1546,6 +1778,9 @@ mod darwin {
         };
         if let Ok(restart) = RestartRecord::parse(&raw, native_target()) {
             return recover_restart(&home, &base, &key, &journal, &raw, &restart);
+        }
+        if let Ok(uninstall) = UninstallRecord::parse(&raw, native_target()) {
+            return recover_uninstall(&home, &base, &key, &journal, &raw, &uninstall);
         }
         let record = SwitchRecord::parse(&raw, native_target())?;
         if owner_stopped(&key)? != record.stopped {

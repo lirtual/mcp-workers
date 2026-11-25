@@ -254,26 +254,11 @@ pub(super) fn stage(root: &Path, programs: &Path, package: &Package) -> Result<P
 // Reuse an already staged immutable version only when the entire verified
 // inventory has the same contents, not just a matching release name.
 pub(super) fn same_package(left: &Path, right: &Path, package: &Package) -> Result<bool, ()> {
-    use sha2::{Digest, Sha256};
     if verify(left, &package.target)? != *package || verify(right, &package.target)? != *package {
         return Ok(false);
     }
-    for path in FILES {
-        let (mode, max) = if path == "bundle.json" {
-            (0o600, 65536)
-        } else {
-            (0o700, 180_000_000)
-        };
-        let digest = |root: &Path| -> Result<_, ()> {
-            let file = open_file(&root.join(path), mode, max)?;
-            let mut hash = Sha256::new();
-            let count = std::io::copy(&mut file.take(max + 1), &mut hash).map_err(|_| ())?;
-            if count == 0 || count > max {
-                return Err(());
-            }
-            Ok(hash.finalize())
-        };
-        if digest(left)? != digest(right)? {
+    for index in 0..FILES.len() {
+        if file_digest(left, index)? != file_digest(right, index)? {
             return Ok(false);
         }
     }
@@ -297,18 +282,116 @@ pub(super) fn reviewed_programs(programs: &Path, target: &str) -> Result<Vec<Pat
     Ok(roots)
 }
 
-// Remove only the reviewed inventory, never a recursively discovered tree.
-pub(super) fn remove_package(root: &Path, target: &str) -> Result<(), ()> {
+pub(super) type RemovalInventory = [String; 3];
+
+fn file_digest(root: &Path, index: usize) -> Result<String, ()> {
+    use sha2::{Digest, Sha256};
+    let (mode, max) = if index == 0 {
+        (0o600, 65536)
+    } else {
+        (0o700, 180_000_000)
+    };
+    let file = open_file(&root.join(FILES[index]), mode, max)?;
+    let mut hash = Sha256::new();
+    let count = std::io::copy(&mut file.take(max + 1), &mut hash).map_err(|_| ())?;
+    if count == 0 || count > max {
+        return Err(());
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+pub(super) fn removal_inventory(root: &Path, target: &str) -> Result<RemovalInventory, ()> {
     verify(root, target)?;
-    for path in FILES {
-        fs::remove_file(root.join(path)).map_err(|_| ())?;
+    Ok([
+        file_digest(root, 0)?,
+        file_digest(root, 1)?,
+        file_digest(root, 2)?,
+    ])
+}
+
+fn present(path: &Path) -> Result<bool, ()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(()),
+    }
+}
+
+// Missing reviewed entries are permitted during removal; new or changed
+// entries are not. Check each ancestor before visiting its children.
+pub(super) fn verify_remaining(root: &Path, inventory: &RemovalInventory) -> Result<(), ()> {
+    for (relative, allowed) in [
+        ("", &["bundle.json", "apps"][..]),
+        ("apps", &["remote-control-agent"][..]),
+        (APP, &[".build"][..]),
+        (
+            BUILD,
+            &["rca-standard-darwin-candidate", "darwin-session-supervisor"][..],
+        ),
+    ] {
+        let directory = if relative.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(relative)
+        };
+        if !present(&directory)? {
+            continue;
+        }
+        private_dir(&directory)?;
+        for entry in fs::read_dir(&directory).map_err(|_| ())? {
+            let entry = entry.map_err(|_| ())?;
+            if !allowed
+                .iter()
+                .any(|name| entry.file_name() == std::ffi::OsStr::new(name))
+            {
+                return Err(());
+            }
+        }
+    }
+    for (index, file) in FILES.iter().enumerate() {
+        if present(&root.join(file))? && file_digest(root, index)? != inventory[index] {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+// Remove only members of the original verified inventory. This is safe to
+// resume after interruption, not permission to recursively remove a tree.
+pub(super) fn remove_remaining(root: &Path, inventory: &RemovalInventory) -> Result<(), ()> {
+    verify_remaining(root, inventory)?;
+    for (index, path) in FILES.iter().enumerate() {
+        let path = root.join(path);
+        if present(&path)? {
+            if file_digest(root, index)? != inventory[index] {
+                return Err(());
+            }
+            fs::remove_file(&path).map_err(|_| ())?;
+            File::open(path.parent().ok_or(())?)
+                .and_then(|f| f.sync_all())
+                .map_err(|_| ())?;
+        }
     }
     for path in [BUILD, APP, "apps", ""] {
-        fs::remove_dir(root.join(path)).map_err(|_| ())?;
+        let path = if path.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(path)
+        };
+        if present(&path)? {
+            private_dir(&path)?;
+            fs::remove_dir(&path).map_err(|_| ())?;
+            File::open(path.parent().ok_or(())?)
+                .and_then(|f| f.sync_all())
+                .map_err(|_| ())?;
+        }
     }
-    File::open(root.parent().ok_or(())?)
-        .and_then(|f| f.sync_all())
-        .map_err(|_| ())
+    Ok(())
+}
+
+#[cfg(test)]
+pub(super) fn remove_package(root: &Path, target: &str) -> Result<(), ()> {
+    remove_remaining(root, &removal_inventory(root, target)?)
 }
 
 #[cfg(test)]
@@ -344,6 +427,43 @@ mod tests {
             fs::write(root.join(path), bytes).unwrap();
             fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o700)).unwrap();
         }
+    }
+
+    #[test]
+    fn interrupted_removal_accepts_only_original_reviewed_inventory() {
+        let home = tempfile::tempdir().unwrap();
+        let root = home.path().join("v0.1.60-darwin-arm64");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        fixture(&root, "darwin-arm64");
+        let inventory = removal_inventory(&root, "darwin-arm64").unwrap();
+        fs::remove_file(root.join(ENTRY)).unwrap();
+        assert!(verify_remaining(&root, &inventory).is_ok());
+        fs::write(root.join(BUILD).join("extra"), b"foreign").unwrap();
+        assert!(verify_remaining(&root, &inventory).is_err());
+        fs::remove_file(root.join(BUILD).join("extra")).unwrap();
+        let original = fs::read(root.join(HELPER)).unwrap();
+        fs::write(root.join(HELPER), b"changed").unwrap();
+        assert!(verify_remaining(&root, &inventory).is_err());
+        fs::write(root.join(HELPER), original).unwrap();
+        symlink(home.path(), root.join(ENTRY)).unwrap();
+        assert!(verify_remaining(&root, &inventory).is_err());
+        fs::remove_file(root.join(ENTRY)).unwrap();
+        remove_remaining(&root, &inventory).unwrap();
+        assert!(!root.exists());
+        remove_remaining(&root, &inventory).unwrap();
+        let foreign = home.path().join("foreign");
+        fs::DirBuilder::new().mode(0o700).create(&foreign).unwrap();
+        fixture(&foreign, "darwin-arm64");
+        symlink(&foreign, &root).unwrap();
+        assert!(verify_remaining(&root, &inventory).is_err());
+        assert!(remove_remaining(&root, &inventory).is_err());
+        assert!(verify(&foreign, "darwin-arm64").is_ok());
+        fs::remove_file(&root).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        symlink(foreign.join("apps"), root.join("apps")).unwrap();
+        assert!(verify_remaining(&root, &inventory).is_err());
+        assert!(remove_remaining(&root, &inventory).is_err());
+        assert!(verify(&foreign, "darwin-arm64").is_ok());
     }
 
     #[test]
