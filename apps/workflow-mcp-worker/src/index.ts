@@ -5,6 +5,7 @@ import { authenticatePortalRequest } from '@mcp-workers/portal-auth';
 import { buildMcpServer } from './tools.ts';
 import { WorkflowOrchestrator } from './runner.ts';
 import {admitScheduledCron} from './scheduled.ts';
+import {collectNativeTerminalProofs} from './instance-observation.ts';
 import {expireDropClaimReceipts} from './drop-claim-receipt.ts';
 import {handleWorkflowWebhook} from './webhook.ts';
 import {handleWaitEvent} from './wait-event-ingress.ts';
@@ -23,6 +24,13 @@ export default {
   const result=await admitScheduledCron(env,controller.scheduledTime);
   if(result.capacity_skipped||result.failed)
     console.warn('workflow_cron_tick',JSON.stringify(result));
+  // Admission is authoritative and runs first. A failed evidence read or
+  // persistence must never suppress the normal minute-tick behavior.
+  try{
+    const proof=await collectNativeTerminalProofs(env,controller.scheduledTime);
+    if(proof.unavailable||proof.conflicts)
+      console.warn('workflow_terminal_proof_tick',JSON.stringify(proof));
+  }catch{console.warn('workflow_terminal_proof_collection_unavailable');}
  },
  async fetch(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url);

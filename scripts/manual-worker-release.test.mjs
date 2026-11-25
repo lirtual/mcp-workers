@@ -1668,3 +1668,31 @@ test('historical claimed Artifact requires matched physical proof and delivered 
   const badJobs=structuredClone(jobs);badJobs.jobs[0].steps.at(-1).conclusion='skipped';
   assert.throws(()=>historicalArtifactTerminalProof(d1,prior,badJobs,github,now),/blocked/);
 });
+
+// The actual production inventory prefix is v22, not a newly invented
+// minimal table. The one additive migration must preserve all audit rows.
+test('#1046 v22 to v23 adds only the nullable bounded terminal proof column',()=>{
+  const db=new DatabaseSync(':memory:');
+  try{
+    const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+    const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+    assert.equal(files.length,23);
+    assert.equal(files.at(-1),'0023_execution_terminal_proof.sql');
+    for(const name of files.slice(0,22))db.exec(readFileSync(new URL(name,dir),'utf8'));
+    db.prepare("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)").run();
+    db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d','{}',1)").run();
+    db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at) VALUES('r','wf','v','i','d','{}','started','indeterminate','execution_interrupted',1,2)").run();
+    db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES('r','s','indeterminate',2)").run();
+    const original=db.prepare('SELECT * FROM runs').all();
+    const originalSteps=db.prepare('SELECT * FROM run_steps').all();
+    const schema=()=>db.prepare("SELECT type,name FROM sqlite_master ORDER BY type,name").all();
+    const before=schema();
+    db.exec(readFileSync(new URL(files.at(-1),dir),'utf8'));
+    assert.deepEqual(schema(),before);
+    const after=db.prepare('SELECT * FROM runs').all();
+    assert.equal(after[0].execution_terminal_proof,null);
+    delete after[0].execution_terminal_proof;
+    assert.deepEqual(after,original);
+    assert.deepEqual(db.prepare('SELECT * FROM run_steps').all(),originalSteps);
+  }finally{db.close();}
+});

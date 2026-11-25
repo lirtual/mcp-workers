@@ -8,20 +8,21 @@ const files = readdirSync(new URL("../apps/workflow-mcp-worker/migrations/", imp
 const response = names => [{success:true,results:names.map(name=>({name}))}];
 
 test("new source migration cannot bypass the production D1 migration fence", () => {
-  assert.equal(files.length,22);
-  assert.equal(files.at(-1),"0022_drop_claim_receipts.sql");
+  assert.equal(files.length,23);
+  assert.equal(files.at(-2),"0022_drop_claim_receipts.sql");
+  assert.equal(files.at(-1),"0023_execution_terminal_proof.sql");
   assert.deepEqual(selectWorkflowSchemaRelease(response(files.slice(0,-1)),files),
-    {apply_required:true,applied:21,source:22});
+    {apply_required:true,applied:22,source:23});
   assert.deepEqual(selectWorkflowSchemaRelease(response(files),files),
-    {apply_required:false,applied:22,source:22});
+    {apply_required:false,applied:23,source:23});
 });
 test("pending migration keeps original strict schema migration gate", () => {
-  assert.deepEqual(selectWorkflowSchemaRelease(response(files.slice(0,-2)),files),
-    {apply_required:true,applied:20,source:22});
+  assert.deepEqual(selectWorkflowSchemaRelease(response(files.slice(0,20)),files),
+    {apply_required:true,applied:20,source:23});
   assert.deepEqual(selectWorkflowSchemaRelease(response([]),files),
-    {apply_required:true,applied:0,source:22});
-  assert.deepEqual(selectWorkflowSchemaRelease(response(files),[...files,"0023_new.sql"]),
-    {apply_required:true,applied:22,source:23});
+    {apply_required:true,applied:0,source:23});
+  assert.deepEqual(selectWorkflowSchemaRelease(response(files),[...files,"0024_new.sql"]),
+    {apply_required:true,applied:23,source:24});
 });
 test("unknown, out of order, duplicate and malformed inventories fail closed", () => {
   for (const data of [

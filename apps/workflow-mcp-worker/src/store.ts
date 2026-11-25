@@ -17,7 +17,7 @@ import { currentExecutorRepository } from './github-action-catalog.ts';
 import {hasHistoricalTaggedGitHubAction,isDynamicMainAction} from './github-action-main.ts';
 import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString, isAuxiliaryBarkPair, validateStaticOutputReferences } from './plan.ts';
 import {settleVerifiedAuxiliaryBusiness} from './auxiliary-bark-recovery.ts';
-import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
+import {observeInstance, recordNativeTerminalObservation, type InstanceObservation, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
@@ -139,7 +139,7 @@ export function applyStatus(native:string, outcome:string):string {
 }
 type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string;deleted_at:number|null};
 type VersionRow={id:string;plan:string;digest:string};
-type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
+type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null;execution_terminal_proof:string|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
 type RecentRunSnapshot={run_id:string;published_version_id:string;created_at:number;
   updated_at:number;start_state:string;recorded_outcome:string;error_code:string|null};
@@ -1012,7 +1012,10 @@ throw new StateError('reserved_idempotency_key');
         // never reconcile them into a new physical execution or rewrite facts.
         if(hasRetiredWeixinAction(plan))continue;
         const observed=await observeInstance(this.env.WORKFLOW,run.instance_id);
-        if(observed.kind==='found')await this.settleNativeOutcome(run,observed.status);
+        if(observed.kind==='found'){
+          await this.rememberNativeTerminal(run,observed);
+          await this.settleNativeOutcome(run,observed.status);
+        }
       }
     }
     const wf=await this.row(workflow_id);
@@ -1149,6 +1152,7 @@ throw new StateError('reserved_idempotency_key');
       const observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
       if(observation.kind==='found'){
         await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+        await this.rememberNativeTerminal(row,observation);
       }
       return {run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:observation.kind==='found'?'started':row.start_state,idempotent_replay:true};
     }
@@ -1157,6 +1161,7 @@ throw new StateError('reserved_idempotency_key');
     let observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
     if(observation.kind==='found'){
       await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+      await this.rememberNativeTerminal(row,observation);
       return started();
     }
     if(observation.kind==='missing' && row.outcome==='queued' && now()-row.created_at<START_RECONCILE_WINDOW_MS){
@@ -1165,6 +1170,7 @@ throw new StateError('reserved_idempotency_key');
       observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
       if(observation.kind==='found'){
         await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+        await this.rememberNativeTerminal(row,observation);
         return started();
       }
     }
@@ -1177,6 +1183,12 @@ throw new StateError('reserved_idempotency_key');
     if(latest?.start_state==='started')return {run_id:row.id,published_version_id:row.version_id,status:latest.outcome,start_state:'started',idempotent_replay:true};
     // Unknown lookup error: retain quota and audit identity until observation works.
     return {run_id:row.id,published_version_id:row.version_id,status:'start_unknown',start_state:'start_unknown',idempotent_replay:true};
+  }
+  private async rememberNativeTerminal(row:RunRow, observation:InstanceObservation):Promise<void>{
+    try{
+      const saved=await recordNativeTerminalObservation(this.db,row,observation);
+      if(saved==='conflict')console.warn('workflow_terminal_observation_conflict',row.id);
+    }catch{console.warn('workflow_terminal_observation_unavailable',row.id);}
   }
   private async settleNativeOutcome(row:RunRow, native:string):Promise<RunRow>{
     if(row.start_state!=='started'||!['queued','running'].includes(row.outcome))return row;
@@ -1229,10 +1241,12 @@ throw new StateError('reserved_idempotency_key');
       row=(await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>())!;
     }
     let native='unknown';
-    if(!legacy&&row.start_state==='started' && ['queued','running'].includes(row.outcome)){
+    if(!legacy&&row.start_state==='started' &&
+      (['queued','running'].includes(row.outcome)||row.execution_terminal_proof===null)){
       const observed=await observeInstance(this.env.WORKFLOW,row.instance_id);
       if(observed.kind==='found'){
         native=observed.status;
+        await this.rememberNativeTerminal(row,observed);
         row=await this.settleNativeOutcome(row,native);
       }
     }
