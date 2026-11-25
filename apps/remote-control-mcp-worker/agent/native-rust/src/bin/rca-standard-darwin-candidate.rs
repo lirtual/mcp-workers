@@ -1472,6 +1472,42 @@ mod darwin {
         Ok(())
     }
 
+    fn secure_input_local(request_id: &str) -> Result<(), ()> {
+        use std::io::IsTerminal;
+        if !valid_device_id(request_id)
+            || !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+        {
+            return Err(());
+        }
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        let base = identity_directory(&home, false)?;
+        let key = base.join("v2-identity.pem");
+        if owner_stopped(&key)? {
+            return Err(());
+        }
+        for path in [
+            base.join("macos/switch.json"),
+            base.join("macos/remote-upgrades/active.json"),
+            sidecar(&key, ".re-pair-transition"),
+        ] {
+            if exists_owned_path(&path)? {
+                return Err(());
+            }
+        }
+        let current = installed(&home, &base)?;
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        rca_native_agent::secure_input_cli::run_secure_input_owner_flow(
+            &current.endpoint,
+            &pem,
+            id.trim(),
+            request_id,
+        )
+        .map_err(|_| ())
+    }
+
     pub fn run() -> Result<(), ()> {
         native_host()?;
         let arguments: Vec<String> = std::env::args_os()
@@ -1487,6 +1523,11 @@ mod darwin {
             }
             if matches!(action.as_str(), "status" | "stop" | "start") {
                 return manage(action);
+            }
+        }
+        if let [action, request_id] = arguments.as_slice() {
+            if action == "secure-input" {
+                return secure_input_local(request_id);
             }
         }
         if let [action, endpoint, name, version, source] = arguments.as_slice() {

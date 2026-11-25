@@ -237,7 +237,7 @@ pub(super) fn native_cli(executable: &Path) -> Result<String, ()> {
         return Err(());
     }
     let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
-    Ok(format!("#!/bin/sh\nset -eu\n[ \"$#\" -eq 1 ] || exit 2\ncase \"$1\" in status|stop|start|recover|uninstall) ;; *) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;; esac\nexec {quoted} \"$@\"\n"))
+    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|stop|start|recover|uninstall) [ \"$#\" -eq 1 ] || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
 }
 
 pub(super) fn new_generation() -> Result<String, ()> {
@@ -561,6 +561,39 @@ mod tests {
             "darwin-arm64"
         )
         .is_err());
+    }
+
+    #[test]
+    fn native_cli_forwards_only_supported_secure_input_request() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("owner's agent");
+        std::fs::write(&executable, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let launcher = temp.path().join("rca");
+        std::fs::write(&launcher, native_cli(&executable).unwrap()).unwrap();
+        let invoke = |args: &[&str]| {
+            std::process::Command::new("/bin/sh")
+                .arg(&launcher)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let output = invoke(&["secure-input", ID]);
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("secure-input\n{ID}\n")
+        );
+        for args in [
+            &["secure-input"][..],
+            &["secure-input", "bad"],
+            &["secure-input", ID, "extra"],
+            &["stop", "extra"],
+            &["--service", ID],
+        ] {
+            assert_eq!(invoke(args).status.code(), Some(2));
+        }
     }
 
     #[test]
