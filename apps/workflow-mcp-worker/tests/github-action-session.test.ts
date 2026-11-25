@@ -753,20 +753,22 @@ test('Session dispatches once, signed GitHub Claim and Ready complete startup bu
  }finally{f.db.close();}
 });
 test('pre-Ready physical terminal is a verified failure, not an indeterminate terminated Session',async()=>{
- for(const [attemptState,sessionState,expected] of [
-  ['failed','terminated','github_session_ended_before_ready'],
-  ['claimed','stopping','github_session_no_ready'],
+ for(const [attemptState,sessionState,physicalCancels,expected] of [
+  ['failed','terminated',false,'github_session_ended_before_ready'],
+  ['claimed','stopping',true,'github_session_ended_before_ready'],
+  ['claimed','stopping',false,'github_session_ready_unconfirmed'],
  ] as const){
   const f=fixture();
   try{
    const {jwt,publicKey}=await signedReady();
-   let attemptId='';
+   let attemptId='',waits=0,posts=0;
    const http=async(request:Request):Promise<Response>=>{
     const path=new URL(request.url).pathname;
     if(path.endsWith('/git/ref/tags/release-v1'))
      return Response.json({ref:'refs/tags/release-v1',
       object:{type:'commit',sha:action.commitSha}});
     if(request.method==='POST'){
+     posts++;
      const payload=await request.json() as {inputs:{attempt_id:string}};
      attemptId=payload.inputs.attempt_id;
      return Response.json({workflow_run_id:42});
@@ -775,12 +777,14 @@ test('pre-Ready physical terminal is a verified failure, not an indeterminate te
      id:42,workflow_id:456,run_attempt:1,
      repository:{id:123,full_name:action.repository},
      path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
-     event:'workflow_dispatch',status:'in_progress',conclusion:null,
+     event:'workflow_dispatch',status:physicalCancels&&waits>=2?'completed':'in_progress',
+     conclusion:physicalCancels&&waits>=2?'cancelled':null,
     });
    };
    const workflow={
     do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
     waitForEvent:async()=>{
+     if(++waits>1)return {attemptId};
      assert.equal(await verifyAndClaimPinnedGitHubAction(f.adapter,
       attemptId,jwt,audience,publicKey),true);
      // Simulates an independently verified physical terminal racing the
@@ -798,6 +802,11 @@ test('pre-Ready physical terminal is a verified failure, not an indeterminate te
     (plan as unknown as Plan).steps[0],run(1),workflow,http);
    assert.deepEqual(outcome,{status:expected==='github_session_ended_before_ready'?'failed':'indeterminate',
     error_code:expected});
+   assert.equal(posts,1);
+   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,
+    expected==='github_session_ended_before_ready'?'terminated':'stopping');
+   if(physicalCancels)assert.equal(waits,2);
+   if(expected==='github_session_ready_unconfirmed')assert.equal(waits,30);
   }finally{f.db.close();}
  }
 });
