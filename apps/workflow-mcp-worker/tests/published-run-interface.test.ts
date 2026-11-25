@@ -46,7 +46,7 @@ test('Litterbox declares file only when the frozen single manual file gate is va
  assert.equal(viewed.unknown_result,'never_retry');
  assert.equal(describe({...raw,triggers:[{type:'cron'}]}).kind,'generic');
 });
-test('Drop Published adapter requires a selected HTML/ZIP file, no inputs and a unique key',()=>{
+test('Drop Published adapter requires a selected HTML/ZIP file and a unique key, without repeated consent',()=>{
  const action={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
   workflowPath:'.github/workflows/drop.yml',commitSha:'b'.repeat(40),
   type:'task',contractDigest:'a'.repeat(64)};
@@ -57,6 +57,7 @@ test('Drop Published adapter requires a selected HTML/ZIP file, no inputs and a 
  const viewed=describe(plan);
  assert.equal(viewed.kind,'drop_manual_file');
  assert.deepEqual(viewed.inputs,{});
+ assert.equal(viewed.terms,'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment');
  assert.equal(viewed.top_level_file.required,true);
  assert.deepEqual(viewed.top_level_file.extensions,['.html','.zip']);
  assert.equal(viewed.top_level_file.max_bytes,10*1024*1024);

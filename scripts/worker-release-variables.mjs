@@ -23,11 +23,7 @@ export const BROWSER_ACCESS_VARIABLES = Object.freeze([
 export const WORKER_VARIABLES = Object.freeze({
   "browser-mcp-worker": ["BROWSER_ACTIVATION_AUDIENCE", "BROWSER_REMEMBERED_IDLE_DAYS"],
   "mcp-gateway-worker": [],
-  "raindrop-mcp-worker": [
-    "RAINDROP_RATE_LIMIT_MAX_RETRIES",
-    "CLERK_PILOT_PUBLISHABLE_KEY", "CLERK_PILOT_OWNER_USER_ID",
-    "CLERK_PILOT_ISSUER", "CLERK_PILOT_RESOURCE",
-  ],
+  "raindrop-mcp-worker": ["RAINDROP_RATE_LIMIT_MAX_RETRIES"],
   "ima-mcp-worker": ["IMA_CLIENT_ID", "IMA_BASE_URL"],
   "database-mcp-worker": [
     "DATABASE_MAX_ROWS", "DATABASE_MAX_RESULT_BYTES", "DATABASE_MAX_SCHEMA_BYTES", "DATABASE_QUERY_TIMEOUT_MS",
@@ -82,6 +78,20 @@ export function gatewayOriginFromConfig(config) {
   return "https://" + host;
 }
 
+// RCA and Gateway share the already approved public Clerk identity source.
+export function remoteControlClerkIdentity(env) {
+  const key=env.CLERK_PILOT_PUBLISHABLE_KEY, owner=env.CLERK_PILOT_OWNER_USER_ID;
+  let validKey=false;
+  try {
+    validKey=typeof key==="string" && /^pk_live_[A-Za-z0-9+/=]+$/.test(key) &&
+      atob(key.slice("pk_live_".length))==="clerk.lirtual.dpdns.org$";
+  } catch {}
+  if(!validKey || typeof owner!=="string" || !/^user_[A-Za-z0-9]+$/.test(owner) ||
+      env.CLERK_PILOT_ISSUER!=="https://clerk.lirtual.dpdns.org")
+    throw Error("RCA shared Clerk public identity missing or invalid");
+  return {CLERK_PUBLISHABLE_KEY:key,CLERK_OWNER_USER_ID:owner};
+}
+
 export function collectWorkerVars(worker, env, options = {}) {
   const allowed = WORKER_VARIABLES[worker];
   if (!allowed) throw new Error("Unsupported Worker release target");
@@ -131,31 +141,6 @@ export function collectWorkerVars(worker, env, options = {}) {
       throw Error("Invalid RCA_PERMANENT_IDLE_DAYS: expected decimal integer 1..90");
     }
   }
-  if (worker === "raindrop-mcp-worker") {
-    const keys = ["CLERK_PILOT_PUBLISHABLE_KEY", "CLERK_PILOT_OWNER_USER_ID",
-      "CLERK_PILOT_ISSUER", "CLERK_PILOT_RESOURCE"];
-    const selected = keys.filter(name => env[name] != null && env[name] !== "");
-    if (selected.length) {
-      if (selected.length !== keys.length || keys.some(name =>
-        typeof env[name] !== "string" || env[name].trim() !== env[name] ||
-        env[name].length > 1024 || /[\r\n]/.test(env[name])))
-        throw Error("Incomplete or invalid Raindrop Clerk pilot Variables");
-      if (!/^pk_(?:live|test)_[^\s]{8,}$/.test(env.CLERK_PILOT_PUBLISHABLE_KEY) ||
-          !/^user_[a-zA-Z0-9]+$/.test(env.CLERK_PILOT_OWNER_USER_ID))
-        throw Error("Invalid Raindrop Clerk pilot key or Owner ID");
-      let issuer, resource;
-      try {
-        issuer = new URL(env.CLERK_PILOT_ISSUER);
-        resource = new URL(env.CLERK_PILOT_RESOURCE);
-      } catch { throw Error("Invalid Raindrop Clerk pilot URLs"); }
-      if (issuer.protocol !== "https:" || issuer.href !== issuer.origin + "/" ||
-          env.CLERK_PILOT_ISSUER !== issuer.origin || issuer.username || issuer.password ||
-          resource.protocol !== "https:" || resource.username || resource.password ||
-          resource.pathname !== "/clerk/mcp" || resource.hash || resource.search ||
-          env.CLERK_PILOT_RESOURCE !== resource.href)
-        throw Error("Invalid Raindrop Clerk pilot issuer or resource");
-    }
-  }
   if (worker === "workflow-mcp-worker") {
     variables.push(
       "WORKFLOW_MCP_PORTAL_ENDPOINT:https://mcp-portal.lirtual.dpdns.org/mcp",
@@ -179,6 +164,7 @@ export function collectWorkerVars(worker, env, options = {}) {
   if (worker === "remote-control-mcp-worker") {
     const origin=remoteControlInstallOrigin(options.config);
     variables.push("REMOTE_CONTROL_INSTALL_ORIGIN:" + origin);
+    for(const [name,value] of Object.entries(remoteControlClerkIdentity(env))) variables.push(name+":"+value);
   }
   if (worker === 'database-mcp-worker') {
     // Validate with only reviewed named inputs; output retains unresolved Secret tokens.

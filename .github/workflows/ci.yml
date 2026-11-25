@@ -44,6 +44,7 @@ jobs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
       remote_control_changed: ${{ steps.scope.outputs.remote_control_changed }}
       agent_native_changed: ${{ steps.scope.outputs.agent_native_changed }}
+      rust_candidate_changed: ${{ steps.scope.outputs.rust_candidate_changed }}
       canonical_owner_email: ${{ steps.canonical_owner.outputs.email }}
       canonical_workflow_executor_repository: ${{ steps.canonical_workflow_executor.outputs.repository }}
     steps:
@@ -173,6 +174,150 @@ jobs:
       candidate_tag: v0.0.0-ci
     permissions:
       contents: read
+
+  rust-agent-candidate:
+    # This is only the unshipped Rust core. Native installation, managed process
+    # ownership, WSS Owner pairing, upgrade and Release require separate gates.
+    name: RCA Rust core (nonproduction) / ${{ matrix.os }}
+    needs: checks
+    if: needs.checks.outputs.rust_candidate_changed == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Match the existing Node candidate's Standard physical runners.
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: Check Rust formatting
+        if: matrix.os == 'ubuntu-24.04'
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        run: cargo fmt --all -- --check
+      - name: Compile and lint Rust core for host OS (no Agent package)
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Unix Rust core tests on host OS (no Owner identity)
+        if: runner.os != 'Windows'
+        timeout-minutes: 8
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        # A hung platform-specific test must leave a bounded CI failure with
+        # enough progress output to identify the last running test binary.
+        run: cargo test --locked --all-targets -- --nocapture
+      - name: Run Windows-supported Rust core and owner-private SQLite ACL checks
+        if: runner.os == 'Windows'
+        timeout-minutes: 8
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        # Exercise real NTFS ACLs, signed localhost WSS with receipt-protected
+        # Windows Job sessions, and verified Owner cleanup on disposable runners.
+        # Installed-state migration remains Gate 1.
+        run: >-
+          cargo test --locked --lib
+          --test golden_digest --test golden_identity --test heartbeat_session
+          --test loopback_session --test native_browse --test native_read
+          --test native_read_wss --test reconnect_transport --test windows_private_state
+          --test windows_job --test windows_output --test windows_managed
+          --test windows_managed_wss --test windows_cli
+          --test session_enrollment --test session_transport_env
+          -- --nocapture
+      - name: Verify receipt isolation and ownership on Windows
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        working-directory: apps/remote-control-mcp-worker/agent/native-rust
+        run: cargo test --locked --test native_file_wss receipt_runtime_ -- --nocapture
+      - name: Verify Linux owned-group and Standard CLI cleanup on disposable host
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs
+          RCA_NATIVE_SUPERVISOR_BIN="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/.build/session-supervisor" \
+            cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
+            --locked --test linux_supervisor --test native_process_wss --test native_file_wss --test standard_linux_wss -- --ignored --nocapture
+      - name: Verify Darwin owned-group and signed managed WSS on disposable host
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+            apps/remote-control-mcp-worker/agent/scripts/darwin-session-supervisor.c \
+            -o "$RUNNER_TEMP/rca-darwin-supervisor"
+          chmod 700 "$RUNNER_TEMP/rca-darwin-supervisor"
+          RCA_DARWIN_SUPERVISOR_BIN="$RUNNER_TEMP/rca-darwin-supervisor" \
+            cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
+            --locked --test darwin_supervisor --test native_process --test native_process_wss --test native_file_wss --test cli_managed -- --ignored --nocapture
+      - uses: pnpm/action-setup@v4
+        if: runner.os == 'macOS'
+        with:
+          version: 10.17.1
+          run_install: false
+      - name: Install pinned macOS package-builder dependencies
+        if: runner.os == 'macOS'
+        run: pnpm install --filter remote-control-agent --frozen-lockfile --ignore-scripts
+      - name: Build and exercise unpublished macOS Rust candidate package
+        if: runner.os == 'macOS'
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64)
+              target=darwin-arm64
+              baseline_sha256=712bd2bb99697db8421765c0e1ac9b027af3e6e858effdc2866adb4bca626580
+              ;;
+            x86_64)
+              target=darwin-x64
+              baseline_sha256=ed6326e92ba3a5564b41b6eaa147b6f48ad9e60acc98807a1891a8cce1be5c0f
+              ;;
+            *) echo "Unsupported Darwin architecture" >&2; exit 1 ;;
+          esac
+          # Start from the immutable published Node package on this architecture.
+          baseline_archive="$RUNNER_TEMP/remote-control-agent-v0.1.56-$target.tar.gz"
+          curl --fail --silent --show-error --location --max-time 60 \
+            --proto '=https' --tlsv1.2 \
+            "https://github.com/lirtual/mcp-workers/releases/download/v0.1.56/$(basename "$baseline_archive")" \
+            -o "$baseline_archive"
+          echo "$baseline_sha256  $baseline_archive" | shasum -a 256 --check
+          baseline="$RUNNER_TEMP/spec914-v0.1.56"
+          mkdir -m 700 "$baseline"
+          tar -xzf "$baseline_archive" -C "$baseline"
+          source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
+          supervisor="$RUNNER_TEMP/rca-darwin-supervisor"
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+            "$source_root/scripts/darwin-session-supervisor.c" -o "$supervisor"
+          chmod 700 "$supervisor"
+          cargo build --locked --release --manifest-path \
+            "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
+          node_bin="$(realpath "$(command -v node)")"
+          rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
+          out="$RUNNER_TEMP/spec914-darwin-candidate"
+          mkdir -m 700 -p "$out"
+          node "$source_root/scripts/build-v2-release.mjs" \
+            --version v0.1.57-rust-candidate.1 --target "$target" \
+            --node-bin "$node_bin" --node-sha256 "$(shasum -a 256 "$node_bin" | cut -d' ' -f1)" \
+            --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
+            --rust-agent-bin "$rust_agent" \
+            --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
+            --out "$out"
+          archive="$out/remote-control-agent-v0.1.57-rust-candidate.1-$target.tar.gz"
+          unpacked="$out/unpacked"
+          mkdir -m 700 "$unpacked"
+          tar -xzf "$archive" -C "$unpacked"
+          RCA_MACOS_BUNDLE_ROOT="$unpacked" node --test \
+            "$source_root/tests/macos-local.test.mjs" \
+            "$source_root/tests/macos-remote-upgrade.test.mjs"
+          # Actual launchd switch attempt and rollback, with synthetic local state only.
+          RCA_MACOS_BASELINE_ROOT="$baseline" \
+            RCA_MACOS_CANDIDATE_ROOT="$unpacked" \
+            node --test \
+            "$source_root/tests/macos-launchd-rust-failure-recovery.integration.mjs"
 
   database-integration:
     name: Database integration

@@ -186,6 +186,33 @@ function Resolve-LatestAgentRelease {
   if (-not $windows) { throw 'Windows x64 Agent asset is missing' }
   return @{ Tag = $tag; Sha = $windows.digest.Substring(7); Url = [string]$windows.browser_download_url; Size = [long]$windows.size }
 }
+function Resolve-ReviewedNativeRelease([string]$tag,[string]$sha,[bool]$stable = $false) {
+  # Candidate pin or a stable tag selected by the independent upgrade launcher.
+  # Never look up Latest a second time or accept an arbitrary URL.
+  $tagPattern = if ($stable) { '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$' }
+    else { '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' }
+  if ($tag -cnotmatch $tagPattern -or $sha -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'Reviewed native Release tag and SHA-256 required'
+  }
+  $uri = "https://api.github.com/repos/lirtual/mcp-workers/releases/tags/$tag"
+  $headers = @{ Accept = 'application/vnd.github+json'; 'User-Agent' = 'rca-windows-reviewed-installer' }
+  $response = Invoke-WebRequest -Uri $uri -Headers $headers -MaximumRedirection 0 -UseBasicParsing -TimeoutSec 30
+  if ([int]$response.StatusCode -ne 200) { throw 'Reviewed native Release lookup failed' }
+  $release = $response.Content | ConvertFrom-Json
+  if ($release.immutable -ne $true -or $release.draft -ne $false -or
+      $release.prerelease -ne (-not $stable) -or $release.tag_name -cne $tag) {
+    throw 'Selected native Release does not match the reviewed immutable tag'
+  }
+  $name = "remote-control-agent-$tag-windows-x64.zip"
+  $expected = "https://github.com/lirtual/mcp-workers/releases/download/$tag/$name"
+  $assets = @($release.assets | Where-Object { $_.name -ceq $name })
+  if ($assets.Count -ne 1 -or $assets[0].state -ne 'uploaded' -or
+      $assets[0].digest -cne ('sha256:' + $sha) -or $assets[0].browser_download_url -cne $expected -or
+      $assets[0].size -lt 100000 -or $assets[0].size -gt 100000000) {
+    throw 'Reviewed native asset digest, URL or size does not match'
+  }
+  return @{ Tag=$tag; Sha=$sha; Url=$expected; Size=[long]$assets[0].size }
+}
 function Assert-ArchiveDigest([string]$file, [string]$sha) {
   if ($sha -cnotmatch '^[a-f0-9]{64}$') { throw 'SHA256 must be the official digest' }
   $item = Get-Item -LiteralPath $file -Force
@@ -221,8 +248,8 @@ function Expand-SafeArchive([string]$file, [string]$folder) {
           $name -match '[^\x20-\x7e]' -or -not $seen.Add($name)) {
         throw 'ZIP traversal, alias or duplicate'
       }
-      $allowedDir = $name -cmatch '^(?:bin|apps|apps/remote-control-agent|apps/remote-control-agent/src|apps/remote-control-agent/scripts)/$'
-      $allowedFile = $name -cmatch '^(?:bin/(?:node\.exe|rca-background\.exe)|rca\.cmd|bundle\.json|apps/remote-control-agent/(?:package\.json|src/[a-z0-9-]+\.js|scripts/(?:(?:windows-private-store|windows-session-private-store|windows-user-task|windows-stage-install|windows-upgrade-once)\.ps1|verify-windows-preview\.mjs)))$'
+      $allowedDir = $name -cmatch '^(?:bin|apps|apps/remote-control-agent|apps/remote-control-agent/scripts|apps/remote-control-agent/\.build)/$'
+      $allowedFile = $name -cmatch '^(?:bin/rca-background\.exe|rca\.cmd|bundle\.json|apps/remote-control-agent/(?:\.build/rca-(?:standard|session)-windows-candidate\.exe|scripts/(?:windows-private-store|windows-user-task|windows-stage-install|verify-windows-native)\.ps1))$'
       if (($name.EndsWith('/') -and -not $allowedDir) -or
           (-not $name.EndsWith('/') -and -not $allowedFile)) {
         if ($env:GITHUB_ACTIONS -eq 'true') {
@@ -253,6 +280,54 @@ function Expand-SafeArchive([string]$file, [string]$folder) {
     }
   } finally { $zip.Dispose() }
 }
+# NTFS inheritance carries access rules, not the creator's owner SID.
+# Elevated users can create files owned by Administrators even inside an
+# owner-private stage. Seal only freshly extracted entries before promotion.
+function Seal-StagedArchive([string]$folder) {
+  Assert-PrivateFolder $folder
+  foreach ($item in @(Get-ChildItem -LiteralPath $folder -Recurse -Force -ErrorAction Stop)) {
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'Unexpected link in private archive stage'
+    }
+    $acl = if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($item.FullName) }
+      else { [IO.File]::GetAccessControl($item.FullName) }
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $userSid.Value) {
+      $acl.SetOwner($userSid)
+      if ($item.PSIsContainer) { [IO.Directory]::SetAccessControl($item.FullName,$acl) }
+      else { [IO.File]::SetAccessControl($item.FullName,$acl) }
+      $acl = if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($item.FullName) }
+        else { [IO.File]::GetAccessControl($item.FullName) }
+    }
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $userSid.Value) {
+      throw 'Staged archive entry is not owned by the current user'
+    }
+    $ownerFull = $false
+    foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+      if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+          $allowedSids -notcontains $rule.IdentityReference.Value) { throw 'Unexpected staged archive ACL' }
+      if ($rule.IdentityReference.Value -eq $userSid.Value -and
+          ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq
+          [Security.AccessControl.FileSystemRights]::FullControl) { $ownerFull = $true }
+    }
+    if (-not $ownerFull) { throw 'Staged archive entry lacks owner access' }
+  }
+}
+# Windows may briefly retain an executable file handle after the verifier
+# exits. Retry only the private staging filesystem operation, never the
+# installer, the grant request, or the Task switch. Access-denied from a
+# directory move can also be a loaded file; persistent denial still fails.
+function Invoke-StageFileOperation([scriptblock]$operation) {
+  for ($attempt = 1; $attempt -le 8; $attempt++) {
+    try { & $operation; return }
+    catch {
+      $cause = $_.Exception
+      while ($cause.InnerException) { $cause = $cause.InnerException }
+      $code = $cause.HResult -band 0xffff
+      if ($attempt -eq 8 -or $code -notin @(5,32,33)) { throw }
+      Start-Sleep -Milliseconds 250
+    }
+  }
+}
 # Inspect the task target without launching it. The packaged CLI performs
 # the complete owner/ACL/task signature validation again before switching.
 function Get-ExistingAgentVersion([string]$programs, [string]$taskExe) {
@@ -264,23 +339,89 @@ function Get-ExistingAgentVersion([string]$programs, [string]$taskExe) {
   }
   $relative = $exe.Substring($base.Length)
   $matched = [regex]::Match($relative,
-    '^(v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?)-windows-x64\\bin\\(?:node\.exe|rca-background\.exe)$',
+    '^(v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?)-windows-x64\\bin\\rca-background\.exe$',
     [Text.RegularExpressions.RegexOptions]::IgnoreCase)
   if (-not $matched.Success) { throw 'Unrecognized existing Agent task executable' }
   return $matched.Groups[1].Value
 }
-function Complete-ApprovedOnboarding([string]$launcher) {
-  # The local installer is interactive. Missing grants require one remote MCP
-  # owner approval; do not treat a task-start response as proof of WSS online.
+# Native first activation requires the owner console. An admitted detached
+# stable upgrade may only invoke the existing transactional Task switch.
+function Complete-NativeInstall([string]$directory) {
+  $scripts = Join-Path $directory 'apps/remote-control-agent/scripts'
+  $entry = Join-Path $directory 'apps/remote-control-agent/.build/rca-standard-windows-candidate.exe'
+  $controller = Join-Path $scripts 'windows-user-task.ps1'
+  $ps = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+  $origin = 'https://rca.lirtual.dpdns.org/'
+  if ($detachedUpgrade -and -not $nativeDetachedUpgrade) {
+    throw 'Detached native activation requires an existing running approved Task'
+  }
+  if (-not $nativeDetachedUpgrade -and ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected)) {
+    throw 'Real owner console required for reviewed native install'
+  }
+  & (Join-Path $scripts 'verify-windows-native.ps1') -Root $directory -Version $Version | Out-Null
+  & (Join-Path $scripts 'windows-private-store.ps1') -Action Check -Directory $root
   if (Test-Path -LiteralPath ($identityFile + '.owner-stopped')) {
+    if ($detachedUpgrade) { throw 'Owner STOP blocks detached native upgrade' }
     Write-Output 'Owner STOP preserved. Agent was not started.'
     return
   }
-  & $launcher onboard --endpoint 'https://rca.lirtual.dpdns.org/'
-  if ($LASTEXITCODE -ne 0) {
-    throw 'Authorization incomplete. Identity kept.'
+  if ($upgradeExisting) {
+    & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
+    if ($LASTEXITCODE -ne 0) { throw 'Native upgrade refused or uncertain; review retained state' }
+    if ($detachedUpgrade) { Write-Output 'Local switch returned; independent signed-WSS verification required.' }
+    return
   }
+  if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }
+  $raw = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Status
+  if ($LASTEXITCODE -ne 0) { throw 'Existing Task status uncertain' }
+  $state = $raw | ConvertFrom-Json
+  $modePath = $identityFile + '.install-mode'
+  if (Test-Path -LiteralPath $modePath) {
+    $mode = (Get-Content -LiteralPath $modePath -Raw).Trim()
+    if ($mode -cnotin @('permanent','temporary')) { throw 'Untrusted install mode' }
+  } else {
+    if ($state.installed -or (Test-Path -LiteralPath $identityFile) -or (Test-Path -LiteralPath $idFile)) {
+      throw 'Existing identity requires explicit management'
+    }
+    Write-Host -NoNewline 'Install mode [1] permanent / [2] temporary: '
+    try { $selected = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown') } catch { throw 'Real owner console required' }
+    Write-Host ''
+    $mode = switch -CaseSensitive ($selected.Character) {
+      '1' { 'permanent' }
+      '2' { 'temporary' }
+      default { throw 'Cancelled. No identity changes.' }
+    }
+  }
+  if ($state.installed -and ($mode -eq 'temporary' -or -not (Test-Path -LiteralPath $idFile))) {
+    throw 'Existing Task conflicts with pairing'
+  }
+  if ($state.installed -and $mode -ceq 'permanent' -and
+      -not (Test-Path -LiteralPath ($identityFile + '.activation-pending'))) {
+    & $entry --cli onboard --endpoint $origin
+    if ($LASTEXITCODE -ne 0) { throw 'Native authorization reconciliation incomplete; existing identity retained' }
+    return
+  }
+  $name = [Environment]::MachineName
+  if (-not (Test-Path -LiteralPath $idFile)) {
+    $entered = Read-Host ('Device name [' + $name + ']')
+    if ($entered.Trim()) { $name = $entered.Trim() }
+  }
+  & $entry --pair-local $origin $name $mode
+  if ($LASTEXITCODE -ne 0) { throw 'Native authorization incomplete; existing identity retained' }
+  if ($mode -ceq 'temporary') {
+    Write-Output 'Temporary foreground only. Closing the terminal disconnects, not revokes.'
+    & $entry --cli run --endpoint $origin
+    if ($LASTEXITCODE -ne 0) { throw 'Native foreground session refused' }
+    return
+  }
+  if (-not (Test-Path -LiteralPath ($identityFile + '.activation-pending'))) {
+    Write-Output 'Approved identity unchanged; no Task modification.'
+    return
+  }
+  & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action ActivateNative -Version $Version -Endpoint $origin
+  if ($LASTEXITCODE -ne 0) { throw 'Native initial activation incomplete; identity and intent retained' }
 }
+
 # Read a console key directly: PromptForChoice renders system-localized
 # help/default text even when its title and choices are English.
 # Read-Host can consume piped script input from "irm ... | iex".
@@ -298,32 +439,6 @@ function Confirm-Upgrade([object]$ui) {
 }
 
 
-function Invoke-AgentUpgradeFreeze([string]$keyPath,[string]$action) {
-  if ($action -cnotin @('freeze','verify-frozen','release')) { throw 'Invalid upgrade action' }
-  $canonical = $keyPath.Replace('/','\').ToLowerInvariant()
-  $sha = [Security.Cryptography.SHA256]::Create()
-  try {
-    $hash = [BitConverter]::ToString($sha.ComputeHash(
-      [Text.Encoding]::UTF8.GetBytes($canonical))).Replace('-','').ToLowerInvariant().Substring(0,32)
-  } finally { $sha.Dispose() }
-  $pipe = [IO.Pipes.NamedPipeClientStream]::new(
-    '.', 'rca-upgrade-' + $hash, [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::None)
-  try {
-    $pipe.Connect(10000)
-    # The protocol accepts only ASCII action names and exact LF.
-    # StreamWriter with Encoding.UTF8 would prepend a BOM to the first frame.
-    $requestBytes = [Text.Encoding]::ASCII.GetBytes($action + "`n")
-    $pipe.Write($requestBytes,0,$requestBytes.Length)
-    $pipe.Flush()
-    $reader = [IO.StreamReader]::new($pipe,[Text.Encoding]::ASCII,$false,1024,$true)
-    try {
-      $answer = $reader.ReadLine()
-      $expected = if ($action -ceq 'release') { 'released' } else { 'ready' }
-      if ($answer -cne $expected) { throw 'Agent is busy, absent or not frozen' }
-    } finally { $reader.Dispose() }
-  } finally { $pipe.Dispose() }
-}
-
 # A Remote Control Shell may schedule the *reviewed official installer* in a
 # separate same-user Windows Task. Never infer approval from missing TTY.
 # This opt-in is only valid for an existing approved, currently running Task.
@@ -332,10 +447,17 @@ $detachedRequest = $env:RCA_UNATTENDED_UPGRADE -ceq 'launch-approved-task-v1'
 $temp = $null
 $stage = $null
 $promoted = $false
+$primaryFailure = $false
 $releaseUrl = $null
 $releaseSha = $null
 $releaseSize = [long]0
 try {
+  if ($detachedUpgrade -and ($OfflineArchive -or -not $SelectedTag -or -not $SelectedReleaseSha256 -or $StageOnly)) {
+    throw 'Detached upgrade requires a selected immutable stable Release'
+  }
+  if ($detachedRequest -and ($SelectedTag -or $OfflineArchive -or $StageOnly)) {
+    throw 'Detached launcher must select the official Latest itself'
+  }
   if ($OfflineArchive) {
     if ($env:GITHUB_ACTIONS -ne 'true' -or -not $Version -or -not $ExpectedSha256) {
       throw 'Offline input is allowed only by explicit CI fixture'
@@ -346,6 +468,16 @@ try {
     $Version = $SelectedTag
     $releaseSha = $SelectedReleaseSha256
     $releaseUrl = "https://github.com/lirtual/mcp-workers/releases/download/$Version/remote-control-agent-$Version-windows-x64.zip"
+    if ($detachedUpgrade) {
+      $reviewed = Resolve-ReviewedNativeRelease $Version $releaseSha $true
+      $releaseUrl = $reviewed.Url
+      $releaseSize = $reviewed.Size
+    } elseif ($Version -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -and
+        -not $StageOnly -and -not $detachedUpgrade -and -not $detachedRequest) {
+      $reviewed = Resolve-ReviewedNativeRelease $Version $releaseSha
+      $releaseUrl = $reviewed.Url
+      $releaseSize = $reviewed.Size
+    }
   } else {
     if ($Version -or $ExpectedSha256) { throw 'Live install resolves the latest Agent Release and does not accept a source pin' }
     $latest = Resolve-LatestAgentRelease
@@ -356,6 +488,9 @@ try {
   }
   Ensure-PrivateFolder ([IO.Path]::Combine($env:LOCALAPPDATA, 'mcp-workers'))
   Ensure-PrivateFolder $root
+  if (Test-Path -LiteralPath ([IO.Path]::Combine($root,'windows-native-upgrade.json'))) {
+    throw 'Unreconciled native upgrade; recover before changing installed programs'
+  }
   $programs = [IO.Path]::Combine($root, 'programs')
   Ensure-PrivateFolder $programs
   $target = [IO.Path]::Combine($programs, "$Version-windows-x64")
@@ -364,6 +499,22 @@ try {
   $alreadyPaired = Test-Path -LiteralPath $idFile
   $userTaskName = 'RCA-Remote-Control-v2-' + $userSid.Value.Replace('-', '_')
   $task = Get-ScheduledTask -TaskName $userTaskName -ErrorAction SilentlyContinue
+  if ($task) {
+    if ($task.Actions.Count -ne 1 -or [string]$task.Actions[0].Arguments -cnotmatch ' --service --endpoint "[^"]+" --generation "[0-9a-f-]{36}"$') {
+      throw 'Retired Node or unreviewed Agent Task; manually reinstall Rust'
+    }
+    $existingVersion = Get-ExistingAgentVersion $programs ([string]$task.Actions[0].Execute)
+    $existingDir = Join-Path $programs ($existingVersion + '-windows-x64')
+    Assert-PrivateFolder $existingDir
+    $existingManifest = Get-Content -LiteralPath (Join-Path $existingDir 'bundle.json') -Raw | ConvertFrom-Json
+    $existingProfile = $existingManifest.PSObject.Properties['artifact_profile']
+    $existingRuntime = $existingManifest.PSObject.Properties['agent_runtime']
+    if ($existingManifest.version -cne $existingVersion -or $null -eq $existingProfile -or
+        $existingProfile.Value -cne 'rust-native-only-v1' -or $null -eq $existingRuntime -or
+        $existingRuntime.Value -cne 'rust-standard-windows-v1') {
+      throw 'Retired Node or unreviewed Agent version; manually reinstall Rust'
+    }
+  }
   if ($detachedUpgrade -and (-not $alreadyPaired -or -not $task -or
       $task.State -ne 'Running' -or
       (Test-Path -LiteralPath ($identityFile + '.owner-stopped')))) {
@@ -441,19 +592,35 @@ try {
     return
   }
 
+  $candidateOnboarding = $SelectedTag -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$' -and
+    -not $StageOnly -and -not $OfflineArchive -and -not $detachedUpgrade -and -not $detachedRequest
+  # Only the official immutable Latest lookup (not an arbitrary stable pin,
+  # offline fixture or detached task) can admit attended stable native install.
+  $stableOnboarding = -not $SelectedTag -and -not $OfflineArchive -and
+    -not $StageOnly -and -not $detachedUpgrade -and -not $detachedRequest
+  $nativeOnboarding = $candidateOnboarding -or $stableOnboarding
   $upgradeExisting = $false
   if ($alreadyPaired) {
     if (-not (Test-Path -LiteralPath $identityFile -PathType Leaf)) {
       throw 'Existing device ID has no private key; refusing upgrade'
     }
-    if (-not $task -or $task.Actions.Count -ne 1) {
-      throw 'Existing device has no user-logon task; use explicit device management'
+    if (-not $task) {
+      if (-not $nativeOnboarding -or -not (Test-Path -LiteralPath ($identityFile + '.install-mode'))) {
+        throw 'Existing device has no user-logon task; use explicit device management'
+      }
+    } elseif ($task.Actions.Count -ne 1) {
+      throw 'Unreviewed existing user-logon Task'
     }
-    $oldVersion = Get-ExistingAgentVersion $programs ([string]$task.Actions[0].Execute)
+    $oldVersion = if ($task) { Get-ExistingAgentVersion $programs ([string]$task.Actions[0].Execute) } else { $Version }
+    if ($detachedUpgrade -and $oldVersion -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+      throw 'Detached candidate promotion refused; use attended upgrade'
+    }
     if ($oldVersion -cne $Version) {
       $oldNumber = [version](($oldVersion.Substring(1) -split '-')[0])
       $newNumber = [version](($Version.Substring(1) -split '-')[0])
-      if ($newNumber -le $oldNumber) { throw 'Automatic downgrade or same-version replacement refused' }
+      $stablePromotion = $stableOnboarding -and ($newNumber -eq $oldNumber) -and
+        $oldVersion -cmatch '^v[0-9]+\.[0-9]+\.[0-9]+-rust-candidate\.[1-9][0-9]*$'
+      if ($newNumber -le $oldNumber -and -not $stablePromotion) { throw 'Automatic downgrade or same-version replacement refused' }
       Write-Output ("Agent: {0} -> {1}" -f $oldVersion, $Version)
       Write-Output 'Finish active operations before upgrading.'
       Write-Output ("Task: {0} (state preserved)" -f $task.State)
@@ -468,51 +635,41 @@ try {
   } elseif ($task) {
     throw 'Existing user-logon task without an approved local identity; refusing new pairing'
   }
+  # The independent Task path admits only a strictly newer reviewed stable
+  # archive for an already-running permanent installation, never onboarding.
+  $nativeDetachedUpgrade = $detachedUpgrade -and $upgradeExisting -and $alreadyPaired -and
+    $task -and $task.State -eq 'Running' -and -not (Test-Path -LiteralPath ($identityFile + '.owner-stopped'))
   if ($StageOnly -and -not $upgradeExisting) {
     throw 'Staging requires an existing paired device with a strictly newer target version'
   }
   if (Test-Path -LiteralPath $target) {
     Assert-PrivateFolder $target
-    $nodeExisting = [IO.Path]::Combine($target,'bin','node.exe')
-    $verifyExisting = [IO.Path]::Combine($target,'apps','remote-control-agent','scripts','verify-windows-preview.mjs')
-    & $nodeExisting $verifyExisting $target | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Existing program manifest failed verification' }
-    if ($StageOnly) {
-      Write-Output ('Verified staging already exists: ' + $Version)
-      return
+    # Reuse only the explicitly reviewed immutable native candidate.
+    # Never overwrite an already present program directory.
+    $installedManifest = Get-Content -LiteralPath (Join-Path $target 'bundle.json') -Raw | ConvertFrom-Json
+    $installedProfile = $installedManifest.PSObject.Properties['artifact_profile']
+    if ($null -eq $installedProfile -or $installedProfile.Value -cne 'rust-native-only-v1') {
+      throw 'Retired Node or unreviewed installed package; manually reinstall Rust'
     }
-    if ($upgradeExisting) {
-      $upgradeFrozen = $false
-      try {
-        if ($detachedUpgrade) { Invoke-AgentUpgradeFreeze $identityFile 'freeze'; $upgradeFrozen = $true }
-        & ([IO.Path]::Combine($target,'rca.cmd')) upgrade --version $Version | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'Upgrade failed. Task kept or restored.' }
-      } finally {
-        if ($upgradeFrozen) {
-          try { Invoke-AgentUpgradeFreeze $identityFile 'release' }
-          catch { } # Original Agent may already have been replaced.
-        }
-      }
-      if ($detachedUpgrade) {
-        Write-Output 'Local switch returned; independent signed-WSS verification required.'
-      } else {
-        Write-Output 'Upgraded. Checking authorization...'
-        Complete-ApprovedOnboarding ([IO.Path]::Combine($target,'rca.cmd'))
-      }
-      return
+    if (-not ($nativeOnboarding -or $nativeDetachedUpgrade)) {
+      throw 'Native-only bundle requires reviewed attended onboarding or detached upgrade'
     }
-    if ($detachedUpgrade) {
-      Write-Output 'Already installed; independent signed-WSS verification required.'
-      return
+    $temp = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('rca-' + [guid]::NewGuid().ToString('N') + '.zip'))
+    Download-ApprovedAsset $releaseUrl $temp $releaseSize
+    Assert-ArchiveDigest $temp $releaseSha
+    $stage = [IO.Path]::Combine($programs, ('.stage-' + [guid]::NewGuid().ToString('N')))
+    Ensure-PrivateFolder $stage
+    Expand-SafeArchive $temp $stage
+    Seal-StagedArchive $stage
+    & (Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1') -Root $stage -Version $Version | Out-Null
+    if ((Get-FileHash -LiteralPath (Join-Path $stage 'bundle.json') -Algorithm SHA256).Hash -cne
+        (Get-FileHash -LiteralPath (Join-Path $target 'bundle.json') -Algorithm SHA256).Hash) {
+      throw 'Installed candidate does not match reviewed asset'
     }
-    if ($alreadyPaired) {
-      $storedId = (Get-Content -LiteralPath $idFile -Raw).Trim()
-      if ($storedId -cnotmatch '^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$') { throw 'Untrusted stored device ID' }
-      Write-Output ('Device ID: ' + $storedId)
-      Complete-ApprovedOnboarding ([IO.Path]::Combine($target,'rca.cmd'))
-      return
-    }
-    Complete-ApprovedOnboarding ([IO.Path]::Combine($target,'rca.cmd'))
+    # Run the trusted verifier from the reviewed ZIP against the installed
+    # directory before executing any installed script or binary.
+    & (Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1') -Root $target -Version $Version | Out-Null
+    Complete-NativeInstall $target
     return
   }
   $temp = [IO.Path]::Combine([IO.Path]::GetTempPath(), ('rca-' + [guid]::NewGuid().ToString('N') + '.zip'))
@@ -529,44 +686,53 @@ try {
   $stage = [IO.Path]::Combine($programs, ('.stage-' + [guid]::NewGuid().ToString('N')))
   Ensure-PrivateFolder $stage
   Expand-SafeArchive $temp $stage
-  $node = [IO.Path]::Combine($stage, 'bin', 'node.exe')
-  $verifier = [IO.Path]::Combine($stage, 'apps', 'remote-control-agent',
-                                'scripts', 'verify-windows-preview.mjs')
-  & $node $verifier $stage | Out-Null
-  if ($LASTEXITCODE -ne 0) { throw 'Bundle file manifest failed verification' }
+  Seal-StagedArchive $stage
   $manifest = Get-Content -LiteralPath ([IO.Path]::Combine($stage, 'bundle.json')) -Raw | ConvertFrom-Json
   if ($manifest.version -cne $Version) { throw 'Manifest version mismatch' }
-  [IO.Directory]::Move($stage, $target)
+  $profile = $manifest.PSObject.Properties['artifact_profile']
+  if ($null -eq $profile -or $profile.Value -cne 'rust-native-only-v1') {
+    throw 'Retired Node or unreviewed package; native Rust required'
+  }
+  if (-not $StageOnly -and -not ($nativeOnboarding -or $nativeDetachedUpgrade)) {
+    throw 'Native-only Windows bundle requires reviewed attended onboarding or detached upgrade'
+  }
+  # The outer reviewed ZIP SHA256 was checked before extraction.
+  $verifier = Join-Path $stage 'apps/remote-control-agent/scripts/verify-windows-native.ps1'
+  & $verifier -Root $stage -Version $Version | Out-Null
+  Invoke-StageFileOperation {
+    Assert-PrivateFolder $stage
+    if (Test-Path -LiteralPath $target) { throw 'Target already exists; refuse stage promotion' }
+    [IO.Directory]::Move($stage, $target)
+  }
   $promoted = $true
   Write-Output "Installed: $Version"
   if ($StageOnly) {
     Write-Output ('Verified staging complete; running Agent task unchanged: ' + $Version)
     return
   }
-  if ($upgradeExisting) {
-    $upgradeFrozen = $false
-    try {
-      if ($detachedUpgrade) { Invoke-AgentUpgradeFreeze $identityFile 'freeze'; $upgradeFrozen = $true }
-      & ([IO.Path]::Combine($target,'rca.cmd')) upgrade --version $Version | Out-Null
-      if ($LASTEXITCODE -ne 0) { throw 'Upgrade failed. Task kept or restored.' }
-    } finally {
-      if ($upgradeFrozen) {
-        try { Invoke-AgentUpgradeFreeze $identityFile 'release' }
-        catch { } # Original Agent may already have been replaced.
-      }
-    }
-    if ($detachedUpgrade) {
-      Write-Output 'Local switch returned; independent signed-WSS verification required.'
-    } else {
-      Write-Output 'Upgraded. Checking authorization...'
-      Complete-ApprovedOnboarding ([IO.Path]::Combine($target,'rca.cmd'))
-    }
-    return
-  }
-  Complete-ApprovedOnboarding ([IO.Path]::Combine($target,'rca.cmd'))
+  Complete-NativeInstall $target
+} catch {
+  $primaryFailure = $true
+  throw
 } finally {
-  if ($temp -and (Test-Path -LiteralPath $temp)) { Remove-Item -LiteralPath $temp -Force }
+  # An exception during cleanup must not mask the primary install result.
+  $cleanupFailed = $false
+  if ($temp -and (Test-Path -LiteralPath $temp)) {
+    try { Invoke-StageFileOperation { Remove-Item -LiteralPath $temp -Force -ErrorAction Stop } }
+    catch { $cleanupFailed = $true }
+  }
   if (-not $promoted -and $stage -and (Test-Path -LiteralPath $stage)) {
-    Remove-Item -LiteralPath $stage -Recurse -Force
+    try {
+      Invoke-StageFileOperation {
+        if (Test-Path -LiteralPath $stage) {
+          Assert-PrivateFolder $stage
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction Stop
+        }
+      }
+    } catch { $cleanupFailed = $true }
+  }
+  if ($cleanupFailed) {
+    if (-not $primaryFailure) { throw 'Private installer staging cleanup incomplete' }
+    Write-Warning 'Private installer staging cleanup incomplete; original failure preserved'
   }
 }

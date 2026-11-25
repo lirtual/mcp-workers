@@ -17,7 +17,7 @@ test('one checkout contains the nested Agent and does not fetch a pinned public 
 
   const pkg = JSON.parse(read('apps/remote-control-mcp-worker/agent/package.json'));
   assert.equal(pkg.name, 'remote-control-agent');
-  assert.equal(existsSync(path.join(root, 'apps/remote-control-mcp-worker/agent/src/v2-main.ts')), true);
+  assert.equal(existsSync(path.join(root, 'apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml')), true);
   assert.equal(existsSync(path.join(root, 'apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs')), true);
   assert.equal(existsSync(path.join(root, 'apps/remote-control-mcp-worker/agent/scripts/validate-local-archive.py')), true);
   assert.equal(existsSync(path.join(root, 'apps/remote-control-mcp-worker/agent/install.ps1')), true);

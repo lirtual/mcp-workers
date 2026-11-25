@@ -24,10 +24,10 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 | `ima-mcp-worker` | `IMA_API_KEY` | `IMA_CLIENT_ID`、`IMA_BASE_URL` |
 | `raindrop-mcp-worker` | `RAINDROP_ACCESS_TOKEN` | `RAINDROP_RATE_LIMIT_MAX_RETRIES` |
 | `ssh-mcp-worker` | `SSH_ENCRYPTION_KEY`（GitHub/运行时同名） | 无 |
-| `remote-control-mcp-worker` | 无 | 无 |
+| `remote-control-mcp-worker` | 无 | 复用 `CLERK_PILOT_PUBLISHABLE_KEY`、`CLERK_PILOT_OWNER_USER_ID`、`CLERK_PILOT_ISSUER`；可选 `RCA_PERMANENT_IDLE_DAYS` |
 | `github-actions-mcp-worker` | `ACTIONS_GITHUB_DISPATCH_TOKENS` | 无 |
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`；`SESSION_RUNTIME_DATA_KEY` 已按 #774 清理，不再是现行发布来源 | `WORKFLOW_MCP_PORTAL_CLIENT_ID`（Repository）、`WORKFLOW_GITHUB_ACTION_REPOSITORY`（Repository） |
-| `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（运行时 `CF_ACCESS_CLIENT_SECRET`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`、原有 `CLERK_PILOT_*`（仅复用身份变量，不复用 Resource） |
+| `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（运行时 `CF_ACCESS_CLIENT_SECRET`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`、历史命名的 `CLERK_PILOT_*` GitHub 身份输入（Gateway 与 RCA 发布复用，不再注入 Raindrop） |
 
 **Historical Spec #733 exception (2026-11-06, superseded):** GitHub Environment `ENCRYPTION_KEY` (SSH), `MCP_PORTAL_CLIENT_SECRET` and `SESSION_RUNTIME_DATA_KEY` (Workflow) were originally kept as release inputs and mapped to canonical Worker runtime names. The #774 UU cleanup removed `SESSION_RUNTIME_DATA_KEY`. The subsequent authorized GitHub-source-only normalization replaces the remaining two with unchanged-byte `SSH_ENCRYPTION_KEY` and `WORKFLOW_MCP_PORTAL_CLIENT_SECRET` inputs. Historical failed rename attempts and their audit evidence below remain unchanged; the source-only change does not deploy Workers or prove decryption.
 

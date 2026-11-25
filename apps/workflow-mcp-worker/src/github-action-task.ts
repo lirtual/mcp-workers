@@ -10,6 +10,7 @@ import {inspectPersistedGitHubActionAttempt} from './github-action-attempt-inspe
 import {inspectGitHubActionRun} from './github-action-run-inspection.ts';
 import {isDynamicMainAction} from './github-action-main.ts';
 import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
+import {selectedFilePlan} from './selected-file-plan.ts';
 import {isDropClaimCallback} from './drop-claim-receipt.ts';
 import {readWorkflowGitHubExecutor,isCurrentWorkflowGitHubAction} from './workflow-github-executor.ts';
 
@@ -52,10 +53,10 @@ export async function runPublishedGitHubActionTask(
    return {status:'failed',error_code:'github_action_invalid_publication'};
   inputs[key]=String(value);
  }
- // Only this exact approved, manual Drop Plan may replace three fixed placeholders.
+ // A reviewed selected-file Task may replace only its three frozen slots.
  // D1 has only ciphertext; the file URL is never loaded by this executor.
  let sealedAttemptId:string|undefined;
- if(isDropPlan(plan)){
+ if(isDropPlan(plan)||selectedFilePlan(plan)!==null){
   const row=await env.DB.prepare('SELECT inputs FROM runs WHERE id=?')
    .bind(runId).first<{inputs:string}>();
   let sealed:unknown;
@@ -127,7 +128,7 @@ export async function runPublishedGitHubActionTask(
       .bind(attemptId).first<{result_json:string}>();
     try{
      const output=receipt?JSON.parse(receipt.result_json):null;
-     if(isDropPlan(plan)){
+     if(isDropPlan(plan)||selectedFilePlan(plan)?.file.receipt==='owner_claim_v1'){
       // A physical upload can succeed even when its signed receipt is lost.
       // Never misreport that case as a successful Drop preview.
       if(!output||output.claim_receipt_ref!==attemptId||
@@ -171,11 +172,12 @@ export async function recordSignedGitHubActionTaskResult(
  const published=await db.prepare(`SELECT v.plan FROM runs r
     JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
     .bind(row.run_id).first<{plan:string}>();
- let drop=false;
- try{drop=!!published&&isDropPlan(JSON.parse(published.plan) as Plan);}
+ let selectedFile=false;
+ try{if(published){const plan=JSON.parse(published.plan) as Plan;
+  selectedFile=isDropPlan(plan)||selectedFilePlan(plan)?.file.receipt==='owner_claim_v1';}}
  catch{return 'denied';}
  let savedResult:Record<string,unknown>=result;
- if(drop){
+ if(selectedFile){
   // The bearer URL is sealed by the Runner BEFORE this HTTP request; this
   // table is its only persisted ciphertext copy. Other result paths get a ref.
   if(!isDropClaimCallback(result))return 'denied';

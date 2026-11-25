@@ -88,8 +88,8 @@ test("DO websocket error rejects in-flight work, while a reconstructed DO finds 
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   assert.deepEqual((await result.json() as Array<{idle_expires_at?:number}>).map(({idle_expires_at,...d})=>d), [
-    { device_id: f.a, name: "home", status: "offline", grant_type: "permanent" },
-    { device_id: f.b, name: "office", status: "online", grant_type: "permanent" },
+    { device_id: f.a, name: "home", status: "offline", grant_type: "permanent", capability_hints: { file_read: "unknown", file_write: "unknown", shell: "unknown" } },
+    { device_id: f.b, name: "office", status: "online", grant_type: "permanent", capability_hints: { file_read: "unknown", file_write: "unknown", shell: "unknown" } },
   ].sort((x, y) => x.device_id.localeCompare(y.device_id)));
   // An actual read dispatched by the reconstructed DO must target the live
   // device and correlate only a new request; no prior in-memory map is needed.

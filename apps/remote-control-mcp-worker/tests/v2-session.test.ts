@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { newEnrollment } from "../agent/src/v2-enrollment.ts";
 import { signedSessionProof } from "../agent/src/v2-session-client.ts";
+import { parseDeviceInfo } from "../src/device-info.ts";
 import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof, listApprovedDevices } from "../src/v2-session.ts";
 
 interface MockStore {
@@ -196,6 +197,70 @@ test("failed Hibernation attachment setup closes an accepted WSS instead of leak
   }
 });
 
+
+test("device list shows only fresh reported read/write/Shell hints, never stale authorization", async () => {
+  const { records, store } = testStore();
+  const now = Date.now();
+  const connectedAt = now - 2_000;
+  const info = {
+    hostname: "signed-host", os: "linux", os_version: "Ubuntu 24",
+    arch: "x64", environment: "native", agent_version: "v0.1.56",
+    capabilities: ["read", "file_write", "shell"],
+  };
+  assert.deepEqual(parseDeviceInfo(JSON.stringify({kind: "device_info", ...info}))?.capabilities,
+    ["read", "file_write", "shell"], "existing wire field is retained only after validation");
+  assert.equal(parseDeviceInfo(JSON.stringify({
+    kind: "device_info", ...info, capabilities: ["read", "admin"],
+  })), null, "unknown capability must be rejected, not reported");
+
+  const device = {
+    device_id: uuid, name: "signed-host", public_key: "signed-key",
+    fingerprint: "0123456789abcdef01234567", approved_at: now - 10_000,
+    revoked: false, grant_type: "temporary", expires_at: now - 10_000 + 86_400_000,
+    last_connected_at: connectedAt, device_info: info,
+  };
+  records.set("device:" + uuid, device);
+  records.set("session:epoch:" + uuid, "signed-epoch");
+  let open = true;
+  let metadataReported = true;
+  const socket = {
+    get readyState() { return open ? WebSocket.OPEN : WebSocket.CLOSED; },
+    deserializeAttachment: () => ({
+      device_id: uuid, epoch: "signed-epoch",
+      connected_at: connectedAt, last_auth_check_at: now - 1_000,
+      device_info_reported: metadataReported,
+    }),
+  } as unknown as WebSocket;
+  const state = {
+    storage: store,
+    getWebSockets: (tag: string) => tag === "device:" + uuid ? [socket] : [],
+  } as unknown as DurableObjectState;
+  const hints = async () => ((await listApprovedDevices(state, async () => true)).body as
+    Array<{ capability_hints: { file_read: string; file_write: string; shell: string } }>)[0]?.capability_hints;
+  const full = { file_read: "reported_enabled", file_write: "reported_enabled", shell: "reported_enabled" };
+  const unknown = { file_read: "unknown", file_write: "unknown", shell: "unknown" };
+
+  assert.deepEqual(await hints(), full);
+  records.set("device:" + uuid, {
+    ...device, device_info: { ...info, agent_version: "v0.1.55" },
+  });
+  assert.deepEqual(await hints(), unknown, "legacy Agent claims must not become current capability hints");
+  records.set("device:" + uuid, device);
+  metadataReported = false;
+  assert.deepEqual(await hints(), unknown, "a signed socket is not fresh until its metadata frame is accepted");
+  metadataReported = true;
+  records.set("device:" + uuid, { ...device, device_info: { ...info, capabilities: ["read"] } });
+  assert.deepEqual(await hints(), {
+    file_read: "reported_enabled", file_write: "reported_disabled", shell: "reported_disabled",
+  });
+  records.set("device:" + uuid, { ...device, device_info: { ...info, capabilities: undefined } });
+  assert.deepEqual(await hints(), unknown, "old Agent without capability report must stay unknown");
+  records.set("device:" + uuid, { ...device, last_connected_at: connectedAt - 1 });
+  assert.deepEqual(await hints(), unknown, "metadata from a different socket must not survive reconnect");
+  records.set("device:" + uuid, device);
+  open = false;
+  assert.deepEqual(await hints(), unknown, "offline metadata is not an active capability report");
+});
 
 test("temporary and Workflow Session online reporting uses the current authenticated socket", async () => {
   for (const grant_type of ["temporary", "session"] as const) {

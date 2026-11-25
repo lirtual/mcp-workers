@@ -1,12 +1,13 @@
+import { validCdp, type CdpStep } from "./cdp.ts";
 import { isInteraction, validInteraction, type Interaction } from "./interactions.ts";
 // Browser MCP T3 foundation: durable, minimum-fact operation intent ledger.
 // This module never executes a browser action, queues offline work, or stores a URL,
 // tab title, input body or raw execution payload. Only a privileged coordinator
 // may call admit/dispatch/finalize after checking local authorization and target.
 type Sql = Pick<SqlStorage,"exec">;
-type Action = "tab_open" | "tab_navigate" | "tab_close" | Interaction["action"];
+type Action = "tab_open" | "tab_navigate" | "tab_close" | "cdp" | Interaction["action"];
 type State = "admitted" | "pending_approval" | "denied" | "dispatching" | "unknown" | "owner_reported_resolution" | "completed" | "failed" | "expired";
-export type Command = {endpoint_id:string;intent_key:string;action:Action;url?:string;tab_id?:number;document_id?:string;element_id?:string;text?:string;key?:string;delta_y?:number;value?:string};
+export type Command = {endpoint_id:string;intent_key:string;action:Action;url?:string;tab_id?:number;document_id?:string;element_id?:string;text?:string;key?:string;delta_y?:number;value?:string;session_id?:string;commands?:CdpStep[]};
 type Row = {
   endpoint_id:string;intent_key:string;operation_id:string;action:Action;
   commitment:string;state:State;generation:number|null;prepared_revision:number|null;execute_token_hash:string|null;
@@ -35,12 +36,18 @@ const failureActions:Record<string,string>={
   prepare_storage_unavailable:"extension_session_prepare_storage_failed; check extension session storage",
   prepare_expired:"extension_prepare_deadline_invalid; do not reuse this operation",
   capacity_exceeded:"review_operation_capacity",
-  ordinary_window_required:"owner_must_open_ordinary_window"
+  ordinary_window_required:"owner_must_open_ordinary_window",
+  cdp_disabled:"enable_advanced_cdp_in_local_extension_options",
+  unsupported_version:"upgrade_chrome_edge_extension_with_owner_permission",
+  unsupported_cdp:"browser_debugger_api_unavailable",
+  debugger_unavailable:"check_DevTools_or_browser_policy",
+  authorization_changed:"recheck_endpoint_and_local_grant"
 };
 export const safeFailureCode=(value:unknown):string|undefined=>
   typeof value==="string"&&Object.hasOwn(failureActions,value)?value:undefined;
 const random=()=>Array.from(crypto.getRandomValues(new Uint8Array(32)),v=>v.toString(16).padStart(2,"0")).join("");
 function validCommand(value: Command) {
+  if(value.action==="cdp")return validCdp(value);
   if(isInteraction(value.action))return validInteraction(value);
   if(!endpoint.test(value.endpoint_id) || !uuid.test(value.intent_key))return false;
   if(value.action!=="tab_open" && value.action!=="tab_navigate" && value.action!=="tab_close")return false;
@@ -94,7 +101,7 @@ export class IntentLedger {
   }
   private async commitment(command:Command) {
     // Fixed order and fixed parameters: do not hash caller-supplied serialization.
-    const canonical=JSON.stringify([command.endpoint_id,command.action,command.tab_id??null,command.document_id??null,command.url??null,...(isInteraction(command.action)?[command.element_id,command.text??null,command.key??null,command.delta_y??null,command.value??null]:[])]);
+    const canonical=JSON.stringify([command.endpoint_id,command.action,command.tab_id??null,command.document_id??null,command.url??null,...(command.action==="cdp"?[command.session_id??null,command.commands]:isInteraction(command.action)?[command.element_id,command.text??null,command.key??null,command.delta_y??null,command.value??null]:[])]);
     const key=await crypto.subtle.importKey("raw",bytes(this.secret),{name:"HMAC",hash:"SHA-256"},false,["sign"]);
     return hex(await crypto.subtle.sign("HMAC",key,bytes(canonical)));
   }

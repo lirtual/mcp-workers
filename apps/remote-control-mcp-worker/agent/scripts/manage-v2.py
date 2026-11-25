@@ -12,6 +12,7 @@ APP = Path("apps/remote-control-agent")
 UNIT = "remote-control-agent.service"
 VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+ASSET_SHA = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def local_runtime():
@@ -26,10 +27,8 @@ def local_runtime():
     if not manifest.is_file() or manifest.is_symlink():
         raise ValueError("Versioned Agent bundle is missing.")
     info = json.loads(manifest.read_text("utf8"))
-    if (info.get("artifact_schema") != 1 or info.get("device_protocol") != 2
-            or info.get("upgrade_profile") != "read-only-no-shell-v1"
-            or root.name != info.get("version", "") + "-" + info.get("target", "")):
-        raise ValueError("Unreviewed installed Agent bundle.")
+    if info.get("artifact_profile") != "rust-native-only-v1":
+        raise ValueError("Unsupported installed Linux Agent; reinstall native Rust")
     source = script.with_name("bootstrap-v2.py")
     spec = importlib.util.spec_from_file_location("rc_agent_bootstrap", source)
     bootstrap = importlib.util.module_from_spec(spec)
@@ -39,6 +38,7 @@ def local_runtime():
     spec.loader.exec_module(bootstrap)
     # This rejects foreign, symlinked and unowned local installation paths.
     bootstrap.local_inventory(str(home))
+    bootstrap.validated_owned_version(root)
     return root, info, bootstrap
 
 
@@ -46,7 +46,7 @@ def installed_endpoint(bootstrap):
     _, _, _, unit, _ = bootstrap.local_inventory(str(Path.home()))
     if not unit:
         return None
-    lines = [s.partition("=")[2] for s in unit.splitlines()
+    lines = [s.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=") for s in unit.splitlines()
              if s.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
     if len(lines) != 1:
         raise ValueError("Cannot establish a unique owned Worker endpoint.")
@@ -80,22 +80,26 @@ def logs(bootstrap):
 def pair(root, bootstrap, arguments):
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Pairing/repair requires a real local terminal.")
+    temporary = bool(arguments) and arguments[0] == "--temporary"
+    if temporary:
+        arguments = arguments[1:]
     if len(arguments) > 1:
-        raise ValueError("Usage: rca pair [https://approved-worker-origin/]")
+        raise ValueError("Usage: rca pair [--temporary] [https://approved-worker-origin/]")
     endpoint = installed_endpoint(bootstrap)
     if arguments:
         if not arguments[0].startswith("https://") or arguments[0].count("/") > 3:
             raise ValueError("Supply a clean HTTPS endpoint.")
-        if endpoint and arguments[0] != endpoint:
+        if endpoint and arguments[0] != endpoint and not temporary:
             raise ValueError("Existing device endpoint cannot be silently changed.")
         endpoint = arguments[0]
     if not endpoint:
         raise ValueError("Supply an approved HTTPS origin: pair https://example.org/")
-    node = root / "bin/node"
-    installer = root / APP / "scripts/install-v2.mjs"
-    environment = {**os.environ, "RC_AGENT_NO_POST_START": "1"}
-    return subprocess.run([str(node), str(installer), "--endpoint", endpoint],
-                          check=False, env=environment).returncode
+    if temporary:
+        return bootstrap.native_temporary(Path.home(), root, endpoint)
+    if input("Type NATIVE-INSTALL for permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
+        raise ValueError("Native installation not confirmed")
+    print(json.dumps(bootstrap.native_pair_or_install(Path.home(), root, endpoint), indent=2))
+    return 0
 
 
 def bootstrap_action(bootstrap, arguments):
@@ -108,27 +112,35 @@ def bootstrap_action(bootstrap, arguments):
 
 
 def upgrade(bootstrap, arguments):
-    if len(arguments) != 2 or not VERSION.fullmatch(arguments[0]) or not SHA.fullmatch(arguments[1]):
-        raise ValueError("Usage: rca upgrade <published-tag> <reviewed-40-char-commit>")
+    if not arguments:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            raise ValueError("Upgrade requires local interactive confirmation.")
+        endpoint = installed_endpoint(bootstrap)
+        if not endpoint:
+            raise ValueError("No installer-owned permanent service available to upgrade.")
+        return bootstrap.native_upgrade_latest(endpoint)
+    if (len(arguments) != 3 or not VERSION.fullmatch(arguments[0])
+            or not SHA.fullmatch(arguments[1])
+            or not ASSET_SHA.fullmatch(arguments[2])):
+        raise ValueError("Usage: rca upgrade <published-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>")
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Upgrade requires local interactive confirmation.")
     endpoint = installed_endpoint(bootstrap)
     if not endpoint:
         raise ValueError("No installer-owned permanent service available to upgrade.")
     print("Only immutable verified GitHub Releases are accepted. Identity and receipts are preserved.")
-    if input("Type UPGRADE to confirm: ").strip() != "UPGRADE":
-        raise ValueError("Upgrade not confirmed.")
-    # Bootstrap execs bundled Node. Do not open a second manager inside this menu.
-    os.environ["RC_AGENT_NO_POST_START"] = "1"
     return bootstrap_action(bootstrap, ["--tag", arguments[0], "--commit", arguments[1],
-                                         "--endpoint", endpoint, "--upgrade"])
+                                        "--endpoint", endpoint, "--native-upgrade",
+                                        "--asset-sha256", arguments[2]])
 
 
 def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
-        print("Usage: rca [status|pair|logs|upgrade|uninstall]")
+        print("Usage: rca [status|pair|logs|stop|start|upgrade|recover|uninstall]")
+        print("Permanent pairing / re-pair and pair --temporary are supported.")
         print("Without arguments: open the interactive local Agent manager.")
-        print("Upgrade requires: upgrade <immutable-tag> <reviewed-40-char-commit>.")
+        print("Upgrade from the reviewed stable Latest: rca upgrade.")
+        print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
         return 0
     if command in ("--version", "version"):
         print(info["version"])
@@ -145,8 +157,19 @@ def dispatch(command, args, root, info, bootstrap):
         return 0
     if command == "pair":
         return pair(root, bootstrap, args)
+    if command in ("stop", "start"):
+        if args:
+            raise ValueError("Stop/Start takes no arguments")
+        print(json.dumps(bootstrap.native_owner_lifecycle(Path.home(), command)))
+        return 0
     if command == "upgrade":
+        if args in (["--unattended"], ["--unattended-worker"]):
+            return bootstrap.native_unattended_upgrade(root, worker=args == ["--unattended-worker"])
         return upgrade(bootstrap, args)
+    if command == "recover":
+        if args:
+            raise ValueError("recover takes no arguments")
+        return bootstrap_action(bootstrap, ["--recover-native"])
     if command == "uninstall":
         if args:
             raise ValueError("uninstall takes no arguments")
@@ -162,20 +185,21 @@ def main():
         raise ValueError("Interactive menu needs a local TTY; use 'status' for scripted checks.")
     while True:
         print("\nRemote Control Agent " + info["version"])
-        print("1. Status   2. Pair / repair   3. Logs")
+        print("1. Status   2. " + "Pair / repair" + "   3. Logs")
         print("4. Upgrade  5. Uninstall       6. Exit")
+        print("7. Recover interrupted installation/upgrade")
         choice = input("Choose an option: ").strip()
         if choice in ("6", "q", "Q"):
             return 0
         mapping = {"1": "status", "2": "pair", "3": "logs", "4": "upgrade",
                    "5": "uninstall"}
+        mapping["7"] = "recover"
         if choice not in mapping:
-            print("Choose 1–6.")
+            print("Choose 1–7.")
             continue
         action = mapping[choice]
-        if action == "upgrade":
-            print("Provide the reviewed immutable Release tag and its 40-character commit.")
-            args = input("tag commit: ").split()
+        if action == "pair" and not installed_endpoint(bootstrap):
+            args = [input("Approved HTTPS Worker origin: ").strip()]
         else:
             args = []
         try:
@@ -184,13 +208,13 @@ def main():
                 return 0
             if result:
                 print("Operation was not completed; existing identity was not discarded.")
-        except (ValueError, OSError) as exc:
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
             print("Operation refused: " + str(exc), file=sys.stderr)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (ValueError, OSError, KeyError, json.JSONDecodeError):
+    except (ValueError, OSError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
         print("Remote Control Agent manager refused unsafe or unavailable local state.", file=sys.stderr)
         sys.exit(1)

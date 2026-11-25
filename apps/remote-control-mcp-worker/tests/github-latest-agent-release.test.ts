@@ -4,20 +4,12 @@ import {
   readLatestAgentRelease,
   selectLatestAgentRelease,
 } from "../src/github-latest-agent-release.ts";
-import {
-  LatestAgentReleaseError,
-  planInstalledWindowsTakeover,
-  verifyDownloadedWindowsAsset,
-  windowsExtractPathAllowed,
-} from "../agent/src/windows-installed-takeover.ts";
+
 
 const LATEST = "https://api.github.com/repos/lirtual/mcp-workers/releases/latest";
 const TAG = "v0.2.0";
 const SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const SIZE = 12345678;
-const WINDOWS_SHA = "8e527193e30f66d04ad8a6f13d97f4d577a00dec5a936ccb968ea06ac332399f";
-const DEVICE = "11111111-1111-4111-8111-111111111111";
-const UNKNOWN_OP = "6f0c2a1e-7b3d-4e1a-9c2f-0a1b2c3d4e5f";
 
 const TARGETS: ReadonlyArray<readonly [string, string]> = [
   ["linux-x64-glibc", "tar.gz"],
@@ -98,14 +90,7 @@ test("one latest snapshot selects the Windows asset from a stable immutable five
   assert.equal(request.url, LATEST);
   assert.equal(request.redirect, "manual");
   assert.equal(lookedUp.ok, true);
-  assert.equal(windowsExtractPathAllowed("bin/node.exe"), true);
-  assert.equal(windowsExtractPathAllowed("bin/rca-background.exe"), true);
-  assert.equal(windowsExtractPathAllowed("apps/remote-control-agent/scripts/windows-user-task.ps1"), true);
-  assert.equal(windowsExtractPathAllowed("apps/remote-control-agent/scripts/windows-upgrade-once.ps1"), true);
-  assert.equal(windowsExtractPathAllowed("../bin/node.exe"), false);
-  assert.equal(windowsExtractPathAllowed("bin/node.exe/../../outside.txt"), false);
-  assert.equal(windowsExtractPathAllowed("/bin/node.exe"), false);
-  assert.equal(windowsExtractPathAllowed("apps/remote-control-agent/scripts/evil.ps1"), false);
+
 });
 
 test("latest lookup stops on 404, 403, 429, redirects, prerelease tags, and a bad Agent manifest", async () => {
@@ -143,93 +128,4 @@ test("latest lookup stops on 404, 403, 429, redirects, prerelease tags, and a ba
     if (decision.ok) continue;
     assert.equal(decision.stop, stop);
   }
-});
-
-test("downloaded Windows bytes must match the official size and SHA-256", async () => {
-  const bytes = new TextEncoder().encode("windows-asset");
-  await verifyDownloadedWindowsAsset({ sha256: WINDOWS_SHA, size: 13 }, bytes);
-  await assert.rejects(verifyDownloadedWindowsAsset({ sha256: SHA, size: 13 }, bytes), (error: unknown) => {
-    assert.ok(error instanceof LatestAgentReleaseError);
-    assert.equal(error.code, "corrupt");
-    return true;
-  });
-  await assert.rejects(verifyDownloadedWindowsAsset({ sha256: WINDOWS_SHA, size: 12 }, bytes), (error: unknown) => {
-    assert.ok(error instanceof LatestAgentReleaseError);
-    assert.equal(error.code, "corrupt");
-    return true;
-  });
-});
-
-test("v0.1.51 paired Windows state keeps device id, key, permanent grant, and Owner Stop", () => {
-  const stopped = planInstalledWindowsTakeover({
-    version: "v0.1.51",
-    deviceId: DEVICE,
-    privateKeyPresent: true,
-    grant: "permanent",
-    ownerStopped: true,
-    unknownOperationId: UNKNOWN_OP,
-  }, TAG);
-  assert.equal(stopped.action, "upgrade");
-  assert.equal(stopped.deviceId, DEVICE);
-  assert.equal(stopped.grant, "permanent");
-  assert.equal(stopped.ownerStopped, true);
-  assert.equal(stopped.privateKeyPreserved, true);
-  assert.equal(stopped.startAgent, false);
-  assert.equal(stopped.rePair, false);
-  assert.equal(stopped.replayUnknownOperationId, null);
-
-  const reconnect = planInstalledWindowsTakeover({
-    version: "v0.1.51",
-    deviceId: DEVICE,
-    privateKeyPresent: true,
-    grant: "permanent",
-    ownerStopped: false,
-    unknownOperationId: UNKNOWN_OP,
-  }, TAG);
-  assert.equal(reconnect.action, "upgrade");
-  assert.equal(reconnect.startAgent, true);
-  assert.equal(reconnect.rePair, false);
-  assert.equal(reconnect.deviceId, DEVICE);
-  assert.equal(reconnect.replayUnknownOperationId, null);
-
-  const unknown = planInstalledWindowsTakeover({
-    version: "v0.1.51",
-    deviceId: DEVICE,
-    privateKeyPresent: true,
-    grant: "permanent",
-    ownerStopped: true,
-    unknownOperationId: UNKNOWN_OP,
-    upgradeResult: "unknown",
-  }, TAG);
-  assert.equal(unknown.action, "isolate");
-  assert.equal(unknown.startAgent, false);
-  assert.equal(unknown.rePair, false);
-  assert.equal(unknown.deviceId, DEVICE);
-  assert.equal(unknown.replayUnknownOperationId, null);
-
-  const partial = planInstalledWindowsTakeover({
-    version: "v0.1.51",
-    deviceId: DEVICE,
-    privateKeyPresent: true,
-    grant: "permanent",
-    ownerStopped: false,
-    unknownOperationId: null,
-    upgradeResult: "partial",
-  }, TAG);
-  assert.equal(partial.action, "isolate");
-  assert.equal(partial.startAgent, false);
-  assert.equal(partial.rePair, false);
-  assert.equal(partial.replayUnknownOperationId, null);
-
-  const same = planInstalledWindowsTakeover({
-    version: "v0.1.51",
-    deviceId: DEVICE,
-    privateKeyPresent: true,
-    grant: "permanent",
-    ownerStopped: false,
-    unknownOperationId: null,
-  }, "v0.1.51");
-  assert.equal(same.action, "refuse");
-  assert.equal(same.startAgent, false);
-  assert.equal(same.rePair, false);
 });

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {approvedAttachmentUrl,readBoundedAttachment,AttachmentReadError,
+import {approvedAttachmentUrl,inspectAttachmentUrl,readBoundedAttachment,AttachmentReadError,
  LITTERBOX_MAX_BYTES} from '../src/litterbox-file-source.ts';
 const file={file_id:'file_00000001',download_url:'https://files.oaiusercontent.com/test-fixture?token=disposable',
  mime_type:'text/plain',file_name:'fixture.txt'};
@@ -22,6 +22,63 @@ test('only exact OpenAI HTTPS file host and valid file ID can be fetched',()=>{
   assert.equal(approvedAttachmentUrl({...file,file_id:bad}),null);
  }
  assert.equal(approvedAttachmentUrl({...file,extra:'thing'}),null);
+});
+test('source rejection categories reveal no URL, host, ID or SAS value',()=>{
+ const selected=[
+  [{...file,file_id:'  '},'descriptor_invalid'],
+  [{...file,download_url:'http://files.oaiusercontent.com/x'},'url_invalid'],
+  [{...file,download_url:'https://not-approved.example/file'},'host_unapproved'],
+  [{...file,download_url:'https://selectedblob123.blob.core.windows.net/uploads/a.html?sig=x'},
+   'azure_sas_invalid'],
+ ] as const;
+ for(const [candidate,reason] of selected){
+  const checked=inspectAttachmentUrl(candidate);
+  assert.equal(checked.url,null);
+  assert.equal(checked.reason,reason);
+  assert.equal(JSON.stringify(checked).includes(candidate.download_url),false);
+  assert.equal(JSON.stringify(checked).includes(candidate.file_id),false);
+ }
+ assert.equal(inspectAttachmentUrl(file).reason,undefined);
+});
+test('unapproved file hosts expose only a finite provider family, never a hostname',()=>{
+ const cases=[
+  ['https://files2.oaiusercontent.com/path','openai'],
+  ['https://api.openai.com/path','openai'],
+  ['https://files.oaiusercontent.com.attacker.invalid/path','other'],
+  ['https://abc-def.blob.core.windows.net/path','azure_blob'],
+  ['https://a.blob.core.windows.net/path','azure_blob'],
+  ['https://blob.core.windows.net/path','azure_blob'],
+  ['https://abc.blob.core.windows.net.attacker.invalid/path','other'],
+  ['https://bucket.s3.amazonaws.com/path','aws'],
+  ['https://s3.us-east-1.amazonaws.com/path','aws'],
+  ['https://s3.amazonaws.com.attacker.invalid/path','other'],
+  ['https://127.0.0.1/path','other'],
+  ['https://unrecognized.example/path','other'],
+ ] as const;
+ for(const [download_url,host_family] of cases){
+  const candidate={...file,file_id:'SYNTHETIC_ID',download_url};
+  const checked=inspectAttachmentUrl(candidate);
+  assert.equal(checked.url,null);
+  assert.equal(checked.reason,'host_unapproved');
+  assert.equal(checked.host_family,host_family);
+  assert.equal(approvedAttachmentUrl(candidate),null);
+  for(const sensitive of [download_url,new URL(download_url).hostname,candidate.file_id])
+   assert.equal(JSON.stringify(checked).includes(sensitive),false);
+ }
+});
+test('Drop-only source policy accepts public HTTPS DNS while legacy stays strict',()=>{
+ for(const url of ['https://cdn.example.com/site.html',
+  'https://bucket.s3.amazonaws.com/site.zip',
+  'https://files.oaiusercontent.com.alias.example/site.html']){
+  assert.equal(inspectAttachmentUrl({...file,download_url:url},true).url?.href,url);
+  assert.equal(inspectAttachmentUrl({...file,download_url:url}).url,null);
+  assert.equal(approvedAttachmentUrl({...file,download_url:url}),null);
+ }
+ for(const url of ['https://127.0.0.1/site.html','https://[::1]/site.html',
+  'https://localhost/site.html','http://cdn.example.com/site.html',
+  'https://cdn.example.com:443/site.html']){
+  assert.equal(inspectAttachmentUrl({...file,download_url:url},true).url,null);
+ }
 });
 test('fetches the one file with no credentials or redirect, hashes bounded bytes in memory',async()=>{
  let count=0;
@@ -117,4 +174,18 @@ test('Azure Blob signed source inherits redirect and byte-limit safety',async()=
  await assert.rejects(()=>readBoundedAttachment(azure,async()=>redirect),/file_read_unavailable/);
  const tooLarge=new Response('x',{headers:{'content-length':String(LITTERBOX_MAX_BYTES+1)}});
  await assert.rejects(()=>readBoundedAttachment(azure,async()=>tooLarge),/file_size_limit/);
+});
+
+test('reviewed Cloudflare file limit stops a larger response before buffering the full legacy 10 MiB',async()=>{
+ await assert.rejects(()=>readBoundedAttachment(file,
+  async()=>new Response(new Uint8Array(2048)),1024),/file_size_limit/);
+});
+
+test('small reviewed byte cap rejects chunked responses without Content-Length',async()=>{
+ const body=new ReadableStream<Uint8Array>({start(controller){
+  controller.enqueue(new Uint8Array(700));
+  controller.enqueue(new Uint8Array(700));controller.close();
+ }});
+ await assert.rejects(()=>readBoundedAttachment(file,async()=>new Response(body),1024),
+  /file_size_limit/);
 });

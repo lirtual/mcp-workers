@@ -5,12 +5,26 @@ import {spawnSync} from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {acceptsOwnerConfirmation,admitsMacOwnerUpgrade,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,ownedWrite,ownerCliText,parsePlist,plistText,stopLaunchdForSwitch,verifiedEndpoint} from
+import {acceptsOwnerConfirmation,admitsMacOwnerUpgrade,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,observeOnline,ownedWrite,ownerCliText,parsePlist,plistText,stopLaunchdForSwitch,verifiedEndpoint} from
   "../scripts/macos-local.mjs";
 import {parsePermanentMacArgs} from "../src/macos-permanent.ts";
 const ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const ENDPOINT="https://rca.example.test/";
 const bundle=process.env.RCA_MACOS_BUNDLE_ROOT;
+
+test("#914 macOS activation reads Rust epoch and Node ISO connection markers",async t=>{
+  const identity=await mkdtemp(path.join(os.tmpdir(),"rca914-connection-"));
+  t.after(()=>rm(identity,{recursive:true,force:true}));
+  const generation=randomUUID();
+  const at=Date.now();
+  const marker=path.join(identity,"macos-connection.json");
+  for(const observed of [at,new Date(at).toISOString()]){
+    await writeFile(marker,JSON.stringify({
+      generation,version:"rust-candidate",pid:123,state:"connected",at:observed
+    })+"\n",{mode:0o600});
+    assert.equal(await observeOnline(identity,generation,()=>at),true);
+  }
+});
 
 test("#661 macOS owner installer dispatch must not silently skip a symlinked/aliased entry path",async t=>{
   const root=await mkdtemp(path.join(os.tmpdir(),"rca-mac-entry-alias-"));
@@ -136,13 +150,14 @@ test("#660 LaunchAgent plist is strictly owned, deterministic and rejects foreig
   const node=path.join(root,"bin/node");
   const entry=path.join(root,"apps/remote-control-agent/src/macos-permanent.js");
   const xml=plistText({node,entry,endpoint:ENDPOINT,generation:ID});
-  assert.deepEqual(parsePlist(xml,programs,ENDPOINT,"arm64"),{root,generation:ID});
+  assert.deepEqual(parsePlist(xml,programs,ENDPOINT,"arm64"),
+    {root,generation:ID,agentRuntime:"node-v2"});
   const intelRoot=path.join(programs,"v0.0.0-ci-darwin-x64");
   const intelXml=plistText({node:path.join(intelRoot,"bin/node"),
     entry:path.join(intelRoot,"apps/remote-control-agent/src/macos-permanent.js"),
     endpoint:ENDPOINT,generation:ID});
   assert.deepEqual(parsePlist(intelXml,programs,ENDPOINT,"x64"),
-    {root:intelRoot,generation:ID});
+    {root:intelRoot,generation:ID,agentRuntime:"node-v2"});
   assert.throws(()=>parsePlist(intelXml,programs,ENDPOINT,"arm64"));
   for(const other of [
     xml.replace("/bin/node","/bin/sh"),
@@ -200,14 +215,37 @@ test("#809 installed v0.1.51 source commit does not authorize the next macOS dow
 test("#660 candidate provenance requires exact pinned source and no change of protocol",()=>{
   const meta={version:"v0.0.0-ci",target:"darwin-arm64",source_commit:"a".repeat(40),
     artifact_schema:1,device_protocol:2,receipt_schema:1,
-    candidate_profile:"darwin-permanent-local-v1",
+    agent_runtime:"node-v2",candidate_profile:"darwin-permanent-local-v1",
     native_supervisor:"darwin-owned-group-v1",modules:["macos-permanent.ts"]};
   assert.equal(candidateName(meta,"a".repeat(40),"arm64"),"v0.0.0-ci-darwin-arm64");
+  const publishedNode={...meta};
+  delete publishedNode.agent_runtime;
+  assert.equal(candidateName(publishedNode,"a".repeat(40),"arm64"),
+    "v0.0.0-ci-darwin-arm64","published v0.1.56 Node manifests predate agent_runtime");
+  assert.throws(()=>candidateName({...publishedNode,agent_runtime:"unknown"},"a".repeat(40),"arm64"));
   assert.equal(candidateName({...meta,target:"darwin-x64"},"a".repeat(40),"x64"),"v0.0.0-ci-darwin-x64");
   assert.throws(()=>candidateName(meta,"a".repeat(40),"x64"));
   assert.throws(()=>candidateName(meta,"b".repeat(40),"arm64"));
   assert.throws(()=>candidateName({...meta,target:"linux-x64-glibc"},"a".repeat(40),"arm64"));
   assert.throws(()=>candidateName({...meta,device_protocol:3},"a".repeat(40),"arm64"));
+  const rust={...meta,version:"v0.1.57-rust-candidate.1",
+    agent_runtime:"rust-standard-darwin-v1",
+    runtime_profile:"standard-darwin-rust-runtime-v1"};
+  assert.equal(candidateName(rust,"a".repeat(40),"arm64"),
+    "v0.1.57-rust-candidate.1-darwin-arm64");
+  assert.throws(()=>candidateName({...rust,runtime_profile:"standard-linux-rust-runtime-v1"},
+    "a".repeat(40),"arm64"));
+  const programs="/Users/test/.local/share/mcp-workers/remote-control/macos/programs";
+  const root=path.join(programs,"v0.1.57-rust-candidate.1-darwin-arm64");
+  const rustExecutable=path.join(root,"apps/remote-control-agent/.build/rca-standard-darwin-candidate");
+  const rustXml=plistText({node:path.join(root,"bin/node"),entry:rustExecutable,
+    endpoint:ENDPOINT,generation:ID,agentRuntime:"rust-standard-darwin-v1"});
+  assert.match(rustXml,/rca-standard-darwin-candidate/);
+  assert.doesNotMatch(rustXml,/macos-permanent\\.js/);
+  assert.deepEqual(parsePlist(rustXml,programs,ENDPOINT,"arm64"),
+    {root,generation:ID,agentRuntime:"rust-standard-darwin-v1"});
+  assert.throws(()=>parsePlist(rustXml.replace("rca-standard-darwin-candidate","/bin/sh"),
+    programs,ENDPOINT,"arm64"));
 });
 
 const native=process.platform==="darwin"&&["arm64","x64"].includes(process.arch)&&!!bundle;
@@ -463,7 +501,7 @@ test("#660 native unreconciled new deregistration preserves switch journal",{
   await assert.rejects(localMacAction("upgrade",{
     ...first,bundle:candidate,freezeAgent:async()=> "ready",
     online:async()=>false,
-  }),/UNKNOWN rollback/);
+  }),/UNKNOWN rollback at stop-new-service after signed-wss-activation/);
   assert.equal(bootstraps,2,"must not bootstrap old over uncertain new registration");
   assert.equal(registered,true);
   const journal=JSON.parse(await readFile(path.join(f.identity,"macos/switch.json"),"utf8"));

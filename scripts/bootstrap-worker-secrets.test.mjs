@@ -74,7 +74,7 @@ test("Workflow release always stages the dedicated Portal and GitHub credentials
 });
 
 
-test("Workflow Drop PEM Secrets are optional as a pair and scoped to Workflow only", () => {
+test("Workflow Drop PEM inputs are optional as a pair and scoped to Workflow only", () => {
   const makeRSA = () => generateKeyPairSync("rsa", {modulusLength:2048,
     publicKeyEncoding:{type:"spki",format:"pem"},
     privateKeyEncoding:{type:"pkcs8",format:"pem"}});
@@ -98,8 +98,11 @@ test("Workflow Drop PEM Secrets are optional as a pair and scoped to Workflow on
     ...fixtures["remote-control-mcp-worker"],...withKeys
   }),fixtures["remote-control-mcp-worker"]);
   const release=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
-  for(const name of [publicName,privateName])
-    assert.ok(release.includes(name+": ${{ inputs.worker == 'workflow-mcp-worker' && secrets."+name+" || '' }}"));
+  // GitHub stores the public encryption key as a Variable, while the
+  // receipt decryption private key remains a Secret.
+  for(const [name,source] of [[publicName,"vars"],[privateName,"secrets"]])
+    assert.ok(release.includes(name+": ${{ inputs.worker == 'workflow-mcp-worker' && "+source+"."+name+" || '' }}"));
+  assert.ok(!release.includes("secrets."+publicName));
 });
 
 test("Workflow bootstrap stages only canonical runtime keys; missing mapped inputs fail closed", () => {
@@ -146,23 +149,22 @@ test("Workflow Repository secrets never use reserved GITHUB_ names",()=>{
   for(const name of names)assert.doesNotMatch(name,/^GITHUB_/);
 });
 
-test("Raindrop Clerk Secret is optional, worker-scoped, and requires an enabled resource", () => {
+test("Raindrop bootstrap excludes obsolete Clerk pilot Secret", () => {
   const normal = fixtures["raindrop-mcp-worker"];
-  const resource = "https://raindrop-mcp-worker.aiyaya.workers.dev/clerk/mcp";
   assert.deepEqual(collectBootstrapSecrets("raindrop-mcp-worker", normal), normal);
   assert.deepEqual(collectBootstrapSecrets("raindrop-mcp-worker", {
-    ...normal, CLERK_PILOT_RESOURCE: resource, CLERK_SECRET_KEY: "clerk-test-secret",
-  }), { ...normal, CLERK_SECRET_KEY: "clerk-test-secret" });
-  assert.throws(() => collectBootstrapSecrets("raindrop-mcp-worker", {
-    ...normal, CLERK_PILOT_RESOURCE: resource,
-  }), /Clerk pilot Secret/);
-  assert.throws(() => collectBootstrapSecrets("raindrop-mcp-worker", {
-    ...normal, CLERK_SECRET_KEY: "clerk-test-secret",
-  }), /Clerk pilot Secret/);
-  assert.deepEqual(collectBootstrapSecrets("ima-mcp-worker", {
-    ...fixtures["ima-mcp-worker"], CLERK_PILOT_RESOURCE: resource,
-    CLERK_SECRET_KEY: "clerk-test-secret",
-  }), fixtures["ima-mcp-worker"]);
+    ...normal,
+    CLERK_PILOT_RESOURCE: "https://raindrop-mcp-worker.aiyaya.workers.dev/clerk/mcp",
+    CLERK_SECRET_KEY: "obsolete-pilot-secret",
+  }), normal);
+
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.doesNotMatch(release, /CLERK_PILOT_RESOURCE:/);
+  for (const name of ["CLERK_SECRET_KEY", "CLERK_PILOT_PUBLISHABLE_KEY",
+    "CLERK_PILOT_OWNER_USER_ID", "CLERK_PILOT_ISSUER"]) {
+    assert.match(release, new RegExp(name + ": .*inputs\\.worker == 'mcp-gateway-worker'"));
+    assert.doesNotMatch(release, new RegExp(name + ": .*raindrop-mcp-worker"));
+  }
 });
 
 test('Gateway release stages only its Clerk and dedicated Portal service credential', () => {

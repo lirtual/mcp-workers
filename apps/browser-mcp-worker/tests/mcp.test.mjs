@@ -38,7 +38,7 @@ test("tool discovery publishes only implemented lifecycle tools and strict expli
   const response=await rpc(env,"tools/list",{});
   assert.equal(response.status,200);
   const body=await response.json();
-  assert.deepEqual(body.result.tools.map(x=>x.name),["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select","browser_endpoints","browser_tabs","browser_snapshot","browser_screenshot","browser_tab_open","browser_tab_navigate","browser_tab_close","browser_stop","browser_revoke","browser_operation_status"]);
+  assert.deepEqual(body.result.tools.map(x=>x.name),["browser_click","browser_fill","browser_keypress","browser_scroll","browser_select","browser_cdp","browser_cdp_events","browser_endpoints","browser_tabs","browser_snapshot","browser_screenshot","browser_tab_open","browser_tab_navigate","browser_tab_close","browser_stop","browser_revoke","browser_operation_status"]);
   for(const entry of body.result.tools)assert.equal(entry.inputSchema.additionalProperties,false);
   const receipt=body.result.tools.find(x=>x.name==="browser_operation_status");
   assert.deepEqual(receipt.inputSchema.required,["endpoint_id"]);

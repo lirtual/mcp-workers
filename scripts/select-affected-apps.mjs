@@ -56,8 +56,12 @@ export function selectionDetails(changedFiles) {
   const remoteControlChanged = checkAll || changedFiles.some(selectsRemoteControl);
   // Shared workspace and dependency inputs can change nested Agent builds.
   // Unrelated Worker-only edits still must not schedule five native platforms.
+  const rustDir = 'apps/remote-control-mcp-worker/agent/native-rust/';
+  // A change to the Rust CI contract must exercise the Rust job itself.
+  const rustCandidateChanged = changedFiles.some(file =>
+    file.startsWith(rustDir) || file === '.github/workflows/ci.yml');
   const agentNativeChanged = changedFiles.some(file =>
-    file.startsWith('apps/remote-control-mcp-worker/agent/')
+    (file.startsWith('apps/remote-control-mcp-worker/agent/') && !file.startsWith(rustDir))
     || file === AGENT_NATIVE_WORKFLOW
     || ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'].includes(file));
   return {
@@ -66,6 +70,7 @@ export function selectionDetails(changedFiles) {
     portalAuthChanged: changedFiles.some(file => file.startsWith('packages/portal-auth/')),
     remoteControlChanged,
     agentNativeChanged,
+    rustCandidateChanged,
   };
 }
 
@@ -132,6 +137,7 @@ function main(env = process.env) {
       `database_changed=${details.databaseChanged}`,
       `remote_control_changed=${details.remoteControlChanged}`,
       `agent_native_changed=${details.agentNativeChanged}`,
+      `rust_candidate_changed=${details.rustCandidateChanged}`,
     ].join('\n') + '\n');
   }
   process.stdout.write(selected.length ? `Selected applications: ${selected.join(' ')}\n` : 'No application checks are required for this change set.\n');

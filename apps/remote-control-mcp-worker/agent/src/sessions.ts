@@ -11,6 +11,8 @@ const MAX_OUTPUT_BYTES = 256 * 1024;
 const DEFAULT_PAGE_BYTES = 16 * 1024;
 const MAX_PAGE_BYTES = 64 * 1024;
 const MAX_WAIT_MS = 30_000;
+// The coordinating DO holds a read/operation slot for at most five seconds.
+const MAX_RELAY_REPLY_WAIT_MS = 1_500;
 const MAX_SESSION_LIFETIME_MS = 60 * 60 * 1000;
 const DEADLINE_TERMINATION_GRACE_MS = 5_000;
 
@@ -114,51 +116,6 @@ class SessionSupervisorControl {
   }
 }
 
-/**
- * Native Windows session control uses the OS-owned taskkill tree operation,
- * never a Linux supervisor or a caller-supplied PID. Only PIDs of children
- * actually spawned by this ManagedSessions instance may be stopped.
- * A failed/ambiguous stop is reported as unknown, not as completed.
- */
-class WindowsSessionControl implements SessionProcessControl {
-  readonly ready = Promise.resolve(true);
-  private readonly child: ChildProcess;
-  constructor(child: ChildProcess) { this.child = child; }
-
-  async signal(_signal: "SIGTERM" | "SIGKILL"): Promise<boolean> {
-    const pid = this.child.pid;
-    if (!Number.isSafeInteger(pid) || !pid || pid <= 0 ||
-        this.child.exitCode !== null || this.child.signalCode !== null) return false;
-    const root = process.env.SystemRoot;
-    if (!root || !path.win32.isAbsolute(root)) return false;
-    const executable = path.win32.join(root, "System32", "taskkill.exe");
-    return await new Promise<boolean>((resolve) => {
-      let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const finish = (ok: boolean) => {
-        if (settled) return;
-        settled = true;
-        if (timer) clearTimeout(timer);
-        resolve(ok);
-      };
-      try {
-        const killer = spawn(executable, ["/PID", String(pid), "/T", "/F"], {
-          windowsHide: true, stdio: "ignore",
-        });
-        killer.once("error", () => finish(false));
-        killer.once("close", code => finish(code === 0));
-        timer = setTimeout(() => { killer.kill(); finish(false); }, 3_000);
-      } catch { finish(false); }
-    });
-  }
-  close(): void { /* No open protocol pipes on native Windows. */ }
-}
-
-/** Platform-specific argument list; never pass untrusted commands as Shell executable paths. */
-export function windowsManagedShellArguments(command: string): string[] {
-  return ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command];
-}
-
 const supervisorPath = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   process.platform === "darwin" ? "../.build/darwin-session-supervisor" : "../.build/session-supervisor",
@@ -206,6 +163,7 @@ export class ManagedSessions {
   }
 
   async start(command: string, waitMs: number, onExit?: (session: SessionSnapshot) => Promise<void>): Promise<SessionSnapshot> {
+    if (process.platform === "win32") throw new Error("Windows requires the native Rust Agent.");
     this.prune();
     if (this.revocationClosing) throw new Error("Managed sessions are closed to new starts.");
     const active = [...this.sessions.values()].filter((session) => this.ownsRunningProcess(session)).length;
@@ -216,26 +174,17 @@ export class ManagedSessions {
     try {
     let child: ChildProcess;
     try {
-      child = process.platform === "win32"
-        ? spawn(this.shellPath, windowsManagedShellArguments(command), {
-          stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
-        })
-        : spawn(supervisorPath, [this.shellPath, command], {
-          stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"], detached: true,
-        });
+      child = spawn(supervisorPath, [this.shellPath, command], {
+        stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"], detached: true,
+      });
     } catch {
       throw new Error("The development command could not be started.");
     }
 
-    let control: SessionProcessControl;
-    if (process.platform === "win32") {
-      control = new WindowsSessionControl(child);
-    } else {
-      const requestStream = child.stdio[3] as Writable | null;
-      const responseStream = child.stdio[4] as Readable | null;
-      if (!requestStream || !responseStream) throw new Error("The development command could not be started.");
-      control = new SessionSupervisorControl(requestStream, responseStream);
-    }
+    const requestStream = child.stdio[3] as Writable | null;
+    const responseStream = child.stdio[4] as Readable | null;
+    if (!requestStream || !responseStream) throw new Error("The development command could not be started.");
+    const control: SessionProcessControl = new SessionSupervisorControl(requestStream, responseStream);
 
     const session: ManagedSession = {
       sessionId,
@@ -254,16 +203,35 @@ export class ManagedSessions {
       deadlineExceeded: false,
     };
 
+    const markTruncated = () => {
+      // The fixed capture boundary can fall inside a UTF-8 code point.
+      // Drop only those final incomplete bytes and explicitly mark truncation.
+      const captured = Buffer.concat(session.chunks, session.outputBytes);
+      let start = captured.length - 1;
+      while (start >= 0 && (captured[start]! & 0xc0) === 0x80) start -= 1;
+      if (start >= 0) {
+        const lead = captured[start]!;
+        const width = lead >= 0xf0 && lead <= 0xf4 ? 4
+          : lead >= 0xe0 && lead <= 0xef ? 3
+          : lead >= 0xc2 && lead <= 0xdf ? 2 : 1;
+        if (captured.length - start < width) {
+          session.chunks = [captured.subarray(0, start)];
+          session.outputBytes = start;
+        }
+      }
+      session.truncated = true;
+    };
     const capture = (chunk: Buffer) => {
+      if (session.truncated) return;
       const remaining = MAX_OUTPUT_BYTES - session.outputBytes;
       if (remaining <= 0) {
-        session.truncated = true;
+        markTruncated();
         return;
       }
       const kept = chunk.subarray(0, remaining);
       session.chunks.push(Buffer.from(kept));
       session.outputBytes += kept.byteLength;
-      if (kept.byteLength < chunk.byteLength) session.truncated = true;
+      if (kept.byteLength < chunk.byteLength) markTruncated();
     };
     child.stdout?.on("data", capture);
     child.stderr?.on("data", capture);
@@ -303,18 +271,13 @@ export class ManagedSessions {
       new Promise<boolean>((resolve) => { readyTimer = setTimeout(() => resolve(false), 2000); }),
     ]);
     if (readyTimer) clearTimeout(readyTimer);
-    // Native Windows has no Linux supervisor handshake: allow the first
-    // event loop turn to reveal immediate spawn errors before admitting work.
-    if (process.platform === "win32") await new Promise<void>(resolve => setImmediate(resolve));
     // A command that already exited successfully is a valid managed session.
     if (!ready || session.state === "failed") {
       await control.signal("SIGTERM");
       await new Promise((resolve) => setTimeout(resolve, 500));
       await control.signal("SIGKILL");
       await Promise.race([session.closed, new Promise<void>((resolve) => setTimeout(resolve, 500))]);
-      throw new Error(process.platform === "win32"
-        ? "The native Windows managed command could not be started."
-        : "The managed Shell supervisor is unavailable on this Linux kernel.");
+      throw new Error("The managed Shell supervisor is unavailable on this platform.");
     }
     // Revocation can start while supervisor readiness is pending. Never
     // add a session to the active map after the cleanup snapshot.
@@ -336,7 +299,8 @@ export class ManagedSessions {
 
     if (waitMs > 0 && session.state === "running") {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([session.closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.min(waitMs, MAX_WAIT_MS)); })]);
+      // Prefer an early running session_id over an ambiguous DO timeout.
+      await Promise.race([session.closed, new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.min(waitMs, MAX_WAIT_MS, MAX_RELAY_REPLY_WAIT_MS)); })]);
       if (timer) clearTimeout(timer);
     }
     return snapshot(session);
@@ -489,14 +453,25 @@ export class ManagedSessions {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
     const data = Buffer.concat(session.chunks, session.outputBytes);
-    const end = Math.min(data.byteLength, offset + length);
+    // Offsets remain bytes, but pages must begin and end on UTF-8 code-point
+    // boundaries; otherwise valid Chinese/emoji output becomes replacement text.
+    let start = Math.min(offset, data.byteLength);
+    while (start > 0 && start < data.byteLength && (data[start]! & 0xc0) === 0x80) start -= 1;
+    let end = Math.min(data.byteLength, Math.max(start, offset + length));
+    while (end > start && end < data.byteLength && (data[end]! & 0xc0) === 0x80) end -= 1;
+    // A short requested page (1-3 bytes) must still make progress over one
+    // complete character; at most three extra bytes are returned.
+    if (end === start && start < data.byteLength) {
+      end = start + 1;
+      while (end < data.byteLength && (data[end]! & 0xc0) === 0x80) end += 1;
+    }
     return {
       ...snapshot(session),
-      offset,
+      offset: start,
       next_offset: end,
       eof: !this.ownsRunningProcess(session) && end >= data.byteLength,
       truncated: session.truncated,
-      output: data.subarray(Math.min(offset, data.byteLength), end).toString("utf8"),
+      output: data.subarray(start, end).toString("utf8"),
     };
   }
 

@@ -1,6 +1,6 @@
 import {databaseCatalogStage} from './database-catalog-stage.mjs';
 import {createPrivateKey,createPublicKey} from 'node:crypto';
-// Stage only the selected Worker's Repository Secrets.
+// Stage only the selected Worker's GitHub Repository Secrets and Variables.
 // Used for EVERY authorized manual release, not only for first deployment.
 // Source scope must remain unambiguous; do not add Environment-bound jobs.
 // Never print credentials, and never fall back to the removed *_SECRETS_JSON.
@@ -35,15 +35,6 @@ export function collectBootstrapSecrets(worker, env) {
   if (worker === "mcp-gateway-worker") {
     payload.CF_ACCESS_CLIENT_SECRET = payload.MCP_GATEWAY_PORTAL_CLIENT_SECRET;
     delete payload.MCP_GATEWAY_PORTAL_CLIENT_SECRET;
-  }
-  if (worker === "raindrop-mcp-worker") {
-    const enabled = typeof env.CLERK_PILOT_RESOURCE === "string" &&
-      env.CLERK_PILOT_RESOURCE.length > 0;
-    const supplied = typeof env.CLERK_SECRET_KEY === "string" &&
-      env.CLERK_SECRET_KEY.length > 0;
-    if (enabled !== supplied || (enabled && !env.CLERK_SECRET_KEY.trim()))
-      throw Error("Raindrop Clerk pilot Secret and resource must be configured together");
-    if (enabled) payload.CLERK_SECRET_KEY = env.CLERK_SECRET_KEY;
   }
   if (worker === "database-mcp-worker") {
     Object.assign(payload,databaseCatalogStage(env).secrets);

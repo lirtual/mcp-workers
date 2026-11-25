@@ -1,6 +1,6 @@
 #!/bin/sh
 # Portable rca entry, executed from the installer-owned versioned release.
-# Uses the verified bundled Node 24, never the host's node or Python.
+# Native Rust uses Python stdlib for owner-local management and upgrades.
 set -eu
 resolved=$(readlink -f -- "$0") || exit 1
 root=$(dirname -- "$(dirname -- "$(dirname -- "$(dirname -- "$resolved")")")")
@@ -12,7 +12,8 @@ case "$root" in
     exit 1
     ;;
 esac
-test -x "$root/bin/node" || exit 1
-test -r "$root/apps/remote-control-agent/scripts/manage-v2.mjs" || exit 1
-unset NODE_OPTIONS NODE_PATH
-exec "$root/bin/node" "$root/apps/remote-control-agent/scripts/manage-v2.mjs" "$@"
+# Only reviewed native Linux versions are supported.
+test -x "$root/apps/remote-control-agent/.build/rca-standard-linux-candidate" || exit 1
+test ! -e "$root/bin/node" || exit 1
+test -r "$root/apps/remote-control-agent/scripts/manage-v2.py" || exit 1
+exec /usr/bin/python3 -I -B "$root/apps/remote-control-agent/scripts/manage-v2.py" "$@"

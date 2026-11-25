@@ -48,6 +48,8 @@ async function refresh() {
     const sensitive=s.sensitive_permissions||{};
     for(const surface of ["lan","private"])$(""+surface).textContent=
       (sensitive[surface]?"Disable ":"Enable ")+(surface==="lan"?"direct localhost/LAN":"private/incognito");
+    $("advanced-cdp").disabled=local!=="enabled"||!s.advanced_cdp?.available;
+    $("advanced-cdp").textContent=(s.advanced_cdp?.enabled?"Disable":"Enable")+" advanced CDP";
     $("locate").disabled=!Number.isSafeInteger(s.last_observed_tab_id);
     $("stop").hidden=!s.endpoint_id||(!s.pending_cloud_stop&&local!=="enabled");
     $("ack").hidden=!s.pending_revocation_id;
@@ -60,6 +62,7 @@ async function refresh() {
       "Server extension: "+(remote?.client_version??"Unknown"),
       "Endpoint: "+(s.endpoint_id||"None"),
       "Local update: "+(s.last_update?new Date(s.last_update).toLocaleString():"Never"),
+      "Advanced CDP: "+(s.advanced_cdp?.enabled?"ON":"OFF"),
       "Direct LAN: "+(sensitive.lan?"ON":"OFF"),
       "Private: "+(sensitive.private&&sensitive.native_private?"ON":"OFF")+"; native: "+(sensitive.native_private?"allowed":"denied / unavailable"),
       "Last observed target: "+(Number.isSafeInteger(s.last_observed_tab_id)?"Tab "+s.last_observed_tab_id:"None"),
@@ -125,6 +128,12 @@ for(const surface of ["lan","private"])$(surface).onclick=()=>action("Changing l
   const s=await call("status"),enabled=!s.sensitive_permissions?.[surface];
   if(enabled&&!confirm(surface==="lan"?"Allow direct localhost/LAN HTTP(S) control for this browser session? This is not full DNS rebinding or page network isolation. Consequential actions remain blocked, with no remote approval.":"Allow private/incognito observation and control for this browser session? Chrome/Edge native permission is also required. Consequential actions remain blocked, with no remote approval."))return;
   return call("sensitive-permission",{surface,enabled});
+});
+
+$("advanced-cdp").onclick=()=>action("Changing advanced CDP",async()=>{
+  const s=await call("status"),enabled=!s.advanced_cdp?.enabled;
+  if(enabled&&!confirm("Enable powerful CDP debugger access for this authorized Profile? Agent commands may read session data, execute scripts, upload authorized local files or change websites. Permission remains subject to Profile grant and Stop."))return;
+  return call("advanced-cdp",{enabled});
 });
 
 $("visual-feedback").onchange=async()=>{

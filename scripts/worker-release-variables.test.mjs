@@ -5,7 +5,13 @@ import { collectWorkerVars as originalCollectWorkerVars, remoteControlInstallOri
 
 const externalRepository = "alternate-owner/private-actions";
 const externalIdentity = {repository:externalRepository,repositoryId:8090,ciWorkflowId:9010};
+const rcaClerk={CLERK_PILOT_PUBLISHABLE_KEY:"pk_live_"+Buffer.from("clerk.lirtual.dpdns.org$").toString("base64"),
+  CLERK_PILOT_OWNER_USER_ID:"user_fixture",CLERK_PILOT_ISSUER:"https://clerk.lirtual.dpdns.org"};
+const rcaBase=["REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org",
+  "CLERK_PUBLISHABLE_KEY:"+rcaClerk.CLERK_PILOT_PUBLISHABLE_KEY,
+  "CLERK_OWNER_USER_ID:"+rcaClerk.CLERK_PILOT_OWNER_USER_ID];
 function collectWorkerVars(worker, env={}, options={}) {
+  if(worker==="remote-control-mcp-worker") return originalCollectWorkerVars(worker,{...rcaClerk,...env},options);
   if (worker !== "workflow-mcp-worker") return originalCollectWorkerVars(worker,env,options);
   return originalCollectWorkerVars(worker,{
     WORKFLOW_GITHUB_ACTION_REPOSITORY:externalRepository,...env
@@ -23,7 +29,7 @@ const remoteConfig = { routes: [
 test("Remote Control installer origin comes only from its configured Custom Domain", () => {
   assert.equal(remoteControlInstallOrigin(remoteConfig), "https://rca.lirtual.dpdns.org");
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker", {}, { config: remoteConfig }),
-    ["REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org"]);
+    rcaBase);
   assert.throws(() => collectWorkerVars("remote-control-mcp-worker", {}), /Custom Domain/);
   for (const bad of [
     { routes: [] },
@@ -44,7 +50,7 @@ test("each Worker owns an explicit non-secret variable allowlist", () => {
   assert.deepEqual(WORKER_VARIABLES["remote-control-mcp-worker"], ["RCA_PERMANENT_IDLE_DAYS"]);
   assert.deepEqual(collectWorkerVars("remote-control-mcp-worker",
     { DATABASE_MAX_ROWS: "100", REMOTE_CONTROL_V2_ONLY: "false", REMOTE_CONTROL_INSTALL_ORIGIN: "https://evil.example" }, { config: remoteConfig }),
-    ["REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org"]);
+    rcaBase);
   assert.throws(() => collectWorkerVars("not-a-worker", {}), /Unsupported/);
 });
 
@@ -209,7 +215,7 @@ test('Browser remembered idle setting is optional, scoped and validated',()=>{
 });
 
 test('RCA idle release duration is selected-worker scoped, validated and never permissive', () => {
-  const expected = ['REMOTE_CONTROL_INSTALL_ORIGIN:https://rca.lirtual.dpdns.org'];
+  const expected = rcaBase;
   assert.deepEqual(collectWorkerVars('remote-control-mcp-worker', {}, { config: remoteConfig }), expected);
   for (const days of ['1','7','14','30','90']) {
     assert.deepEqual(collectWorkerVars('remote-control-mcp-worker', { RCA_PERMANENT_IDLE_DAYS: days }, { config: remoteConfig }),
@@ -278,45 +284,17 @@ test('Spec #804 stages Browser runtime values only from protected candidate stat
   } finally {rmSync(root,{recursive:true,force:true});}
 });
 
-test("Raindrop Clerk release variables are optional as a complete validated tuple", () => {
-  const enabled = {
+test("Raindrop release excludes legacy direct-Clerk pilot Variables", () => {
+  const stale = {
     CLERK_PILOT_PUBLISHABLE_KEY: "pk_test_syntheticExample",
     CLERK_PILOT_OWNER_USER_ID: "user_owner123",
     CLERK_PILOT_ISSUER: "https://example.clerk.accounts.dev",
     CLERK_PILOT_RESOURCE: "https://raindrop-mcp-worker.aiyaya.workers.dev/clerk/mcp",
   };
-  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker", {}), []);
-  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker", enabled), [
-    ...Object.entries(enabled).map(([name,value]) => name + ":" + value),
-  ]);
-  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker",
-    { ...enabled, RAINDROP_RATE_LIMIT_MAX_RETRIES:"2" }), [
-    "RAINDROP_RATE_LIMIT_MAX_RETRIES:2",
-    ...Object.entries(enabled).map(([name,value]) => name + ":" + value),
-  ]);
-  assert.deepEqual(collectWorkerVars("ssh-mcp-worker", enabled), []);
+  assert.deepEqual(collectWorkerVars("raindrop-mcp-worker", stale), []);
   assert.deepEqual(collectWorkerVars("raindrop-mcp-worker", {
-    ...enabled, CLERK_PILOT_PUBLISHABLE_KEY: "pk_live_base64Example==",
-  }).at(0), "CLERK_PILOT_PUBLISHABLE_KEY:pk_live_base64Example==");
-  for (const name of Object.keys(enabled)) {
-    const missing={...enabled};
-    delete missing[name];
-    assert.throws(() => collectWorkerVars("raindrop-mcp-worker", missing), /Clerk pilot/);
-  }
-  for (const patch of [
-    {CLERK_PILOT_RESOURCE:"http://raindrop.example.com/clerk/mcp"},
-    {CLERK_PILOT_RESOURCE:"https://raindrop.example.com/mcp"},
-    {CLERK_PILOT_RESOURCE:"https://raindrop.example.com/clerk/mcp?x=1"},
-    {CLERK_PILOT_RESOURCE:"https://user:password@raindrop.example.com/clerk/mcp"},
-    {CLERK_PILOT_ISSUER:"http://clerk.example.com"},
-    {CLERK_PILOT_ISSUER:"https://clerk.example.com/a"},
-    {CLERK_PILOT_OWNER_USER_ID:"bad"},
-    {CLERK_PILOT_PUBLISHABLE_KEY:"invalid"},
-    {CLERK_PILOT_OWNER_USER_ID:"user_good\nSECRET=bad"},
-  ]) {
-    assert.throws(() => collectWorkerVars("raindrop-mcp-worker",
-      { ...enabled, ...patch }), /Clerk pilot/i);
-  }
+    ...stale, RAINDROP_RATE_LIMIT_MAX_RETRIES: "2",
+  }), ["RAINDROP_RATE_LIMIT_MAX_RETRIES:2"]);
 });
 
 test('Gateway release derives its origin and identity from existing configuration', () => {
@@ -353,4 +331,12 @@ test('Gateway release derives its origin and identity from existing configuratio
   }
   assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', { ...env, MCP_GATEWAY_PORTAL_CLIENT_ID: '' }, { config }), /Gateway/);
   assert.throws(() => originalCollectWorkerVars('mcp-gateway-worker', env, { config: {} }), /Gateway/);
+});
+
+
+test("RCA release reuses only the existing Clerk public identity, never management secrets",()=>{
+  assert.deepEqual(originalCollectWorkerVars("remote-control-mcp-worker",{...rcaClerk,CLERK_SECRET_KEY:"not-staged"},{config:remoteConfig}),rcaBase);
+  for(const env of [{},{...rcaClerk,CLERK_PILOT_ISSUER:"https://other.example"},{...rcaClerk,CLERK_PILOT_OWNER_USER_ID:"invalid"},{...rcaClerk,CLERK_PILOT_PUBLISHABLE_KEY:"pk_live_YWJj"}])
+    assert.throws(()=>originalCollectWorkerVars("remote-control-mcp-worker",env,{config:remoteConfig}),/Clerk public identity/);
+  assert.deepEqual(originalCollectWorkerVars("ssh-mcp-worker",rcaClerk),[]);
 });

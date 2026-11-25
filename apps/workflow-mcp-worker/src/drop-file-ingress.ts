@@ -1,14 +1,17 @@
-/** Spec #87: one-shot, selected-file Drop admission.
- * The signed file locator is sealed in memory for the exact reviewed
- * GitHub Task Attempt. D1 receives ciphertext only, never the locator.
+/** Spec #87: one-shot admission for an approved selected file.
+ * The GitHub transport seals a short-lived locator for the exact reviewed
+ * Task Attempt. D1 receives ciphertext only, never the plaintext locator.
  */
 import {WorkflowService,StateError,type Env} from './store.ts';
-import {approvedAttachmentUrl,type ChatGptFile} from './litterbox-file-source.ts';
+import {inspectAttachmentUrl,type ChatGptFile} from './litterbox-file-source.ts';
 import {startLitterboxUpload} from './litterbox-executor.ts';
+import {selectedFilePlan} from './selected-file-plan.ts';
+import {cloudflareSelectedFilePlan} from './cloudflare-selected-file.ts';
+import {startCloudflareSelectedFile} from './cloudflare-selected-file-ingress.ts';
 import {isDropPlan,isSealedDropInputs,DROP_UUID,DROP_DIGEST,DROP_PART_SIZE,
  type SealedDropInputs} from './drop-file-contract.ts';
 import type {Plan} from './plan.ts';
-const FILENAME=/^[^\/\\\u0000-\u001f\u007f]{1,160}\.(?:html|zip)$/i;
+const FILENAME=/^[^\/\\\u0000-\u001f\u007f]{1,160}$/i;
 
 const encode=(bytes:Uint8Array):string=>{
  let binary='';
@@ -27,21 +30,29 @@ function parsePublicKey(pem:string):ArrayBuffer{
 }
 export async function sealDropFile(
  file:ChatGptFile,attemptId:string,contractDigest:string,pem:string,
- now=Date.now(),
+ now=Date.now(),extensions:readonly string[]=['.html','.zip'],
 ):Promise<SealedDropInputs>{
- const url=approvedAttachmentUrl(file);
+ const source=inspectAttachmentUrl(file,true);
+ if(!source.url)throw new StateError('drop_file_source_'+source.reason+
+  (source.reason==='host_unapproved'?'_'+source.host_family:''));
+ const url=source.url;
  const filename=file.file_name;
- if(!url||!filename||!FILENAME.test(filename)||filename.startsWith('.')||
-    filename.trim()!==filename||
-    (file.mime_type!==undefined&&(typeof file.mime_type!=='string'||file.mime_type.length>255))||
-    !DROP_UUID.test(attemptId)||!DROP_DIGEST.test(contractDigest)||!Number.isSafeInteger(now))
-  throw new StateError('drop_invalid_file_or_contract');
+ if((filename!==undefined&&
+    (typeof filename!=='string'||!FILENAME.test(filename)||filename.startsWith('.')||
+     filename.trim()!==filename||
+     (!extensions.includes('*')&&!extensions.some(ext=>filename.toLowerCase().endsWith(ext)))))||
+    (file.mime_type!==undefined&&(typeof file.mime_type!=='string'||file.mime_type.length>255)))
+  throw new StateError('drop_file_metadata_invalid');
+ if(!DROP_UUID.test(attemptId)||!DROP_DIGEST.test(contractDigest)||!Number.isSafeInteger(now))
+  throw new StateError('drop_file_contract_invalid');
  let expires=now+60*60*1000;
- if(url.hostname.endsWith('.blob.core.windows.net')){
-  const sas=Date.parse(url.searchParams.get('se')??'');
-  if(!Number.isFinite(sas)||sas<=now+60000)
+ // Honour a declared expiry without requiring service-specific SAS fields:
+ // a selected HTTPS file may be hosted on any public DNS hostname.
+ if(url.hostname.endsWith('.blob.core.windows.net')&&url.searchParams.has('se')){
+  const declared=Date.parse(url.searchParams.get('se')??'');
+  if(!Number.isFinite(declared)||declared<=now+60000)
    throw new StateError('drop_file_expiry_insufficient');
-  expires=Math.min(expires,sas-30000);
+  expires=Math.min(expires,declared-30000);
  }
  const issued=now;
  let key:CryptoKey;
@@ -57,7 +68,8 @@ export async function sealDropFile(
  const plaintext=new TextEncoder().encode(JSON.stringify({
   attemptId:attemptId.toLowerCase(),contractDigest:contractDigest.toLowerCase(),
   issuedAt:issued,expiresAt:expires,file:{
-   file_id:file.file_id,download_url:file.download_url,file_name:filename,
+   file_id:file.file_id,download_url:file.download_url,
+   ...(filename===undefined?{}:{file_name:filename}),
    ...(file.mime_type===undefined?{}:{mime_type:file.mime_type}),
   },
  }));
@@ -92,7 +104,10 @@ export async function startSelectedFile(env:Env,args:{
  idempotency_key:string;expected_published_version_id?:string;
 }){
  const {plan,version}=await publishedPlan(env,args.workflow_id,args.expected_published_version_id);
- if(!isDropPlan(plan)){
+ const cloudflareCapability=cloudflareSelectedFilePlan(plan);
+ if(cloudflareCapability)return startCloudflareSelectedFile(env,args,cloudflareCapability,version);
+ const fileCapability=selectedFilePlan(plan);
+ if(!fileCapability&&!isDropPlan(plan)){
   const supplied=args.inputs;
   if(Object.keys(supplied).some(k=>k!=='time')||
      (supplied.time!==undefined&&typeof supplied.time!=='string'))
@@ -101,14 +116,21 @@ export async function startSelectedFile(env:Env,args:{
    ...(supplied.time===undefined?{}:{time:supplied.time as string}),
    idempotency_key:args.idempotency_key,expected_published_version_id:version});
  }
- if(Object.keys(args.inputs).length!==0)throw new StateError('drop_file_inputs_invalid');
+ // The owner-initiated manual Run authorizes this selected-file upload.
+ // Cloudflare Terms and Privacy acceptance is a one-time prerequisite before
+ // the first temporary account; it is not a repeated Workflow input.
+ if(fileCapability?.file.consent==='owner_public_upload_v1'){
+  if(Object.keys(args.inputs).length!==1||args.inputs.public_file_upload_accepted!==true)
+   throw new StateError('selected_file_public_upload_consent_required');
+ }else if(Object.keys(args.inputs).length!==0)
+  throw new StateError('file_inputs_invalid');
  if(!env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY)throw new StateError('drop_key_unavailable');
  const action=plan.steps[0]!.with.action as {contractDigest:string};
  const attemptId=crypto.randomUUID();
- const sealed=await sealDropFile(args.file,attemptId,action.contractDigest,
-  env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY);
+ const sealed=await sealDropFile(args.file,attemptId,fileCapability?.contract_digest??action.contractDigest,
+  env.WORKFLOW_GITHUB_DROP_PUBLIC_KEY,Date.now(),fileCapability?.file.extensions);
  const run=await new WorkflowService(env).start(args.workflow_id,sealed,args.idempotency_key,
-  undefined,'drop',version);
+  undefined,fileCapability?'github_selected_file':'drop',version);
  return {run_id:run.run_id,published_version_id:run.published_version_id,
   status:run.status,start_state:run.start_state};
 }

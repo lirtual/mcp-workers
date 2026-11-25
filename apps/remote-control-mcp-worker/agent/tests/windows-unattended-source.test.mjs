@@ -6,10 +6,6 @@ import {fileURLToPath} from "node:url";
 const text=readFileSync(fileURLToPath(new URL("../install.ps1",import.meta.url)),"utf8");
 test("unattended Windows opt-in is limited to a running, already-paired owner task",()=>{
   for(const part of [
-    "Invoke-AgentUpgradeFreeze $identityFile 'freeze'",
-    "Invoke-AgentUpgradeFreeze $identityFile 'release'",
-    "NamedPipeClientStream",
-    "Agent is busy, absent or not frozen",
     "RCA_UNATTENDED_UPGRADE -ceq 'owner-approved-task-v1'",
     "RCA_UNATTENDED_UPGRADE -ceq 'launch-approved-task-v1'",
     "New-ScheduledTaskPrincipal -UserId $me.Name -LogonType Interactive -RunLevel Limited",
@@ -41,7 +37,9 @@ test("unattended Windows opt-in is limited to a running, already-paired owner ta
   assert.equal(text.includes("raw.githubusercontent.com"),false);
   assert.equal(text.includes("github.com/lirtual/remote-control-agent"),false);
   const task=readFileSync(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
-  assert(task.includes("if ($wasRunning -and -not $ownerStopped)"));
+  assert(task.includes("Assert-UpgradeIdentity $record"));
+  assert(task.includes("NamedPipeClientStream"));
+  assert(task.includes("Agent is busy, absent or not frozen"));
 });
 
 
@@ -51,5 +49,17 @@ test("detached Windows Task switch refuses unfrozen Agent immediately before sto
   const check=task.indexOf("Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'");
   const stop=task.indexOf("Stop-ScheduledTask -TaskName $name",check);
   assert(check>=0&&stop>check);
-  assert(task.includes("RCA_UNATTENDED_UPGRADE -ceq 'owner-approved-task-v1'"));
+  assert(text.includes("RCA_UNATTENDED_UPGRADE -ceq 'owner-approved-task-v1'"));
+  assert(task.includes("Freeze-OwnedAgent $original $oldAction"));
+});
+
+test("native detached upgrade admits only reviewed existing Task switch, not onboarding",()=>{
+  assert.match(text,/\$nativeDetachedUpgrade = \$detachedUpgrade -and \$upgradeExisting -and \$alreadyPaired -and/);
+  assert.ok(text.includes("Resolve-ReviewedNativeRelease $Version $releaseSha $true"));
+  const complete=text.slice(text.indexOf("function Complete-NativeInstall"),text.indexOf("function Confirm-Upgrade"));
+  assert.ok(complete.includes("if ($detachedUpgrade -and -not $nativeDetachedUpgrade)"));
+  assert.ok(complete.includes("if (-not $nativeDetachedUpgrade -and ([Console]::IsInputRedirected"));
+  assert.ok(complete.includes("if ($detachedUpgrade) { throw 'Owner STOP blocks detached native upgrade' }"));
+  assert.ok(complete.indexOf("-Action Switch -Version $Version -Direction Upgrade") < complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }"));
+  assert.ok(complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }") < complete.indexOf("--pair-local"));
 });

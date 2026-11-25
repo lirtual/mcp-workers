@@ -40,6 +40,7 @@ export async function reviewedGitHubAction(source: GitHubActionSource): Promise<
     contractDigest: await hash(JSON.stringify(canonical({
       name:source.contract.name,type:source.contract.type,inputs:source.contract.inputs,
       ...(source.contract.outputSchema?{output_schema:source.contract.outputSchema}:{}),
+      ...(source.contract.selectedFile?{selected_file:source.contract.selectedFile}:{}),
     }))),
   };
 }

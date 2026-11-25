@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseGitHubAction } from '../src/github-action-contract.ts';
+import {parseGitHubSelectedFile} from '../src/selected-file-contract.ts';
 import {reviewedGitHubOutputSource} from '../src/github-action-discovery.ts';
 
 const valid = `name: Linux test
@@ -117,4 +118,56 @@ test('reviewed Drop task is discoverable without opening arbitrary none-output t
  assert.equal(reviewedGitHubOutputSource('.github/workflows/download.yml',task),true);
  assert.equal(reviewedGitHubOutputSource('.github/workflows/ubuntu.yml',task),false);
  assert.equal(reviewedGitHubOutputSource('.github/workflows/unreviewed.yml',task),false);
+});
+
+test('reviewed file capability is declared by source contract, independent of Action name',()=>{
+ const fixture=`name: Arbitrary reviewed file Task
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id: {type: string, required: true}
+      dispatch_id: {type: string, required: true}
+      capability_id: {type: string, required: true}
+      drop_part_0: {type: string, required: true}
+      drop_part_1: {type: string, required: false, default: ''}
+      drop_part_2: {type: string, required: false, default: ''}
+env:
+  WORKFLOW_ACTION_TYPE: task
+  WORKFLOW_ACTION_OUTPUT_KIND: none
+  WORKFLOW_ACTION_SELECTED_FILE: '{"delivery":"github_encrypted_locator_v1","extensions":[".html",".zip"],"max_bytes":10485760,"input_slots":["drop_part_0","drop_part_1","drop_part_2"],"consent":"cloudflare_terms_v1","receipt":"owner_claim_v1"}'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps: [{run: echo ok}]
+`;
+ const action=parseGitHubAction(fixture);
+ assert.deepEqual(action.selectedFile,{delivery:'github_encrypted_locator_v1',
+  extensions:['.html','.zip'],max_bytes:10485760,
+  input_slots:['drop_part_0','drop_part_1','drop_part_2'],
+  consent:'cloudflare_terms_v1',receipt:'owner_claim_v1'});
+});
+
+test('GitHub selected-file source can review bounded alternate transport policy, not arbitrary protocols',()=>{
+ const slots={drop_part_0:{type:'string' as const,required:true},
+  drop_part_1:{type:'string' as const,required:false,default:''},
+  drop_part_2:{type:'string' as const,required:false,default:''}};
+ const policy={delivery:'github_encrypted_locator_v1',extensions:['.txt'],
+  max_bytes:2048,input_slots:['drop_part_0','drop_part_1','drop_part_2'],
+  consent:'owner_public_upload_v1',receipt:'reviewed_output_v1'};
+ assert.deepEqual(parseGitHubSelectedFile(JSON.stringify(policy),slots,'task','none'),policy);
+ for(const invalid of [
+  {...policy,extensions:['.TXT']},
+  {...policy,extensions:['.txt','.txt']},
+  {...policy,extensions:['*','.txt']},
+  {...policy,extensions:[]},
+  {...policy,max_bytes:0},
+  {...policy,max_bytes:10485761},
+  {...policy,consent:'caller_chooses'},
+  {...policy,receipt:'arbitrary_secret'},
+  {...policy,delivery:'plaintext_url_v1'},
+  {...policy,input_slots:['file_url']},
+ ]){
+  assert.throws(()=>parseGitHubSelectedFile(JSON.stringify(invalid),slots,'task','none'),
+   /github_action_invalid_selected_file/);
+ }
 });

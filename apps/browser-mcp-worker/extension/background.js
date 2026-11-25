@@ -1,6 +1,7 @@
 importScripts("config.js");
 importScripts("observation.js");
 importScripts("mutations.js");
+importScripts("cdp.js");
 // Browser MCP Profile identity lives only in trusted extension storage.
 // A release must pin this exact trusted origin; arbitrary origins are not permitted.
 // storage.local defaults to content-script readable: deny access before handling commands.
@@ -13,7 +14,7 @@ let sensitiveEpoch=0, sensitiveChanging=0, sensitiveFault=false;
 let localBlocked=false;
 let sensitiveWrites=Promise.resolve();
 async function sensitiveToken() {
-  return sensitiveEpoch+":"+(await browserSensitivePermissions()).revision;
+  return sensitiveEpoch+":"+browserCdpEpoch+":"+(await browserSensitivePermissions()).revision;
 }
 function changeSensitivePermission(surface,enabled) {
   if(!["lan","private"].includes(surface)||typeof enabled!=="boolean")throw Error("invalid_permission");
@@ -87,6 +88,7 @@ async function render() {
   await chrome.action.setTitle({title:`Browser MCP — ${label}: ${description} (${s.authorization} / ${s.connection})${s.pending_cloud_stop?" · cloud Stop pending":""}`});
 }
 function clearNetwork() {
+  void browserCdpClear().catch(()=>{});
   currentGeneration=0;
   lastObserved=null;
   if(timer)clearInterval(timer);timer=null;
@@ -243,6 +245,7 @@ async function stopLocal() {
   const feedbackTarget=lastObserved;
   localBlocked=true;
   localDenialEpoch++;
+  void browserCdpSetEnabled(false).catch(()=>{});
   const active=await activationAttempt();
   await chrome.storage.session.remove(["browser_activation_attempt","browser_activation_tab"]);
   if(active)void activationRequest("cancel",{attempt_id:active.attempt_id,proof:active.proof}).catch(()=>{});
@@ -251,7 +254,7 @@ async function stopLocal() {
   // A never-paired Profile has no cloud grant to reconcile.
   const hadEndpoint=Boolean((await state()).endpoint_id);
   // Persist the local denial *before* any cloud/network action.
-  await persist({authorization:"stopped",connection:"offline",pending_cloud_stop:hadEndpoint});
+  await persist({authorization:"stopped",connection:"offline",pending_cloud_stop:hadEndpoint,browser_advanced_cdp_enabled:false});
   clearNetwork();
   await clearObservedTargetFeedback(feedbackTarget);
   const s=await state();
@@ -289,6 +292,7 @@ async function revokeLocal() {
   const feedbackTarget=lastObserved;
   localBlocked=true;
   localDenialEpoch++;
+  void browserCdpSetEnabled(false).catch(()=>{});
   const active=await activationAttempt();
   await chrome.storage.session.remove(["browser_activation_attempt","browser_activation_tab"]);
   if(active)void activationRequest("cancel",{attempt_id:active.attempt_id,proof:active.proof}).catch(()=>{});
@@ -298,7 +302,7 @@ async function revokeLocal() {
   await trustedStorage;
   await chrome.storage.local.remove(["credential","endpoint_id"]);
   await chrome.storage.session.remove("browser_temporary_grant");
-  await persist({authorization:"revoked",connection:"offline",pending_cloud_stop:false,pending_revocation_id:s.endpoint_id||s.pending_revocation_id||null});
+  await persist({authorization:"revoked",connection:"offline",pending_cloud_stop:false,browser_advanced_cdp_enabled:false,pending_revocation_id:s.endpoint_id||s.pending_revocation_id||null});
   clearNetwork();
   await clearObservedTargetFeedback(feedbackTarget);
   if(!s.endpoint_id)return {cloud_confirmed:false};
@@ -333,7 +337,7 @@ function connect() {
         brands.some(b=>/Google Chrome/i.test(b.brand))||/Chrome\//.test(agent)?"chrome":"unknown";
       const os=/Windows/i.test(agent)?"windows":/Macintosh|Mac OS/i.test(agent)?"mac":
         /Linux/i.test(agent)?"linux":"other";
-      ws.send(JSON.stringify({type:"authenticate",protocol:3,extension_version:"0.2.6",
+      ws.send(JSON.stringify({type:"authenticate",protocol:3,extension_version:"0.3.0",
         endpoint_id:s.endpoint_id,credential:s.credential,service_origin:s.service,
         browser_family:family,browser_platform:os}));
     };
@@ -353,7 +357,8 @@ function connect() {
         let prepareStage="validation";
         try {
           const permissionToken=await sensitiveToken();
-          const check=await browserValidateMutation(message.command);
+          const check=message.command?.action==="cdp"?await browserCdpPrepare(message.command):
+            await browserValidateMutation(message.command);
           if(check.error_code)proposal={error_code:check.error_code};
           prepareStage="context";
           const local=await state();
@@ -403,11 +408,17 @@ function connect() {
           // Persist consumption before touching any webpage. Failure means no action.
           await chrome.storage.session.set({[consumed]:true});
           await chrome.storage.session.remove(key);
-          const result=await browserExecuteMutation(stored.command,async()=>{
+          const authorized=async()=>{
             const latest=await state();
             return stored.permissionToken===await sensitiveToken() && latest.authorization==="enabled" && socket===ws &&
               currentGeneration===message.generation && latest.endpoint_id===stored.endpoint_id;
-          });
+          };
+          const result=stored.command.action==="cdp"?await browserCdpExecute(stored.command,authorized,executed_count=>{
+            if(socket===ws&&ws.readyState===WebSocket.OPEN&&currentGeneration===message.generation)
+              ws.send(JSON.stringify({type:"cdp_progress",operation_id:op,intent_key:message.intent_key,
+                generation:currentGeneration,executed_count}));
+          }):
+            await browserExecuteMutation(stored.command,authorized);
           // Session-only tab provenance; never derive permission to auto-close from it.
           // If recording fails after a browser effect, leave the receipt Unknown.
           if(result.state==="completed" && Number.isSafeInteger(result.tab_id)){
@@ -420,11 +431,12 @@ function connect() {
               intent_key:message.intent_key,execute_token:message.execute_token,
               generation:currentGeneration,state:result.state,tab_id:result.tab_id??null,
               ...(result.presentation_warning?{presentation_warning:result.presentation_warning}:{}),
+              ...(stored.command.action==="cdp"&&result.data?{data:result.data}:{}),
               ...(result.state==="failed"&&result.error_code?{error_code:result.error_code}:{})}));
         } catch {/* failure after consumption is Unknown, never retry */}
         finally {executingOperations.delete(op);}
       } else if(message.type==="read_request") {
-        if(!/^[a-f0-9-]{36}$/.test(message.request_id||"") || !["tabs","snapshot","screenshot"].includes(message.tool) ||
+        if(!/^[a-f0-9-]{36}$/.test(message.request_id||"") || !["tabs","snapshot","screenshot","cdp_events"].includes(message.tool) ||
            message.generation!==currentGeneration)return;
         // Fixed, non-content-bearing progress markers; transient and only for
         // the authenticated in-flight read on this WebSocket generation.
@@ -437,7 +449,9 @@ function connect() {
         progress("extension_received");
         const permissionToken=await sensitiveToken();
         let response;
-        try { response=await executeBrowserRead(message.tool,message.tab_id,message.scope,async()=>
+        try { response=message.tool==="cdp_events"?await browserCdpEvents(message,async()=>
+          socket===ws&&currentGeneration===message.generation&&(await state()).authorization==="enabled"&&permissionToken===await sensitiveToken()):
+          await executeBrowserRead(message.tool,message.tab_id,message.scope,async()=>
           socket===ws&&currentGeneration===message.generation&&(await state()).authorization==="enabled"&&permissionToken===await sensitiveToken(),progress); }
         catch { response={error_code:"unavailable"}; }
         const latest=await state();
@@ -459,8 +473,9 @@ function connect() {
       } else if(message.type==="stopped"||message.type==="revoked"){
         const feedbackTarget=lastObserved;
         localBlocked=true;localDenialEpoch++;
+        void browserCdpSetEnabled(false).catch(()=>{});
         void clearSensitivePermissions().catch(()=>{});
-        await chrome.storage.local.set({authorization:message.type,connection:"offline",last_update:Date.now()});
+        await chrome.storage.local.set({authorization:message.type,connection:"offline",browser_advanced_cdp_enabled:false,last_update:Date.now()});
         if(message.type==="revoked"){await chrome.storage.local.remove(["credential","endpoint_id"]);await chrome.storage.session.remove("browser_temporary_grant");}
         clearNetwork();await clearObservedTargetFeedback(feedbackTarget);await render();
       }
@@ -560,9 +575,13 @@ chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
             browser_platform:v.browser_platform??null,client_version:v.client_version??null};
         }catch{/* Local authorization remains authoritative when offline. */}
       }
-      return {...publicState,cloud_state,sensitive_permissions:{...permissions,native_private:await browserNativePrivateAllowed()},last_observed_tab_id:tab_id,last_observed_scope:tab_id===null?null:(await chrome.tabs.get(tab_id)).incognito===true?"private":"ordinary",last_observed_tab_source:tab_source,activity};
+      return {...publicState,cloud_state,advanced_cdp:{enabled:await browserCdpEnabled(),available:browserCdpAvailable()},sensitive_permissions:{...permissions,native_private:await browserNativePrivateAllowed()},last_observed_tab_id:tab_id,last_observed_scope:tab_id===null?null:(await chrome.tabs.get(tab_id)).incognito===true?"private":"ordinary",last_observed_tab_source:tab_source,activity};
     }
     if(message.type==="sensitive-permission"){await changeSensitivePermission(message.surface,message.enabled);return {changed:true};}
+    if(message.type==="advanced-cdp"){
+      if(typeof message.enabled!=="boolean")throw Error("invalid_permission");
+      return browserCdpSetEnabled(message.enabled);
+    }
     if(message.type==="locate")return locateObservedTab();
     if(message.type==="rename"){
       const alias=message.alias;
@@ -588,6 +607,7 @@ chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
   return true;
 });
 chrome.tabs.onRemoved.addListener(tab_id=>{
+  if(browserCdpTabs.has(tab_id))void browserCdpForgetTab(tab_id).catch(()=>{});
   if(lastObserved?.tab_id===tab_id)lastObserved=null;
   void chrome.storage.session.remove("browser_source_"+tab_id).catch(()=>{});
 });

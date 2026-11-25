@@ -22,6 +22,8 @@ import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
 import {publishedRunInterface} from './published-run-interface.ts';
 import {isDropPlan,isSealedDropInputs} from './drop-file-contract.ts';
+import {selectedFilePlan} from './selected-file-plan.ts';
+import {cloudflareSelectedFilePlan} from './cloudflare-selected-file.ts';
 import {openDropClaim} from './drop-claim-receipt.ts';
 import {recordRuntimeApproval} from './runtime-approval.ts';
 import {portalAuthorization,changePortalAuthorization} from './portal-authorization.ts';
@@ -138,6 +140,12 @@ type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;activ
 type VersionRow={id:string;plan:string;digest:string};
 type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
+type RecentRunSnapshot={run_id:string;published_version_id:string;created_at:number;
+  updated_at:number;start_state:string;recorded_outcome:string;error_code:string|null};
+type WorkflowGetResponse=ReturnType<typeof workflowView>&{
+  published_run_interface:ReturnType<typeof publishedRunInterface>|null;
+  recent_runs?:RecentRunSnapshot[];
+};
 // A bounded dynamic MCP child requires the same explicit Publish grant as an
 // ordinary Step; the compiler has already pinned its exact tool schema.
 function approvedMcpSteps(plan:Plan):Array<{with:Record<string,unknown>}>{
@@ -188,17 +196,35 @@ export class WorkflowService {
         recorded_state:x.state,recorded_at:x.updated_at,
         attempt_state:x.attempt_state,physical_health:'unverified' as const}))};
   }
-  async get(workflow_id:string){
+  async get(workflow_id:string,recent_runs_limit?:number):Promise<WorkflowGetResponse>{
     assertId(workflow_id);
+    if(recent_runs_limit!==undefined&&
+      (!Number.isSafeInteger(recent_runs_limit)||recent_runs_limit<1||recent_runs_limit>20))
+      throw new StateError('invalid_recent_runs_limit');
     const row=await this.row(workflow_id);
-    if(!row.active_version_id)return {...workflowView(row),published_run_interface:null};
-    const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
-      .bind(row.active_version_id,workflow_id).first<{plan:string}>();
-    if(!version)throw new StateError('published_version_missing');
-    let plan:Plan;
-    try{plan=JSON.parse(version.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
-    return {...workflowView(row),
-      published_run_interface:publishedRunInterface(plan,row.active_version_id)};
+    let response:WorkflowGetResponse;
+    if(!row.active_version_id)response={...workflowView(row),published_run_interface:null};
+    else{
+      const version=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=? AND workflow_id=?')
+        .bind(row.active_version_id,workflow_id).first<{plan:string}>();
+      if(!version)throw new StateError('published_version_missing');
+      let plan:Plan;
+      try{plan=JSON.parse(version.plan) as Plan;}catch{throw new StateError('published_plan_invalid');}
+      response={...workflowView(row),
+        published_run_interface:publishedRunInterface(plan,row.active_version_id)};
+    }
+    if(recent_runs_limit===undefined)return response;
+    const recentRuns=await this.db.prepare(`SELECT id,version_id,created_at,updated_at,
+      start_state,outcome,error_code FROM runs
+      WHERE workflow_id=? ORDER BY created_at DESC,id DESC LIMIT ?`)
+      .bind(workflow_id,recent_runs_limit)
+      .all<{id:string;version_id:string;created_at:number;updated_at:number;
+        start_state:string;outcome:string;error_code:string|null}>();
+    return {...response,recent_runs:recentRuns.results.map(run=>({
+      run_id:run.id,published_version_id:run.version_id,created_at:run.created_at,
+      updated_at:run.updated_at,start_state:run.start_state,
+      recorded_outcome:run.outcome,error_code:run.error_code,
+    }))};
   }
   private async row(id:string){const row=await this.db.prepare('SELECT * FROM workflows WHERE id=? AND deleted_at IS NULL').bind(id).first<WorkflowRow>();if(!row)throw new StateError('workflow_not_found');return row;}
   async create(definition:string){
@@ -900,7 +926,7 @@ if(required.length){
     if(parent)throw new StateError('workflow_referenced_by_parent');
     throw new StateError('workflow_delete_conflict');
   }
-  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile:false|true|'drop'=false,expected_published_version_id?:string){
+  async start(workflow_id:string,inputs:Record<string,unknown>={},idempotency_key?:string,expected_version_id?:string,allowTransientFile:false|true|'drop'|'github_selected_file'|'cloudflare_selected_file'=false,expected_published_version_id?:string){
     assertId(workflow_id);
     // Caller assertion is not an internal trigger identity. Check it before
     // replay, ephemeral secret generation or any Run reservation.
@@ -922,7 +948,7 @@ throw new StateError('reserved_idempotency_key');
       if(original){
         if(expected_published_version_id&&original.version_id!==expected_published_version_id)
           throw new StateError('published_version_changed');
-        if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':'litterbox_duplicate_admission');
+        if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':['github_selected_file','cloudflare_selected_file'].includes(String(allowTransientFile))?'selected_file_duplicate_admission':'litterbox_duplicate_admission');
         // A file-less workflow_run cannot use a prior file-backed Run key
         // to bypass the selected-file admission gate, even on replay.
         const oldPlan=await this.db.prepare('SELECT plan FROM workflow_versions WHERE id=?')
@@ -942,7 +968,9 @@ throw new StateError('reserved_idempotency_key');
         }
         if(parsed.steps?.some(s=>s.uses==='action.run'&&s.with.provider==='litterbox'))
           throw new StateError('litterbox_file_tool_required');
-        if(isDropPlan(parsed))throw new StateError('drop_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
+        if(isDropPlan(parsed))throw new StateError('drop_file_tool_required');
+        if(selectedFilePlan(parsed)||cloudflareSelectedFilePlan(parsed))
+          throw new StateError('selected_file_tool_required');if((JSON.parse(original.inputs) as Record<string,unknown>).key_digest)throw new StateError('envshare_key_unrecoverable');if(original.request_digest!==request_digest)throw new StateError('idempotency_conflict');if(expected_version_id&&original.version_id!==expected_version_id)throw new StateError('published_version_changed');return this.reconcileStart(original);}
     }
     // Reconcile only the bounded number of stale starts occupying the eight
     // Workflow admission slots. This is ingress repair, not a new scheduler.
@@ -1002,14 +1030,21 @@ throw new StateError('reserved_idempotency_key');
     // Secret never reaches durable D1 inputs, Action outputs or ordinary result.
     // Litterbox bytes and signed file locator are never durable Run inputs.
     // Only workflow_run with an explicitly selected file may start this Plan.
-    const isLitterbox=activePlan.steps[0]?.uses==='action.run'&&
+    const isCloudflareSelected=cloudflareSelectedFilePlan(activePlan)!==null;
+    const isLitterbox=!isCloudflareSelected&&activePlan.steps[0]?.uses==='action.run'&&
       activePlan.steps[0].with.provider==='litterbox'&&
       activePlan.steps[0].with.action==='litterbox.upload_file'&&
       (activePlan.steps.length===1||isAuxiliaryBarkPair(activePlan.steps));
     if(isLitterbox!==(allowTransientFile===true))throw new StateError('litterbox_file_tool_required');
-    const isDrop=isDropPlan(activePlan);
+    const isSelected=selectedFilePlan(activePlan)!==null;
+    const isDrop=!isSelected&&isDropPlan(activePlan);
     if(isDrop!==(allowTransientFile==='drop'))throw new StateError('drop_file_tool_required');
-    if(isDrop&&(!idempotency_key||expected_version_id||!isSealedDropInputs(inputs)))
+    if(isSelected!==(allowTransientFile==='github_selected_file')||
+       isCloudflareSelected!==(allowTransientFile==='cloudflare_selected_file'))
+      throw new StateError('selected_file_tool_required');
+    if(isCloudflareSelected&&(!idempotency_key||expected_version_id))
+      throw new StateError('selected_file_manual_admission_required');
+    if((isDrop||isSelected)&&(!idempotency_key||expected_version_id||!isSealedDropInputs(inputs)))
       throw new StateError('drop_manual_file_admission_required');
     if(isLitterbox&&(!idempotency_key||expected_version_id||
       activePlan.cloudflare_execution_approved!==true||activePlan.triggers?.length))
@@ -1049,7 +1084,7 @@ throw new StateError('reserved_idempotency_key');
         if(prior){
           if(expected_published_version_id&&prior.version_id!==expected_published_version_id)
             throw new StateError('published_version_changed');
-          if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':'litterbox_duplicate_admission');
+          if(allowTransientFile)throw new StateError(allowTransientFile==='drop'?'drop_duplicate_admission':['github_selected_file','cloudflare_selected_file'].includes(String(allowTransientFile))?'selected_file_duplicate_admission':'litterbox_duplicate_admission');
           if(deliveryKey)throw new StateError('envshare_key_unrecoverable');
           if(prior.request_digest!==request_digest)throw new StateError('idempotency_conflict');
           if(expected_version_id&&prior.version_id!==expected_version_id)
@@ -1347,7 +1382,8 @@ throw new StateError('reserved_idempotency_key');
         JOIN workflow_versions v ON v.id=r.version_id WHERE r.id=?`)
         .bind(run_id).first<{plan:string}>();
       let approved=false;
-      try{approved=!!source&&isDropPlan(JSON.parse(source.plan) as Plan);}
+      try{if(source){const plan=JSON.parse(source.plan) as Plan;
+      approved=isDropPlan(plan)||selectedFilePlan(plan)!==null;}}
       catch{approved=false;}
       if(approved){
         // Never expose an orphan ciphertext row: an authenticated Callback

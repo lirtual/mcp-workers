@@ -88,7 +88,7 @@ test("a main-frame navigation event during capture invalidates the screenshot ev
 test("unattended capture has the canonical all_urls permission (executor still excludes protected schemes)",()=>{
   const m=JSON.parse(fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../extension/manifest.json"),"utf8"));
   assert.ok(m.host_permissions.includes("<all_urls>"));
-  assert.ok(!m.permissions.includes("debugger"));
+  assert.ok(m.permissions.includes("debugger"),"Spec #917 explicitly requires debugger permission for locally gated advanced CDP");
 });
 
 test("screenshots reject recognized credentials in open Shadow DOM and visible select controls",()=>{

@@ -9,6 +9,17 @@ function uuid7(ms=Date.now()){
   const stamp=ms.toString(16).padStart(12,"0");
   return stamp.slice(0,8)+"-"+stamp.slice(8)+"-7000-8000-000000000001";
 }
+// A fixed number of event-loop turns is not a wall-clock allowance:
+// CI can delay async dispatch even though the intent is still valid.
+async function waitForSent(sent,type){
+  const deadline=Date.now()+2000;
+  while(Date.now()<deadline){
+    const found=sent.find(message=>message.type===type);
+    if(found)return found;
+    await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  return sent.find(message=>message.type===type);
+}
 function fixture(){
   const db=new DatabaseSync(":memory:");
   const sql={exec(statement,...values){
@@ -125,9 +136,7 @@ test("snapshot socket close retains only a bounded in-flight stage and close cod
       method:"POST",headers:{"content-type":"application/json"},
       body:JSON.stringify({endpoint_id:id,tool:"snapshot",tab_id:41})
     }));
-    for(let i=0;i<30&&!f.sent.some(x=>x.type==="read_request");i++)
-      await new Promise(resolve=>setImmediate(resolve));
-    const request=f.sent.find(x=>x.type==="read_request");
+    const request=await waitForSent(f.sent,"read_request");
     assert.ok(request,"snapshot must reach current socket");
     // Invalid and cross-request progress must not enter the diagnostic receipt.
     await f.first.webSocketMessage(f.socket,JSON.stringify({
@@ -168,4 +177,102 @@ test("old live socket without the new extension version cannot accept reads or w
     await owner.webSocketMessage(oldSocket,JSON.stringify({type:'ping'}));
     assert.deepEqual(f.sent,[{type:'closed'}]);
   }finally{f.db.close();}
+});
+
+
+test("CDP results are transient; durable intent prevents duplicate or changed-argument replay",async()=>{
+  const f=fixture();
+  f.socket.deserializeAttachment=()=>({authenticated:true,protocol:3,extension_version:"0.3.0",
+    endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()});
+  const key=uuid7();
+  const command={endpoint_id:id,intent_key:key,action:"cdp",tab_id:73,
+    commands:[{method:"Runtime.evaluate",params:{expression:"window.privateTestValue"}}]};
+  const request=body=>new Request("https://owner.internal/mutate",{method:"POST",
+    headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+  // Reproduce an asynchronous admission slower than a few event-loop turns.
+  // The prepare must still arrive before the real request deadline.
+  const originalAdmit=f.first.intents.admit.bind(f.first.intents);
+  f.first.intents.admit=async(...args)=>{
+    await new Promise(resolve=>setTimeout(resolve,40));
+    return originalAdmit(...args);
+  };
+  try{
+    const pending=f.first.fetch(request(command));
+    const prepare=await waitForSent(f.sent,"prepare_request");
+    assert.ok(prepare);
+    await f.first.webSocketMessage(f.socket,JSON.stringify({type:"prepare_result",
+      operation_id:prepare.operation_id,intent_key:key,generation:7,accepted:true}));
+    const execute=await waitForSent(f.sent,"execute_request");
+    assert.ok(execute);
+    await f.first.webSocketMessage(f.socket,JSON.stringify({type:"execute_result",
+      operation_id:execute.operation_id,intent_key:key,generation:7,
+      execute_token:execute.execute_token,state:"completed",tab_id:73,
+      data:{commands:[{index:0,method:"Runtime.evaluate",result:{value:"PRIVATE_CDP_FIXTURE"}}],executed_count:1}}));
+    const result=await (await pending).json();
+    assert.equal(result.state,"completed");
+    assert.equal(result.data.commands[0].result.value,"PRIVATE_CDP_FIXTURE");
+    const database=JSON.stringify(f.db.prepare("SELECT * FROM browser_intents").all());
+    assert.doesNotMatch(database,/PRIVATE_CDP_FIXTURE|privateTestValue|Runtime\.evaluate/);
+    const duplicate=await (await f.first.fetch(request(command))).json();
+    assert.equal(duplicate.operation_id,result.operation_id);
+    assert.equal(duplicate.data,undefined,"a replay returns only the safe receipt, never past page contents");
+    const changed=await (await f.first.fetch(request({...command,
+      commands:[{method:"Runtime.evaluate",params:{expression:"document.cookie"}}]}))).json();
+    assert.equal(changed.error_code,"intent_conflict");
+    assert.equal(f.sent.filter(x=>x.type==="prepare_request").length,1);
+  } finally {f.db.close();}
+});
+
+test("old v0.2.6 extension remains available for legacy tools but explicitly rejects CDP",async()=>{
+  const f=fixture();
+  try{
+    const key=uuid7();
+    const r=await f.first.fetch(new Request("https://owner.internal/mutate",{method:"POST",
+      headers:{"content-type":"application/json"},
+      body:JSON.stringify({endpoint_id:id,intent_key:key,action:"cdp",tab_id:73,
+        commands:[{method:"Runtime.evaluate",params:{expression:"1"}}]})}));
+    assert.equal(r.status,409);
+    assert.equal((await r.json()).error_code,"unsupported_version");
+    assert.equal(f.sent.length,0);
+    assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM browser_intents").get().n,0);
+    const tabs=f.first.fetch(new Request("https://owner.internal/read",{method:"POST",
+      body:JSON.stringify({endpoint_id:id,tool:"tabs"})}));
+    const read=await waitForSent(f.sent,"read_request");
+    assert.ok(read,"legacy read remains dispatchable");
+    await f.first.webSocketMessage(f.socket,JSON.stringify({type:"read_result",generation:7,
+      request_id:read.request_id,data:{tabs:[]}}));
+    assert.deepEqual(await (await tabs).json(),{tabs:[]});
+  } finally {f.db.close();}
+});
+
+
+test("CDP partial progress survives a Stop only as bounded Unknown counts",async()=>{
+  const f=fixture();
+  f.socket.deserializeAttachment=()=>({authenticated:true,protocol:3,extension_version:"0.3.0",
+    endpoint_id:id,generation:7,deadline:0,last_seen:Date.now()});
+  const key=uuid7();
+  const command={endpoint_id:id,intent_key:key,action:"cdp",tab_id:73,
+    commands:[{method:"Input.dispatchMouseEvent",params:{type:"mousePressed",x:1,y:1}},
+      {method:"Input.dispatchMouseEvent",params:{type:"mouseReleased",x:2,y:2}}]};
+  try{
+    const pending=f.first.fetch(new Request("https://owner.internal/mutate",{method:"POST",
+      body:JSON.stringify(command)}));
+    const prepare=await waitForSent(f.sent,"prepare_request");
+    assert.ok(prepare);
+    await f.first.webSocketMessage(f.socket,JSON.stringify({type:"prepare_result",
+      operation_id:prepare.operation_id,intent_key:key,generation:7,accepted:true}));
+    const exec=await waitForSent(f.sent,"execute_request");
+    assert.ok(exec);
+    await f.first.webSocketMessage(f.socket,JSON.stringify({type:"cdp_progress",
+      operation_id:exec.operation_id,intent_key:key,generation:7,executed_count:1,
+      data:"MUST_NOT_BE_PERSISTED"}));
+    f.first.close(id,"stopped");
+    const result=await (await pending).json();
+    assert.equal(result.state,"unknown");
+    assert.equal(result.executed_count,1);
+    assert.equal(result.data,undefined);
+    const stored=JSON.stringify(f.db.prepare("SELECT * FROM browser_intents").all());
+    assert.doesNotMatch(stored,/MUST_NOT_BE_PERSISTED|mousePressed|mouseReleased/);
+    assert.equal(f.ledger.status(id,key).state,"unknown");
+  } finally {f.db.close();}
 });

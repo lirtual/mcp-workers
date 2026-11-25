@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import worker from "../src/worker.ts";
 import { LATEST_MANIFEST_URL } from "../src/release-manifest-shell.ts";
@@ -39,7 +42,7 @@ test("first-install Linux script is static, no Worker GitHub API or old reposito
   assert.ok(script.indexOf("Invalid immutable Agent Release manifest") <
             script.indexOf("Downloading Remote Control Agent"));
   assert.ok(script.indexOf("sha256sum -c -") < script.indexOf("tar -xOzf"));
-  assert.ok(script.indexOf("tar -xOzf") < script.indexOf("bootstrap-node.mjs >"));
+  assert.ok(script.indexOf("tar -xOzf") < script.indexOf("bootstrap-v2.py >"));
   assert.equal(spawnSync("sh", ["-n"], { input: script, encoding: "utf8", timeout: 3000 }).status, 0);
   assert.ok(Buffer.byteLength(script) < 16384);
 });
@@ -75,4 +78,52 @@ test("public Linux Shell requires owner terminal before contacting GitHub", asyn
   assert.notEqual(ran.status, 0);
   assert.match(ran.stderr, /Requires an ordinary interactive Linux user/);
   assert.equal(counter.calls, 0);
+});
+
+test("verified public Linux archive dispatch rejects retired runtimes and preserves action", async () => {
+  const response = await worker.fetch(new Request(origin + "/install.sh"), approvedEnv({calls:0}));
+  const script = await response.text();
+  assert.ok(script.indexOf("sha256sum -c -") < script.indexOf('tar -tzf'));
+  assert.ok(script.indexOf('tar -tzf') < script.indexOf('bootstrap-v2.py >'));
+  // Exercise the generated dispatch after the common size/SHA gate. No
+  // network, real installer, pairing, or user terminal is involved.
+  const dispatch = script.slice(script.indexOf('tar -tzf')).replaceAll('< /dev/tty','< /dev/null');
+  const root = mkdtempSync(join(tmpdir(),"rca-public-dispatch-"));
+  try {
+    for (const kind of ["node","native","invalid"] as const) {
+      const fixture = join(root,kind);
+      const scripts = join(fixture,"apps/remote-control-agent/scripts");
+      const stage = join(root,kind+"-stage");
+      mkdirSync(scripts,{recursive:true});
+      mkdirSync(stage);
+      const archive = join(root,kind+".tar.gz");
+      const members = [];
+      if (kind === "node") {
+        mkdirSync(join(fixture,"bin"));
+        writeFileSync(join(fixture,"bin/node"), '#!/bin/sh\nprintf "NODE:%s\\n" "$*"\n');
+        writeFileSync(join(scripts,"bootstrap-node.mjs"),"fixture");
+        members.push("bin/node","apps/remote-control-agent/scripts/bootstrap-node.mjs");
+      } else if (kind === "native") {
+        writeFileSync(join(scripts,"bootstrap-v2.py"),'import sys\nprint("NATIVE:"+" ".join(sys.argv[1:]))\n');
+        members.push("apps/remote-control-agent/scripts/bootstrap-v2.py");
+      } else {
+        writeFileSync(join(fixture,"bundle.json"),"{}");
+        members.push("bundle.json");
+      }
+      assert.equal(spawnSync("tar",["-czf",archive,"-C",fixture,...members]).status,0);
+      const result=spawnSync("sh",["-ec",dispatch,"fixture","--upgrade"],{
+        env:{...process.env,archive,stage,tag:"v0.1.58",expected:"a".repeat(64)},encoding:"utf8",timeout:5000,
+      });
+      if (kind !== "native") {
+        assert.notEqual(result.status,0);
+        assert.match(result.stderr,/Unsupported verified Agent archive/);
+      } else {
+        assert.equal(result.status,0,result.stderr);
+        assert.match(result.stdout,/NATIVE:--latest-archive /);
+        assert.match(result.stdout,/--tag v0\.1\.58/);
+        assert.match(result.stdout,/--endpoint https:\/\/rca\.lirtual\.dpdns\.org\/ --upgrade/);
+        assert.doesNotMatch(result.stdout,/NODE:/);
+      }
+    }
+  } finally { rmSync(root,{recursive:true,force:true}); }
 });

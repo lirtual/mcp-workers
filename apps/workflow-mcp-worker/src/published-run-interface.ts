@@ -2,6 +2,8 @@ import type {Plan} from './plan.ts';
 import {isEnvsharePlan} from './envshare-transient.ts';
 import {isLitterboxPlan} from './litterbox-executor.ts';
 import {isDropPlan} from './drop-file-contract.ts';
+import {selectedFilePlan} from './selected-file-plan.ts';
+import {cloudflareSelectedFilePlan} from './cloudflare-selected-file.ts';
 import {isSessionDurationInputRef} from './github-action-inputs.ts';
 
 type UnknownField={type:'not_declared';required:'not_declared';default:'not_declared'};
@@ -24,6 +26,31 @@ export function publishedRunInterface(plan:Plan,published_version_id:string){
    idempotency_key:'optional',
    execution:'published_plan_only',
  };
+ const selectedCloudflare=cloudflareSelectedFilePlan(plan);
+ if(selectedCloudflare){
+   return {...base,kind:'manual_selected_file',
+     inputs:{public_file_upload_accepted:{type:'boolean',required:true,const:true,
+       note:'Fresh authorization to send this file to the reviewed public Cloudflare Action'}},
+     top_level_file:{required:true,source:'ChatGPT file descriptor',
+       extensions:selectedCloudflare.policy.extensions,
+       max_bytes:selectedCloudflare.policy.max_bytes},
+     idempotency_key:'required',approval:'fresh_owner_public_upload_authorization_required',
+     unknown_result:'never_retry'};
+ }
+ const selected=selectedFilePlan(plan);
+ if(selected){
+   return {...base,kind:'manual_selected_file',
+     inputs:selected.file.consent==='owner_public_upload_v1'
+       ?{public_file_upload_accepted:{type:'boolean',required:true,const:true,
+         note:'Fresh authorization to send this file to the reviewed public GitHub Action'}}:{},
+     top_level_file:{required:true,source:'ChatGPT file descriptor',
+       extensions:selected.file.extensions,max_bytes:selected.file.max_bytes},
+     idempotency_key:'required',
+     ...(selected.file.consent==='cloudflare_terms_v1'
+       ?{terms:'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment'}
+       :{approval:'fresh_owner_public_upload_authorization_required'}),
+     unknown_result:'never_retry'};
+ }
  if(isLitterboxPlan(plan)){
    return {...base,kind:'litterbox_manual_file',
      inputs:{time:{type:'string',required:false,default:'24h',
@@ -35,11 +62,12 @@ export function publishedRunInterface(plan:Plan,published_version_id:string){
      unknown_result:'never_retry'};
  }
  if(isDropPlan(plan)){
-   return {...base,kind:'drop_manual_file',inputs:{},
+   return {...base,kind:'drop_manual_file',
+     inputs:{},
      top_level_file:{required:true,source:'ChatGPT file descriptor',
        extensions:['.html','.zip'],max_bytes:10*1024*1024},
      idempotency_key:'required',
-     approval:'fresh_owner_cloudflare_terms_and_temporary_account_authorization_required',
+     terms:'one_time_cloudflare_terms_and_privacy_acceptance_before_first_deployment',
      unknown_result:'never_retry'};
  }
  if(isEnvsharePlan(plan)&&!plan.triggers?.length&&

@@ -124,6 +124,38 @@ test("a device-local invalid read returns failed and does not revoke the signed 
   assert.equal(socket.closeCount, 1);
 });
 
+test("read transport rejects JSON-expanded frames without dropping the signed connection", async (t) => {
+  const socket = new FakeSocket();
+  const stopped = new AbortController();
+  t.after(() => stopped.abort());
+  const monitored = monitorDeviceSocket(socket as unknown as WebSocket, stopped.signal,
+    { intervalMs: 60_000, timeoutMs: 10_000 },
+    async (_tool, args) => (args as { path: string }).path.endsWith("large")
+      ? String.fromCharCode(92).repeat(40_000)
+      : "READ_OK");
+
+  const oversizedId = randomUUID();
+  socket.event("message", { data: JSON.stringify({
+    kind: "read", request_id: oversizedId, tool: "read_file", arguments: { path: "/tmp/large" },
+  }) });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(socket.sent[0]!), {
+    kind: "read_result", request_id: oversizedId, status: "failed", error: "result_too_large",
+  });
+  assert.equal(socket.closeCount, 0);
+
+  const smallerId = randomUUID();
+  socket.event("message", { data: JSON.stringify({
+    kind: "read", request_id: smallerId, tool: "read_file", arguments: { path: "/tmp/small" },
+  }) });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(JSON.parse(socket.sent[1]!), {
+    kind: "read_result", request_id: smallerId, status: "completed", text: "READ_OK",
+  });
+  stopped.abort();
+  assert.equal(await monitored, "aborted");
+});
+
 test("reconnect obtains a fresh challenge and stops on abort without executing commands", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "rc-v2-reconnect-"));
   const keyPath = path.join(dir, "device.pem");
@@ -164,10 +196,10 @@ test("reconnect obtains a fresh challenge and stops on abort without executing c
     assert.equal(sockets.length, 2);
     for (const socket of sockets) {
       assert.equal(socket.sent.length, 1, "one metadata report per signed session");
-      const info = JSON.parse(socket.sent[0]!) as { kind: string; os: string };
+      const info = JSON.parse(socket.sent[0]!) as { kind: string; os: string; capabilities: string[] };
       assert.equal(info.kind, "device_info");
       assert.ok(["linux", "windows", "darwin"].includes(info.os));
-      assert.equal(Object.hasOwn(info, "capabilities"), false);
+      assert.deepEqual(info.capabilities, ["read", "file_write", "shell"], "default full runtime reports the supported operations");
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
@@ -844,7 +876,7 @@ test("paired v2 agent exposes reads, writes and Shell without capability flags",
 test("minimal runtime metadata never includes device ID or secrets", () => {
   const info = collectDeviceInfo();
   assert.equal(info.kind, "device_info");
-  assert.equal(Object.hasOwn(info, "capabilities"), false);
+  assert.deepEqual(info.capabilities, ["read"], "default runtime metadata is read-only");
   assert.ok(info.hostname.length > 0 && info.hostname.length <= 64);
   assert.ok(info.os_version.length > 0 && info.os_version.length <= 96);
   assert.ok(["native", "wsl2", "container"].includes(info.environment));
@@ -922,7 +954,7 @@ test("Windows preview read-only capability rejects Shell and file mutations", as
 test("metadata is bounded and independent of execution permissions", () => {
   const readonly = collectDeviceInfo();
   assert.equal(readonly.kind, "device_info");
-  assert.equal(Object.hasOwn(readonly, "capabilities"), false);
+  assert.deepEqual(readonly.capabilities, ["read"], "read-only mode never claims write or Shell");
   assert.ok(readonly.hostname.length > 0 && readonly.hostname.length <= 64);
   assert.ok(readonly.os_version.length > 0 && readonly.os_version.length <= 96);
   assert.ok(["native", "wsl2", "container"].includes(readonly.environment));

@@ -1,5 +1,7 @@
 import {runPublishedCloudflareAction} from './cloudflare-action-executor.ts';
 import {recordedLitterboxStep} from './litterbox-executor.ts';
+import {cloudflareSelectedFilePlan} from './cloudflare-selected-file.ts';
+import {recordedCloudflareFileStep} from './cloudflare-selected-file-ingress.ts';
 import {watchPersistedSessions} from './github-action-session-watch.ts';
 import {compensateSession} from './saga.ts';
 import {awaitedChildRunId,transferAwaitedChildCapacity,admitDetachedChild,startReservedDetachedChild,startReservedAwaitedChild} from './child-capacity.ts';
@@ -792,20 +794,25 @@ async function runAwaitedChild(
 /** File bytes are handled only by the owner-selected MCP call, never by
  * the native engine. The durable fenced result is authoritative, not the wake.
  */
-async function awaitLitterboxFileReceipt(env:Env,s:Step,runId:string,step:WorkflowStep):Promise<Outcome>{
+async function awaitSelectedFileReceipt(env:Env,plan:Plan,s:Step,runId:string,step:WorkflowStep):Promise<Outcome>{
+ const selected=cloudflareSelectedFilePlan(plan)?.step_id===s.id;
+ const receipt=()=>selected?recordedCloudflareFileStep(env.DB,plan,runId,s.id):
+   recordedLitterboxStep(env.DB,runId,s.id);
  try{
   await env.DB.prepare(`INSERT INTO run_steps(run_id,step_id,status,updated_at)
     SELECT ?,?,'waiting',? WHERE EXISTS(
       SELECT 1 FROM runs WHERE id=? AND outcome='running')
     ON CONFLICT(run_id,step_id) DO NOTHING`)
    .bind(runId,s.id,now(),runId).run();
-  const recorded=await recordedLitterboxStep(env.DB,runId,s.id);
+  const recorded=await receipt();
   if(recorded)return recorded;
   try{
-   await step.waitForEvent('workflow-'+s.id+'-litterbox',{
-    type:'litterbox-complete-'+s.id,timeout:'180 seconds'});
+   await step.waitForEvent('workflow-'+s.id+
+     (selected?'-selected-file':'-litterbox'),{
+    type:(selected?'selected-file-complete-':'litterbox-complete-')+s.id,
+    timeout:'180 seconds'});
   }catch{/* A lost wake is never evidence that the upload did not happen. */}
-  const final=await recordedLitterboxStep(env.DB,runId,s.id);
+  const final=await receipt();
   if(final)return final;
   const fenced=await env.DB.prepare(`SELECT invocation_id
     FROM cloudflare_action_invocations WHERE run_id=? AND step_id=?`)
@@ -907,8 +914,9 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
             ? await runBoundedLoop(this.env,plan,s,id,step,ctx)
             : s.uses==='flow.foreach'
             ? await runForeachStep(this.env,plan,s,id,step,ctx)
-            : s.uses==='action.run'&&s.with.provider==='litterbox'
-            ? await awaitLitterboxFileReceipt(this.env,s,id,step)
+            : s.uses==='action.run'&&
+              (s.with.provider==='litterbox'||cloudflareSelectedFilePlan(plan)?.step_id===s.id)
+            ? await awaitSelectedFileReceipt(this.env,plan,s,id,step)
             : s.uses==='action.run'
             ? await step.do('workflow-'+s.id,
               {retries:{limit:0,delay:'1 second'},timeout:'90 seconds'},async():Promise<Outcome>=>{

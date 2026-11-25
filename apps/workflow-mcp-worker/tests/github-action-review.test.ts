@@ -46,3 +46,18 @@ test('runtime authorization needs exact grant from immutable Published Plan',asy
   assert.equal(isPublishedGitHubActionApproved([reviewed],{...reviewed,contractDigest:'0'.repeat(64)}),false);
   assert.equal(isPublishedGitHubActionApproved([reviewed],{...reviewed,workflowId:789}),false);
 });
+
+test('selected file policy is part of the reviewed GitHub contract digest',async()=>{
+ const base:GitHubActionSource={...source,contract:{...source.contract,type:'task'}};
+ const capability={delivery:'github_encrypted_locator_v1' as const,
+  extensions:['.html','.zip'],max_bytes:10485760,
+  input_slots:['drop_part_0','drop_part_1','drop_part_2'] as ['drop_part_0','drop_part_1','drop_part_2'],
+  consent:'cloudflare_terms_v1' as const,receipt:'owner_claim_v1' as const};
+ const reviewedBase=await reviewedGitHubAction(base);
+ const reviewedFile=await reviewedGitHubAction({...base,
+  contract:{...base.contract,selectedFile:capability}});
+ assert.notEqual(reviewedBase.contractDigest,reviewedFile.contractDigest);
+ assert.notEqual((await reviewedGitHubAction({...base,contract:{...base.contract,
+  selectedFile:{...capability,extensions:['.html']}}})).contractDigest,
+  reviewedFile.contractDigest);
+});

@@ -93,15 +93,19 @@ export function renderLinuxLatestInstallShell(origin: string): string {
     "printf '%s  %s\\n' \"$expected\" \"$archive\" | sha256sum -c - >/dev/null || { echo 'Verified asset checksum mismatch' >&2; exit 1; }",
     "echo '==> SHA-256 verification passed'",
     "# The COMPLETE archive has been verified before any bundled byte executes.",
-    "echo '==> [4/5] Extracting bundled Node.js and bootstrap...'",
-    "tar -xOzf \"$archive\" bin/node > \"$stage/node\"",
-    "tar -xOzf \"$archive\" apps/remote-control-agent/scripts/bootstrap-node.mjs > \"$stage/bootstrap-node.mjs\"",
-    "chmod 700 \"$stage/node\"",
-    "chmod 600 \"$stage/bootstrap-node.mjs\"",
-    "unset NODE_OPTIONS NODE_PATH",
-    "echo '==> [5/5] Launching interactive Agent installer...'",
-    "\"$stage/node\" \"$stage/bootstrap-node.mjs\" --archive \"$archive\" --tag \"$tag\" --sha256 \"$expected\" --endpoint \"" +
+    "tar -tzf \"$archive\" > \"$stage/entries\"",
+    // Reject retired runtimes rather than executing their bootstrap.
+    'if awk \'$0=="bin/node"{found=1} END{exit !found}\' "$stage/entries"; then',
+    '  echo "Unsupported verified Agent archive; native Rust required" >&2; exit 1',
+    'elif awk \'$0=="apps/remote-control-agent/scripts/bootstrap-v2.py"{found=1} END{exit !found}\' "$stage/entries"; then',
+    '  test -x /usr/bin/python3 || { echo "Python 3 is required for native Agent management" >&2; exit 1; }',
+    "  echo '==> [4/5] Extracting native Agent bootstrap...'",
+    "  tar -xOzf \"$archive\" apps/remote-control-agent/scripts/bootstrap-v2.py > \"$stage/bootstrap-v2.py\"",
+    "  chmod 600 \"$stage/bootstrap-v2.py\"",
+    "  echo '==> [5/5] Launching interactive native Agent installer...'",
+    "  /usr/bin/python3 -I -B \"$stage/bootstrap-v2.py\" --latest-archive \"$archive\" --tag \"$tag\" --asset-sha256 \"$expected\" --endpoint \"" +
       origin + "/\" \"$@\" < /dev/tty",
+    'else echo "Unsupported verified Agent archive" >&2; exit 1; fi',
     "",
   ].join("\n");
 }

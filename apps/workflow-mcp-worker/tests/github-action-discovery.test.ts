@@ -151,3 +151,45 @@ test('pinned recheck returns nothing when the workflow is no longer active', asy
   assert.deepEqual(actions, []);
   assert.equal(paths.some(p => p.includes('/contents/')), false);
 });
+
+// A newly reviewed file Action must not require a workflow-path allowlist entry.
+test('reviewed selected-file Task is discoverable without a known Action basename',async()=>{
+ const {reviewedGitHubOutputSource}=await import('../src/github-action-discovery.ts');
+ const {parseGitHubAction}=await import('../src/github-action-contract.ts');
+ const extra=`name: Arbitrary selected-file action
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id:
+        type: string
+        required: true
+      dispatch_id:
+        type: string
+        required: true
+      capability_id:
+        type: string
+        required: true
+      drop_part_0:
+        type: string
+        required: true
+      drop_part_1:
+        type: string
+        default: ''
+      drop_part_2:
+        type: string
+        default: ''
+env:
+  WORKFLOW_ACTION_TYPE: task
+  WORKFLOW_ACTION_OUTPUT_KIND: none
+  WORKFLOW_ACTION_SELECTED_FILE: '{"delivery":"github_encrypted_locator_v1","extensions":[".html",".zip"],"max_bytes":10485760,"input_slots":["drop_part_0","drop_part_1","drop_part_2"],"consent":"cloudflare_terms_v1","receipt":"owner_claim_v1"}'
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo safe
+`;
+ const reviewed=parseGitHubAction(extra);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/new-preview.yml',reviewed),true);
+ assert.equal(reviewedGitHubOutputSource('.github/workflows/new-preview.yml',
+  {...reviewed,selectedFile:undefined}),false);
+});

@@ -152,7 +152,9 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   const productionNs = "abcd1234abcd1234abcd1234abcd1234";
   const sessionRpc={name:"WORKFLOW_SESSION_AUTHORIZATION",type:"service",
     service:"workflow-mcp-worker",entrypoint:"SessionAuthorization"};
+  const clerkIdentity={CLERK_PUBLISHABLE_KEY:"pk_live_"+Buffer.from("clerk.lirtual.dpdns.org$").toString("base64"),CLERK_OWNER_USER_ID:"user_fixture"};
   const prod = { bindings: [
+    ...Object.entries(clerkIdentity).map(([name,text])=>({name,type:"plain_text",text})),
     sessionRpc,
     { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
     { name: "REMOTE_CONTROL_INSTALL_ORIGIN", type: "plain_text", text: "https://rca.lirtual.dpdns.org" },
@@ -160,7 +162,7 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
       type: "durable_object_namespace", namespace_id: productionNs },
   ], observability: { enabled: true, logs: { invocation_logs: false } } };
   const secrets = [{name:"MCP_ACCESS_TOKEN"}];
-  const options = { mode: "readback", previousNamespaceId: previewNs,
+  const options = { mode: "readback", previousNamespaceId: previewNs, expectedRcaClerkIdentity:clerkIdentity,
     sourceConfig: { routes: [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }] } };
   const reviewed=readConfiguration(worker,
     readFileSync(new URL('../apps/remote-control-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
@@ -173,6 +175,10 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
     assert.throws(()=>readConfiguration(worker,JSON.stringify({...reviewed,
       services:sourceBindings})),/Session Service Binding/);
   assert.equal(verifyBindings(worker, prod, secrets, options), true);
+  for(const name of Object.keys(clerkIdentity)){
+    assert.throws(()=>verifyBindings(worker,{...prod,bindings:prod.bindings.filter(x=>x.name!==name)},secrets,options),/Clerk public identity/);
+    assert.throws(()=>verifyBindings(worker,{...prod,bindings:prod.bindings.map(x=>x.name===name?{...x,text:"wrong"}:x)},secrets,options),/Clerk public identity/);
+  }
   assert.equal(verifyBindings(worker,{...prod,bindings:prod.bindings.filter(
     b=>b.name!==sessionRpc.name)},secrets,{mode:"preflight"}),true);
   assert.throws(()=>verifyBindings(worker,{...prod,bindings:prod.bindings.filter(

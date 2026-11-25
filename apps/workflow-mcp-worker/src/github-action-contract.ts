@@ -1,4 +1,5 @@
 import { parseDocument, isMap } from 'yaml';
+import {parseGitHubSelectedFile,type GitHubSelectedFileContract} from './selected-file-contract.ts';
 
 export type ActionInput = {
   type: 'string' | 'choice' | 'boolean' | 'number';
@@ -14,6 +15,7 @@ export type DiscoveredAction = {
   publicMain?: boolean;
   outputKind?: 'tailnet'|'web'|'none';
   outputSchema?: Record<string,unknown>;
+  selectedFile?: GitHubSelectedFileContract;
 };
 
 const outputLeaf=(type:string)=>({type});
@@ -61,13 +63,15 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
   if (!record(root.jobs) || Object.keys(root.jobs).length === 0) fail('missing_jobs');
   for (const job of Object.values(root.jobs)) {
     if (!record(job)) fail('invalid_job');
-    if (own(job.env, 'WORKFLOW_ACTION_OUTPUT_KIND') !== undefined ||
+    if (own(job.env, 'WORKFLOW_ACTION_SELECTED_FILE') !== undefined ||
+        own(job.env, 'WORKFLOW_ACTION_OUTPUT_KIND') !== undefined ||
         own(job.env, 'WORKFLOW_ACTION_PUBLIC') !== undefined ||
         own(job.env, 'WORKFLOW_ACTION_TYPE') !== undefined ||
         (record(job.steps) && own(job.steps, 'WORKFLOW_ACTION_TYPE') !== undefined)) fail('shadowed_type');
     if (Array.isArray(job.steps)) {
       for (const step of job.steps) {
-        if (own(own(step, 'env'), 'WORKFLOW_ACTION_TYPE') !== undefined ||
+        if (own(own(step, 'env'), 'WORKFLOW_ACTION_SELECTED_FILE') !== undefined ||
+            own(own(step, 'env'), 'WORKFLOW_ACTION_TYPE') !== undefined ||
             own(own(step, 'env'), 'WORKFLOW_ACTION_PUBLIC') !== undefined ||
             own(own(step, 'env'), 'WORKFLOW_ACTION_OUTPUT_KIND') !== undefined) fail('shadowed_type');
       }
@@ -132,8 +136,11 @@ export function parseGitHubAction(yaml: string): DiscoveredAction {
        (duration.default as number)<1 || (duration.default as number)>300)
       fail('invalid_session_duration');
   }
+  const selectedFile=parseGitHubSelectedFile(env.WORKFLOW_ACTION_SELECTED_FILE,
+    inputs,env.WORKFLOW_ACTION_TYPE as 'task'|'session',kind as 'tailnet'|'web'|'none'|undefined);
   return { name: root.name, type: env.WORKFLOW_ACTION_TYPE as 'task' | 'session', inputs,
     publicMain: env.WORKFLOW_ACTION_PUBLIC === 'true',
     ...(kind===undefined?{}:{outputKind:kind as 'tailnet'|'web'|'none'}),
-    ...(kind==='tailnet'||kind==='web'?{outputSchema:REVIEWED_OUTPUTS[kind]}:{}) };
+    ...(kind==='tailnet'||kind==='web'?{outputSchema:REVIEWED_OUTPUTS[kind]}:{}),
+    ...(selectedFile?{selectedFile}:{}) };
 }

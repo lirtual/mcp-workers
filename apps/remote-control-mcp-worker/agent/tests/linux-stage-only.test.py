@@ -24,10 +24,11 @@ ENDPOINT = "https://rca.example.org/"
 TARGET = "linux-x64-glibc"
 
 
-def archive_bytes(protocol="owner-one-shot-v1"):
+def archive_bytes():
     raw = json.dumps({
         "name": "remote-control-agent", "version": TAG, "target": TARGET,
-        "upgrade_profile": "paired-full-v1", "upgrade_protocol": protocol,
+        "upgrade_profile": "paired-full-v1", "artifact_profile": "rust-native-only-v1",
+        "agent_runtime": "rust-standard-linux-v1", "candidate_profile": "standard-linux-rust-runtime-v1", "modules": [],
         "device_protocol": 2, "receipt_schema": 1,
     }).encode("utf8")
     buf = io.BytesIO()
@@ -100,21 +101,29 @@ class LinuxStageOnly(unittest.TestCase):
                 download.assert_not_called()
                 unpack.assert_not_called()
 
-    def test_missing_protocol_blocks_stage_before_extraction(self):
-        data = archive_bytes(protocol=None)
-        with self.assertRaisesRegex(ValueError, "lacks reviewed protocol"):
-            self.stage(data)
-
     def test_non_stage_call_refuses_sha_and_stage_refuses_install_options(self):
         for overrides in [
             {"stage_only": True, "asset_sha256": None},
             {"stage_only": True, "asset_sha256": "F" * 64},
             {"stage_only": True, "asset_sha256": "a" * 64, "upgrade": True},
             {"stage_only": True, "asset_sha256": "a" * 64, "name": "wrong"},
-            {"stage_only": False, "asset_sha256": "a" * 64},
         ]:
             with mock.patch.object(bootstrap, "preflight") as preflight:
                 with self.assertRaisesRegex(ValueError, "Stage-only|stage-only"):
+                    bootstrap.install(TAG, COMMIT, ENDPOINT, **overrides)
+                preflight.assert_not_called()
+
+    def test_native_install_digest_and_action_boundaries(self):
+        for overrides, message in [
+            ({"asset_sha256": "a" * 64}, "exactly one native staging, install or upgrade action"),
+            ({"temporary": True}, "Temporary mode requires --native-install"),
+            ({"temporary": True, "stage_only": True, "asset_sha256": "a" * 64}, "Temporary mode requires --native-install"),
+            ({"native_install": True}, "Native install requires a reviewed SHA-256"),
+            ({"native_install": True, "asset_sha256": "F" * 64}, "Native install requires a reviewed SHA-256"),
+            ({"native_install": True, "asset_sha256": "a" * 64, "upgrade": True}, "Native install requires a reviewed SHA-256"),
+        ]:
+            with mock.patch.object(bootstrap, "preflight") as preflight:
+                with self.assertRaisesRegex(ValueError, message):
                     bootstrap.install(TAG, COMMIT, ENDPOINT, **overrides)
                 preflight.assert_not_called()
 
