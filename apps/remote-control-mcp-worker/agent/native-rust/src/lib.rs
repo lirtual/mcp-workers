@@ -69,6 +69,15 @@ pub fn validate_windows_private_path(
     windows_private::private_path(path, is_dir)
 }
 
+/// Atomically publish a complete record under an existing owner-private directory.
+#[cfg(windows)]
+pub fn replace_windows_private_record(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), receipts::ReceiptError> {
+    windows_private::replace_private_record(path, bytes)
+}
+
 /// Seal the just-created Session-private directory and verify its final ACL.
 #[cfg(windows)]
 pub(crate) fn seal_new_windows_private_directory(

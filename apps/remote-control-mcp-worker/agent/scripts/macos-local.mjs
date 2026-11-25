@@ -664,6 +664,9 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     throw Error("Invalid automatic upgrade context.");
   if(policyAction!==undefined&&(action!=="update-policy"||!["on","off"].includes(policyAction)))
     throw Error("Invalid automatic update policy action.");
+  if(["start","stop","restart"].includes(action)&&!terminal())
+    throw Error("Owner terminal required for local lifecycle command.");
+  const createPaths=action==="install"||action==="upgrade";
   const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest"||action==="automatic-check"||action==="update-policy"||action==="logs"||action==="pair"||action==="recover"||action==="uninstall";
   if(!readOnly)process.umask(0o077);
   if(action==="temporary"){
@@ -683,14 +686,14 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     return {status:"temporary_session_ended"};
   }
   await checked(home,{dir:true,privateOnly:false});
-  const identity=await directories(home,ROOT,!readOnly);
-  const receipts=await directories(home,[".local","state","mcp-workers","remote-control-agent"],!readOnly);
+  const identity=await directories(home,ROOT,createPaths);
+  const receipts=await directories(home,[".local","state","mcp-workers","remote-control-agent"],createPaths);
   await checked(path.join(receipts,"operation-receipts.sqlite"),{optional:true,mode:0o600});
-  const macos=await directories(home,[...ROOT,"macos"],!readOnly);
-  const programs=await directories(home,[...ROOT,"macos","programs"],!readOnly);
-  const localBin=await directories(home,[".local","bin"],!readOnly);
+  const macos=await directories(home,[...ROOT,"macos"],createPaths);
+  const programs=await directories(home,[...ROOT,"macos","programs"],createPaths);
+  const localBin=await directories(home,[".local","bin"],createPaths);
   const cli=path.join(localBin,"rca");
-  const agents=await directories(home,["Library","LaunchAgents"],!readOnly);
+  const agents=await directories(home,["Library","LaunchAgents"],createPaths);
   const plist=path.join(agents,LABEL+".plist");
   const stopMark=path.join(macos,"stopped"), journal=path.join(macos,"switch.json");
   const journalPresent=await checked(journal,{optional:true,mode:0o600});
@@ -966,7 +969,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     return {status:state,findings};
   }
   if(action==="restart"){
-    if(!terminal()||!current||stopped||!await approved(key))
+    if(!current||stopped||!await approved(key))
       throw Error("Normal restart requires the local owner terminal and Owner-ON service.");
     if(await statMaybe(path.join(macos,"remote-upgrades","active.json")))
       throw Error("Unresolved detached upgrade; inspect before restart.");
@@ -1026,7 +1029,6 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   }
   if(action==="stop"){
     if(!current||!await approved(key))throw Error("Existing approved LaunchAgent required.");
-    if(!await ask("Intentionally stop this user LaunchAgent?"))throw Error("Owner declined.");
     // Durable OFF intent precedes service shutdown; even crash/reboot/upgrade respects it.
     await ownedWrite(stopMark,"stopped\n",stopped);
     let cloud="unconfirmed";
@@ -1044,7 +1046,6 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   if(action==="start"){
     if(!current||!stopped||!await approved(key))throw Error("No deliberately stopped approved LaunchAgent.");
     if((await readFile(stopMark,"utf8"))!=="stopped\n")throw Error("Unsafe persisted owner STOP.");
-    if(!await ask("Resume the previously stopped LaunchAgent?"))throw Error("Owner declined.");
     if(launchctlServiceState(service,invoke)!=="absent")
       throw Error("LaunchAgent registration not confirmed absent; owner STOP retained.");
     await signedIntent('stop'); // reconcile offline Stop first without extending cloud deadline

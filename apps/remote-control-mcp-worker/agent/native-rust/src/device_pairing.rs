@@ -496,21 +496,14 @@ pub fn persist_windows_auto_policy(
     let pem = read(&directory.join("v2-identity.pem"), 8192)?.ok_or_else(invalid)?;
     signing_key(&pem).map_err(|_| invalid())?;
     let target = directory.join("v2-identity.pem.automatic-update");
-    if present(&target)? {
-        crate::validate_windows_private_path(&target, false).map_err(|_| invalid())?;
-    }
-    let mut random = [0u8; 16];
-    getrandom::fill(&mut random).map_err(|_| SessionRecoveryError::Unavailable)?;
-    let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
-    let stage = directory.join(format!(".auto-policy-{suffix}"));
     let value = json!({"device_id":device_id,"enabled":enabled}).to_string();
-    write_new(&stage, value.as_bytes())?;
-    if std::fs::rename(&stage, &target).is_err() {
-        let _ = std::fs::remove_file(&stage);
-        return Err(SessionRecoveryError::Unavailable);
-    }
-    crate::validate_windows_private_path(&target, false).map_err(|_| invalid())?;
-    Ok(())
+    crate::replace_windows_private_record(&target, value.as_bytes()).map_err(|error| {
+        if matches!(error, crate::receipts::ReceiptError::UnsafePath) {
+            invalid()
+        } else {
+            SessionRecoveryError::Unavailable
+        }
+    })
 }
 
 #[cfg(windows)]

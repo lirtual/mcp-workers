@@ -346,12 +346,12 @@ function Wait-VersionExited($program,$managementCaller=$null) {
   }
   throw 'Previous Agent process exit not confirmed'
 }
-function Wait-OwnedAgent($program,$expectedAction) {
+function Wait-OwnedAgent($program,$expectedAction,$managementCaller=$null) {
   for ($i=0; $i -lt 40; $i++) {
     $observed = Read-OwnedTask
     if (-not (Test-SameAction $observed.Actions[0] $expectedAction)) { throw 'Task action drift' }
     if ($observed.State -eq 'Running') {
-      try { return Get-OwnedAgentProcess $program } catch { }
+      try { return Get-OwnedAgentProcess $program $managementCaller } catch { }
     }
     Start-Sleep -Milliseconds 250
   }
@@ -469,12 +469,12 @@ function Assert-AutomaticEligibility($program,$expectedAction,[string]$target=''
     throw 'Automatic update Agent changed'
   }
 }
-function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false,[bool]$allowBusy=$false) {
+function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false,[bool]$allowBusy=$false,$managementCaller=$null) {
   $observed = Read-OwnedTask
   if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $expectedAction)) {
     throw 'Agent task changed before freeze'
   }
-  $process = Get-OwnedAgentProcess $program
+  $process = Get-OwnedAgentProcess $program $managementCaller
   if ($recovering) {
     try { Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen' }
     catch { Invoke-AgentUpgradeFreeze $identityFile 'freeze' }
@@ -483,7 +483,7 @@ function Freeze-OwnedAgent($program,$expectedAction,[bool]$recovering=$false,[bo
   }
   Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
   $after = Read-OwnedTask
-  $currentProcess = Get-OwnedAgentProcess $program
+  $currentProcess = Get-OwnedAgentProcess $program $managementCaller
   if ($after.State -ne 'Running' -or -not (Test-SameAction $after.Actions[0] $expectedAction) -or
       $currentProcess.ProcessId -ne $process.ProcessId -or $currentProcess.CreationDate -ne $process.CreationDate) {
     throw 'Agent changed during freeze'
@@ -494,7 +494,7 @@ function Restore-NativeOriginal($record,$original,$target,$oldAction,$newAction,
   $current = Read-OwnedTask
   if (Test-SameAction $current.Actions[0] $newAction) {
     if ($current.State -eq 'Running') {
-      Freeze-OwnedAgent $target $newAction $true
+      Freeze-OwnedAgent $target $newAction $true $false $managementCaller
       Stop-ScheduledTask -TaskName $name -ErrorAction Stop
     }
     Wait-VersionExited $target $managementCaller
@@ -512,14 +512,14 @@ function Restore-NativeOriginal($record,$original,$target,$oldAction,$newAction,
   $current = Read-OwnedTask
   if (-not (Test-SameAction $current.Actions[0] $oldAction)) { throw 'Previous task action not restored' }
   if ($current.State -eq 'Running') {
-    $null = Get-OwnedAgentProcess $original
+    $null = Get-OwnedAgentProcess $original $managementCaller
     Invoke-AgentUpgradeFreeze $identityFile 'release'
   } else {
     Wait-VersionExited $original $managementCaller
     Assert-UpgradeState $target $record
     Start-ScheduledTask -TaskName $name -ErrorAction Stop
   }
-  $null = Wait-OwnedAgent $original $oldAction
+  $null = Wait-OwnedAgent $original $oldAction $managementCaller
   Assert-UpgradeIdentity $record
 }
 
@@ -603,7 +603,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   try {
     $saved = Read-NativeJournal $stream
     if (($saved | ConvertTo-Json -Compress) -cne ($record | ConvertTo-Json -Compress)) { throw 'Journal changed' }
-    if ((Freeze-OwnedAgent $original $oldAction $false $true) -ceq 'busy') {
+    if ((Freeze-OwnedAgent $original $oldAction $false $true $managementCaller) -ceq 'busy') {
       $deferred = $true
       throw 'Agent busy; no switch attempted'
     }

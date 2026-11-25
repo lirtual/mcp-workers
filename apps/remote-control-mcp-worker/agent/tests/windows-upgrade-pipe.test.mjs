@@ -450,3 +450,52 @@ foreach($Action in @('Switch','Restart','Stop','Start','Uninstall','VerifyAutoma
   assert.equal(result.status,0,result.stderr);
   assert.equal(result.stdout.trim(),"journal-read-pass");
 });
+
+test("#1035 Windows freeze and restore observe the same reviewed management caller",async t=>{
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const functions=["Freeze-OwnedAgent","Wait-OwnedAgent"].map(name=>{
+    const fn=source.match(new RegExp("^function "+name+"\\([\\s\\S]*?^\\}","m"))?.[0];
+    assert(fn,name);return fn;
+  });
+  const command=functions.join("\n")+String.raw`
+$ErrorActionPreference='Stop'
+$identityFile='fixture-key'
+$script:caller=[pscustomobject]@{ProcessId=200;CreationDate=1}
+$script:required=$true
+$script:observations=0
+$script:pidValue=100
+$script:freezeCount=0
+function Read-OwnedTask { [pscustomobject]@{State='Running';Actions=@('reviewed')} }
+function Test-SameAction($a,$b) { $a -ceq $b }
+function Get-OwnedAgentProcess($program,$managementCaller=$null) {
+  $script:observations++
+  if ($script:required -and (-not $managementCaller -or
+      $managementCaller.ProcessId -ne $script:caller.ProcessId -or
+      $managementCaller.CreationDate -ne $script:caller.CreationDate)) {
+    throw 'Exact management caller evidence was lost'
+  }
+  if (-not $script:required -and $managementCaller) { throw 'Unexpected caller exclusion' }
+  [pscustomobject]@{ProcessId=$script:pidValue;CreationDate=2}
+}
+function Invoke-AgentUpgradeFreeze($key,$command,$busy=$false) {
+  $script:freezeCount++
+}
+function Start-Sleep {}
+Freeze-OwnedAgent 'fixture' 'reviewed' $false $false $script:caller
+$observed=Wait-OwnedAgent 'fixture' 'reviewed' $script:caller
+if ($observed.ProcessId -ne 100 -or $script:observations -ne 3 -or $script:freezeCount -ne 2) {
+  throw 'Incorrect reviewed process observation'
+}
+$script:required=$false
+Freeze-OwnedAgent 'fixture' 'reviewed'
+$observed=Wait-OwnedAgent 'fixture' 'reviewed'
+if ($observed.ProcessId -ne 100 -or $script:observations -ne 6) { throw 'Ordinary caller contract changed' }
+'caller-propagation-pass'
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:15000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"caller-propagation-pass");
+});

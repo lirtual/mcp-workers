@@ -413,3 +413,59 @@ pub(crate) fn private_path(path: &Path, is_dir: bool) -> Result<(), ReceiptError
         expected_dir = true;
     }
 }
+
+// Replace one small owner-private record by publishing a sealed same-volume
+// file. A reader sees the prior or next complete value, not a truncated proof.
+pub(crate) fn replace_private_record(path: &Path, bytes: &[u8]) -> Result<(), ReceiptError> {
+    use std::fs;
+    use std::io::{ErrorKind, Write};
+    let parent = path.parent().ok_or_else(unsafe_path)?;
+    private_path(parent, true)?;
+    match fs::symlink_metadata(path) {
+        Ok(_) => private_path(path, false)?,
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).map_err(|_| ReceiptError::Unavailable)?;
+    let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+    let stage = parent.join(format!(".private-record-{suffix}"));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&stage)?;
+    let result = (|| -> Result<(), ReceiptError> {
+        seal_new_owner(&stage, false)?;
+        private_path(&stage, false)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&stage, path)?;
+        private_path(path, false)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&stage);
+    }
+    result
+}
+
+#[cfg(test)]
+mod record_tests {
+    use super::*;
+
+    #[test]
+    fn private_record_replaces_stale_proof_without_partial_or_foreign_write() {
+        let dir = tempfile::tempdir().unwrap();
+        seal_new_private_directory(dir.path()).unwrap();
+        let target = dir.path().join("connection.json");
+        let old = br#"{"pid":100,"at":1000}"#;
+        let next = br#"{"pid":101,"at":2000}"#;
+        replace_private_record(&target, old).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), old);
+        replace_private_record(&target, next).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), next);
+        private_path(&target, false).unwrap();
+        assert!(replace_private_record(dir.path(), b"foreign").is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+}

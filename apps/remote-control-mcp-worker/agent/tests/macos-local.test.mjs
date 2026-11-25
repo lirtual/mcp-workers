@@ -616,7 +616,7 @@ test("#660 native offline install → stopped state → upgrade without restart"
   assert.equal(checks,/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:rc|rust-candidate)\.[1-9]\d*)?$/.test(f.version)?1:0);
   assert.equal(await readFile(cli,"utf8"),legacy);
   let unloaded=false;
-  await localMacAction("stop",{...opts,pauseLaunchd:async()=>{},invoke:(command,args)=>{
+  await localMacAction("stop",{...opts,terminal:()=>true,ask:()=>{throw Error("Redundant normal confirmation");},pauseLaunchd:async()=>{},invoke:(command,args)=>{
     f.commands.push(args[0]);
     if(args[0]==="bootout")unloaded=true;
     return args[0]==="print"&&unloaded
@@ -911,8 +911,9 @@ test('#660 native failed bootstrap records exit code and preserves STOP and key'
     invoke,ask:async()=>true,online:async()=>true,pauseLaunchd:async()=>{},
     ownerIntent:async(action)=>({status:action==='resume'?'resume_pending':'stopped'})};
   await localMacAction('install',opts);
-  assert.equal((await localMacAction('stop',opts)).status,'intentionally_stopped');
-  await assert.rejects(localMacAction('start',opts),/bootstrap failed \(exit=5\)/);
+  const lifecycle={...opts,terminal:()=>true,ask:()=>{throw Error("Redundant normal confirmation");}};
+  assert.equal((await localMacAction('stop',lifecycle)).status,'intentionally_stopped');
+  await assert.rejects(localMacAction('start',lifecycle),/bootstrap failed \(exit=5\)/);
   assert.equal(await readFile(path.join(f.identity,'macos/stopped'),'utf8'),'stopped\n');
   assert.equal(await readFile(identity,'utf8'),device);
   assert.equal(registered,false);
@@ -928,11 +929,15 @@ test('#666 native owner Stop/Resume preserves same identity and demands signed a
   ownerIntent:async(action)=>{calls.push('cloud:'+action);
    return {status:action==='stop'?'stopped':'resume_pending',idle_expires_at:Date.now()+14*86_400_000}}};
  await localMacAction('install',opts);
- await localMacAction('stop',opts);
+ const lifecycle={...opts,terminal:()=>true,ask:()=>{throw Error("Redundant normal confirmation");}};
+ const before=[...calls];
+ await assert.rejects(localMacAction('stop',{...lifecycle,terminal:()=>false}),/Owner terminal required/);
+ assert.deepEqual(calls,before);
+ await localMacAction('stop',lifecycle);
  const marker=path.join(f.identity,'macos','stopped');
  assert.equal(await readFile(marker,'utf8'),'stopped\n');
  assert.equal((await localMacAction('status',opts)).local_service,'stopped_requested_unverified');
- assert.equal((await localMacAction('start',opts)).status,'connected_observed');
+ assert.equal((await localMacAction('start',lifecycle)).status,'connected_observed');
  await assert.rejects(readFile(marker),{code:'ENOENT'});
  assert.deepEqual(calls.filter(x=>x.startsWith('cloud:')),['cloud:stop','cloud:stop','cloud:resume']);
  assert.equal((await readFile(path.join(f.identity,'v2-identity.pem.device-id'),'utf8')).trim(),ID);

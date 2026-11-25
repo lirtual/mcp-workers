@@ -938,11 +938,11 @@ try {
     [IO.Directory]::Move($stage, $target)
   }
   $promoted = $true
-  Write-Output "Installed: $Version"
   if ($StageOnly) {
     Write-Output ('Verified staging complete; running Agent task unchanged: ' + $Version)
     return
   }
+  Write-Output ('Verified candidate staged: ' + $Version + '; activation not yet confirmed.')
   Complete-NativeInstall $target
 } catch {
   if ($Automatic -and $detachedUpgrade -and -not $automaticSwitchDispatched) {

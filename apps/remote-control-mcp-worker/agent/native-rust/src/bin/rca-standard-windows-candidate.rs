@@ -285,17 +285,13 @@ mod windows {
             "at": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).map_err(|_| ())?.as_millis()
         });
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|_| ())?;
-        file.write_all(record.to_string().as_bytes())
-            .map_err(|_| ())?;
-        file.write_all(b"\n").map_err(|_| ())?;
-        file.sync_all().map_err(|_| ())?;
-        validate_windows_private_path(&path, false).map_err(|_| ())?;
-        Ok(())
+        // Restarts and rollback may reuse the same Task generation. Replace
+        // that generation's proof only after a fresh authenticated handshake.
+        rca_native_agent::replace_windows_private_record(
+            &path,
+            (record.to_string() + "\n").as_bytes(),
+        )
+        .map_err(|_| ())
     }
 
     fn pair_local(endpoint: &str, name: &str, mode: &str) -> Result<(), ()> {
@@ -1061,7 +1057,9 @@ mod windows {
         let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             windows_log::record(&connected_root, "connected");
             if let Some(generation) = marker_generation.as_deref() {
-                let _ = record_connected(&connected_root, generation, &marker_id);
+                if record_connected(&connected_root, generation, &marker_id).is_err() {
+                    windows_log::record(&connected_root, "connection_proof_write_failed");
+                }
             }
         });
         let disconnected_root = root.clone();

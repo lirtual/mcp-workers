@@ -40,6 +40,7 @@ fn known(event: &str) -> bool {
             | "automatic_check_refused"
             | "automatic_check_unconfirmed"
             | "automatic_check_launch_failed"
+            | "connection_proof_write_failed"
     )
 }
 fn unsafe_log() -> io::Error {
