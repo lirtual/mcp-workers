@@ -55,6 +55,9 @@ function inspectedManifest(actionId:string,raw:unknown){
     raw.error_codes.length>32||new Set(raw.error_codes).size!==raw.error_codes.length||
     raw.error_codes.some(code=>typeof code!=='string'||!/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(code))))reject();
  validSchema(raw.input_schema);
+ // Invocation metadata belongs to the executor, never to a caller schema.
+ if(Object.keys((raw.input_schema as {properties:object}).properties).some(k=>
+   ['invocation_id','deployment_id','contract_digest','input_digest'].includes(k)))reject();
  if(raw.output_schema!==undefined)validSchema(raw.output_schema);
  if(raw.selected_file!==undefined&&(!reviewedCloudflareFilePolicy(raw.selected_file)||
      raw.output_schema===undefined))reject();
