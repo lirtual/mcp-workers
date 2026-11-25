@@ -698,8 +698,7 @@ test("#660 native upgrade busy/activation failure retains identity and rolls bac
   await writeFile(manifestFile,JSON.stringify(m)+"\n",{mode:0o600});
   const opts={...base,bundle:alt,freezeAgent:async()=> "busy"};
   await assert.rejects(localMacAction("upgrade",opts),/Busy or uncertain/);
-  assert.equal((await localMacAction("status",{home:f.home,invoke:f.invoke})).version,
-    f.version+"-darwin-"+process.arch);
+  assert.equal((await localMacAction("status",{home:f.home,invoke:f.invoke})).version,f.version);
   const programs=path.join(f.identity,"macos/programs");
   const next=path.join(programs,m.version+"-darwin-"+process.arch);
   await assert.rejects(lstat(next),{code:"ENOENT"});
@@ -983,4 +982,46 @@ test("#1035 permanent macOS schedule serializes checks and cancels future work",
     await wait(15);
     assert.equal(calls,1);
   }finally{stop();}
+});
+
+test("#1035 local connection facts distinguish a matching live process from historical or uncertain evidence",async t=>{
+  const {observeMacLocalService,macInstalledVersion}=await import("../scripts/macos-local.mjs");
+  assert.equal(macInstalledVersion("v1.2.3-darwin-arm64"),"v1.2.3");
+  assert.equal(macInstalledVersion("v1.2.3-rust-candidate.6-darwin-x64"),"v1.2.3-rust-candidate.6");
+  assert.equal(macInstalledVersion("not-a-program"),null);
+  const identity=await mkdtemp(path.join(os.tmpdir(),"rca-local-facts-"));
+  t.after(()=>rm(identity,{recursive:true,force:true}));
+  const file=path.join(identity,"macos-connection.json");
+  const marker={generation:ID,pid:123,state:"connected",at:new Date().toISOString()};
+  await writeFile(file,JSON.stringify(marker),{mode:0o600});
+  let pid=123,reply="ready",requests=0;
+  const invoke=()=>({status:0,stdout:"service = {\n program = "+path.join(identity,"bin/node")+"\n pid = "+pid+"\n}\n"});
+  const request=async(_key,command)=>{assert.equal(command,"verify-online");requests++;return reply;};
+  const check=()=>observeMacLocalService(identity,{generation:ID,root:identity},"service",invoke,request);
+  assert.equal((await check()).signed_wss,"connected_observed");
+  reply="busy";
+  const old=await check();
+  assert.equal(old.local_service,"running_observed");
+  assert.equal(old.signed_wss,"unconfirmed");
+  assert.equal(old.last_online,marker.at);
+  pid=124;requests=0;
+  assert.equal((await check()).local_service,"present_unverified");
+  assert.equal(requests,0);
+  pid=123;
+  await writeFile(file,JSON.stringify({...marker,generation:randomUUID()}),{mode:0o600});
+  assert.equal((await check()).signed_wss,"unconfirmed");
+  assert.equal(requests,0);
+  await writeFile(file,JSON.stringify({...marker,state:"disconnected"}),{mode:0o600});
+  assert.equal((await check()).last_online,"unconfirmed");
+  assert.equal(requests,0);
+});
+
+test("#1035 direct installed automatic-check CLI exits cleanly with consent off", {skip:!native},async t=>{
+  const f=await fixture(t);
+  await localMacAction("install",{home:f.home,bundle,sourceSha:f.sourceSha,endpoint:ENDPOINT,
+    invoke:f.invoke,ask:async()=>true,online:async()=>true});
+  const result=spawnSync(process.execPath,[path.resolve(import.meta.dirname,"../scripts/macos-local.mjs"),"automatic-check"],
+    {env:{...process.env,HOME:f.home},encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout),{status:"disabled"});
 });

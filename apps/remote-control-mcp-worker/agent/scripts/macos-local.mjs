@@ -235,6 +235,105 @@ export async function stopLaunchdForSwitch(service,invoke,pause,bootout=true){
   if(!await awaitLaunchctlUnregistered(service,invoke,pause))
     throw Error("LaunchAgent deregistration not confirmed.");
 }
+export function remoteJobLabel(id){
+  if(!ID.test(id))throw Error("Invalid one-shot upgrade operation.");
+  return "org.mcp-workers.rca-upgrade-"+id.replaceAll("-","");
+}
+// launchctl submit restarts failed jobs (confirmed by the real Mac incident).
+// A private, launch-on-load plist with LaunchOnlyOnce prevents any replay even
+// when the detached worker exits nonzero or when the same owner logs in again.
+export function remoteJobPlist(id,node,worker,dir){
+  const label=remoteJobLabel(id);
+  const escape=s=>s.replaceAll("&","&amp;").replaceAll("<","&lt;")
+    .replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&apos;");
+  if(![node,worker,dir].every(s=>path.isAbsolute(s)))
+    throw Error("Absolute owner-private job paths required.");
+  const arg=x=>"<string>"+escape(x)+"</string>";
+  return '<?xml version="1.0" encoding="UTF-8"?>\n'+
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '+
+    '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'+
+    '<plist version="1.0"><dict>\n'+
+    '<key>Label</key>'+arg(label)+'\n'+
+    '<key>ProgramArguments</key><array>'+
+    [node,worker,"worker",id].map(arg).join("")+'</array>\n'+
+    '<key>RunAtLoad</key><true/>\n'+
+    '<key>KeepAlive</key><false/>\n'+
+    '<key>LaunchOnlyOnce</key><true/>\n'+
+    '<key>StandardOutPath</key>'+arg(path.join(dir,"stdout.log"))+'\n'+
+    '<key>StandardErrorPath</key>'+arg(path.join(dir,"stderr.log"))+'\n'+
+    '</dict></plist>\n';
+}
+// launchctl's print output is an observation, not authority to mutate
+// a job with a matching name. Require the complete known job definition.
+function exitedAutomaticJob(output,service,job,node,worker,id){
+  const lines=output.split("\n").map(line=>line.trim());
+  const field=(name,value)=>{
+    const matching=lines.filter(line=>line.startsWith(name+" = "));
+    return matching.length===1&&matching[0]===name+" = "+value;
+  };
+  const argumentsAt=lines.indexOf("arguments = {");
+  if(argumentsAt<0||lines.lastIndexOf("arguments = {")!==argumentsAt)return false;
+  return lines[0]===service+" = {"&&field("path",job)&&field("program",node)&&
+    field("state","not running")&&!lines.some(line=>line.startsWith("pid = "))&&
+    JSON.stringify(lines.slice(argumentsAt+1,argumentsAt+6))===JSON.stringify([node,worker,"worker",id,"}"]);
+}
+// Only retire a completed automatic job whose exact private plan and
+// result match. Unknown dispatch/exit or a retained switch journal blocks.
+export async function reconcileAutomaticMacJob(home,invoke=run,pause){
+  const mac=path.join(home,...ROOT,"macos"),tasks=path.join(mac,"remote-upgrades");
+  const marker=path.join(tasks,"active.json");
+  if(!await statMaybe(marker))return;
+  await checked(tasks,{dir:true});await checked(marker,{mode:0o600});
+  const originalMarker=await readFile(marker,"utf8");
+  const state=JSON.parse(originalMarker);
+  if(state.automatic!==true||!ID.test(state.id)||state.label!==remoteJobLabel(state.id))
+    throw Error("Unresolved existing upgrade operation.");
+  const dir=path.join(tasks,state.id),context=path.join(dir,"context.json"),resultFile=path.join(dir,"result.json");
+  await checked(dir,{dir:true});await checked(context,{mode:0o600});await checked(resultFile,{mode:0o600});
+  const plan=JSON.parse(await readFile(context,"utf8")),result=JSON.parse(await readFile(resultFile,"utf8"));
+  if(plan.automatic!==true||plan.id!==state.id||plan.label!==state.label||plan.version!==state.version||
+     plan.state!=="owner_authorized_remote_upgrade"||!SHA.test(plan.sourceSha)||
+     !/^[a-f0-9]{64}$/.test(plan.expectedBinding)||
+     result.id!==state.id||result.version!==state.version||
+     !["connected_observed","waiting_idle","failed_recovered","deferred"].includes(result.status)||
+     await statMaybe(path.join(mac,"switch.json")))
+    throw Error("Automatic upgrade outcome unconfirmed.");
+  const key=path.join(home,...ROOT,"v2-identity.pem");
+  await checked(key,{mode:0o600});await checked(key+".device-id",{mode:0o600});
+  const deviceId=(await readFile(key+".device-id","utf8")).trim();
+  const evidence=await readMacAutomaticResult(key,deviceId);
+  const expected=result.status==="connected_observed"?"success":result.status;
+  if(result.status!=="deferred"&&!(
+      evidence?.status===expected&&evidence.operation_id===state.id.replaceAll("-","")&&
+      evidence.target_version===stableMacTag(state.version)||
+      result.status==="waiting_idle"&&evidence?.status==="failed_recovered"))
+    throw Error("Automatic result evidence not confirmed.");
+  const node=path.join(dir,"bundle/bin/node"),worker=path.join(dir,"bundle/apps/remote-control-agent/scripts/macos-remote-upgrade.mjs");
+  const job=path.join(dir,"job.plist");await checked(job,{mode:0o600});
+  if(await readFile(job,"utf8")!==remoteJobPlist(state.id,node,worker,dir))
+    throw Error("Automatic job definition changed.");
+  const service="gui/"+process.getuid()+"/"+state.label;
+  const observed=invoke("/bin/launchctl",["print",service]);
+  if(!observed.error&&observed.status===0){
+    const output=String(observed.stdout??"");
+    if(!exitedAutomaticJob(output,service,job,node,worker,state.id))
+      throw Error("Automatic job still running or identity uncertain.");
+    await stopLaunchdForSwitch(service,invoke,pause);
+  }else{
+    if(observed.error||observed.status!==113||!/Could not find service/.test(String(observed.stderr??"")))
+      throw Error("Automatic job state unknown.");
+    await stopLaunchdForSwitch(service,invoke,pause,false);
+  }
+  if(await readFile(marker,"utf8")!==originalMarker)
+    throw Error("Automatic job marker changed.");
+  // Keep the admission marker if deleting the private attempt fails.
+  // Never authorize a new attempt while an old job's outcome is uncertain.
+  await checked(dir,{dir:true});
+  await rm(dir,{recursive:true});
+  if(await readFile(marker,"utf8")!==originalMarker)
+    throw Error("Automatic job marker changed.");
+  await rm(marker);
+}
 export function parseFreezeReply(frame){
   if(!["ready\n","busy\n","released\n"].includes(frame))
     throw Error("Freeze response unconfirmed.");
@@ -319,9 +418,13 @@ export async function writeMacAutoPolicy(key,deviceId,enabled){
 }
 // Shared result semantics with the Linux/Windows owner managers.
 const STABLE_TAG=/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+export function macInstalledVersion(directory){
+  const match=/^(v\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?)-darwin-(?:arm64|x64)$/.exec(directory);
+  return match?.[1]??null;
+}
 export function stableMacTag(directory){
-  const tag=directory.replace(/-darwin-(?:arm64|x64)$/,"");
-  return STABLE_TAG.test(tag)?tag:null;
+  const tag=macInstalledVersion(directory);
+  return tag&&STABLE_TAG.test(tag)?tag:null;
 }
 export function parseMacAutomaticResult(value,deviceId){
   if(!value||typeof value!=="object"||Object.keys(value).length!==6||
@@ -422,6 +525,42 @@ export async function reserveMacSwitch(journal,record,recheck,requestFreeze,onBu
 export function macBindingDigest(binding){
   return createHash("sha256").update(JSON.stringify(binding)).digest("hex");
 }
+// Status observes OS registration, the matching connection marker, and the
+// existing read-only local control socket; never contact GitHub or the Worker.
+export async function observeMacLocalService(identity,current,service,invoke,request=freeze){
+  const facts={local_service:"present_unverified",signed_wss:"unconfirmed",last_online:"unconfirmed"};
+  const readPid=()=>{
+    const result=invoke("/bin/launchctl",["print",service]);
+    if(result.error||result.status!==0)return null;
+    const output=String(result.stdout??"");
+    const executable=current.agentRuntime==="rust-standard-darwin-v1"
+      ?path.join(current.root,"apps/remote-control-agent/.build/rca-standard-darwin-candidate")
+      :path.join(current.root,"bin/node");
+    const programs=output.split("\n").map(line=>line.trim()).filter(line=>line.startsWith("program = "));
+    if(programs.length!==1||programs[0]!=="program = "+executable)return null;
+    const matches=[...output.matchAll(/(?:^|\n)\s*pid = ([1-9][0-9]*)(?=\n|$)/g)];
+    return matches.length===1&&Number.isSafeInteger(Number(matches[0][1]))?Number(matches[0][1]):null;
+  };
+  try{
+    const pid=readPid();
+    if(!pid)return facts;
+    const file=path.join(identity,"macos-connection.json");
+    if(!await checked(file,{optional:true,mode:0o600})||(await lstat(file)).size>1024)return facts;
+    const raw=await readFile(file,"utf8"),marker=JSON.parse(raw);
+    if(marker.generation!==current.generation||marker.pid!==pid||
+       !["connected","disconnected","rejected"].includes(marker.state))return facts;
+    const at=typeof marker.at==="number"?marker.at:Date.parse(marker.at);
+    if(!Number.isSafeInteger(at)||at<0||at>Date.now()+10000)return facts;
+    facts.local_service="running_observed";
+    if(marker.state==="connected"){
+      facts.last_online=new Date(at).toISOString();
+      if(await request(path.join(identity,"v2-identity.pem"),"verify-online")==="ready"&&
+         readPid()===pid&&await readFile(file,"utf8")===raw)
+        facts.signed_wss="connected_observed";
+    }
+  }catch{/* Preserve established local observations, never infer connectivity. */}
+  return facts;
+}
 export async function observeOnline(identity,generation,now=Date.now){
   const start=now(),file=path.join(identity,"macos-connection.json");
   for(let i=0;i<50;i++){
@@ -516,7 +655,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
         }
         return {automatic_update:policy};
       }
-      const state={installed:null,version:null,local_service:"unconfirmed",
+      const state={installed:null,version:null,platform:"darwin",arch:process.arch,local_service:"unconfirmed",
         cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
         last_online:"unconfirmed",receipts:"preserved_unverified",
         automatic_update:policy,automatic_update_activity:"needs_attention"};
@@ -593,7 +732,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       return {automatic_update:policy};
     }
     const state={
-      installed:!!current,version:current?path.basename(current.root):null,
+      installed:!!current,version:current?macInstalledVersion(path.basename(current.root)):null,
+      platform:"darwin",arch:process.arch,
       local_service:current?(stopped?"stopped_requested_unverified":"present_unverified"):"not_installed",
       cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
       last_online:"unconfirmed",receipts:"preserved_unverified",
@@ -603,12 +743,23 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       try{
         const result=await readMacAutomaticResult(key,deviceId);
         if(result){
-          state.automatic_update_result={...result,current:result.installed_version===stableMacTag(state.version)};
+          state.automatic_update_result={...result,current:result.installed_version===state.version};
           if(state.automatic_update_result.current)
             state.automatic_update_activity=result.status==="failed_recovered"?"recovered":
               result.status==="waiting_idle"&&policy==="off"?"disabled":result.status;
         }
       }catch{state.automatic_update_activity="unknown";state.automatic_update_result={status:"unknown"};}
+    }
+    if(action==="status"||action==="doctor"){
+      if(current&&!stopped)Object.assign(state,await observeMacLocalService(identity,current,service,invoke,freezeAgent));
+      try{
+        const active=path.join(macos,"remote-upgrades","active.json");
+        if(await checked(active,{optional:true,mode:0o600})){
+          state.update_transaction="pending_or_cleanup";
+          // A durable admission marker alone cannot prove active work.
+          state.automatic_update_activity="unknown";
+        }
+      }catch{state.update_transaction="unknown";state.automatic_update_activity="unknown";}
     }
     if(action==="status")return state;
     if(action==="check-update"||action==="update-latest"||action==="automatic-check"){
@@ -616,15 +767,14 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       const manifest=path.join(current.root,"bundle.json");
       await checked(manifest,{mode:0o600});
       const meta=JSON.parse(await readFile(manifest,"utf8"));
-      if(state.version!==candidateName(meta,meta.source_commit))throw Error("Untrusted installed version.");
+      if(path.basename(current.root)!==candidateName(meta,meta.source_commit))throw Error("Untrusted installed version.");
       if(action==="check-update")return checkLatestMacVersion(meta.version,process.arch,doFetch);
       if(action==="automatic-check"){
         // Known completed detached jobs must be retired even when Latest
         // is unchanged or the owner has since opted out.
-        const {reconcileAutomaticMacJob}=await import("./macos-remote-upgrade.mjs");
         await reconcileAutomaticMacJob(home,invoke,pauseLaunchd);
         if(policy==="off")return {status:"disabled"};
-        await requireMacAutomatic(key,stableMacTag(state.version),null,freezeAgent);
+        await requireMacAutomatic(key,stableMacTag(path.basename(current.root)),null,freezeAgent);
       }else if(!terminal())throw Error("Owner terminal required for update.");
       if(stopped||!bound||launchctlServiceState(service,invoke)!=="present")
         throw Error("Existing running owner service required for update.");
@@ -643,8 +793,12 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     }
 
     const findings=[];
-    findings.push(current?"local_service_unconfirmed":"permanent_service_not_installed");
-    findings.push("cloud_authorization_unconfirmed","signed_wss_unconfirmed");
+    if(!current)findings.push("permanent_service_not_installed");
+    else if(state.local_service!=="running_observed")findings.push("local_service_unconfirmed");
+    findings.push("cloud_authorization_unconfirmed");
+    if(state.signed_wss!=="connected_observed")findings.push("signed_wss_unconfirmed");
+    if(["unknown","needs_attention"].includes(state.automatic_update_activity)||state.update_transaction)
+      findings.push("update_state_needs_review");
     return {status:state,findings};
   }
   if(action==="stop"){

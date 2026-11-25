@@ -98,7 +98,8 @@ test("#657 remote launcher references exactly one detached launchd job and durab
   const publisher=readFileSync(path.join(root,"build-v2-release.mjs"),"utf8");
   assert.match(driver,/launchctl/);
   assert.match(driver,/\["bootstrap","gui\/"\+process\.getuid\(\),job\]/);
-  assert.match(driver,/LaunchOnlyOnce/);
+  assert.match(readFileSync(path.join(root,"macos-local.mjs"),"utf8"),/LaunchOnlyOnce/);
+  assert.match(driver,/remoteJobPlist\(id,node,worker,dir\)/);
   assert.match(driver,/verifiedLaunchdJob/);
   assert.match(driver,/\bstate:"preparing"/);
   assert.match(driver,/owner_authorized_remote_upgrade/);
@@ -359,4 +360,60 @@ test("#660 historical failed Mac upgrade reconciliation is gated, audited and id
   await ownerWrite(path.join(archive,"audit.json"),"{}\n");
   await assert.rejects(reconcileFailedRemoteMacUpgrade({...opts,apply:true}),
     /audit differs/);
+});
+
+test("#1035 completed automatic job cleanup rejects missing, live, foreign and unresolved observations",async t=>{
+  const {reconcileAutomaticMacJob}=await import("../scripts/macos-remote-upgrade.mjs");
+  const {mkdtemp,mkdir,writeFile,readFile,rm}=await import("node:fs/promises");
+  const {tmpdir}=await import("node:os");
+  const home=await mkdtemp(path.join(tmpdir(),"rca-auto-reap-"));
+  t.after(()=>rm(home,{recursive:true,force:true}));
+  const base=path.join(home,".local/share/mcp-workers/remote-control");
+  const mac=path.join(base,"macos"),tasks=path.join(mac,"remote-upgrades"),dir=path.join(tasks,ID);
+  const marker=path.join(tasks,"active.json"),result=path.join(dir,"result.json");
+  const job=path.join(dir,"job.plist"),node=path.join(dir,"bundle/bin/node");
+  const worker=path.join(dir,"bundle/apps/remote-control-agent/scripts/macos-remote-upgrade.mjs");
+  const key=path.join(base,"v2-identity.pem"),version="v1.0.1-darwin-"+process.arch;
+  await mkdir(dir,{recursive:true,mode:0o700});
+  const put=async(file,value)=>writeFile(file,JSON.stringify(value),{mode:0o600});
+  const state={id:ID,label:LABEL,version,state:"preparing",automatic:true};
+  await put(marker,state);
+  await put(path.join(dir,"context.json"),{...state,state:"owner_authorized_remote_upgrade",sourceSha:"a".repeat(40),expectedBinding:"b".repeat(64)});
+  await writeFile(job,remoteJobPlist(ID,node,worker,dir),{mode:0o600});
+  await writeFile(key,"synthetic-key",{mode:0o600});
+  await writeFile(key+".device-id",ID,{mode:0o600});
+  await put(key+".native-upgrade-result",{device_id:ID,operation_id:ID.replaceAll("-",""),
+    target_version:"v1.0.1",installed_version:"v1.0.1",status:"success",updated_at_unix_ms:123});
+  let mode="live",calls=[],removed=false;
+  const service="gui/"+process.getuid()+"/"+LABEL;
+  const valid=service+" = {\n path = "+job+"\n state = not running\n program = "+node+
+    "\n arguments = {\n "+node+"\n "+worker+"\n worker\n "+ID+"\n }\n}\n";
+  const invoke=(_binary,args)=>{
+    calls.push(args[0]);
+    if(args[0]==="bootout"){removed=true;return {status:0};}
+    if(removed)return {status:113,stderr:"Could not find service"};
+    if(mode==="unknown")return {status:1,stderr:"unconfirmed"};
+    return {status:0,stdout:mode==="live"?valid.replace("state = not running","state = running\n pid = 123"):
+      mode==="foreign"?valid.replace("program = "+node,"program = "+node+"-foreign"):
+      mode==="other-plan"?valid.replace(worker,worker+"-foreign"):valid};
+  };
+  const reap=()=>reconcileAutomaticMacJob(home,invoke,async()=>{});
+  await assert.rejects(reap()); // result missing: no native request
+  assert.deepEqual(calls,[]);
+  await put(result,{id:ID,version,status:"connected_observed"});
+  for(const invalid of ["live","foreign","other-plan","unknown"]){
+    mode=invalid;calls=[];
+    await assert.rejects(reap());
+    assert(!calls.includes("bootout"),invalid);
+    assert.equal(JSON.parse(await readFile(marker,"utf8")).id,ID);
+  }
+  mode="valid";
+  await put(path.join(mac,"switch.json"),{pending:true});
+  await assert.rejects(reap(),/outcome unconfirmed/);
+  await rm(path.join(mac,"switch.json"));
+  await reap();
+  assert(removed);
+  await assert.rejects(readFile(marker),{code:"ENOENT"});
+  await assert.rejects(readFile(result),{code:"ENOENT"});
+  assert.equal(JSON.parse(await readFile(key+".native-upgrade-result","utf8")).status,"success");
 });

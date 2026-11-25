@@ -273,3 +273,69 @@ Write-Output 'switch-binding-pass'
   assert.equal(result.status,0,result.stderr);
   assert.equal(result.stdout.trim(),"switch-binding-pass");
 });
+
+test("automatic one-shot cleanup matches the full original Task definition",async t=>{
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const source=await readFile(fileURLToPath(new URL("../install.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Test-AutomaticTaskDefinition\([\s\S]*?^\}/m)?.[0];
+  assert(fn);
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$name='RCA-Upgrade-synthetic'
+$sid='S-1-5-21-123'
+$exe='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$argsText='-NoProfile -File "C:\Owner Path\runner.ps1"'
+$task=[pscustomobject]@{TaskName=$name;TaskPath='\';Principal=[pscustomobject]@{RunLevel='Limited';LogonType='Interactive'};Triggers=@();Actions=@([pscustomobject]@{Execute=$exe;Arguments=$argsText;WorkingDirectory=''})}
+function valid {Test-AutomaticTaskDefinition $task $name $sid $sid $exe $argsText}
+if (-not (valid)) {throw 'Reviewed Task refused'}
+foreach($entry in @(
+  @{object=$task;field='TaskName';value='RCA-Foreign'},
+  @{object=$task;field='TaskPath';value='\Other\'},
+  @{object=$task.Principal;field='RunLevel';value='Highest'},
+  @{object=$task.Principal;field='LogonType';value='Password'},
+  @{object=$task;field='Triggers';value=@('unexpected')},
+  @{object=$task.Actions[0];field='Execute';value='C:\Other.exe'},
+  @{object=$task.Actions[0];field='Arguments';value='other'},
+  @{object=$task.Actions[0];field='WorkingDirectory';value='C:\Other'})){
+  $obj=$entry.object;$field=$entry.field;$before=$obj.$field
+  $obj.$field=$entry.value
+  if(valid){throw "Unreviewed Task accepted: $field"}
+  $obj.$field=$before
+}
+if(Test-AutomaticTaskDefinition $task $name $sid 'S-1-5-18' $exe $argsText){throw 'Foreign principal accepted'}
+Write-Output 'task-definition-pass'
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"task-definition-pass");
+});
+
+test("read-only permanent mode observation coexists with the lifecycle writer guard",async t=>{
+  if(process.platform!=="win32"){t.skip("Windows NTFS share modes required");return;}
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Read-UpgradeMode\([\s\S]*?^\}/m)?.[0];
+  assert(fn);
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+$file=Join-Path ([IO.Path]::GetTempPath()) ('rca-mode-test-'+[guid]::NewGuid().ToString('N'))
+try{
+  [IO.File]::WriteAllBytes($file,[Text.Encoding]::UTF8.GetBytes("permanent"+[char]10))
+  $guard=[IO.File]::Open($file,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+  try{
+    if((Read-UpgradeMode $file) -cne ("permanent"+[char]10)){throw 'Mode read failed'}
+    $blocked=$false
+    try{$other=[IO.File]::Open($file,[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read);$other.Dispose()}
+    catch{$blocked=$true}
+    if(-not $blocked){throw 'Competing writer admitted'}
+  }finally{$guard.Dispose()}
+}finally{Remove-Item -LiteralPath $file -ErrorAction SilentlyContinue}
+Write-Output 'mode-share-pass'
+`;
+  const result=spawnSync("powershell.exe",["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"mode-share-pass");
+});

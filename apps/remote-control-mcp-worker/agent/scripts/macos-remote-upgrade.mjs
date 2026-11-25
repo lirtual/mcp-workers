@@ -10,9 +10,10 @@ import {fileURLToPath} from "node:url";
 import {
   checked,checkCandidate,localMacAction,matchesOwnerCli,parsePlist,
   launchctlServiceState,verifiedEndpoint,freeze,forwardMacVersion,
-  macUpgradeBinding,macBindingDigest,stableMacTag,requireMacAutomatic,stopLaunchdForSwitch,readMacAutomaticResult,
+  macUpgradeBinding,macBindingDigest,stableMacTag,requireMacAutomatic,
+  remoteJobLabel,remoteJobPlist,reconcileAutomaticMacJob,
 } from "./macos-local.mjs";
-export {forwardMacVersion};
+export {forwardMacVersion,remoteJobLabel,remoteJobPlist,reconcileAutomaticMacJob};
 
 const ROOT=path.join(".local","share","mcp-workers","remote-control");
 const LABEL="org.mcp-workers.remote-control-agent";
@@ -27,34 +28,6 @@ async function ownedDirectory(dir){
 function nativeOwner(){
   return process.platform==="darwin" && ["arm64","x64"].includes(process.arch) &&
     Number.parseInt(os.release(),10)>=24 && process.getuid?.()>0;
-}
-export function remoteJobLabel(id){
-  if(!ID.test(id))throw Error("Invalid one-shot upgrade operation.");
-  return "org.mcp-workers.rca-upgrade-"+id.replaceAll("-","");
-}
-// launchctl submit restarts failed jobs (confirmed by the real Mac incident).
-// A private, launch-on-load plist with LaunchOnlyOnce prevents any replay even
-// when the detached worker exits nonzero or when the same owner logs in again.
-export function remoteJobPlist(id,node,worker,dir){
-  const label=remoteJobLabel(id);
-  const escape=s=>s.replaceAll("&","&amp;").replaceAll("<","&lt;")
-    .replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&apos;");
-  if(![node,worker,dir].every(s=>path.isAbsolute(s)))
-    throw Error("Absolute owner-private job paths required.");
-  const arg=x=>"<string>"+escape(x)+"</string>";
-  return '<?xml version="1.0" encoding="UTF-8"?>\n'+
-    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '+
-    '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'+
-    '<plist version="1.0"><dict>\n'+
-    '<key>Label</key>'+arg(label)+'\n'+
-    '<key>ProgramArguments</key><array>'+
-    [node,worker,"worker",id].map(arg).join("")+'</array>\n'+
-    '<key>RunAtLoad</key><true/>\n'+
-    '<key>KeepAlive</key><false/>\n'+
-    '<key>LaunchOnlyOnce</key><true/>\n'+
-    '<key>StandardOutPath</key>'+arg(path.join(dir,"stdout.log"))+'\n'+
-    '<key>StandardErrorPath</key>'+arg(path.join(dir,"stderr.log"))+'\n'+
-    '</dict></plist>\n';
 }
 export function verifiedLaunchdJob(id,uid,pid,invoke=run,parentPid=process.ppid){
   if(!ID.test(id)||!Number.isInteger(uid)||uid<=0||
@@ -129,7 +102,7 @@ export async function awaitCallerQuiescence(freezeAgent,key,{
   return "busy";
 }
 async function record(file,contents){
-  await writeFile(file,JSON.stringify(contents)+"\n",{flag:"wx",mode:0o600});
+  await writeFile(file,JSON.stringify(contents)+"\n",{flag:"wx",mode:0o600,flush:true});
 }
 async function automaticBinding(home){
   const identity=path.join(home,ROOT),mac=path.join(identity,"macos");
@@ -137,54 +110,6 @@ async function automaticBinding(home){
     plist:path.join(home,"Library","LaunchAgents",LABEL+".plist"),
     cli:path.join(home,".local/bin/rca"),endpointFile:path.join(mac,"endpoint"),
     stopMark:path.join(mac,"stopped"),journal:path.join(mac,"switch.json")});
-}
-// Only retire a completed automatic job whose exact private plan and
-// result match. Unknown dispatch/exit or a retained switch journal blocks.
-export async function reconcileAutomaticMacJob(home,invoke=run,pause){
-  const mac=path.join(home,ROOT,"macos"),tasks=path.join(mac,"remote-upgrades");
-  const marker=path.join(tasks,"active.json");
-  if(!await exists(marker))return;
-  await checked(tasks,{dir:true});await checked(marker,{mode:0o600});
-  const state=JSON.parse(await readFile(marker,"utf8"));
-  if(state.automatic!==true||!ID.test(state.id)||state.label!==remoteJobLabel(state.id))
-    throw Error("Unresolved existing upgrade operation.");
-  const dir=path.join(tasks,state.id),context=path.join(dir,"context.json"),resultFile=path.join(dir,"result.json");
-  await checked(dir,{dir:true});await checked(context,{mode:0o600});await checked(resultFile,{mode:0o600});
-  const plan=JSON.parse(await readFile(context,"utf8")),result=JSON.parse(await readFile(resultFile,"utf8"));
-  if(plan.automatic!==true||plan.id!==state.id||plan.label!==state.label||plan.version!==state.version||
-     result.id!==state.id||result.version!==state.version||
-     !["connected_observed","waiting_idle","failed_recovered","deferred"].includes(result.status)||
-     await exists(path.join(mac,"switch.json")))
-    throw Error("Automatic upgrade outcome unconfirmed.");
-  const key=path.join(home,ROOT,"v2-identity.pem");
-  await checked(key,{mode:0o600});await checked(key+".device-id",{mode:0o600});
-  const deviceId=(await readFile(key+".device-id","utf8")).trim();
-  const evidence=await readMacAutomaticResult(key,deviceId);
-  const expected=result.status==="connected_observed"?"success":result.status;
-  if(result.status!=="deferred"&&!(
-      evidence?.status===expected&&evidence.operation_id===state.id.replaceAll("-","")&&
-      evidence.target_version===stableMacTag(state.version)||
-      result.status==="waiting_idle"&&evidence?.status==="failed_recovered"))
-    throw Error("Automatic result evidence not confirmed.");
-  const node=path.join(dir,"bundle/bin/node"),worker=path.join(dir,"bundle/apps/remote-control-agent/scripts/macos-remote-upgrade.mjs");
-  const job=path.join(dir,"job.plist");await checked(job,{mode:0o600});
-  if(await readFile(job,"utf8")!==remoteJobPlist(state.id,node,worker,dir))
-    throw Error("Automatic job definition changed.");
-  const service="gui/"+process.getuid()+"/"+state.label;
-  const observed=invoke("/bin/launchctl",["print",service]);
-  if(!observed.error&&observed.status===0){
-    const output=String(observed.stdout??"");
-    if(!/(?:^|\n)\s*state = not running(?:\n|$)/.test(output)||
-       /(?:^|\n)\s*pid = [1-9][0-9]*/.test(output)||
-       !output.includes("program = "+node))
-      throw Error("Automatic job still running or identity uncertain.");
-    await stopLaunchdForSwitch(service,invoke,pause);
-  }else if(launchctlServiceState(service,invoke)!=="absent")
-    throw Error("Automatic job state unknown.");
-  if((JSON.parse(await readFile(marker,"utf8"))).id!==state.id)
-    throw Error("Automatic job marker changed.");
-  await rm(marker);
-  await rm(dir,{recursive:true});
 }
 export async function dispatchRemoteMacUpgrade({home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,invoke=run}={}){
   process.umask(0o077);

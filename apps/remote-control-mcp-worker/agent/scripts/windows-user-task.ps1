@@ -7,7 +7,8 @@ param(
   [string]$Version, [ValidateSet('Upgrade')][string]$Direction,
   [string]$Generation,
   [switch]$Automatic,
-  [ValidatePattern('^[0-9a-f]{64}$')][string]$AutomaticBinding
+  [ValidatePattern('^[0-9a-f]{64}$')][string]$AutomaticBinding,
+  [ValidatePattern('^[0-9a-f]{32}$')][string]$AutomaticOperation
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -88,7 +89,7 @@ function Check-Existing {
   }
 }
 if ($Automatic -and $Action -ne 'Switch') { throw 'Automatic authority is only valid for Switch' }
-if ([bool]$Automatic -ne [bool]$AutomaticBinding) { throw 'Automatic switch requires its original target binding' }
+if ([bool]$Automatic -ne [bool]$AutomaticBinding -or [bool]$Automatic -ne [bool]$AutomaticOperation) { throw 'Automatic switch requires its original target binding' }
 if ($Action -ne 'VerifyActivation' -and $Generation) { throw 'Unexpected generation argument' }
 function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
@@ -359,9 +360,19 @@ function Assert-UpgradeState($program,$record) {
   if ($LASTEXITCODE -ne 0) { throw 'Receipt compatibility or private identity not confirmed' }
 }
 
+# Read-only observation must coexist with the existing exclusive writer
+# lifecycle guard. The reader never requests write access.
+function Read-UpgradeMode([string]$file) {
+  $stream = [IO.File]::Open($file,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+  try {
+    if ($stream.Length -ne 10) { throw 'Existing permanent owner Agent required' }
+    $reader = [IO.StreamReader]::new($stream,[Text.Encoding]::UTF8,$false,128,$true)
+    try { $reader.ReadToEnd() } finally { $reader.Dispose() }
+  } finally { $stream.Dispose() }
+}
 function Check-UpgradeStore {
   & (Join-Path $PSScriptRoot 'windows-private-store.ps1') -Action Check -Directory $identityRoot
-  if ((Get-Content -LiteralPath ($identityFile + '.install-mode') -Raw) -cne ("permanent" + [char]10)) {
+  if ((Read-UpgradeMode ($identityFile + '.install-mode')) -cne ("permanent" + [char]10)) {
     throw 'Existing permanent owner Agent required'
   }
 }
@@ -402,7 +413,7 @@ function Write-NativeAutomaticResult($record,[string]$status) {
   if (-not (Test-AutomaticResultTransition $prior $record.target $status)) { return }
   $result = @{
     device_id=(Get-Content -LiteralPath ($identityFile + '.device-id') -Raw).Trim()
-    operation_id=[guid]::NewGuid().ToString('N')
+    operation_id=$AutomaticOperation
     target_version=$record.target
     installed_version=$(if ($status -ceq 'success') { $record.target } else { $record.original })
     status=$status
@@ -858,6 +869,18 @@ if ($Action -eq 'Status') {
   $activity = $null
   $result = $null
   if (Test-Path -LiteralPath $nativeJournal) { $activity = 'needs_attention' }
+  if (-not $activity) {
+    try {
+      $idPath = $identityFile + '.device-id'
+      if (Test-Path -LiteralPath $idPath) {
+        Check-UpgradeStore
+        $autoName = 'RCA-Upgrade-' + (Get-Content -LiteralPath $idPath -Raw).Trim().Replace('-','')
+        if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -ieq $autoName }).Count -ne 0) {
+          $activity = 'unknown'
+        }
+      }
+    } catch { $activity = 'unknown' }
+  }
   try {
     $result = Get-NativeAutomaticResult
     if ($result) {
@@ -871,7 +894,7 @@ if ($Action -eq 'Status') {
         }
       }
     }
-  } catch { $activity = 'unknown'; $result = @{status='unknown'} }
+  } catch { if (-not $activity) { $activity = 'unknown' }; $result = @{status='unknown'} }
   @{installed=$true;running=$running;autostart='at-user-logon';version=$installed;
     automatic_update_activity=$activity;automatic_update_result=$result} | ConvertTo-Json -Compress -Depth 4
   exit 0

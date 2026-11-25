@@ -11,7 +11,8 @@ param(
   [switch]$CheckOnly,
   [switch]$UpdateOnly,
   [switch]$Automatic,
-  [ValidatePattern('^[0-9a-f]{64}$')][string]$AutomaticBinding
+  [ValidatePattern('^[0-9a-f]{64}$')][string]$AutomaticBinding,
+  [ValidatePattern('^[0-9a-f]{32}$')][string]$AutomaticOperation
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -435,6 +436,20 @@ function Assert-AttendedUpdateTarget($expected,$observed) {
 }
 # The automatic worker must target exactly the same reviewed installation
 # that the Agent observed before selecting immutable Latest.
+# Pure definition check, shared with the generated one-shot runner. The
+# observed principal is resolved to its immutable SID before this comparison.
+function Test-AutomaticTaskDefinition($task,[string]$taskName,[string]$ownerSid,[string]$observedSid,[string]$executable,[string]$arguments) {
+  return ($null -ne $task -and
+    $task.TaskName -ceq $taskName -and $task.TaskPath -ceq '\' -and
+    $observedSid -ceq $ownerSid -and
+    [string]$task.Principal.RunLevel -ceq 'Limited' -and
+    [string]$task.Principal.LogonType -cin @('Interactive','InteractiveToken') -and
+    @($task.Triggers | Where-Object { $null -ne $_ }).Count -eq 0 -and
+    $task.Actions.Count -eq 1 -and
+    [string]::Equals([string]$task.Actions[0].Execute,$executable,[StringComparison]::OrdinalIgnoreCase) -and
+    [string]$task.Actions[0].Arguments -ceq $arguments -and
+    [string]::IsNullOrEmpty([string]$task.Actions[0].WorkingDirectory))
+}
 function Get-UpdateBindingDigest($binding) {
   $bytes = [Text.Encoding]::UTF8.GetBytes((@($binding.version,$binding.key_hash,$binding.id_hash,
     $binding.execute,$binding.arguments,$binding.working_directory) | ConvertTo-Json -Compress))
@@ -479,7 +494,8 @@ function Complete-NativeInstall([string]$directory) {
   if ($upgradeExisting) {
     if ($Automatic) {
       Assert-AutomaticUpdateBinding $Version
-      & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade -Automatic -AutomaticBinding (Get-UpdateBindingDigest $attendedBinding)
+      $script:automaticSwitchDispatched = $true
+      & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade -Automatic -AutomaticBinding (Get-UpdateBindingDigest $attendedBinding) -AutomaticOperation $AutomaticOperation
     } else {
       & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
     }
@@ -570,7 +586,7 @@ function Confirm-Upgrade([object]$ui) {
 # This branch precedes every directory, archive, identity and Task mutation.
 if ($CheckOnly) {
   if (-not $Version -or $SelectedTag -or $SelectedReleaseSha256 -or $OfflineArchive -or
-      $ExpectedSha256 -or $StageOnly -or $UpdateOnly -or $Automatic -or $AutomaticBinding) { throw 'CheckOnly requires only the installed version' }
+      $ExpectedSha256 -or $StageOnly -or $UpdateOnly -or $Automatic -or $AutomaticBinding -or $AutomaticOperation) { throw 'CheckOnly requires only the installed version' }
   Get-LatestUpdateStatus $Version | ConvertTo-Json -Compress
   return
 }
@@ -583,14 +599,16 @@ $detachedRequest = $env:RCA_UNATTENDED_UPGRADE -ceq 'launch-approved-task-v1'
 if ($Automatic) {
   if ($detachedUpgrade -or $detachedRequest -or $Version -or $OfflineArchive -or $ExpectedSha256 -or
       $StageOnly -or $UpdateOnly -or [bool]$SelectedTag -ne [bool]$AutomaticBinding -or
-      [bool]$SelectedTag -ne [bool]$SelectedReleaseSha256) { throw 'Invalid automatic update arguments' }
+      [bool]$SelectedTag -ne [bool]$SelectedReleaseSha256 -or
+      [bool]$SelectedTag -ne [bool]$AutomaticOperation) { throw 'Invalid automatic update arguments' }
   $detachedUpgrade = [bool]$SelectedTag
   $detachedRequest = -not $detachedUpgrade
-} elseif ($AutomaticBinding) { throw 'Unexpected automatic target binding' }
+} elseif ($AutomaticBinding -or $AutomaticOperation) { throw 'Unexpected automatic target binding' }
 $temp = $null
 $stage = $null
 $promoted = $false
 $primaryFailure = $false
+$automaticSwitchDispatched = $false
 $releaseUrl = $null
 $releaseSha = $null
 $releaseSize = [long]0
@@ -715,7 +733,7 @@ try {
     if ($Automatic) {
       # One demand-start Task per installed identity, not a second scheduler.
       $name = 'RCA-Upgrade-' + (Get-Content -LiteralPath $idFile -Raw).Trim().Replace('-','')
-      if (Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue) {
+      if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -ieq $name }).Count -ne 0) {
         Write-Output 'Automatic update already dispatched or awaiting inspection.'
         return
       }
@@ -729,7 +747,7 @@ try {
     $installerQ = $installer.Replace("'", "''")
     $receiptQ = $receipt.Replace("'", "''")
     $invokeLine = if ($Automatic) {
-      "  & '{0}' -Automatic -SelectedTag '{1}' -SelectedReleaseSha256 '{2}' -AutomaticBinding '{3}'" -f $installerQ,$Version,$releaseSha,(Get-UpdateBindingDigest $attendedBinding)
+      "  & '{0}' -Automatic -SelectedTag '{1}' -SelectedReleaseSha256 '{2}' -AutomaticBinding '{3}' -AutomaticOperation '{4}'" -f $installerQ,$Version,$releaseSha,(Get-UpdateBindingDigest $attendedBinding),$operation
     } else { "  & '{0}' -SelectedTag '{1}' -SelectedReleaseSha256 '{2}'" -f $installerQ,$Version,$releaseSha }
     $authorityLine = if ($Automatic) { 'Remove-Item Env:RCA_UNATTENDED_UPGRADE -ErrorAction SilentlyContinue' }
       else { '$env:RCA_UNATTENDED_UPGRADE = ''owner-approved-task-v1''' }
@@ -743,9 +761,9 @@ try {
       '  $claim.Write($bytes,0,$bytes.Length); $claim.Flush($true)'
       '} finally { $claim.Dispose() }'
       'try {'
-      $invokeLine
+      $(if ($Automatic) { "  `$outcome = @($($invokeLine.Trim()))" } else { $invokeLine })
       '  if (-not $?) { throw ''Local switch failed'' }'
-      '  $result = ''local_switch_returned'''
+      $(if ($Automatic) { '  $result = if ($outcome.Count -gt 0 -and $outcome[-1] -ceq ''automatic-pre-switch-refused'') { ''pre_switch_refused'' } else { ''local_switch_returned'' }' } else { '  $result = ''local_switch_returned''' })
       '} catch { $result = ''needs_attention'' }'
       ('$payload = @{ operation_id = ''' + $operation + '''; status = $result } | ConvertTo-Json -Compress')
       ('$stream = [IO.File]::Open(''' + $receiptQ + ''',[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)')
@@ -754,17 +772,25 @@ try {
       '  $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)'
       '} finally { $stream.Dispose() }'
     )
+    $taskExecutable = [IO.Path]::Combine($PSHOME,'powershell.exe')
+    $taskArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '"'
     if ($Automatic) {
       # Journal retention is authoritative for an unconfirmed cutover. On
       # known completion or a pre-switch refusal, retire only this own Task.
       $journalQ = (Join-Path $root 'windows-native-upgrade.json').Replace("'","''")
       $runnerQ = $runner.Replace("'","''")
+      $exeQ = $taskExecutable.Replace("'","''")
+      $argsQ = $taskArguments.Replace("'","''")
       $lines += @(
-        ("if (-not (Test-Path -LiteralPath '{0}')) {{" -f $journalQ)
-        ("  `$own = Get-ScheduledTask -TaskName '{0}' -ErrorAction Stop" -f $name)
-        ("  if (`$own.Actions.Count -ne 1 -or `$own.Actions[0].Arguments -cne '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File ""{0}""') {{ throw 'Automatic Task changed' }}" -f $runnerQ)
-        ("  Unregister-ScheduledTask -TaskName '{0}' -Confirm:`$false -ErrorAction Stop" -f $name)
-        ("  if (Get-ScheduledTask -TaskName '{0}' -ErrorAction SilentlyContinue) {{ throw 'Automatic Task cleanup unconfirmed' }}" -f $name)
+        ('function Test-AutomaticTaskDefinition {' + (Get-Command Test-AutomaticTaskDefinition -CommandType Function).Definition + '}')
+        ("if (`$result -in @('local_switch_returned','pre_switch_refused') -and -not (Test-Path -LiteralPath '{0}')) {{" -f $journalQ)
+        ("  `$own = @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object {{ `$_.TaskName -ieq '{0}' }})" -f $name)
+        "  if (`$own.Count -ne 1) { throw 'Automatic Task ownership unconfirmed' }"
+        '  $principal = [string]$own[0].Principal.UserId'
+        '  $observedSid = if ($principal -match ''^S-1-[0-9]+(?:-[0-9]+)+$'') { ([Security.Principal.SecurityIdentifier]::new($principal)).Value } else { ([Security.Principal.NTAccount]::new($principal)).Translate([Security.Principal.SecurityIdentifier]).Value }'
+        ("  if (-not (Test-AutomaticTaskDefinition `$own[0] '{0}' '{1}' `$observedSid '{2}' '{3}')) {{ throw 'Automatic Task changed' }}" -f $name,$userSid.Value,$exeQ,$argsQ)
+        ("  Unregister-ScheduledTask -TaskName '{0}' -TaskPath '\' -Confirm:`$false -ErrorAction Stop" -f $name)
+        ("  if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object {{ `$_.TaskName -ieq '{0}' }}).Count -ne 0) {{ throw 'Automatic Task cleanup unconfirmed' }}" -f $name)
         ("  Remove-Item -LiteralPath '{0}','{1}','{2}' -ErrorAction Stop" -f $claimQ,$receiptQ,$runnerQ)
         '}'
       )
@@ -782,8 +808,7 @@ try {
       } finally { $handle.Dispose() }
     }
     # Demand-start only; zero scheduled triggers prevents blind replay.
-    $taskAction = New-ScheduledTaskAction -Execute ([IO.Path]::Combine($PSHOME,'powershell.exe')) -Argument (
-      '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '"')
+    $taskAction = New-ScheduledTaskAction -Execute $taskExecutable -Argument $taskArguments
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId $me.Name -LogonType Interactive -RunLevel Limited
     $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
     $definition = New-ScheduledTask -Action $taskAction -Principal $taskPrincipal -Settings $taskSettings
@@ -920,6 +945,11 @@ try {
   }
   Complete-NativeInstall $target
 } catch {
+  if ($Automatic -and $detachedUpgrade -and -not $automaticSwitchDispatched) {
+    Write-Warning 'Automatic update refused before native switch dispatch; no service cutover attempted.'
+    Write-Output 'automatic-pre-switch-refused'
+    return
+  }
   $primaryFailure = $true
   throw
 } finally {

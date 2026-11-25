@@ -79,3 +79,14 @@ test("attended Latest update is limited to existing installation and the bare CL
   assert(complete.includes("Update cannot install or pair a device"));
   assert(complete.includes("Owner STOP blocks attended native upgrade"));
 });
+
+test("automatic dispatch and result use one operation ID and uncertain outcomes retain evidence",()=>{
+  const task=readFileSync(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  assert.match(text,/-AutomaticOperation '\{4\}'" -f .*\$operation/);
+  assert.match(text,/-AutomaticOperation \$AutomaticOperation/);
+  assert.match(task,/operation_id=\$AutomaticOperation/);
+  assert.match(text,/\$result -in @\('local_switch_returned','pre_switch_refused'\) -and -not \(Test-Path/);
+  assert.match(text,/\$Automatic -and \$detachedUpgrade -and -not \$automaticSwitchDispatched/);
+  assert.match(text,/Write-Output 'automatic-pre-switch-refused'/);
+  assert.match(task,/\[bool\]\$Automatic -ne \[bool\]\$AutomaticOperation/);
+});
