@@ -271,7 +271,7 @@ export async function ownedWrite(file,content,replace=false,mode=0o600,parentPri
   if(replace)await checked(file,{mode});
   else if(await statMaybe(file))throw Error("Owned file already exists.");
   const temp=path.join(path.dirname(file),".new-"+randomUUID());
-  await writeFile(temp,content,{flag:"wx",mode});
+  await writeFile(temp,content,{flag:"wx",mode,flush:true});
   try{await rename(temp,file);}catch(e){await rm(temp,{force:true});throw e;}
 }
 // Local CLI dispatches only to the version-pinned, owner-private manager.
@@ -317,6 +317,64 @@ export async function writeMacAutoPolicy(key,deviceId,enabled){
   const replace=await checked(file,{optional:true,mode:0o600});
   await ownedWrite(file,JSON.stringify({device_id:deviceId,enabled}),replace);
 }
+// Shared result semantics with the Linux/Windows owner managers.
+const STABLE_TAG=/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
+export function stableMacTag(directory){
+  const tag=directory.replace(/-darwin-(?:arm64|x64)$/,"");
+  return STABLE_TAG.test(tag)?tag:null;
+}
+export function parseMacAutomaticResult(value,deviceId){
+  if(!value||typeof value!=="object"||Object.keys(value).length!==6||
+     typeof value.device_id!=="string"||!ID.test(value.device_id)||
+     typeof value.operation_id!=="string"||!(/^[a-f0-9]{32}$/).test(value.operation_id)||
+     typeof value.target_version!=="string"||!STABLE_TAG.test(value.target_version)||
+     typeof value.installed_version!=="string"||!STABLE_TAG.test(value.installed_version)||
+     !Number.isSafeInteger(value.updated_at_unix_ms)||value.updated_at_unix_ms<0||
+     !["success","failed_recovered","waiting_idle"].includes(value.status)||
+     (value.status==="success")!==(value.installed_version===value.target_version))
+    throw Error("Unrecognized final upgrade evidence.");
+  return value.device_id===deviceId?value:null;
+}
+export async function readMacAutomaticResult(key,deviceId){
+  const file=key+".native-upgrade-result";
+  if(!await checked(file,{optional:true,mode:0o600}))return null;
+  if((await lstat(file)).size>512)throw Error("Unrecognized final upgrade evidence.");
+  return parseMacAutomaticResult(JSON.parse(await readFile(file,"utf8")),deviceId);
+}
+export function macAutomaticResultAdmits(prior,target,action="admit"){
+  return !(prior?.status==="failed_recovered"&&
+    (action==="waiting_idle"||(action==="admit"&&prior.target_version===target)));
+}
+async function writeMacAutomaticResult(key,deviceId,installed,target,status,operation){
+  if(!await approved(key)||(await readFile(key+".device-id","utf8")).trim()!==deviceId)
+    throw Error("Existing identity changed.");
+  const prior=await readMacAutomaticResult(key,deviceId);
+  if(!macAutomaticResultAdmits(prior,target,status))return;
+  const value={device_id:deviceId,operation_id:operation.replaceAll("-",""),
+    installed_version:status==="success"?target:installed,target_version:target,status,
+    updated_at_unix_ms:Date.now()};
+  parseMacAutomaticResult(value,deviceId);
+  const file=key+".native-upgrade-result";
+  await ownedWrite(file,JSON.stringify(value),await checked(file,{optional:true,mode:0o600}));
+}
+export async function requireMacAutomatic(key,installed,target,request=freeze){
+  if(!installed||!STABLE_TAG.test(installed)||!await approved(key))
+    throw Error("Automatic update requires a Stable permanent Agent.");
+  const id=(await readFile(key+".device-id","utf8")).trim();
+  if(await readMacAutoPolicy(key,id)!=="on")
+    throw Error("Automatic update policy is not enabled.");
+  if(target&&(!STABLE_TAG.test(target)||!forwardMacVersion(
+      installed+"-darwin-"+process.arch,target+"-darwin-"+process.arch)))
+    throw Error("Automatic update requires a newer Stable version.");
+  if(!macAutomaticResultAdmits(await readMacAutomaticResult(key,id),target))
+    throw Error("Previously recovered failed version suppressed for automatic update.");
+  if(await request(key,"verify-online")!=="ready")
+    throw Error("Current signed WSS unconfirmed.");
+  if(!await approved(key)||(await readFile(key+".device-id","utf8")).trim()!==id||
+     await readMacAutoPolicy(key,id)!=="on")
+    throw Error("Automatic update authority changed.");
+  return id;
+}
 // Bind the attended operation to the existing local target, not to whatever
 // identity or LaunchAgent happens to be present after confirmation/staging.
 export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,journal},ownJournal){
@@ -336,7 +394,7 @@ export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,jou
 }
 // The existing recovery journal is also the exclusive admission marker.
 // Unlike rename(), an exclusive create cannot overwrite a competing claim.
-export async function reserveMacSwitch(journal,record,recheck,requestFreeze){
+export async function reserveMacSwitch(journal,record,recheck,requestFreeze,onBusy){
   await checked(path.dirname(journal),{dir:true});
   await writeFile(journal,record,{flag:"wx",mode:0o600,flush:true});
   const discardBeforeSwitch=async()=>{
@@ -353,8 +411,11 @@ export async function reserveMacSwitch(journal,record,recheck,requestFreeze){
   catch{throw Error("Freeze ownership unknown; journal retained.");}
   if(answer==="ready")return true;
   if(answer==="busy"){
+    if(onBusy)await onBusy();
     await discardBeforeSwitch();
-    throw Error("Busy or uncertain Agent; refuse switch.");
+    const error=Error("Busy or uncertain Agent; refuse switch.");
+    error.code="RCA_BUSY";
+    throw error;
   }
   throw Error("Freeze ownership unknown; journal retained.");
 }
@@ -390,20 +451,22 @@ export async function confirm(question){
   });
 }
 /** Host mutation only after local owner consent and a pinned source candidate. */
-export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,policyAction,
+export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,policyAction,automaticOperation,
   invoke=run,ask=confirm,online=observeOnline,freezeAgent=freeze,ownerIntent,
   runTemporary=spawnSync,runUpdate=spawnSync,terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
   pauseLaunchd=ms=>new Promise(resolve=>setTimeout(resolve,ms)),doFetch=fetch}={}){
-  if(!["install","upgrade","status","doctor","check-update","update-latest","update-policy","stop","start","temporary"].includes(action))
+  if(!["install","upgrade","status","doctor","check-update","update-latest","automatic-check","update-policy","stop","start","temporary"].includes(action))
     throw Error("Unsupported local action.");
   if(process.platform!=="darwin"||!["arm64","x64"].includes(process.arch)||
     Number.parseInt(os.release(),10)<24||process.getuid?.()===0)
     throw Error("Native unprivileged macOS 15+ ARM64 or x64 required.");
   if(expectedBinding!==undefined&&(action!=="upgrade"||!(/^[a-f0-9]{64}$/).test(expectedBinding)))
     throw Error("Invalid expected upgrade binding.");
+  if(automaticOperation!==undefined&&(action!=="upgrade"||!ID.test(automaticOperation)||!expectedBinding))
+    throw Error("Invalid automatic upgrade context.");
   if(policyAction!==undefined&&(action!=="update-policy"||!["on","off"].includes(policyAction)))
     throw Error("Invalid automatic update policy action.");
-  const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest"||action==="update-policy";
+  const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest"||action==="automatic-check"||action==="update-policy";
   if(!readOnly)process.umask(0o077);
   if(action==="temporary"){
     // Reuse the signed 24-hour foreground Agent: no LaunchAgent, no service
@@ -536,15 +599,33 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       last_online:"unconfirmed",receipts:"preserved_unverified",
       automatic_update:policy,automatic_update_activity:policy==="off"?"disabled":"unknown",
     };
+    if(deviceId&&current){
+      try{
+        const result=await readMacAutomaticResult(key,deviceId);
+        if(result){
+          state.automatic_update_result={...result,current:result.installed_version===stableMacTag(state.version)};
+          if(state.automatic_update_result.current)
+            state.automatic_update_activity=result.status==="failed_recovered"?"recovered":
+              result.status==="waiting_idle"&&policy==="off"?"disabled":result.status;
+        }
+      }catch{state.automatic_update_activity="unknown";state.automatic_update_result={status:"unknown"};}
+    }
     if(action==="status")return state;
-    if(action==="check-update"||action==="update-latest"){
+    if(action==="check-update"||action==="update-latest"||action==="automatic-check"){
       if(!current)throw Error("No existing managed macOS Agent.");
       const manifest=path.join(current.root,"bundle.json");
       await checked(manifest,{mode:0o600});
       const meta=JSON.parse(await readFile(manifest,"utf8"));
       if(state.version!==candidateName(meta,meta.source_commit))throw Error("Untrusted installed version.");
       if(action==="check-update")return checkLatestMacVersion(meta.version,process.arch,doFetch);
-      if(!terminal())throw Error("Owner terminal required for update.");
+      if(action==="automatic-check"){
+        // Known completed detached jobs must be retired even when Latest
+        // is unchanged or the owner has since opted out.
+        const {reconcileAutomaticMacJob}=await import("./macos-remote-upgrade.mjs");
+        await reconcileAutomaticMacJob(home,invoke,pauseLaunchd);
+        if(policy==="off")return {status:"disabled"};
+        await requireMacAutomatic(key,stableMacTag(state.version),null,freezeAgent);
+      }else if(!terminal())throw Error("Owner terminal required for update.");
       if(stopped||!bound||launchctlServiceState(service,invoke)!=="present")
         throw Error("Existing running owner service required for update.");
       const binding=await macUpgradeBinding({key,plist,cli,endpointFile,stopMark,journal});
@@ -554,7 +635,8 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       await checked(scripts,{dir:true});
       const updater=path.join(scripts,"macos-update.sh");
       await checked(updater,{mode:0o600});
-      const result=runUpdate("/bin/sh",[updater,bound,meta.version,macBindingDigest(binding)],{stdio:"inherit"});
+      const result=runUpdate("/bin/sh",[updater,bound,meta.version,macBindingDigest(binding),
+        ...(action==="automatic-check"?["--automatic"]:[])],{stdio:"inherit"});
       if(result.error||result.signal||result.status!==0)
         throw Error("Update stopped; inspect local status.");
       return {status:"installer_completed"};
@@ -640,6 +722,16 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     if(binding&&JSON.stringify(await macUpgradeBinding(bindingFiles,ownJournal))!==JSON.stringify(binding))
       throw Error("Existing upgrade target changed.");
   };
+  const autoInstalled=automaticOperation?stableMacTag(path.basename(current.root)):null;
+  const autoTarget=automaticOperation?stableMacTag(version):null;
+  if(automaticOperation&&(!autoTarget||stopped))throw Error("Automatic update requires an owner-ON Stable Agent.");
+  const autoId=automaticOperation?await requireMacAutomatic(key,autoInstalled,autoTarget,freezeAgent):null;
+  const automaticResult=async status=>{
+    if(!await approved(key)||createHash("sha256").update(await readFile(key)).digest("hex")!==binding.keyHash||
+       createHash("sha256").update(await readFile(key+".device-id")).digest("hex")!==binding.idHash)
+      throw Error("Automatic update identity changed.");
+    await writeMacAutomaticResult(key,autoId,autoInstalled,autoTarget,status,automaticOperation);
+  };
   const nextRoot=path.join(programs,version);
   if(await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite. " +
     "Inspect existing state and use a separately verified newer candidate; " +
@@ -686,11 +778,13 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       await recheckBinding(record);
       if(action==="upgrade"&&await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite.");
       if(active&&!launch(["print",service],invoke))throw Error("Service state uncertain; refuse upgrade.");
-    },active?()=>freezeAgent(key):null);
+      if(automaticOperation)await requireMacAutomatic(key,autoInstalled,autoTarget,freezeAgent);
+    },active?()=>freezeAgent(key):null,automaticOperation?()=>automaticResult("waiting_idle"):null);
   }catch(error){
     // Only this attempt's private, unpublished copy is disposable.
     // The journal, installed versions and receipts are never removed here.
     if(action==="upgrade")await rm(stage,{recursive:true,force:true});
+    if(automaticOperation&&error.code==="RCA_BUSY")return {status:"waiting_idle",version};
     throw error;
   }
   let oldStopped=false,newLoaded=false,cliWritten=false,plistWritten=false;
@@ -698,6 +792,12 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   try{
     if(action==="upgrade"){
       await recheckBinding(record);
+      // The owned journal and Freeze define the cutover admission boundary.
+      if(automaticOperation){
+        if(await freezeAgent(key,"verify-frozen")!=="ready")throw Error("Freeze unconfirmed.");
+        if(await requireMacAutomatic(key,autoInstalled,autoTarget,freezeAgent)!==autoId)
+          throw Error("Automatic update identity changed.");
+      }
       if(await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite.");
       await rename(stage,nextRoot);
     }
@@ -720,6 +820,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       newLoaded=true;
       failureStage="signed-wss-activation";
       if(!await online(identity,generation))throw Error("New signed WSS activation unconfirmed.");
+      if(automaticOperation&&await freezeAgent(key,"verify-online")!=="ready")throw Error("New signed WSS not current.");
     }
     failureStage="write-cli";
     await ownedWrite(cli,ownerCliText(nextRoot),previousCli!==null,0o700,false);
@@ -741,6 +842,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       if(await readMacAutoPolicy(key,deviceId)==="unknown")throw Error("Automatic update consent unconfirmed.");
     }
     failureStage="finalize-journal";
+    if(automaticOperation)await automaticResult("success");
     await rm(journal);
     return {status:stopped?"stopped_preserved":"connected_observed",version,generation,
       cli};
@@ -780,6 +882,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
         rollbackStage="verify-previous-signed-wss";
         if(!await online(identity,current.generation))
           throw Error("Old signed service not restored.");
+        if(automaticOperation&&await freezeAgent(key,"verify-online")!=="ready")throw Error("Old signed WSS not current.");
       }else if(frozen){
         rollbackStage="release-frozen-agent";
         if(await freezeAgent(key,"release")!=="released")
@@ -787,10 +890,12 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       }
       if(action==="upgrade")await rm(stage,{recursive:true,force:true});
       rollbackStage="remove-switch-journal";
+      if(automaticOperation&&oldStopped)await automaticResult("failed_recovered");
       await rm(journal);
     }catch{
       throw Error(`UNKNOWN rollback at ${rollbackStage} after ${failureStage}: journal, key and receipts retained for manual inspection.`);
     }
+    if(automaticOperation&&oldStopped)return {status:"failed_recovered",version};
     // Do not expose arbitrary OS exception text that may include sensitive paths.
     const reason=error instanceof Error&&error.message==="Unsafe owner, type or mode."
       ?"unsafe-owner-or-mode":"operation-failed";

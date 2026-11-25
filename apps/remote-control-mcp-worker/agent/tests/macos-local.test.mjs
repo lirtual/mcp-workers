@@ -938,3 +938,49 @@ test('#666 native owner Stop/Resume preserves same identity and demands signed a
  assert.deepEqual(calls.filter(x=>x.startsWith('cloud:')),['cloud:stop','cloud:stop','cloud:resume']);
  assert.equal((await readFile(path.join(f.identity,'v2-identity.pem.device-id'),'utf8')).trim(),ID);
 });
+
+test("#1035 automatic admission requires current signed connection, stable forward target and continuing identity policy",async t=>{
+  const {requireMacAutomatic,writeMacAutoPolicy,parseMacAutomaticResult,macAutomaticResultAdmits}=await import("../scripts/macos-local.mjs");
+  const root=await mkdtemp(path.join(os.tmpdir(),"rca1035-automatic-"));
+  t.after(()=>rm(root,{recursive:true,force:true}));
+  const key=path.join(root,"v2-identity.pem");
+  await writeFile(key,"synthetic-key",{mode:0o600});
+  await writeFile(key+".device-id",ID+"\n",{mode:0o600});
+  let online=true,calls=0;
+  const request=async(_key,command)=>{assert.equal(command,"verify-online");calls++;return online?"ready":"busy";};
+  await assert.rejects(requireMacAutomatic(key,"v1.0.0","v1.0.1",request),/not enabled/);
+  assert.equal(calls,0);
+  await writeMacAutoPolicy(key,ID,true);
+  assert.equal(await requireMacAutomatic(key,"v1.0.0","v1.0.1",request),ID);
+  await assert.rejects(requireMacAutomatic(key,"v1.0.0","v1.0.0",request),/newer Stable/);
+  online=false;
+  await assert.rejects(requireMacAutomatic(key,"v1.0.0","v1.0.1",request),/WSS unconfirmed/);
+  online=true;
+  const failed={device_id:ID,operation_id:"a".repeat(32),target_version:"v1.0.1",
+    installed_version:"v1.0.0",status:"failed_recovered",updated_at_unix_ms:123};
+  await writeFile(key+".native-upgrade-result",JSON.stringify(failed),{mode:0o600});
+  await assert.rejects(requireMacAutomatic(key,"v1.0.0","v1.0.1",request),/suppressed/);
+  assert.equal(await requireMacAutomatic(key,"v1.0.0","v1.0.2",request),ID);
+  assert.equal(macAutomaticResultAdmits(failed,"v1.0.2","waiting_idle"),false);
+  for(const timestamp of [true,-1,Number.MAX_SAFE_INTEGER+1,undefined])
+    assert.throws(()=>parseMacAutomaticResult({...failed,updated_at_unix_ms:timestamp},ID),/evidence/);
+  assert.equal(parseMacAutomaticResult(failed,"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),null);
+  await writeMacAutoPolicy(key,ID,false);
+  await assert.rejects(requireMacAutomatic(key,"v1.0.0","v1.0.2",request),/not enabled/);
+});
+test("#1035 permanent macOS schedule serializes checks and cancels future work",async()=>{
+  const {scheduleMacAutomaticCheck}=await import("../src/macos-permanent.ts");
+  const {setTimeout:wait}=await import("node:timers/promises");
+  const controller=new AbortController();
+  let calls=0,finish;
+  const stop=scheduleMacAutomaticCheck(controller.signal,()=>{calls++;return new Promise(r=>{finish=r;});},()=>1);
+  try{
+    for(let i=0;i<100&&calls===0;i++)await wait(5);
+    assert.equal(calls,1);
+    await wait(15);
+    assert.equal(calls,1);
+    controller.abort();finish();
+    await wait(15);
+    assert.equal(calls,1);
+  }finally{stop();}
+});

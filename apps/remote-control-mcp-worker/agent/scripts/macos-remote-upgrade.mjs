@@ -10,6 +10,7 @@ import {fileURLToPath} from "node:url";
 import {
   checked,checkCandidate,localMacAction,matchesOwnerCli,parsePlist,
   launchctlServiceState,verifiedEndpoint,freeze,forwardMacVersion,
+  macUpgradeBinding,macBindingDigest,stableMacTag,requireMacAutomatic,stopLaunchdForSwitch,readMacAutomaticResult,
 } from "./macos-local.mjs";
 export {forwardMacVersion};
 
@@ -130,9 +131,76 @@ export async function awaitCallerQuiescence(freezeAgent,key,{
 async function record(file,contents){
   await writeFile(file,JSON.stringify(contents)+"\n",{flag:"wx",mode:0o600});
 }
-export async function dispatchRemoteMacUpgrade({home=os.homedir(),bundle,sourceSha,endpoint,invoke=run}={}){
+async function automaticBinding(home){
+  const identity=path.join(home,ROOT),mac=path.join(identity,"macos");
+  return macUpgradeBinding({key:path.join(identity,"v2-identity.pem"),
+    plist:path.join(home,"Library","LaunchAgents",LABEL+".plist"),
+    cli:path.join(home,".local/bin/rca"),endpointFile:path.join(mac,"endpoint"),
+    stopMark:path.join(mac,"stopped"),journal:path.join(mac,"switch.json")});
+}
+// Only retire a completed automatic job whose exact private plan and
+// result match. Unknown dispatch/exit or a retained switch journal blocks.
+export async function reconcileAutomaticMacJob(home,invoke=run,pause){
+  const mac=path.join(home,ROOT,"macos"),tasks=path.join(mac,"remote-upgrades");
+  const marker=path.join(tasks,"active.json");
+  if(!await exists(marker))return;
+  await checked(tasks,{dir:true});await checked(marker,{mode:0o600});
+  const state=JSON.parse(await readFile(marker,"utf8"));
+  if(state.automatic!==true||!ID.test(state.id)||state.label!==remoteJobLabel(state.id))
+    throw Error("Unresolved existing upgrade operation.");
+  const dir=path.join(tasks,state.id),context=path.join(dir,"context.json"),resultFile=path.join(dir,"result.json");
+  await checked(dir,{dir:true});await checked(context,{mode:0o600});await checked(resultFile,{mode:0o600});
+  const plan=JSON.parse(await readFile(context,"utf8")),result=JSON.parse(await readFile(resultFile,"utf8"));
+  if(plan.automatic!==true||plan.id!==state.id||plan.label!==state.label||plan.version!==state.version||
+     result.id!==state.id||result.version!==state.version||
+     !["connected_observed","waiting_idle","failed_recovered","deferred"].includes(result.status)||
+     await exists(path.join(mac,"switch.json")))
+    throw Error("Automatic upgrade outcome unconfirmed.");
+  const key=path.join(home,ROOT,"v2-identity.pem");
+  await checked(key,{mode:0o600});await checked(key+".device-id",{mode:0o600});
+  const deviceId=(await readFile(key+".device-id","utf8")).trim();
+  const evidence=await readMacAutomaticResult(key,deviceId);
+  const expected=result.status==="connected_observed"?"success":result.status;
+  if(result.status!=="deferred"&&!(
+      evidence?.status===expected&&evidence.operation_id===state.id.replaceAll("-","")&&
+      evidence.target_version===stableMacTag(state.version)||
+      result.status==="waiting_idle"&&evidence?.status==="failed_recovered"))
+    throw Error("Automatic result evidence not confirmed.");
+  const node=path.join(dir,"bundle/bin/node"),worker=path.join(dir,"bundle/apps/remote-control-agent/scripts/macos-remote-upgrade.mjs");
+  const job=path.join(dir,"job.plist");await checked(job,{mode:0o600});
+  if(await readFile(job,"utf8")!==remoteJobPlist(state.id,node,worker,dir))
+    throw Error("Automatic job definition changed.");
+  const service="gui/"+process.getuid()+"/"+state.label;
+  const observed=invoke("/bin/launchctl",["print",service]);
+  if(!observed.error&&observed.status===0){
+    const output=String(observed.stdout??"");
+    if(!/(?:^|\n)\s*state = not running(?:\n|$)/.test(output)||
+       /(?:^|\n)\s*pid = [1-9][0-9]*/.test(output)||
+       !output.includes("program = "+node))
+      throw Error("Automatic job still running or identity uncertain.");
+    await stopLaunchdForSwitch(service,invoke,pause);
+  }else if(launchctlServiceState(service,invoke)!=="absent")
+    throw Error("Automatic job state unknown.");
+  if((JSON.parse(await readFile(marker,"utf8"))).id!==state.id)
+    throw Error("Automatic job marker changed.");
+  await rm(marker);
+  await rm(dir,{recursive:true});
+}
+export async function dispatchRemoteMacUpgrade({home=os.homedir(),bundle,sourceSha,endpoint,expectedBinding,invoke=run}={}){
   process.umask(0o077);
+  const automatic=expectedBinding!==undefined;
+  if(automatic){
+    if(!/^[a-f0-9]{64}$/.test(expectedBinding))throw Error("Invalid automatic target binding.");
+    await reconcileAutomaticMacJob(home,invoke);
+  }
   const t=await trustedExisting(home,endpoint,bundle,sourceSha,invoke);
+  if(automatic){
+    if(macBindingDigest(await automaticBinding(home))!==expectedBinding)
+      throw Error("Existing automatic upgrade target changed.");
+    const target=stableMacTag(t.version);
+    if(!target)throw Error("Automatic target must be Stable.");
+    await requireMacAutomatic(path.join(t.base,"v2-identity.pem"),stableMacTag(path.basename(t.old.root)),target);
+  }
   const id=randomUUID(),label=remoteJobLabel(id);
   const tasks=path.join(t.mac,"remote-upgrades");
   await ownedDirectory(tasks);
@@ -142,13 +210,13 @@ export async function dispatchRemoteMacUpgrade({home=os.homedir(),bundle,sourceS
   await mkdir(dir,{mode:0o700});await checked(dir,{dir:true});
   const staged=path.join(dir,"bundle");
   // Write the single durable idempotency marker before staging and submission.
-  await record(active,{id,label,version:t.version,state:"preparing"});
+  await record(active,{id,label,version:t.version,state:"preparing",...(automatic?{automatic:true}:{})});
   await cp(bundle,staged,{recursive:true,force:false,errorOnExist:true});
   await checked(staged,{dir:true});
   if(await checkCandidate(staged,sourceSha)!==t.version)
     throw Error("Staged candidate identity mismatch.");
   await record(path.join(dir,"context.json"),{id,label,version:t.version,
-    sourceSha,endpoint,state:"owner_authorized_remote_upgrade"});
+    sourceSha,endpoint,state:"owner_authorized_remote_upgrade",...(automatic?{automatic:true,expectedBinding}:{})});
   const node=path.join(staged,"bin","node");
   const worker=path.join(staged,"apps","remote-control-agent","scripts","macos-remote-upgrade.mjs");
   await checked(node,{mode:0o700});await checked(worker,{mode:0o600});
@@ -178,7 +246,9 @@ export async function runRemoteMacUpgrade(id,{home=os.homedir(),invoke=run,ppid=
   const plan=JSON.parse(await readFile(context,"utf8"));
   if(state.id!==id||state.label!==remoteJobLabel(id)||
      plan.id!==id||plan.label!==state.label||plan.version!==state.version||
-     plan.state!=="owner_authorized_remote_upgrade"||!SHA.test(plan.sourceSha))
+     plan.state!=="owner_authorized_remote_upgrade"||!SHA.test(plan.sourceSha)||
+     (state.automatic===true)!==(plan.automatic===true)||
+     (plan.automatic===true&&!/^[a-f0-9]{64}$/.test(plan.expectedBinding)))
     throw Error("One-shot upgrade context is inconsistent.");
   const bundle=path.join(dir,"bundle");
   // The existing approved native upgrade freezes operations and rolls back
@@ -190,15 +260,29 @@ export async function runRemoteMacUpgrade(id,{home=os.homedir(),invoke=run,ppid=
       :awaitCallerQuiescence(existingFreeze,key);
     const out=await localMacAction("upgrade",{home,bundle,
       sourceSha:plan.sourceSha,endpoint:plan.endpoint,invoke,online,
-      freezeAgent:handoff,ask:async()=>true});
-    if(out.status!=="connected_observed"||out.version!==plan.version)
+      freezeAgent:handoff,ask:async()=>true,
+      ...(plan.automatic?{automaticOperation:id,expectedBinding:plan.expectedBinding}:{})});
+    if(out.version!==plan.version||!(plan.automatic
+      ?["connected_observed","waiting_idle","failed_recovered"].includes(out.status)
+      :out.status==="connected_observed"))
       throw Error("Signed activation not confirmed.");
-    await record(resultFile,{status:"connected_observed",version:out.version,id});
+    await record(resultFile,{status:out.status,version:out.version,id});
+    // The next managed check reaps the completed automatic job; never
+    // bootout a still-running worker or lose an unknown admission marker.
+    if(plan.automatic)return {status:out.status,version:out.version,id};
     // A verified completed worker may clear the admission marker. Audited
     // per-operation result and task files remain for independent review.
     if((JSON.parse(await readFile(marker,"utf8"))).id===id)await rm(marker);
     return {status:"connected_observed",version:out.version,id};
   }catch{
+    if(plan.automatic){
+      let unchanged=false;
+      try{unchanged=macBindingDigest(await automaticBinding(home))===plan.expectedBinding;}catch{}
+      if(unchanged){
+        await record(resultFile,{status:"deferred",version:plan.version,id});
+        return {status:"deferred",version:plan.version,id};
+      }
+    }
     await record(resultFile,{status:"needs_attention",id});
     throw Error("Detached upgrade needs inspection; no blind retry.");
   }
@@ -350,10 +434,11 @@ async function main(){
   if(action==="worker"&&args.length===1){
     process.stdout.write(JSON.stringify(await runRemoteMacUpgrade(args[0]))+"\n");return;
   }
-  if(action==="dispatch"&&args.length===6&&args[0]==="--bundle"&&
-     args[2]==="--source-sha"&&args[4]==="--endpoint"){
+  if(((action==="dispatch"&&args.length===6)||
+      (action==="dispatch-automatic"&&args.length===8&&args[6]==="--expected-binding"))&&
+     args[0]==="--bundle"&&args[2]==="--source-sha"&&args[4]==="--endpoint"){
     process.stdout.write(JSON.stringify(await dispatchRemoteMacUpgrade({
-      bundle:args[1],sourceSha:args[3],endpoint:args[5]}))+"\n");return;
+      bundle:args[1],sourceSha:args[3],endpoint:args[5],expectedBinding:args[7]}))+"\n");return;
   }
   throw Error("Unsupported remote upgrade action.");
 }

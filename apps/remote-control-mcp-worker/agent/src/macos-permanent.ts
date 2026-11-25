@@ -7,7 +7,8 @@ import { lstat, rename, writeFile, readFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomInt } from "node:crypto";
+import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { beginDeviceEnrollment, approvalInstruction } from "./pair-device.ts";
 import { requireNativeMac, privateDirectory, privateFileIfPresent,
@@ -35,6 +36,26 @@ export function parsePermanentMacArgs(argv: string[]): {
   const opts=parseTemporaryMacArgs(rest);
   if(opts.resume || opts.retryPairing)throw Error("Invalid permanent grant options.");
   return {endpoint:opts.endpoint,name:opts.name,service,retryPairing,generation};
+}
+/** Only the existing permanent Agent owns the low-frequency check. */
+export function scheduleMacAutomaticCheck(
+  signal:AbortSignal, check:()=>Promise<void>,
+  delay=(first:boolean)=>first?randomInt(60,301)*1000:randomInt(6*3600-900,6*3600+901)*1000,
+):()=>void{
+  let timer:ReturnType<typeof setTimeout>|undefined,closed=false;
+  const stop=()=>{closed=true;if(timer)clearTimeout(timer);signal.removeEventListener("abort",stop);};
+  const schedule=(first:boolean)=>{
+    if(closed||signal.aborted)return;
+    timer=setTimeout(()=>{
+      if(closed||signal.aborted)return;
+      void check().catch(()=>process.stderr.write('{"service":"remote-control-agent","event":"automatic_check_refused"}\n'))
+        .finally(()=>schedule(false));
+    },delay(first));
+    timer.unref();
+  };
+  signal.addEventListener("abort",stop,{once:true});
+  schedule(true);
+  return stop;
 }
 export async function runPermanentMac(argv=process.argv.slice(2)):Promise<void>{
   requireNativeMac();
@@ -91,10 +112,25 @@ export async function runPermanentMac(argv=process.argv.slice(2)):Promise<void>{
       }catch(error){try{const {unlink}=await import("node:fs/promises");await unlink(temp);}catch{}throw error;}
     };
     await record("disconnected");
-    await maintainAuthenticatedDeviceSession(endpoint,key,controller.signal,{
-      receiptDirectory:receipts,enableLocalUpgrade:true,
-      onState: state=>{void record(state).catch(()=>controller.abort());},
-    });
+    // The installed manager validates current policy, identity and live signed
+    // session before downloading or submitting the existing one-shot job.
+    let stopCheck=()=>{};
+    const installed=path.basename(path.resolve(fileURLToPath(import.meta.url),"../../../.."));
+    if(/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)-darwin-(?:arm64|x64)$/.test(installed)){
+      const manager=fileURLToPath(new URL("../scripts/macos-local.mjs",import.meta.url));
+      stopCheck=scheduleMacAutomaticCheck(controller.signal,()=>new Promise<void>((resolve,reject)=>{
+        if(controller.signal.aborted){resolve();return;}
+        const child=spawn(process.execPath,[manager,"automatic-check"],{stdio:["ignore","inherit","inherit"]});
+        child.once("error",reject);
+        child.once("exit",code=>code===0?resolve():reject(Error("Automatic check refused.")));
+      }));
+    }
+    try{
+      await maintainAuthenticatedDeviceSession(endpoint,key,controller.signal,{
+        receiptDirectory:receipts,enableLocalUpgrade:true,
+        onState: state=>{void record(state).catch(()=>controller.abort());},
+      });
+    }finally{stopCheck();}
   }finally{
     process.off("SIGTERM",abort);process.off("SIGINT",abort);
   }
