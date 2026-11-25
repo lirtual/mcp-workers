@@ -394,8 +394,37 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   const agents=await directories(home,["Library","LaunchAgents"],!readOnly);
   const plist=path.join(agents,LABEL+".plist");
   const stopMark=path.join(macos,"stopped"), journal=path.join(macos,"switch.json");
-  if(await checked(journal,{optional:true,mode:0o600}))
+  if(await checked(journal,{optional:true,mode:0o600})){
+    // A switch may have left plist and CLI at different generations.
+    // Report only established facts; never interpret the journal as a
+    // successful switch. Revoking continuing consent needs no cutover.
+    if(action==="status"||action==="doctor"||
+       (action==="update-policy"&&policyAction!=="on")){
+      const key=path.join(identity,"v2-identity.pem");
+      let deviceId=null,policy="unknown";
+      if(await approved(key)){
+        deviceId=(await readFile(key+".device-id","utf8")).trim();
+        policy=await readMacAutoPolicy(key,deviceId);
+      }
+      if(action==="update-policy"){
+        if(!deviceId)throw Error("Existing approved permanent identity required.");
+        if(policyAction==="off"){
+          await writeMacAutoPolicy(key,deviceId,false);
+          policy=await readMacAutoPolicy(key,deviceId);
+          if(policy!=="off")throw Error("Automatic update policy unconfirmed.");
+        }
+        return {automatic_update:policy};
+      }
+      const state={installed:null,version:null,local_service:"unconfirmed",
+        cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
+        last_online:"unconfirmed",receipts:"preserved_unverified",
+        automatic_update:policy,automatic_update_activity:"needs_attention"};
+      return action==="status"?state:{status:state,findings:[
+        "unresolved_upgrade_journal","local_service_unconfirmed",
+        "cloud_authorization_unconfirmed","signed_wss_unconfirmed"]};
+    }
     throw Error("Unresolved upgrade journal: manual reconciliation required.");
+  }
   const old=await checked(plist,{optional:true,mode:0o600})
     ?await readFile(plist,"utf8"):null;
   const endpointFile=path.join(macos,"endpoint");

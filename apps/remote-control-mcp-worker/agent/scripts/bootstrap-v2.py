@@ -901,7 +901,7 @@ def native_pending_lifecycle(key, unit_file):
             ".re-pair-new", ".re-pair-new.device-id")))
 
 
-def native_update_activity(home, key, device_id, policy, result):
+def native_update_activity(home, key, device_id, policy, result, installed_version):
     job = native_update_job_state(device_id)
     if job in ("upgrading", "needs_attention", "unknown"):
         return job
@@ -909,13 +909,15 @@ def native_update_activity(home, key, device_id, policy, result):
         key, pathlib.Path(home) / ".config/systemd/user" / UNIT)
     if any(os.path.lexists(path) for path in pending):
         return "needs_attention"
-    if result:
+    if policy == "unknown":
+        return "unknown"
+    if installed_version is None:
+        return "disabled" if policy == "off" else "unknown"
+    if result and result["installed_version"] == installed_version:
         if result["status"] == "waiting_idle" and policy == "off":
             return "disabled"
         return {"success": "success", "failed_recovered": "recovered",
                 "waiting_idle": "waiting_idle"}.get(result["status"], "unknown")
-    if policy == "unknown":
-        return "unknown"
     return "disabled" if policy == "off" else "idle"
 
 
@@ -2139,10 +2141,17 @@ def local_status(home):
     if "permanent" in ids:
         try:
             result = native_upgrade_result(key, ids["permanent"])
+            root = owned_unit_root(unit, versions) if unit else None
+            installed_version = None
+            if root is not None:
+                validated_owned_version(root)
+                installed_version = json.loads((root / "bundle.json").read_text("utf8"))["version"]
             if result is not None:
                 update_result = {field: result[field] for field in (
                     "status", "target_version", "installed_version", "updated_at_unix_ms")}
-            activity = native_update_activity(home, key, ids["permanent"], policy, result)
+                update_result["current"] = installed_version == result["installed_version"]
+            activity = native_update_activity(
+                home, key, ids["permanent"], policy, result, installed_version)
         except (OSError, ValueError):
             update_result = {"status": "unknown"}
             activity = "unknown"

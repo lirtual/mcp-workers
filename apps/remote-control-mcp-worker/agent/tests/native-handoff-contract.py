@@ -1554,13 +1554,22 @@ def verify_status_reports_upgrade_result_and_identity_purge_removes_it():
                 Mock(returncode=0), absent]):
             state = bootstrap.local_status(home)
         assert state["automatic_update"] == "on"
-        assert state["automatic_update_activity"] == "recovered"
+        assert state["automatic_update_activity"] == "idle"
+        assert state["automatic_update_result"]["current"] is False
         result = state["automatic_update_result"]
         assert {key: result[key] for key in ("status", "target_version", "installed_version")} == {
             "status": "failed_recovered", "target_version": "v0.1.58",
             "installed_version": "v0.1.56"}
         assert type(result["updated_at_unix_ms"]) is int
         assert 0 <= bootstrap.time.time_ns() // 1_000_000 - result["updated_at_unix_ms"] <= 5_000
+        # A result for the current version is meaningful; historical
+        # evidence stays available without masquerading as current activity.
+        bootstrap.native_write_upgrade_result(key, ID, "a" * 32, "v0.1.58", "v0.1.57", "failed_recovered")
+        with patch.object(bootstrap.subprocess, "run", side_effect=[Mock(returncode=0), absent]):
+            current = bootstrap.local_status(home)
+        assert current["automatic_update_activity"] == "recovered"
+        assert current["automatic_update_result"]["current"] is True
+        bootstrap.native_write_upgrade_result(key, ID, "a" * 32, "v0.1.58", "v0.1.56", "failed_recovered")
         valid_result = json.loads(bootstrap.native_owned_file(result_path, 512))
         for invalid_timestamp in (True, -1, 9_007_199_254_740_992, None):
             corrupted = dict(valid_result)

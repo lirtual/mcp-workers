@@ -487,6 +487,32 @@ test("#662 temporary bootstrap reuses foreground runtime without LaunchAgent wri
     /without confirmed success/);
 });
 
+test("#1035 unresolved macOS switch allows diagnosis and consent withdrawal only",{
+  skip:!native},async t=>{
+  const f=await fixture(t);
+  const key=path.join(f.identity,"v2-identity.pem");
+  const journal=path.join(f.identity,"macos/switch.json");
+  const {writeMacAutoPolicy}=await import("../scripts/macos-local.mjs");
+  await mkdir(path.dirname(journal),{mode:0o700});
+  await writeFile(journal,"synthetic interrupted switch\n",{mode:0o600});
+  await writeMacAutoPolicy(key,ID,true);
+  const opts={home:f.home,invoke:()=>{throw Error("No launchd access");},
+    ask:()=>{throw Error("No confirmation");},
+    doFetch:()=>{throw Error("No network");}};
+  const status=await localMacAction("status",opts);
+  assert.equal(status.installed,null);
+  assert.equal(status.automatic_update,"on");
+  assert.equal(status.automatic_update_activity,"needs_attention");
+  assert.ok((await localMacAction("doctor",opts)).findings.includes("unresolved_upgrade_journal"));
+  assert.deepEqual(await localMacAction("update-policy",opts),{automatic_update:"on"});
+  await assert.rejects(localMacAction("update-policy",{...opts,policyAction:"on"}),/Unresolved/);
+  await assert.rejects(localMacAction("update-latest",opts),/Unresolved/);
+  assert.deepEqual(await localMacAction("update-policy",{...opts,policyAction:"off"}),{automatic_update:"off"});
+  assert.equal((await localMacAction("status",opts)).automatic_update_activity,"needs_attention");
+  assert.equal(await readFile(journal,"utf8"),"synthetic interrupted switch\n");
+  assert.equal(await readFile(key,"utf8"),"synthetic-private-key");
+});
+
 test("#660 native offline install → stopped state → upgrade without restart",{
   skip:!native},async t=>{
   const f=await fixture(t);
