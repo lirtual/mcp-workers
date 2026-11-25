@@ -1,3 +1,4 @@
+import {asciiLower} from './discovery-query.ts';
 import {resolvePublicActionDefinition} from './public-action-definition.ts';
 import {needsExplicitCloudflareEffectGrant} from './action-catalog.ts';
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
@@ -178,8 +179,17 @@ export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
   private get db(){return this.env.DB;}
-  async list(){
-    const out=await this.db.prepare('SELECT * FROM workflows WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
+  async list(query?:string){
+    const columns='id,name,draft_revision,active_version_id,state';
+    const base='SELECT '+columns+' FROM workflows WHERE deleted_at IS NULL';
+    const needle=query===undefined?undefined:asciiLower(query);
+    const statement=needle===undefined
+      ?this.db.prepare(base+' ORDER BY updated_at DESC LIMIT 100')
+      :this.db.prepare(base+' AND (instr(lower(id),?)>0 OR instr(lower(name),?)>0)'+
+        ' ORDER BY CASE WHEN lower(id)=? THEN 0 WHEN lower(name)=? THEN 1 ELSE 2 END,id COLLATE BINARY LIMIT 101')
+        .bind(needle,needle,needle,needle);
+    const out=await statement.all<Pick<WorkflowRow,'id'|'name'|'draft_revision'|'active_version_id'|'state'>>();
+    if(out.results.length>100)throw new StateError('result_too_large');
     // Four global physical Session slots are independent of the parent
     // Workflow's business outcome. The existing read-only workflow_list is
     // enough to discover a held/uncertain slot and its server-pinned run_id;
