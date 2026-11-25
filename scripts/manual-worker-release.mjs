@@ -762,7 +762,8 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
       keys.filter(key=>key!=='steps').every(key=>evidence[key].length===0),
       'no-dispatch Step identity or related execution unresolved');
   }else{
-    require(evidence.steps.every(step=>['succeeded','failed','skipped','cancelled','indeterminate'].includes(step.status)),
+    require(evidence.steps.every(step=>['succeeded','failed','skipped','cancelled','indeterminate'].includes(step.status)||
+      (step.step_id.startsWith('__saga_')&&step.status==='requested')),
       'Step execution unresolved');
   }
   const positive=n=>Number.isSafeInteger(n)&&n>0;
@@ -875,10 +876,38 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
   for(const wait of evidence.waits)
     require(plannedStep(wait.step_id).uses==='flow.wait_event'&&
       receipt(wait.step_id)?.status==='succeeded','event wait '+wait.step_id+' unresolved');
-  // Until their evidence-specific slices are implemented, refuse all related
-  // dependencies rather than inferring their terminal state from native alone.
-  for(const key of ['children','cloudflareCancellations','childCancellations'])
-    require(evidence[key].length===0,key+' requires related terminal evidence');
+  for(const step of evidence.steps.filter(s=>s.step_id.startsWith('__saga_'))){
+    const source=step.step_id.slice('__saga_'.length);
+    const planned=plannedStep(source),plan=evidence.plan.plan;
+    require(plan.saga_compensation_approved===true&&
+      plan.saga?.on?.includes(run.outcome==='cancelled'?'cancel':'failure')&&
+      ['failed','cancelled','indeterminate'].includes(run.outcome)&&
+      planned.uses==='github.run'&&planned.with?.action?.type==='session'&&
+      planned.compensate?.kind==='github.session.cancel'&&receipt(source)?.status==='succeeded'&&
+      evidence.sessions.some(s=>s.step_id===source&&s.state==='terminated')&&
+      evidence.attempts.some(a=>a.step_id===source&&a.capability_id==='github.action'&&
+        ['succeeded','failed','cancelled'].includes(a.state)),
+      'Saga '+source+' physical compensation unresolved');
+  }
+  // Child Plans cannot recursively create another child. Verify the exact
+  // child lineage and its own evidence, not the parent's dispatch ACK.
+  for(const child of evidence.children){
+    const row=child?.run;
+    require(row?.id&&row.id!==run.id&&row.parent_run_id===run.id&&
+      row.instance_id===row.id&&row.parent_step_id&&
+      Array.isArray(child.evidence?.children)&&child.evidence.children.length===0,
+      'child lineage unresolved');
+    const step=plannedStep(row.parent_step_id);
+    require(step.uses==='flow.child'&&step.with?.workflow_id===row.workflow_id&&
+      step.with?.version_id===row.version_id&&receipt(step.id),'child Plan identity mismatch');
+    require(evidence.children.filter(c=>c.run?.parent_step_id===step.id).length===1,'duplicate child lineage');
+    verifyWorkflowTerminalEvidence(row,child.native,child.evidence);
+  }
+  for(const cancellation of evidence.childCancellations)
+    require(cancellation.parent_run_id===run.id&&evidence.children.some(c=>
+      c.run.id===cancellation.child_run_id&&c.run.parent_step_id===cancellation.parent_step_id),
+      'child cancellation physical termination unresolved');
+  require(evidence.cloudflareCancellations.length===0,'Cloudflare cancellation requires related terminal evidence');
   return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at,
     ...(native.historical_source?{historical_source:native.historical_source}:{}),
     ...(claimedProofUsed?{github_attempt:native.github_attempt}:{}),

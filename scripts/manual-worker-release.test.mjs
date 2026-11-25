@@ -1737,3 +1737,42 @@ test('#1046 current effect and wait receipts do not block after independently kn
     changeStep('wait','waiting',null),
   ])assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
 });
+
+test('#1046 independently verified child closure and Saga cancellation do not require rewriting history',async()=>{
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const empty={steps:[],attempts:[],sessions:[],callbacks:[],children:[],invocations:[],mcpFences:[],
+   githubCancellations:[],cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[]};
+ const parent={id:'parent',instance_id:'parent',version_id:'pv',start_state:'started',outcome:'indeterminate'};
+ const native={instance_id:'parent',status:'errored',observed_at:1000};
+ const child={id:'child',instance_id:'child',version_id:'cv',workflow_id:'cw',parent_run_id:'parent',
+   parent_step_id:'child_step',start_state:'started',outcome:'indeterminate'};
+ const cp={instance_id:'child',status:'complete',observed_at:900};
+ const ce={...empty,steps:[{run_id:'child',step_id:'emit',status:'indeterminate'}]};
+ const plan={id:'pv',plan:{steps:[{id:'child_step',uses:'flow.child',with:{workflow_id:'cw',version_id:'cv'}}]}};
+ const e={...empty,plan,steps:[{run_id:'parent',step_id:'child_step',status:'indeterminate'}],
+   children:[{run:child,native:cp,evidence:ce}],
+   childCancellations:[{parent_run_id:'parent',parent_step_id:'child_step',child_run_id:'child',termination_attempted_at:800}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,e),native);
+ for(const bad of [
+   {...e,children:[]},
+   {...e,children:[{run:{...child,outcome:'running'},native:cp,evidence:ce}]},
+   {...e,children:[{run:{...child,version_id:'wrong'},native:cp,evidence:ce}]},
+   {...e,children:[{run:child,native:{...cp,status:'running'},evidence:ce}]},
+   {...e,children:[{run:child,native:cp,evidence:{...ce,callbacks:[{run_id:'child',notification_delivered:0}]}}]},
+   {...e,childCancellations:[{...e.childCancellations[0],child_run_id:'wrong'}]},
+ ])assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,bad),/terminal evidence/);
+ const saga={...empty,plan:{id:'pv',plan:{saga:{on:['failure']},saga_compensation_approved:true,
+   steps:[{id:'session',uses:'github.run',with:{action:{type:'session'}},compensate:{kind:'github.session.cancel'}}]}},
+   steps:[{run_id:'parent',step_id:'session',status:'succeeded'},{run_id:'parent',step_id:'__saga_session',status:'requested'}],
+   attempts:[{run_id:'parent',step_id:'session',attempt_id:'a',capability_id:'github.action',state:'cancelled',
+     candidate_run_id:1,candidate_run_attempt:1,owner_run_id:1,owner_run_attempt:1}],
+   sessions:[{run_id:'parent',step_id:'session',state:'terminated'}],
+   githubCancellations:[{run_id:'parent',step_id:'session',attempt_id:'a'}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,saga),native);
+ for(const bad of [
+   {...saga,sessions:[{...saga.sessions[0],state:'stopping'}]},
+   {...saga,attempts:[{...saga.attempts[0],state:'claimed'}]},
+   {...saga,plan:undefined},
+   {...saga,steps:[saga.steps[0],{...saga.steps[1],step_id:'__saga_other'}]},
+ ])assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,bad),/terminal evidence/);
+});
