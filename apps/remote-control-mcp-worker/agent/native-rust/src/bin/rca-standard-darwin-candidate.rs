@@ -1,5 +1,105 @@
 //! Unshipped Standard macOS RCA entrypoint. No installed Agent path uses it.
-//! The only supported state input is an existing owner-paired Node v2 identity.
+//! Reuses the permanent and temporary identity storage of the reviewed Unix Agent.
+#[cfg(target_os = "macos")]
+#[path = "support/unix_pairing.rs"]
+mod unix_pairing;
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn pairing_store(
+    home: &std::path::Path,
+    temporary: bool,
+) -> Result<(std::path::PathBuf, std::fs::File), ()> {
+    use std::fs;
+    use std::io::ErrorKind;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+
+    let owner = unsafe { libc::geteuid() };
+    let home = fs::canonicalize(home).map_err(|_| ())?;
+    let present = |p: &std::path::Path| match fs::symlink_metadata(p) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(()),
+    };
+    let check_dir = |p: &std::path::Path, private: bool| {
+        let info = fs::symlink_metadata(p).map_err(|_| ())?;
+        if !info.is_dir()
+            || info.uid() != owner
+            || info.mode() & (if private { 0o077 } else { 0o022 }) != 0
+        {
+            return Err(());
+        }
+        Ok(())
+    };
+    let ensure_dir = |p: &std::path::Path, private: bool| {
+        match fs::DirBuilder::new().mode(0o700).create(p) {
+            Ok(()) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+            Err(_) => return Err(()),
+        }
+        check_dir(p, private)
+    };
+    check_dir(&home, false)?;
+    let mut base = home.clone();
+    for (index, part) in [".local", "share", "mcp-workers", "remote-control"]
+        .iter()
+        .enumerate()
+    {
+        base.push(part);
+        ensure_dir(&base, index >= 2)?;
+    }
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(base.join("v2-installer.lock"))
+        .map_err(|_| ())?;
+    let info = lock.metadata().map_err(|_| ())?;
+    if !info.is_file()
+        || info.uid() != owner
+        || info.nlink() != 1
+        || info.mode() & 0o777 != 0o600
+        || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+    {
+        return Err(());
+    }
+    // Reuse the existing Mac journal and Linux installer lock contract. Do
+    // not pair while an earlier management transaction remains unresolved.
+    let macos = base.join("macos");
+    if present(&macos)? {
+        check_dir(&macos, true)?;
+    }
+    for path in [
+        macos.join("switch.json"),
+        macos.join("remote-upgrades/active.json"),
+    ] {
+        if present(&path)? {
+            return Err(());
+        }
+    }
+    // The permanent pairing transaction must be allowed to resume itself;
+    // temporary pairing must not cross that unresolved identity boundary.
+    if temporary && present(&base.join("v2-identity.pem.re-pair-transition"))? {
+        return Err(());
+    }
+    if !temporary
+        && present(&home.join("Library/LaunchAgents/org.mcp-workers.remote-control-agent.plist"))?
+    {
+        return Err(());
+    }
+    let directory = if temporary {
+        let directory = base.join("temporary");
+        ensure_dir(&directory, true)?;
+        directory
+    } else {
+        base
+    };
+    Ok((directory.join("v2-identity.pem"), lock))
+}
+
 #[cfg(any(target_os = "macos", all(test, unix)))]
 fn owner_stopped(key: &std::path::Path) -> Result<bool, ()> {
     use std::fs;
@@ -45,14 +145,15 @@ fn owner_stopped(key: &std::path::Path) -> Result<bool, ()> {
 
 #[cfg(target_os = "macos")]
 mod darwin {
-    use super::owner_stopped;
+    use super::unix_pairing::{pair_or_repair, read_private, sidecar};
+    use super::{owner_stopped, pairing_store};
     use rca_native_agent::darwin_managed::DarwinManagedSessions;
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::native_file::{
-        run_native_managed_session_with_upgrade, NativeFileError, UpgradeRuntimeOptions,
+        run_native_managed_session, run_native_managed_session_with_upgrade, NativeFileError,
+        UpgradeRuntimeOptions,
     };
-    use rca_native_agent::session::SessionError;
-    use std::ffi::OsStr;
+    use rca_native_agent::session::{HeartbeatTiming, SessionError};
     use std::fs;
     use std::io::{ErrorKind, Write};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -64,26 +165,6 @@ mod darwin {
     static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
     extern "C" fn request_stop(_: libc::c_int) {
         SIGNAL_STOP.store(true, Ordering::Release);
-    }
-
-    fn sidecar(key: &Path, suffix: &str) -> PathBuf {
-        let mut name = key.as_os_str().to_os_string();
-        name.push(OsStr::new(suffix));
-        PathBuf::from(name)
-    }
-
-    fn private_regular(path: &Path, max_size: u64) -> Result<(), ()> {
-        let info = fs::symlink_metadata(path).map_err(|_| ())?;
-        if !info.is_file()
-            || info.file_type().is_symlink()
-            || info.uid() != unsafe { libc::geteuid() }
-            || info.permissions().mode() & 0o077 != 0
-            || info.len() == 0
-            || info.len() > max_size
-        {
-            return Err(());
-        }
-        Ok(())
     }
 
     fn home() -> Result<PathBuf, ()> {
@@ -217,13 +298,159 @@ mod darwin {
         Ok(())
     }
 
+    fn native_host() -> Result<(), ()> {
+        use std::ffi::CStr;
+        let mut info = unsafe { std::mem::zeroed::<libc::utsname>() };
+        if unsafe { libc::geteuid() } == 0 || unsafe { libc::uname(&mut info) } != 0 {
+            return Err(());
+        }
+        let release = unsafe { CStr::from_ptr(info.release.as_ptr()) }
+            .to_str()
+            .map_err(|_| ())?;
+        if release
+            .split('.')
+            .next()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0)
+            < 24
+        {
+            return Err(());
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let mut arm64: libc::c_int = 0;
+            let mut size = std::mem::size_of_val(&arm64);
+            let status = unsafe {
+                libc::sysctlbyname(
+                    c"hw.optional.arm64".as_ptr(),
+                    (&mut arm64 as *mut libc::c_int).cast(),
+                    &mut size,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if status == 0 && (arm64 != 0 || size != std::mem::size_of_val(&arm64)) {
+                return Err(());
+            }
+            if status != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ENOENT) {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
+    fn service_absent() -> Result<(), ()> {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
+        let target = format!("gui/{}/org.mcp-workers.remote-control-agent", unsafe {
+            libc::geteuid()
+        });
+        let mut child = Command::new("/bin/launchctl")
+            .args(["print", &target])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|_| ())?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let mut stderr = String::new();
+                    child
+                        .stderr
+                        .take()
+                        .ok_or(())?
+                        .take(8192)
+                        .read_to_string(&mut stderr)
+                        .map_err(|_| ())?;
+                    return (status.code() == Some(113)
+                        && stderr.contains("Could not find service"))
+                    .then_some(())
+                    .ok_or(());
+                }
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25))
+                }
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(());
+                }
+            }
+        }
+    }
+
+    fn pair_local(endpoint: &str, name: &str, temporary: bool) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::PairingClient;
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal()
+            || !std::io::stdout().is_terminal()
+            || name.is_empty()
+            || name.encode_utf16().count() > 64
+            || name.chars().any(|c| c < '\u{20}')
+        {
+            return Err(());
+        }
+        let url = url::Url::parse(endpoint).map_err(|_| ())?;
+        if url.port_or_known_default() != Some(443) {
+            return Err(());
+        }
+        let client = PairingClient::new(endpoint).map_err(|_| ())?;
+        let _supervisor = checked_supervisor()?;
+        let home = home()?;
+        unsafe {
+            libc::umask(0o077);
+        }
+        let (key, _lock) = pairing_store(&home, temporary)?;
+        if !temporary {
+            service_absent()?;
+            if owner_stopped(&key)? {
+                return Err(());
+            }
+        }
+        let mode = if temporary { "temporary" } else { "permanent" };
+        pair_or_repair(
+            &key,
+            &client,
+            |pem, existing| {
+                let id = client
+                    .pair(pem, existing, name, temporary, |pending| {
+                        println!("{}", client.approval_instruction(pending, mode));
+                    })
+                    .map_err(|_| ())?;
+                if !temporary {
+                    client.verify_permanent_grant(&id).map_err(|_| ())?;
+                }
+                Ok(id)
+            },
+            false,
+        )?;
+        if temporary {
+            println!("Starting temporary foreground Agent; the Worker enforces the original 24h grant. Terminal exit disconnects, not revokes.");
+            return run_agent(endpoint, &home, &key, None);
+        }
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        client.verify_permanent_grant(id.trim()).map_err(|_| ())?;
+        println!("Approved identity recovered; service has not been started.");
+        Ok(())
+    }
+
     pub fn run() -> Result<(), ()> {
+        native_host()?;
         let arguments: Vec<String> = std::env::args_os()
             .skip(1)
             .map(|value| value.into_string().map_err(|_| ()))
             .collect::<Result<_, _>>()?;
-        if unsafe { libc::geteuid() } == 0
-            || arguments.len() != 5
+        if let [action, endpoint, name] = arguments.as_slice() {
+            return match action.as_str() {
+                "--pair-local" => pair_local(endpoint, name, false),
+                "--temporary-local" => pair_local(endpoint, name, true),
+                _ => Err(()),
+            };
+        }
+        if arguments.len() != 5
             || arguments[0] != "--service"
             || arguments[1] != "--endpoint"
             || arguments[3] != "--generation"
@@ -231,32 +458,37 @@ mod darwin {
         {
             return Err(());
         }
-        let endpoint = arguments[2].clone();
-        let generation = arguments[4].clone();
         let home = home()?;
         let key = key_path(&home)?;
-        private_regular(&key, 8192)?;
-        private_regular(&sidecar(&key, ".device-id"), 128)?;
-        if owner_stopped(&key)? {
+        run_agent(&arguments[2], &home, &key, Some(&arguments[4]))
+    }
+
+    fn run_agent(
+        endpoint: &str,
+        home: &Path,
+        key: &Path,
+        generation: Option<&str>,
+    ) -> Result<(), ()> {
+        if generation.is_some() && owner_stopped(key)? {
             eprintln!(r#"{{"service":"remote-control-agent","event":"owner_stopped"}}"#);
             return Ok(());
         }
-        let device_id = fs::read_to_string(sidecar(&key, ".device-id")).map_err(|_| ())?;
+        let device_id = read_private(&sidecar(key, ".device-id"), 128)?.ok_or(())?;
         let device_id = device_id.trim();
         if !valid_device_id(device_id) {
             return Err(());
         }
-        let private_pem = fs::read_to_string(&key).map_err(|_| ())?;
+        let private_pem = read_private(key, 8192)?.ok_or(())?;
         // Local PEM validation before any receipt ownership or network I/O.
         signed_session_proof(&private_pem, device_id, "ABCDEFGHIJKLMNOPQRSTUVWX")
             .map_err(|_| ())?;
         let managed = checked_supervisor()?;
         // Fail closed before creating Node's existing SQLite receipt directory.
-        rca_native_agent::upgrade_control::verify_upgrade_directory(&key).map_err(|_| ())?;
+        rca_native_agent::upgrade_control::verify_upgrade_directory(key).map_err(|_| ())?;
         unsafe {
             libc::umask(0o077);
         }
-        let receipts = standard_receipts(&home)?;
+        let receipts = standard_receipts(home)?;
         install_stop_signals()?;
         let stop = Arc::new(AtomicBool::new(false));
         let watch_stop = Arc::clone(&stop);
@@ -271,25 +503,38 @@ mod darwin {
         });
         // Exactly the existing Node default receipt location; never create a
         // parallel receipt ledger when switching the runtime.
-        let marker_identity = key.parent().ok_or(())?.to_path_buf();
-        let marker_generation = generation.clone();
-        let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-            let _ = record_connected(&marker_identity, &marker_generation);
-        });
-        let result = run_native_managed_session_with_upgrade(
-            &endpoint,
-            &private_pem,
-            device_id,
-            &receipts,
-            managed,
-            &stop,
-            UpgradeRuntimeOptions {
-                on_disconnected: None,
-                on_diagnostic: None,
-                key_path: &key,
-                on_connected: Some(on_connected),
-            },
-        );
+        let result = if let Some(generation) = generation {
+            let marker_identity = key.parent().ok_or(())?.to_path_buf();
+            let marker_generation = generation.to_owned();
+            let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                let _ = record_connected(&marker_identity, &marker_generation);
+            });
+            run_native_managed_session_with_upgrade(
+                endpoint,
+                &private_pem,
+                device_id,
+                &receipts,
+                managed,
+                &stop,
+                UpgradeRuntimeOptions {
+                    on_disconnected: None,
+                    on_diagnostic: None,
+                    key_path: key,
+                    on_connected: Some(on_connected),
+                },
+            )
+        } else {
+            // A temporary identity has no persistent service or upgrade IPC.
+            run_native_managed_session(
+                endpoint,
+                &private_pem,
+                device_id,
+                &receipts,
+                managed,
+                &stop,
+                HeartbeatTiming::default(),
+            )
+        };
         stop.store(true, Ordering::Release);
         monitor.join().map_err(|_| ())?;
         if let Err(error) = &result {
@@ -376,5 +621,64 @@ mod owner_stop_tests {
         fs::remove_dir(&macos).unwrap();
         symlink("missing", &macos).unwrap();
         assert!(owner_stopped(&key).is_err());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod pairing_admission_tests {
+    use super::pairing_store;
+    use std::fs;
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn permanent_and_temporary_paths_are_separate_and_serialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        fs::set_permissions(home, fs::Permissions::from_mode(0o700)).unwrap();
+        let (permanent, lock) = pairing_store(home, false).unwrap();
+        fs::write(&permanent, b"synthetic-permanent").unwrap();
+        assert!(pairing_store(home, true).is_err());
+        drop(lock);
+        let (temporary, lock) = pairing_store(home, true).unwrap();
+        assert_eq!(
+            temporary.parent().unwrap(),
+            permanent.parent().unwrap().join("temporary")
+        );
+        assert_eq!(fs::read(&permanent).unwrap(), b"synthetic-permanent");
+        assert!(!temporary.exists());
+        assert!(pairing_store(home, false).is_err());
+        drop(lock);
+        let macos = permanent.parent().unwrap().join("macos");
+        fs::create_dir(&macos).unwrap();
+        fs::set_permissions(&macos, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(macos.join("switch.json"), b"unresolved").unwrap();
+        assert!(pairing_store(home, true).is_err());
+        assert!(pairing_store(home, false).is_err());
+        fs::remove_file(macos.join("switch.json")).unwrap();
+        let transition = permanent
+            .parent()
+            .unwrap()
+            .join("v2-identity.pem.re-pair-transition");
+        fs::write(&transition, b"resume").unwrap();
+        assert!(pairing_store(home, true).is_err());
+        assert!(pairing_store(home, false).is_ok());
+        fs::remove_file(transition).unwrap();
+        let agents = home.join("Library/LaunchAgents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(
+            agents.join("org.mcp-workers.remote-control-agent.plist"),
+            b"existing",
+        )
+        .unwrap();
+        assert!(pairing_store(home, false).is_err());
+        assert!(pairing_store(home, true).is_ok());
+    }
+
+    #[test]
+    fn redirected_pairing_path_is_denied() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        symlink("missing", dir.path().join(".local")).unwrap();
+        assert!(pairing_store(dir.path(), true).is_err());
     }
 }
