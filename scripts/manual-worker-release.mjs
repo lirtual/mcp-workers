@@ -813,15 +813,28 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
       a.step_id===cancellation.step_id&&a.capability_id==='github.action'&&
       ['succeeded','failed','cancelled'].includes(a.state)),
       'GitHub cancellation '+cancellation.step_id+' physical termination unresolved');
+  if(native.retired_invocation){
+    const fact=native.retired_invocation, invocation=evidence.invocations[0];
+    require(native.historical_source&&evidence.invocations.length===1&&
+      typeof fact.invocation_id==='string'&&fact.invocation_id===invocation.invocation_id&&
+      typeof fact.deployment_id==='string'&&fact.deployment_id===invocation.deployment_id&&
+      positive(fact.retirement_release_id)&&positive(fact.observed_at)&&
+      evidence.steps.some(step=>step.step_id===invocation.step_id&&step.status==='indeterminate')&&
+      (invocation.source_attempt_id===invocation.invocation_id||
+       evidence.attempts.some(a=>a.attempt_id===invocation.source_attempt_id&&
+         ['succeeded','failed','cancelled'].includes(a.state))),
+      'retired invocation identity or execution proof unresolved');
+  }else require(evidence.invocations.length===0,'invocation requires related terminal evidence');
   // Until their evidence-specific slices are implemented, refuse all related
   // dependencies rather than inferring their terminal state from native alone.
-  for(const key of ['children','invocations','mcpFences','cloudflareCancellations',
+  for(const key of ['children','mcpFences','cloudflareCancellations',
     'childCancellations','gates','approvals','waits'])
     require(evidence[key].length===0,key+' requires related terminal evidence');
   return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at,
     ...(native.historical_source?{historical_source:native.historical_source}:{}),
     ...(claimedProofUsed?{github_attempt:native.github_attempt}:{}),
-    ...(native.no_dispatch_step_id?{no_dispatch_step_id:native.no_dispatch_step_id}:{})};
+    ...(native.no_dispatch_step_id?{no_dispatch_step_id:native.no_dispatch_step_id}:{}),
+    ...(native.retired_invocation?{retired_invocation:native.retired_invocation}:{})};
 }
 
 /**

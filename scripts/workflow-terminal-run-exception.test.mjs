@@ -598,3 +598,64 @@ test("expired recent native proof steps require a scoped GitHub read token",()=>
     assert.match(config,/^          GITHUB_TOKEN: \$\{\{ github\.token \}\}$/m);
   }
 });
+
+test('#1046 retired invocation fact is bound to a verified historical execution and retired version',async()=>{
+ const {historicalRetiredInvocationProof}=await import('./workflow-terminal-run-exception.mjs');
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const id=SECOND_TERMINAL_RUN_ID, version='fixture-version';
+ const run={id,instance_id:id,version_id:version,outcome:'indeterminate',start_state:'started',error_code:'cloudflare_outcome_unknown'};
+ const attempt={run_id:id,step_id:'openlist',attempt_id:'fixture-attempt',capability_id:'github.action',state:'cancelled',
+  repository:'lirtual/session-actions',owner_run_id:40654886218,candidate_run_id:40654886218,
+  owner_run_attempt:1,candidate_run_attempt:1};
+ const steps=[{run_id:id,step_id:'notify',status:'indeterminate',error_code:'cloudflare_outcome_unknown'},
+  {run_id:id,step_id:'openlist',status:'succeeded',error_code:null}];
+ const session={run_id:id,step_id:'openlist',state:'terminated'};
+ const invocation={run_id:id,step_id:'notify',invocation_id:'2a7527ef-23d1-472d-b369-74c29a31c443',
+  deployment_id:'a2faea6a-dc64-40cb-b6fd-91bf7f306f9b',source_attempt_id:attempt.attempt_id,
+  binding_generation:1,contract_digest:'b378720974a0b76343359f621ac5da269099725ce6babd471ca33a4eb7919603'};
+ const d1=[[run],steps,[session],[attempt],[invocation]].map(results=>({success:true,results}));
+ const evidence={steps,attempts:[attempt],sessions:[session],callbacks:[],children:[],invocations:[invocation],
+  mcpFences:[],githubCancellations:[],cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[]};
+ const prior={id:40871993462,workflow_id:394912681,head_sha:'85464b14040e174f3ea43f6e4acd92b29c523563',
+  event:'workflow_dispatch',status:'completed',conclusion:'success'};
+ const priorJobs={jobs:[{id:123441577953,name:'Manual selected Worker release',head_sha:prior.head_sha,
+  status:'completed',conclusion:'success',steps:['Verify historical terminal Run proof (read-only)',
+   ...['second','third','fourth','fifth','sixth'].map(x=>'Verify '+x+' terminal E2E Run proof (read-only)')]
+   .map(name=>({name,status:'completed',conclusion:'success',completed_at:'2026-10-30T01:00:00Z'}))}]};
+ const github={id:40654886218,status:'completed',conclusion:'cancelled'};
+ const retiredSha='4435351e107f890fe49bddd62245c3513f038ea3';
+ const retirement={run:{id:41757295850,workflow_id:402376874,head_sha:retiredSha,head_branch:'main',
+   event:'workflow_dispatch',run_attempt:1,status:'completed',conclusion:'success'},
+  jobs:{jobs:[{id:126336306385,name:'Reviewed existing Worker upgrade or exact-version rollback',
+   head_sha:retiredSha,status:'completed',conclusion:'success',steps:[
+    'T7 verify one reviewed historical Version, frozen gate and no Native runs (no write)',
+    'T7 delete only the exact approved historical Worker Version (no retry)',
+    'T7 independently verify exactly one old Version absent, all others retained'
+   ].map(name=>({name,status:'completed',conclusion:'success'}))}]},
+  versions:{success:true,result:{items:[{id:'8fa27993-070f-40db-8332-405aa10b18d4'}]},
+   result_info:{page:1,count:1,total_count:1,per_page:100}},
+  plan:{id:version,plan:JSON.stringify({steps:[{id:'notify',uses:'action.run',with:{
+   executor:'cloudflare',provider:'weixin',action:'weixin.send_text',contract_digest:invocation.contract_digest,
+   input:{session_step_id:'openlist'}}}]})}};
+ const now=Date.parse('2026-11-25T15:59:03Z');
+ const proof=historicalRetiredInvocationProof('second',d1,prior,priorJobs,github,retirement,now);
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,proof,evidence),proof);
+ const {retired_invocation,...native}=proof;
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,evidence),/terminal evidence/);
+ for(const bad of [
+  {...evidence,invocations:[{...invocation,invocation_id:'different'}]},
+  {...evidence,invocations:[{...invocation,deployment_id:'different'}]},
+  {...evidence,invocations:[{...invocation,source_attempt_id:'different'}]},
+  {...evidence,invocations:[invocation,{...invocation,invocation_id:'extra'}]},
+  {...evidence,sessions:[{...session,state:'ready'}]}
+ ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,proof,bad),/terminal evidence/);
+ for(const mutate of [
+  r=>r.versions.result.items[0].id=invocation.deployment_id,
+  r=>r.versions.result_info.total_count=2,
+  r=>r.jobs.jobs[0].steps[0].conclusion='skipped',
+  r=>r.plan.id='different',
+  r=>r.plan.plan=r.plan.plan.replace('weixin.send_text','bark.send_notification'),
+  r=>r.plan.plan=r.plan.plan.replace(invocation.contract_digest,'different'),
+ ]){const bad=structuredClone(retirement);mutate(bad);
+  assert.throws(()=>historicalRetiredInvocationProof('second',d1,prior,priorJobs,github,bad,now),/blocked/);}
+});

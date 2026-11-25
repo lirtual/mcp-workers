@@ -613,6 +613,59 @@ export function historicalArtifactTerminalProof(d1,priorRun,priorJobs,github,obs
       head_sha:github.head_sha,conclusion:github.conclusion,observed_at:observedAt}};
 }
 
+// One-time conversion of historical invocation facts. The old reviewed
+// source verifies the native and logical identity; the independently
+// drained/retired Provider and complete current version inventory prove
+// that the original executor is no longer active.
+export function historicalRetiredInvocationProof(kind,d1,priorRun,priorJobs,physical,retirement,observedAt){
+  const verifiers={second:verifySecondTerminalEvidence,third:verifyThirdTerminalEvidence,
+    fourth:verifyFourthTerminalEvidence,fifth:verifyFifthTerminalEvidence,
+    sixth:verifySixthTerminalEvidence,eleventh:verifyEleventhTerminalEvidence};
+  requireValid(Object.hasOwn(verifiers,kind),'unsupported historical invocation source');
+  const recent=kind==='eleventh';
+  const native=recent?verifyRecentPriorNativeProof(priorRun,priorJobs,kind):verifyPriorNativeProof(priorRun,priorJobs);
+  const id=verifiers[kind](d1,native,physical);
+  const run=d1[0].results[0], invocation=d1[4].results[0];
+  const planRow=retirement?.plan;
+  let plan;try{plan=JSON.parse(planRow?.plan);}catch{}
+  const step=plan?.steps?.find(s=>s.id===invocation.step_id);
+  requireValid(run.instance_id===id&&planRow?.id===run.version_id&&step?.uses==='action.run'&&
+    step.with?.executor==='cloudflare'&&step.with?.provider==='weixin'&&
+    step.with?.action==='weixin.send_text'&&step.with?.contract_digest===invocation.contract_digest&&
+    (recent?invocation.source_attempt_id===invocation.invocation_id:
+      d1[3].results.some(a=>a.attempt_id===invocation.source_attempt_id&&a.step_id===step.with.input?.session_step_id)),
+    'retired invocation Plan or source identity changed');
+  const r=retirement?.run, job=retirement?.jobs?.jobs?.find(j=>j.id===126336306385);
+  const sha='4435351e107f890fe49bddd62245c3513f038ea3';
+  requireValid(r?.id===41757295850&&r.workflow_id===402376874&&r.head_sha===sha&&
+    r.head_branch==='main'&&r.event==='workflow_dispatch'&&r.run_attempt===1&&
+    r.status==='completed'&&r.conclusion==='success'&&job?.head_sha===sha&&
+    job.name==='Reviewed existing Worker upgrade or exact-version rollback'&&
+    job.status==='completed'&&job.conclusion==='success'&&[
+      'T7 verify one reviewed historical Version, frozen gate and no Native runs (no write)',
+      'T7 delete only the exact approved historical Worker Version (no retry)',
+      'T7 independently verify exactly one old Version absent, all others retained'
+    ].every(name=>job.steps?.filter(s=>s.name===name&&s.status==='completed'&&s.conclusion==='success').length===1),
+    'original protected Provider retirement proof unavailable');
+  const versions=retirement.versions, info=versions?.result_info, items=versions?.result?.items;
+  requireValid(versions?.success===true&&Array.isArray(items)&&items.length>0&&
+    info?.page===1&&info.count===items.length&&info.total_count===items.length&&
+    Number.isSafeInteger(info.per_page)&&info.per_page>=items.length&&
+    items.every(v=>typeof v.id==='string'&&v.id.length>0)&&
+    new Set(items.map(v=>v.id)).size===items.length&&
+    !items.some(v=>v.id===invocation.deployment_id),
+    'retired Provider version absent from complete inventory not proven');
+  const sourceJob=priorJobs.jobs.find(j=>j.id===(recent?RECENT_PRIOR_JOB_ID:PRIOR_RELEASE_JOB_ID));
+  const stepName=recent?RECENT_PROOF_STEPS.eleventh:PRIOR_PROOF_STEPS[['first','second','third','fourth','fifth','sixth'].indexOf(kind)];
+  const at=Date.parse(sourceJob.steps.find(s=>s.name===stepName)?.completed_at);
+  requireValid(Number.isSafeInteger(at)&&at>0&&Number.isSafeInteger(observedAt)&&observedAt>=at,
+    'historical observation time unavailable');
+  return {instance_id:id,status:'complete',observed_at:at,
+    historical_source:{release_run_id:priorRun.id,job_id:sourceJob.id,step:stepName},
+    retired_invocation:{invocation_id:invocation.invocation_id,deployment_id:invocation.deployment_id,
+      retirement_release_id:r.id,observed_at:observedAt}};
+}
+
 async function main() {
   const kind=process.env.TERMINAL_PROOF_KIND;
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
