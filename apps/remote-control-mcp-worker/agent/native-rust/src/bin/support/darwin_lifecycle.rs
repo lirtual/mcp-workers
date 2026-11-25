@@ -755,6 +755,7 @@ mod tests {
 
     #[test]
     fn native_cli_forwards_supported_commands_and_rejects_invalid_arguments() {
+        let _fixture = crate::LOCK_HANDOFF_TEST.lock().unwrap();
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let executable = temp.path().join("owner's agent");

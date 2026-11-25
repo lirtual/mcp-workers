@@ -1987,6 +1987,12 @@ mod owner_stop_tests {
     }
 }
 
+// A fork in an unrelated test can retain the open file description until
+// exec despite CLOEXEC, delaying flock release. Serialize only the fixture
+// that spawns children and the fixture that asserts immediate lock handoff.
+#[cfg(all(test, unix))]
+static LOCK_HANDOFF_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(all(test, unix))]
 mod pairing_admission_tests {
     use super::pairing_store;
@@ -1995,6 +2001,7 @@ mod pairing_admission_tests {
 
     #[test]
     fn permanent_and_temporary_paths_are_separate_and_serialized() {
+        let _fixture = super::LOCK_HANDOFF_TEST.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         fs::set_permissions(home, fs::Permissions::from_mode(0o700)).unwrap();
