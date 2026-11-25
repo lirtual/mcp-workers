@@ -88,14 +88,14 @@ impl PairingClient {
         })
     }
     /// Print only the canonical browser link for enrollment on that origin.
-    /// Noncanonical endpoints retain the old owner flow during transition;
+    /// Noncanonical endpoints cannot use the production browser approval;
     /// never send their pending code to a different origin.
     pub fn approval_instruction(&self, pending: &PendingEnrollment, mode: &str) -> String {
         let endpoint = self.origin.as_str();
         if endpoint == "https://rca.lirtual.dpdns.org/" {
             format!("Authorize device (10 min): https://rca.lirtual.dpdns.org/pair#{}\nLocal public key fingerprint: {}\nConfirm the fingerprint and {mode} mode in your browser.", pending.code, pending.fingerprint)
         } else {
-            format!("Pairing code (10 min): {}\nLocal public key fingerprint: {}\nBrowser approval is unavailable on this endpoint; use the existing authenticated owner approval for {mode} mode.", pending.code, pending.fingerprint)
+            format!("Local public key fingerprint: {}\nBrowser approval is unavailable on this endpoint for {mode} mode. Use the official RCA installer for the canonical endpoint.", pending.fingerprint)
         }
     }
     fn start(&self, enrollment: &PendingEnrollment) -> Result<(), SessionRecoveryError> {
@@ -585,6 +585,10 @@ mod tests {
                 )),
                 canonical
             );
+            if !canonical {
+                assert!(!message.contains(&pending.code));
+                assert!(message.contains("official RCA installer"));
+            }
             assert!(!message.contains(&pem));
         }
     }

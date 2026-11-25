@@ -41,7 +41,7 @@ test("v2 Agent code and Ed25519 public proof are bounded; private key stays loca
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("pending enrollment only permits Portal-authenticated readonly preview; v1 tools untouched", async () => {
+test("pending enrollment exposes only bounded owner preview data; MCP pairing retired", async () => {
   const { store, values } = makeStore();
   const owner = new V2OwnerCoordinator({ storage: store } as unknown as DurableObjectState);
   const binding = {
@@ -68,9 +68,12 @@ test("pending enrollment only permits Portal-authenticated readonly preview; v1 
   }
   assert.equal((await mcp("bad", "tools/call", { name: "pairing_lookup", arguments: { code: enrollment.code } })).status, 401);
   const tools = await (await mcp("portal-credential", "tools/list")).json() as {result:{tools:Array<{name:string}>}};
-  assert.equal(tools.result.tools.some(x=>x.name==="pairing_lookup"), true);
-  const match = await mcp("portal-credential", "tools/call", { name: "pairing_lookup", arguments: { code: enrollment.code } });
-  const matchBody = await match.text();
+  assert.equal(tools.result.tools.some(x=>x.name==="pairing_lookup"), false);
+  const denied = await mcp("portal-credential", "tools/call", { name: "pairing_lookup", arguments: { code: enrollment.code } });
+  assert.match(await denied.text(), /rejected|unavailable/i);
+  const match = await lookupPending(store as never, enrollment.request.code_verifier);
+  assert.equal(match.status,200);
+  const matchBody = JSON.stringify(match.body);
   assert.match(matchBody, /test-cloud/);
   assert.ok(!matchBody.includes(enrollment.code));
   assert.ok(!matchBody.includes(enrollment.request.public_key));
@@ -78,8 +81,7 @@ test("pending enrollment only permits Portal-authenticated readonly preview; v1 
   assert.ok(!matchBody.includes("PRIVATE KEY"));
   assert.ok(!matchBody.includes("approve"));
   assert.equal([...values.keys()].filter((key) => key.startsWith("pending:")).length, 1);
-  const wrong = await mcp("portal-credential", "tools/call", { name: "pairing_lookup", arguments: { code: "AAAAAAAAAA" } });
-  assert.ok((await wrong.text()).includes("not found"));
+  assert.equal((await lookupPending(store as never,"0".repeat(64))).status,404);
   assert.equal([...values.keys()].filter((key) => key.startsWith("pending:")).length, 1); // No activation, command route or mutation.
 });
 
@@ -125,22 +127,20 @@ test("P1 security gate: a valid Portal token and automated confirm tool call can
   const tools = await (await rpc("portal-credential", "tools/list")).json() as {
     result: { tools: Array<{ name: string }> };
   };
-  assert.equal(tools.result.tools.some(x => x.name === "pairing_lookup"), true);
-  // The only pairing tool is observational; a model-generated approval cannot be accepted.
+  assert.equal(tools.result.tools.some(x => x.name === "pairing_lookup"), false);
+  // Owner pairing is browser-only; even a cached valid Portal call cannot approve.
   assert.equal(tools.result.tools.some(x => /pairing_confirm|approve_device|pairing_complete/.test(x.name)), false);
-  assert.equal(tools.result.tools.some(x => x.name === "pairing_approve"), true); // new deliberate mutating owner grant
+  assert.equal(tools.result.tools.some(x => x.name === "pairing_approve"), false);
 
-  const observed = await rpc("portal-credential", "tools/call", {
-    name: "pairing_lookup", arguments: { code: pending.code },
-  });
-  assert.equal(observed.status, 200);
-  const envelope = await observed.json() as { result: { content: [{ text: string }] } };
-  const details = JSON.parse(envelope.result.content[0].text) as { pairing_id: string; fingerprint: string };
+  const observed = await lookupPending(store as never,pending.request.code_verifier);
+  assert.equal(observed.status,200);
+  const details = observed.body as { pairing_id: string; fingerprint: string };
   assert.match(details.fingerprint, /^[a-f0-9]{24}$/);
   const before = [...values.entries()].filter(([key]) => key.startsWith("pending:"));
   assert.equal(before.length, 1);
 
   for (const [token, name] of [
+    ["portal-credential", "pairing_approve"],
     ["portal-credential", "pairing_confirm"],
     ["portal-credential", "approve_device"],
     ["wrong-credential", "pairing_confirm"],
@@ -149,7 +149,7 @@ test("P1 security gate: a valid Portal token and automated confirm tool call can
       name, arguments: {
         pairing_id: details.pairing_id,
         expected_fingerprint: details.fingerprint,
-        approve: true,
+        expected_grant_type: "permanent",
       },
     });
     if (token !== "portal-credential") {
