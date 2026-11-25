@@ -13,23 +13,30 @@ mod darwin_package;
 mod unix_pairing;
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
+fn directory_present(path: &std::path::Path, private: bool) -> Result<bool, ()> {
+    use std::os::unix::fs::MetadataExt;
+    match std::fs::symlink_metadata(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Ok(info)
+            if info.is_dir()
+                && info.uid() == unsafe { libc::geteuid() }
+                && info.mode() & (if private { 0o077 } else { 0o022 }) == 0 =>
+        {
+            Ok(true)
+        }
+        _ => Err(()),
+    }
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn identity_directory(home: &std::path::Path, create: bool) -> Result<std::path::PathBuf, ()> {
     use std::fs;
     use std::io::ErrorKind;
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    use std::os::unix::fs::DirBuilderExt;
 
-    let owner = unsafe { libc::geteuid() };
     let home = fs::canonicalize(home).map_err(|_| ())?;
-    let check_dir = |p: &std::path::Path, private: bool| {
-        let info = fs::symlink_metadata(p).map_err(|_| ())?;
-        if !info.is_dir()
-            || info.uid() != owner
-            || info.mode() & (if private { 0o077 } else { 0o022 }) != 0
-        {
-            return Err(());
-        }
-        Ok(())
-    };
+    let check_dir =
+        |p: &std::path::Path, private: bool| directory_present(p, private)?.then_some(()).ok_or(());
     let ensure_dir = |p: &std::path::Path, private: bool| {
         if !create {
             return check_dir(p, private);
@@ -253,9 +260,9 @@ fn record_connection(
 #[cfg(target_os = "macos")]
 mod darwin {
     use super::darwin_lifecycle::{
-        connection_time, installed_generation, iso_time, native_cli, native_plist, new_generation,
-        no_other_programs, registration, resume_owned, stop_owned, switch_outcome,
-        unregister_owned, Registration, SwitchOutcome, SwitchRecord, LABEL,
+        connection_time, diagnostic_response, installed_generation, iso_time, native_cli,
+        native_plist, new_generation, no_other_programs, registration, resume_owned, stop_owned,
+        switch_outcome, unregister_owned, Registration, SwitchOutcome, SwitchRecord, LABEL,
     };
     use super::darwin_package;
     use super::unix_pairing::{
@@ -263,8 +270,8 @@ mod darwin {
         replace_owned, sidecar, write_executable, write_new,
     };
     use super::{
-        identity_directory, lock_identity_directory, owner_stopped, pairing_store,
-        record_connection,
+        directory_present, identity_directory, lock_identity_directory, owner_stopped,
+        pairing_store, record_connection,
     };
     use rca_native_agent::darwin_managed::DarwinManagedSessions;
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
@@ -498,14 +505,7 @@ mod darwin {
 
     fn owner_directory(parent: &Path, name: &str, private: bool) -> Result<PathBuf, ()> {
         let path = parent.join(name);
-        let info = fs::symlink_metadata(&path).map_err(|_| ())?;
-        if !info.is_dir()
-            || info.uid() != unsafe { libc::geteuid() }
-            || info.mode() & (if private { 0o077 } else { 0o022 }) != 0
-        {
-            return Err(());
-        }
-        Ok(path)
+        directory_present(&path, private)?.then_some(path).ok_or(())
     }
 
     fn program_directory(base: &Path) -> Result<PathBuf, ()> {
@@ -627,65 +627,119 @@ mod darwin {
         false
     }
 
+    fn diagnostic_state() -> Result<serde_json::Value, ()> {
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        if !directory_present(&home, false)? {
+            return Err(());
+        }
+        // Stop at the first missing ancestor; do not traverse an unchecked
+        // directory, create directories, or acquire a writable lifecycle lock.
+        let path = |parts: &[(&str, bool)]| -> Result<Option<PathBuf>, ()> {
+            let mut current = home.clone();
+            for (name, private) in parts {
+                current.push(name);
+                if !directory_present(&current, *private)? {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(current))
+        };
+        let base = path(&[
+            (".local", false),
+            ("share", false),
+            ("mcp-workers", true),
+            ("remote-control", true),
+        ])?;
+        let agents = path(&[("Library", false), ("LaunchAgents", false)])?;
+        let bin = path(&[(".local", false), ("bin", false)])?;
+        let configured = agents
+            .map(|p| exists_owned_path(&p.join(format!("{LABEL}.plist"))))
+            .transpose()?
+            .unwrap_or(false);
+        let launcher = bin
+            .map(|p| exists_owned_path(&p.join("rca")))
+            .transpose()?
+            .unwrap_or(false);
+        let mut state = serde_json::json!({"installed":null,"version":null,"installed_version":null,
+            "platform":"darwin","arch":if cfg!(target_arch="aarch64") {"arm64"} else {"x64"},
+            "local_service":"unconfirmed","signed_wss":"unconfirmed","cloud_authorization":"unconfirmed",
+            "last_online":"unconfirmed","automatic_update":"unknown","automatic_update_activity":"unknown",
+            "receipts":"preserved_unverified"});
+        if let Some(base) = &base {
+            let macos = base.join("macos");
+            let unresolved = exists_owned_path(&base.join("v2-identity.pem.re-pair-transition"))?
+                || (directory_present(&macos, true)?
+                    && (exists_owned_path(&macos.join("switch.json"))?
+                        || (directory_present(&macos.join("remote-upgrades"), true)?
+                            && exists_owned_path(&macos.join("remote-upgrades/active.json"))?)));
+            if unresolved {
+                state["update_transaction"] = serde_json::json!("pending_or_cleanup");
+                return Ok(state);
+            }
+        }
+        if !configured && !launcher && service_absent().is_ok() {
+            state["installed"] = serde_json::json!(false);
+            state["local_service"] = serde_json::json!("not_installed");
+            return Ok(state);
+        }
+        let base = base.ok_or(())?;
+        let key = base.join("v2-identity.pem");
+        let current = installed(&home, &base)?;
+        let stopped = owner_stopped(&key)?;
+        let observed = observe_registration(&current.executable);
+        let evidence = match (&observed, stopped) {
+            (Registration::Present(Some(pid)), false) => connection_evidence(&current, &key, *pid),
+            _ => None,
+        };
+        let local = match (stopped, observed) {
+            (true, Registration::Absent) => "intentionally_stopped",
+            (true, _) => "stopped_requested_unverified",
+            (false, Registration::Present(_)) if evidence.is_some_and(|(_, _, online)| online) => {
+                "running_observed"
+            }
+            (false, Registration::Present(_)) => "present_unverified",
+            (false, Registration::Absent) => "not_running",
+            _ => "unconfirmed",
+        };
+        state["installed"] = serde_json::json!(true);
+        state["version"] = serde_json::json!(current.version);
+        state["installed_version"] = state["version"].clone();
+        state["local_service"] = serde_json::json!(local);
+        state["signed_wss"] = serde_json::json!(if evidence.is_some_and(|(_, _, online)| online) {
+            "connected_observed"
+        } else {
+            "unconfirmed"
+        });
+        state["last_online"] = serde_json::json!(evidence
+            .and_then(|(connected, at, _)| if connected { iso_time(at) } else { None })
+            .unwrap_or_else(|| "unconfirmed".to_owned()));
+        Ok(state)
+    }
+
+    fn diagnose(action: &str) -> Result<(), ()> {
+        let state = diagnostic_state().unwrap_or_else(|_| serde_json::json!({"installed":null,"version":null,
+            "installed_version":null,"platform":"darwin","local_service":"unconfirmed","signed_wss":"unconfirmed",
+            "cloud_authorization":"unconfirmed","last_online":"unconfirmed","automatic_update_activity":"unknown"}));
+        println!("{}", diagnostic_response(action, &state));
+        Ok(())
+    }
+
     fn manage(action: &str) -> Result<(), ()> {
         let home = home()?;
         let base = identity_directory(&home, false)?;
-        let _lock = if action != "status" {
-            Some(lock_identity_directory(&base)?)
-        } else {
-            None
-        };
+        let _lock = lock_identity_directory(&base)?;
         let key = base.join("v2-identity.pem");
-        let mut unresolved = false;
         for path in [
             base.join("macos/switch.json"),
             base.join("macos/remote-upgrades/active.json"),
             sidecar(&key, ".re-pair-transition"),
         ] {
-            unresolved |= exists_owned_path(&path)?;
-        }
-        if unresolved {
-            if action == "status" {
-                println!(
-                    "{}",
-                    serde_json::json!({"installed":null,"version":null,
-                    "installed_version":null,"platform":"darwin",
-                    "local_service":"unconfirmed","signed_wss":"unconfirmed",
-                    "cloud_authorization":"unconfirmed","last_online":"unconfirmed",
-                    "update_transaction":"pending_or_cleanup"})
-                );
-                return Ok(());
+            if exists_owned_path(&path)? {
+                return Err(());
             }
-            return Err(());
         }
         let current = installed(&home, &base)?;
         let stopped = owner_stopped(&key)?;
-        if action == "status" {
-            let observed = observe_registration(&current.executable);
-            let mut evidence = None;
-            if !stopped {
-                if let Registration::Present(Some(pid)) = observed {
-                    evidence = connection_evidence(&current, &key, pid);
-                }
-            }
-            let local = match (stopped, observed) {
-                (true, Registration::Absent) => "intentionally_stopped",
-                (true, _) => "stopped_requested_unverified",
-                (false, Registration::Present(_)) if evidence.is_some() => "running_observed",
-                (false, Registration::Present(_)) => "present_unverified",
-                (false, Registration::Absent) => "not_running",
-                _ => "unconfirmed",
-            };
-            println!(
-                "{}",
-                serde_json::json!({"installed":true,"installed_version":current.version,
-                "version":current.version,"platform":"darwin","local_service":local,
-                "signed_wss":if evidence.is_some_and(|(_, _, online)| online) {"connected_observed"} else {"unconfirmed"},
-                "cloud_authorization":"unconfirmed",
-                "last_online":evidence.and_then(|(connected, at, _)| if connected {iso_time(at)} else {None}).unwrap_or_else(|| "unconfirmed".to_owned())})
-            );
-            return Ok(());
-        }
         if action == "start" && !stopped {
             return Err(());
         }
@@ -1521,11 +1575,17 @@ mod darwin {
             if action == "recover" {
                 return recover_switch();
             }
-            if matches!(action.as_str(), "status" | "stop" | "start") {
+            if matches!(action.as_str(), "status" | "doctor" | "logs") {
+                return diagnose(action);
+            }
+            if matches!(action.as_str(), "stop" | "start") {
                 return manage(action);
             }
         }
         if let [action, request_id] = arguments.as_slice() {
+            if matches!(action.as_str(), "status" | "doctor") && request_id == "--json" {
+                return diagnose(action);
+            }
             if action == "secure-input" {
                 return secure_input_local(request_id);
             }

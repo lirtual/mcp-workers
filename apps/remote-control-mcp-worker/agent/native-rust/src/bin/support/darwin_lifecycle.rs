@@ -231,13 +231,50 @@ pub(super) fn iso_time(ms: u64) -> Option<String> {
     ))
 }
 
+// Diagnostics are projections of one local observation, not independent
+// queries or repair operations. Never expose raw identity/receipt contents.
+pub(super) fn diagnostic_response(action: &str, state: &serde_json::Value) -> serde_json::Value {
+    match action {
+        "logs" => serde_json::json!({
+            "source":"retained_local_connection_and_update_evidence",
+            "connection":state["signed_wss"],"last_online":state["last_online"],
+            "update_activity":state["automatic_update_activity"],
+            "update_result":state["automatic_update_result"],"transaction":state["update_transaction"]
+        }),
+        "doctor" => {
+            let mut findings = Vec::new();
+            if state["installed"] == false {
+                findings.push("permanent_service_not_installed");
+            } else if state["local_service"] != "running_observed" {
+                findings.push("local_service_unconfirmed");
+            }
+            if state["cloud_authorization"] != "confirmed" {
+                findings.push("cloud_authorization_unconfirmed");
+            }
+            if state["signed_wss"] != "connected_observed" {
+                findings.push("signed_wss_unconfirmed");
+            }
+            if !state["update_transaction"].is_null()
+                || matches!(
+                    state["automatic_update_activity"].as_str(),
+                    Some("unknown" | "needs_attention")
+                )
+            {
+                findings.push("update_state_needs_review");
+            }
+            serde_json::json!({"status":state,"findings":findings})
+        }
+        _ => state.clone(),
+    }
+}
+
 pub(super) fn native_cli(executable: &Path) -> Result<String, ()> {
     let path = executable.to_str().ok_or(())?;
     if !executable.is_absolute() || path.chars().any(|c| c.is_control()) {
         return Err(());
     }
     let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
-    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|stop|start|recover|uninstall) [ \"$#\" -eq 1 ] || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
+    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|doctor) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && [ \"$2\" = --json ]; }} || exit 2 ;;\nlogs|stop|start|recover|uninstall) [ \"$#\" -eq 1 ] || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
 }
 
 pub(super) fn new_generation() -> Result<String, ()> {
@@ -564,7 +601,37 @@ mod tests {
     }
 
     #[test]
-    fn native_cli_forwards_only_supported_secure_input_request() {
+    fn diagnostics_share_status_without_claiming_unobserved_connection() {
+        let state = serde_json::json!({"installed":true,"local_service":"not_running",
+            "signed_wss":"unconfirmed","last_online":"unconfirmed","cloud_authorization":"unconfirmed",
+            "automatic_update":"off","automatic_update_activity":"disabled"});
+        assert_eq!(diagnostic_response("status", &state), state);
+        let doctor = diagnostic_response("doctor", &state);
+        assert_eq!(doctor["status"], state);
+        assert_eq!(
+            doctor["findings"],
+            serde_json::json!([
+                "local_service_unconfirmed",
+                "cloud_authorization_unconfirmed",
+                "signed_wss_unconfirmed"
+            ])
+        );
+        let logs = diagnostic_response("logs", &state);
+        assert_eq!(logs["connection"], "unconfirmed");
+        assert_eq!(logs["update_activity"], "disabled");
+        let absent = serde_json::json!({"installed":false,"local_service":"not_installed","signed_wss":"unconfirmed","cloud_authorization":"unconfirmed"});
+        assert_eq!(
+            diagnostic_response("doctor", &absent)["findings"][0],
+            "permanent_service_not_installed"
+        );
+        let unknown = serde_json::json!({"installed":null,"local_service":"unconfirmed","signed_wss":"unconfirmed","cloud_authorization":"unconfirmed","update_transaction":"pending_or_cleanup"});
+        let findings = diagnostic_response("doctor", &unknown)["findings"].clone();
+        assert_eq!(findings[0], "local_service_unconfirmed");
+        assert_eq!(findings[3], "update_state_needs_review");
+    }
+
+    #[test]
+    fn native_cli_forwards_supported_commands_and_rejects_invalid_arguments() {
         use std::os::unix::fs::PermissionsExt;
         let temp = tempfile::tempdir().unwrap();
         let executable = temp.path().join("owner's agent");
@@ -586,7 +653,26 @@ mod tests {
             format!("secure-input\n{ID}\n")
         );
         for args in [
-            &["secure-input"][..],
+            &["status"][..],
+            &["status", "--json"],
+            &["doctor"],
+            &["doctor", "--json"],
+            &["logs"],
+            &["stop"],
+            &["start"],
+        ] {
+            let output = invoke(args);
+            assert!(output.status.success(), "{args:?}");
+            assert_eq!(
+                String::from_utf8(output.stdout).unwrap(),
+                format!("{}\n", args.join("\n"))
+            );
+        }
+        for args in [
+            &["status", "--repair"][..],
+            &["doctor", "--repair"],
+            &["logs", "--repair"],
+            &["secure-input"],
             &["secure-input", "bad"],
             &["secure-input", ID, "extra"],
             &["stop", "extra"],
@@ -599,7 +685,6 @@ mod tests {
     #[test]
     fn native_cli_quotes_owner_path_and_generation_is_unique() {
         let command = native_cli(Path::new("/Users/o'wner/rca")).unwrap();
-        assert!(command.contains("status|stop|start"));
         assert!(command.ends_with("exec '/Users/o'\"'\"'wner/rca' \"$@\"\n"));
         assert!(native_cli(Path::new("/tmp/bad\npath")).is_err());
         let generation = new_generation().unwrap();
