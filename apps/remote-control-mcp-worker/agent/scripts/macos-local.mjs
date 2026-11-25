@@ -291,7 +291,7 @@ export function readHiddenSecret({input=process.stdin,output=process.stdout}={})
 
 function secureInputEffect(target) {
   if(target?.kind==="task_process")return [
-    "Deliver this credential once to the named running process input stream.",
+    "Deliver this credential once to the named running process input stream. All captured output for that session is permanently suppressed. Use only a trusted target process.",
     "Bytes already delivered cannot be recalled; the process lifetime bounds future reuse."];
   if(typeof target?.kind==="string"&&target.kind.startsWith("github_"))return [
     "Set or replace the named GitHub "+(target.kind.endsWith("_variable")?"Variable":"Secret")+

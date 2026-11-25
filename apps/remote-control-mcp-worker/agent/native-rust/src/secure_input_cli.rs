@@ -141,12 +141,40 @@ pub fn run_secure_input_owner_flow(
             serde_json::to_string(&challenge["provider_principal"]).map_err(|_| ())?
         );
     }
+    let (effect, recovery) = match challenge["target"]["kind"].as_str() {
+        Some("task_process") => (
+            "Deliver once to the named process stdin. All captured output for that session is permanently suppressed. Use only a trusted target process.",
+            "Delivered bytes cannot be recalled; the process lifetime bounds future reuse.",
+        ),
+        Some("github_repository_secret" | "github_environment_secret") => (
+            "Set or replace the named GitHub Secret at the displayed repository or Environment. This does not deploy code by itself.",
+            "The old Secret cannot be read back; recover by replacing or removing it.",
+        ),
+        Some("github_repository_variable" | "github_environment_variable") => (
+            "Set or replace the named GitHub Variable at the displayed repository or Environment. This does not deploy code by itself.",
+            "Recover by restoring the prior Variable value or removing it.",
+        ),
+        Some("cloudflare_worker_secret") => match challenge["target"]["mode"].as_str() {
+            Some("deploy") => (
+                "Set the Worker Secret and immediately create and deploy a new Worker version.",
+                "The old Secret cannot be read back; replace it and separately restore a known-good version if needed.",
+            ),
+            Some("version") => (
+                "Set the Worker Secret on a new version without deploying it.",
+                "The new version stays inactive until separately deployed; the old Secret cannot be read back.",
+            ),
+            _ => return Err(SecureInputCliError),
+        },
+        _ => return Err(SecureInputCliError),
+    };
+    println!("Effect: {effect}");
+    println!("Recovery: {recovery}");
     println!(
         "Environment: {}",
         if challenge["is_production"] == true {
             "production"
         } else {
-            "non-production"
+            "caller marked non-production; verify the exact resource"
         }
     );
     if !confirm(

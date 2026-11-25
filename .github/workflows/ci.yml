@@ -240,6 +240,9 @@ jobs:
           RCA_NATIVE_SUPERVISOR_BIN="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/.build/session-supervisor" \
             cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
             --locked --test linux_supervisor --test native_process_wss --test native_file_wss --test standard_linux_wss -- --ignored --nocapture
+          RCA_NATIVE_SUPERVISOR_BIN="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/.build/session-supervisor" \
+            cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
+            --locked --test linux_managed secure_stdin_suppresses_echo_and_preserves_unrelated_output -- --ignored
       - name: Verify Darwin owned-group and signed managed WSS on disposable host
         if: runner.os == 'macOS'
         timeout-minutes: 5

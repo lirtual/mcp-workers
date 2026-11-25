@@ -370,13 +370,27 @@ fn execute_native_file(
                     let secure_lease = secure.lease().clone();
                     let response = match secure.command_mut() {
                         crate::secure_input::SecureInputCommand::Prepare { id, target } => {
-                            match crate::secure_input::prepare(target) {
-                                Ok(provider_principal) => {
-                                    json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"ready","provider_principal":provider_principal})
+                            match target {
+                                crate::secure_input::SecureInputTarget::TaskProcess {
+                                    session_id,
+                                    ..
+                                } => {
+                                    if processes.as_ref().is_some_and(|engine| {
+                                        engine.sessions.secure_input_ready(session_id)
+                                    }) {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"ready"})
+                                    } else {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"failed","error_code":"process_unavailable"})
+                                    }
                                 }
-                                Err(error_code) => {
-                                    json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"failed","error_code":error_code})
-                                }
+                                _ => match crate::secure_input::prepare(target) {
+                                    Ok(provider_principal) => {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"ready","provider_principal":provider_principal})
+                                    }
+                                    Err(error_code) => {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"failed","error_code":error_code})
+                                    }
+                                },
                             }
                         }
                         crate::secure_input::SecureInputCommand::Submit {
@@ -391,20 +405,26 @@ fn execute_native_file(
                                 stop.store(true, Ordering::Release);
                                 return Err(NativeFileError::Queue);
                             }
-                            let secret = std::mem::take(secret);
+                            let mut secret = std::mem::take(secret);
                             let (status, error_code) = match target {
                                 crate::secure_input::SecureInputTarget::TaskProcess {
                                     session_id,
                                     ..
                                 } => {
-                                    let mut input = secret;
+                                    let mut input = zeroize::Zeroizing::new(String::with_capacity(
+                                        secret.len() + 1,
+                                    ));
+                                    input.push_str(&secret);
+                                    secret.zeroize();
                                     input.push('\n');
                                     let outcome = processes
                                         .as_ref()
-                                        .ok_or(NativeFileError::Policy)?
-                                        .sessions
-                                        .write_input(session_id.as_str(), &input);
-                                    input.zeroize();
+                                        .map(|engine| {
+                                            engine
+                                                .sessions
+                                                .write_secure_input(session_id.as_str(), &input)
+                                        })
+                                        .unwrap_or(ManagedInputOutcome::NotFound);
                                     match outcome {
                                         ManagedInputOutcome::Completed => ("succeeded", None),
                                         ManagedInputOutcome::Failed => {

@@ -11,12 +11,14 @@ use std::os::fd::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use zeroize::Zeroize;
 
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 pub const MAX_PAGE_BYTES: usize = 64 * 1024;
 
 struct Capture {
     bytes: Vec<u8>,
+    sensitive: bool,
     truncated: bool,
     eof_streams: u8,
     interrupted: bool,
@@ -26,6 +28,7 @@ pub struct OutputPage {
     pub offset: usize,
     pub next_offset: usize,
     pub output: String,
+    pub sensitive: bool,
     pub eof: bool,
     pub truncated: bool,
 }
@@ -71,13 +74,15 @@ fn drain<R: Read + AsRawFd + Send + 'static>(
             Err(_) => break,
         };
         let mut state = capture.lock().unwrap_or_else(|error| error.into_inner());
-        if state.truncated {
+        if state.sensitive || state.truncated {
+            bytes[..count].zeroize();
             continue;
         }
         let available = MAX_OUTPUT_BYTES.saturating_sub(state.bytes.len());
         state
             .bytes
             .extend_from_slice(&bytes[..count.min(available)]);
+        bytes[..count].zeroize();
         if count > available {
             // A fixed capture boundary can bisect a UTF-8 character.
             if let Some(mut start) = state.bytes.len().checked_sub(1) {
@@ -115,6 +120,7 @@ impl BoundedProcessOutput {
             .ok_or_else(|| io::Error::new(ErrorKind::BrokenPipe, "stderr already taken"))?;
         let capture = Arc::new(Mutex::new(Capture {
             bytes: Vec::new(),
+            sensitive: false,
             truncated: false,
             eof_streams: 0,
             interrupted: false,
@@ -139,6 +145,17 @@ impl BoundedProcessOutput {
         })
     }
 
+    /// Irreversibly discard captured and future output before writing secure stdin.
+    /// Keep draining both pipes so sensitive tasks retain normal lifecycle semantics.
+    pub(crate) fn suppress_sensitive(&self) {
+        let mut state = self
+            .capture
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.sensitive = true;
+        state.bytes.zeroize();
+    }
+
     pub fn page(&self, offset: usize, length: usize) -> io::Result<OutputPage> {
         if offset > MAX_OUTPUT_BYTES || !(1..=MAX_PAGE_BYTES).contains(&length) {
             return Err(io::Error::new(
@@ -150,6 +167,16 @@ impl BoundedProcessOutput {
             .capture
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if state.sensitive {
+            return Ok(OutputPage {
+                offset: 0,
+                next_offset: 0,
+                output: "[output suppressed after secure input was delivered]".into(),
+                sensitive: true,
+                eof: state.eof_streams == 2,
+                truncated: true,
+            });
+        }
         // Keep byte offsets, but align returned pages to UTF-8 code points.
         // A 1-byte page over a 4-byte emoji is allowed to advance 4 bytes.
         let mut start = offset.min(state.bytes.len());
@@ -170,6 +197,7 @@ impl BoundedProcessOutput {
             offset: start,
             next_offset: end,
             output: String::from_utf8_lossy(&state.bytes[start..end]).into_owned(),
+            sensitive: false,
             eof: state.eof_streams == 2 && end == state.bytes.len(),
             truncated: state.truncated || state.interrupted,
         })
@@ -188,5 +216,53 @@ impl BoundedProcessOutput {
 impl Drop for BoundedProcessOutput {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod secure_capture_tests {
+    use super::*;
+
+    // #1039 secure capture: preexisting output is removed and no page exposes later output.
+    #[test]
+    fn secure_input_irreversibly_suppresses_output_pages() {
+        let capture = Arc::new(Mutex::new(Capture {
+            bytes: b"ordinary-before-input".to_vec(),
+            sensitive: false,
+            truncated: false,
+            eof_streams: 0,
+            interrupted: false,
+        }));
+        let output = BoundedProcessOutput {
+            capture: Arc::clone(&capture),
+            stop: Arc::new(AtomicBool::new(false)),
+            workers: vec![],
+        };
+        assert_eq!(output.page(0, 64).unwrap().output, "ordinary-before-input");
+        output.suppress_sensitive();
+        // Drive the real drain through a synthetic pipe-like stream, not just the page filter.
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().unwrap();
+        std::io::Write::write_all(&mut writer, b"synthetic-after-input").unwrap();
+        drop(writer);
+        drain(
+            reader,
+            Arc::clone(&capture),
+            Arc::new(AtomicBool::new(false)),
+        );
+        {
+            let mut state = capture.lock().unwrap();
+            assert!(state.sensitive);
+            assert!(state.bytes.is_empty());
+            state.eof_streams = 2;
+        }
+        for offset in [0, 3, MAX_OUTPUT_BYTES] {
+            let page = output.page(offset, 64).unwrap();
+            assert!(page.sensitive && page.truncated && page.eof);
+            assert_eq!(page.next_offset, 0);
+            assert_eq!(
+                page.output,
+                "[output suppressed after secure input was delivered]"
+            );
+        }
     }
 }

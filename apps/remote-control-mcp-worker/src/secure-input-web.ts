@@ -53,7 +53,7 @@ let ownerToken = null;
 function text(id, value) { document.getElementById(id).textContent = value == null ? "—" : String(value); }
 function effectAndRecovery(target) {
   if (target.kind === "task_process") return {
-    effect: "Deliver this one-time value to the named running process through its input stream.",
+    effect: "Deliver this one-time value to the named running process through its input stream. All captured output for that session is permanently suppressed. Use only a trusted target process.",
     recovery: "Bytes already delivered cannot be recalled. The process lifetime bounds future reuse."
   };
   if (target.kind.startsWith("github_")) return {
