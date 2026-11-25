@@ -741,6 +741,76 @@ def native_atomic_file(path, data):
             os.unlink(temporary)
 
 
+def native_auto_policy_path(key):
+    return pathlib.Path(str(key) + ".automatic-update")
+
+
+def native_auto_policy(key, device_id):
+    """Absent, invalid or different-identity consent never authorizes updates."""
+    try:
+        value = json.loads(native_owned_file(native_auto_policy_path(key), 256))
+    except FileNotFoundError:
+        return "off"
+    except (OSError, ValueError):
+        return "unknown"
+    if (not isinstance(value, dict) or set(value) != {"device_id", "enabled"}
+            or type(value["enabled"]) is not bool or not isinstance(value["device_id"], str)):
+        return "unknown"
+    return "on" if value["device_id"] == device_id and value["enabled"] else "off"
+
+
+def native_write_auto_policy(key, device_id, enabled):
+    native_atomic_file(native_auto_policy_path(key), json.dumps({
+        "device_id": device_id, "enabled": enabled
+    }, separators=(",", ":")).encode())
+
+
+def native_update_policy(home, action=None):
+    """Read or explicitly change continuing consent, not the device Grant."""
+    if action not in (None, "on", "off") or os.getuid() == 0:
+        raise ValueError("Invalid owner-local automatic update policy action")
+    home = pathlib.Path(home)
+    _, versions, _, unit, ids = local_inventory(home)
+    root = owned_unit_root(unit, versions)
+    if root is None or "permanent" not in ids:
+        raise ValueError("Existing managed permanent service required")
+    key = home / STORE / "v2-identity.pem"
+    if action is None:
+        return {"automatic_update": native_auto_policy(key, ids["permanent"])}
+    base = private_dir(home / STORE)
+    fd = os.open(base / "v2-installer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted v2 installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        _, versions, unit_file, unit, ids = local_inventory(home)
+        root = owned_unit_root(unit, versions)
+        if root is None or "permanent" not in ids:
+            raise ValueError("Existing managed permanent service required")
+        validated_owned_version(root)
+        native_owned_file(key, 8192)
+        device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+        if device_id != ids["permanent"]:
+            raise ValueError("Existing device identity has changed")
+        if action == "on":
+            manifest = json.loads((root / "bundle.json").read_text("utf8"))
+            if native_latest_status(manifest["version"], manifest["version"]) != "up_to_date":
+                raise ValueError("Automatic update requires a stable native Agent")
+            pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
+            pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
+                ".native-upgrade-intent", ".native-upgrade-proof", ".activation-pending",
+                ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+            if any(os.path.lexists(path) for path in pending):
+                raise ValueError("Unreconciled lifecycle; recover before enabling automatic update")
+        native_write_auto_policy(key, device_id, action == "on")
+        return {"automatic_update": action}
+
+
 def native_systemctl(*args):
     completed = subprocess.run(["systemctl", "--user", *args],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -1250,6 +1320,18 @@ def native_first_install(home, root, endpoint, name=None,
             raise ValueError("Existing service without confirmed launcher; manual review required")
         return {"status": "already_installed", "signed_wss": "unconfirmed",
                 "local_service": "active" if pid else "inactive"}
+    # Only a genuinely new identity may receive the disclosed default.
+    # An interrupted activation, re-pair or existing install never migrates
+    # missing consent implicitly.
+    new_stable_policy = (current is None and record is None
+                         and not os.path.lexists(key)
+                         and "permanent" not in state[3])
+    manifest = json.loads((root / "bundle.json").read_text("utf8"))
+    new_stable_policy = (new_stable_policy and
+                         native_latest_status(manifest["version"], manifest["version"]) == "up_to_date")
+    if new_stable_policy:
+        print("Automatic updates for this new permanent device default to on after signed activation; "
+              "disable with rca update --auto off.", flush=True)
     if record is None:
         if not process_check(versions):
             raise ValueError("Running or uncertain Agent blocks first pairing")
@@ -1327,6 +1409,8 @@ def native_first_install(home, root, endpoint, name=None,
             del record["initial_launcher"]
             native_atomic_file(intent, json.dumps(record, separators=(",", ":")).encode())
         native_launcher(home, root)
+        if new_stable_policy:
+            native_write_auto_policy(key, device_id, True)
         for item in (proof, intent):
             item.unlink()
             native_sync_parent(item)
@@ -1789,8 +1873,11 @@ def local_status(home):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 timeout=5, check=False)
         service = "active" if result.returncode == 0 else "inactive_or_unconfirmed"
+    policy = (native_auto_policy(pathlib.Path(home) / STORE / "v2-identity.pem", ids["permanent"])
+              if "permanent" in ids else "off")
     return {"installed_versions": sorted(x.name for x in versions),
             "local_permanent_service": service, "device_ids": ids,
+            "automatic_update": policy,
             "cloud_authorization": "unconfirmed", "signed_wss": "unconfirmed",
             "read_only_access": "unconfirmed", "cloud_revoke": "not_performed",
             "temporary_expires_at": "server_authoritative_unconfirmed",
@@ -2032,6 +2119,7 @@ def local_identity_purge_plan(home):
             raise ValueError("Unresolved v2 re-pair/archive state; purge blocked")
     files = []
     for relative in ("v2-identity.pem", "v2-identity.pem.device-id",
+                     "v2-identity.pem.automatic-update",
                      "temporary/v2-identity.pem",
                      "temporary/v2-identity.pem.device-id"):
         file = base / relative

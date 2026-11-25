@@ -239,12 +239,14 @@ def verify_initial_install():
                     result = bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
                         verify=verify, process_check=lambda versions: not state["pid"])
                     assert result["signed_wss"] is True
+                    assert bootstrap.native_update_policy(home)["automatic_update"] == "on"
                     assert launcher.readlink() == new / APP / "scripts/rca.sh"
                     assert not intent.exists() and not proof.exists()
                     commands = state["commands"].copy()
                     assert bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
                         verify=verify)["status"] == "already_installed"
                     assert state["pairs"] == 1 and state["commands"] == commands
+                    assert bootstrap.native_update_policy(home)["automatic_update"] == "on"
                 else:
                     try:
                         bootstrap.native_first_install(home, new, ENDPOINT, pair=pair,
@@ -253,6 +255,7 @@ def verify_initial_install():
                     except (ValueError, KeyboardInterrupt):
                         pass
                     assert launcher.exists() == preexisting_launcher
+                    assert not Path(str(key) + ".automatic-update").exists()
                     if case in ("no-proof", "interrupted") or case.endswith("no-proof"):
                         assert intent.exists() and unit.exists()
                         assert bootstrap.native_recover(home, process_check=lambda versions: not state["pid"])["status"] == "initial_service_removed"
@@ -1092,6 +1095,82 @@ def verify_native_owner_lifecycle():
     print("NATIVE_OWNER_LIFECYCLE_CONTRACT_PASS")
 
 
+def verify_automatic_update_policy():
+    import contextlib
+    import io
+    from unittest.mock import Mock
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        manager_spec = importlib.util.spec_from_file_location("rca_manager", SCRIPT.with_name("manage-v2.py"))
+        manager = importlib.util.module_from_spec(manager_spec)
+        manager_spec.loader.exec_module(manager)
+        info = json.loads((old / "bundle.json").read_text("utf8"))
+        def cli(*args):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                result = manager.dispatch("update", list(args), old, info, bootstrap)
+            assert result == 0
+            return json.loads(out.getvalue())["automatic_update"]
+        def refused(*args):
+            try:
+                cli(*args)
+            except ValueError:
+                return
+            raise AssertionError("Unsafe policy change accepted")
+        service = unit.read_bytes()
+        identity = key.read_bytes()
+        history = receipts.read_bytes()
+        with patch.dict(os.environ, {"HOME": str(home)}), patch.object(
+                bootstrap, "native_systemctl", Mock(side_effect=AssertionError("Policy changed service"))):
+            assert cli("--auto") == "off"
+            assert cli("--auto", "on") == "on"
+            assert cli("--auto") == "on"
+            with patch.object(bootstrap.subprocess, "run", return_value=Mock(returncode=0)):
+                assert bootstrap.local_status(home)["automatic_update"] == "on"
+            assert cli("--auto", "off") == "off"
+            assert cli("--auto") == "off"
+            assert cli("--auto", "on") == "on"
+            id_path = Path(str(key) + ".device-id")
+            id_path.write_text("123e4567-e89b-42d3-a456-426614174002\n")
+            assert cli("--auto") == "off"
+            id_path.write_text(ID + "\n")
+            pending = Path(str(key) + ".native-upgrade-intent")
+            owned_file(pending)
+            refused("--auto", "on")
+            assert cli("--auto", "off") == "off"
+            pending.unlink()
+            lock_path = key.parent / "v2-installer.lock"
+            with lock_path.open("r+b") as lock:
+                bootstrap.fcntl.flock(lock, bootstrap.fcntl.LOCK_EX)
+                refused("--auto", "on")
+            assert cli("--auto") == "off"
+            unit.unlink()
+            refused("--auto", "on")
+            unit.write_bytes(service)
+            candidate = make_version(home, "v0.1.58-rust-candidate.6")
+            unit.write_text(bootstrap.native_render_unit(candidate, ENDPOINT, key))
+            refused("--auto", "on")
+            unit.write_bytes(service)
+            policy = Path(str(key) + ".automatic-update")
+            policy.write_text("invalid JSON")
+            assert cli("--auto") == "unknown"
+            assert cli("--auto", "off") == "off"
+        assert key.read_bytes() == identity and receipts.read_bytes() == history
+        assert unit.read_bytes() == service
+        assert launcher.readlink() == old / APP / "scripts/rca.sh"
+        # Ordinary uninstall retains identity and consent; explicit identity
+        # purge removes consent with that identity, never shared receipts.
+        bootstrap.local_uninstall(home, True, systemctl=lambda args: None,
+                                  process_check=lambda _: True)
+        assert policy.exists()
+        assert policy in bootstrap.local_identity_purge_plan(home)[0]
+        bootstrap.local_identity_purge(home, True, process_check=lambda: True)
+        assert not policy.exists() and not key.exists() and receipts.read_bytes() == history
+    finally:
+        ctx.cleanup()
+    print("NATIVE_AUTOMATIC_UPDATE_POLICY_CONTRACT_PASS")
+
+
 def stable_release_fixture(tag):
     targets = ("linux-x64-glibc", "linux-arm64-glibc", "windows-x64",
                "darwin-arm64", "darwin-x64")
@@ -1382,6 +1461,7 @@ if __name__ == "__main__":
         verify_service_start()
         verify_public_native_archive()
         verify_native_owner_lifecycle()
+        verify_automatic_update_policy()
         verify_read_only_update_check()
         verify_latest_selection()
         verify_owner_stop_at_cutover_lock()

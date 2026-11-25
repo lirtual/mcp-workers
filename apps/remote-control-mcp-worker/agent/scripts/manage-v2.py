@@ -140,6 +140,7 @@ def dispatch(command, args, root, info, bootstrap):
         print("Permanent pairing / re-pair and pair --temporary are supported.")
         print("Without arguments: open the interactive local Agent manager.")
         print("Check the reviewed stable Latest without installing: rca update --check.")
+        print("Automatic update consent: rca update --auto [on|off].")
         print("Update from the reviewed stable Latest: rca update (upgrade is an alias).")
         print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
         return 0
@@ -164,6 +165,11 @@ def dispatch(command, args, root, info, bootstrap):
         print(json.dumps(bootstrap.native_owner_lifecycle(Path.home(), command)))
         return 0
     if command in ("update", "upgrade"):
+        if args and args[0] == "--auto":
+            if len(args) > 2 or (len(args) == 2 and args[1] not in ("on", "off")):
+                raise ValueError("Usage: rca update --auto [on|off]")
+            print(json.dumps(bootstrap.native_update_policy(Path.home(), args[1] if len(args) == 2 else None)))
+            return 0
         if args == ["--check"]:
             endpoint = installed_endpoint(bootstrap)
             if not endpoint:
