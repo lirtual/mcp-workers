@@ -583,8 +583,8 @@ mod windows {
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
                 [_, command] if command == "--help" || command == "help" => {
-                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update --check|update --version <staged-tag>|recover|--version|--help]");
-                    println!("upgrade is an alias for the reviewed staged-version switch. Use the official installer for initial installation and Latest selection.");
+                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update [--check|--version <staged-tag>]|recover|--version|--help]");
+                    println!("Bare update or upgrade uses the packaged owner installer from rca.cmd. Use the official installer for initial installation.");
                     Ok(())
                 }
                 [_, command] if command == "status" || command == "doctor" => {

@@ -8,7 +8,8 @@ param(
   [string]$OfflineArchive,
   [string]$ExpectedSha256,
   [switch]$StageOnly,
-  [switch]$CheckOnly
+  [switch]$CheckOnly,
+  [switch]$UpdateOnly
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -377,6 +378,59 @@ function Get-ExistingAgentVersion([string]$programs, [string]$taskExe) {
   if (-not $matched.Success) { throw 'Unrecognized existing Agent task executable' }
   return $matched.Groups[1].Value
 }
+# Attended update is an existing-installation operation, not onboarding.
+# Keep the exact reviewed Task and identity binding across release lookup,
+# user confirmation and download. The existing controller still owns cutover.
+function Get-AttendedUpdateBinding {
+  Assert-PrivateFolder ([IO.Path]::GetDirectoryName($root))
+  Assert-PrivateFolder $root
+  $programsPath = Join-Path $root 'programs'
+  Assert-PrivateFolder $programsPath
+  $key = Join-Path $root 'v2-identity.pem'
+  $id = $key + '.device-id'
+  & (Join-Path $PSScriptRoot 'windows-private-store.ps1') -Action Check -Directory $root
+  if (-not (Test-Path -LiteralPath $key -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $id -PathType Leaf) -or
+      (Get-Content -LiteralPath $id -Raw).Trim() -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+      (Get-Content -LiteralPath ($key + '.install-mode') -Raw) -cne ("permanent" + [char]10)) {
+    throw 'Existing approved permanent Agent required'
+  }
+  foreach ($pending in @(($key + '.owner-stopped'), ($key + '.activation-pending'),
+      ($id + '.pending'), (Join-Path $root 'windows-native-upgrade.json'))) {
+    if (Test-Path -LiteralPath $pending) { throw 'Stopped or unresolved Agent; review local status' }
+  }
+  $name = 'RCA-Remote-Control-v2-' + $userSid.Value.Replace('-', '_')
+  $current = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+  if ($current.State -ne 'Running' -or $current.Actions.Count -ne 1) {
+    throw 'Existing running owner Task required'
+  }
+  $action = $current.Actions[0]
+  $installed = Get-ExistingAgentVersion $programsPath ([string]$action.Execute)
+  $ps = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+  $raw = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'windows-user-task.ps1') -Action Status
+  if ($LASTEXITCODE -ne 0) { throw 'Existing Task status uncertain' }
+  $facts = $raw | ConvertFrom-Json
+  if ($facts.installed -ne $true -or $facts.running -ne $true -or $facts.version -cne $installed) {
+    throw 'Existing Task changed during update admission'
+  }
+  [pscustomobject]@{
+    version=$installed
+    key_hash=(Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash
+    id_hash=(Get-FileHash -LiteralPath $id -Algorithm SHA256).Hash
+    execute=[string]$action.Execute
+    arguments=[string]$action.Arguments
+    working_directory=[string]$action.WorkingDirectory
+  }
+}
+function Assert-AttendedUpdateTarget($expected,$observed) {
+  if ($null -eq $expected -or $null -eq $observed) { throw 'Existing update target unavailable' }
+  foreach ($field in @('version','key_hash','id_hash','execute','arguments','working_directory')) {
+    if ($null -eq $expected.PSObject.Properties[$field] -or $null -eq $observed.PSObject.Properties[$field] -or
+        $expected.$field -cne $observed.$field) {
+      throw 'Existing Task or identity changed during update'
+    }
+  }
+}
 # Native first activation requires the owner console. An admitted detached
 # stable upgrade may only invoke the existing transactional Task switch.
 function Complete-NativeInstall([string]$directory) {
@@ -395,8 +449,13 @@ function Complete-NativeInstall([string]$directory) {
   & (Join-Path $scripts 'windows-private-store.ps1') -Action Check -Directory $root
   if (Test-Path -LiteralPath ($identityFile + '.owner-stopped')) {
     if ($detachedUpgrade) { throw 'Owner STOP blocks detached native upgrade' }
+    if ($UpdateOnly) { throw 'Owner STOP blocks attended native upgrade' }
     Write-Output 'Owner STOP preserved. Agent was not started.'
     return
+  }
+  if ($UpdateOnly) {
+    if (-not $upgradeExisting) { throw 'Update cannot install or pair a device' }
+    Assert-AttendedUpdateTarget $attendedBinding (Get-AttendedUpdateBinding)
   }
   if ($upgradeExisting) {
     & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
@@ -476,7 +535,7 @@ function Confirm-Upgrade([object]$ui) {
 # This branch precedes every directory, archive, identity and Task mutation.
 if ($CheckOnly) {
   if (-not $Version -or $SelectedTag -or $SelectedReleaseSha256 -or $OfflineArchive -or
-      $ExpectedSha256 -or $StageOnly) { throw 'CheckOnly requires only the installed version' }
+      $ExpectedSha256 -or $StageOnly -or $UpdateOnly) { throw 'CheckOnly requires only the installed version' }
   Get-LatestUpdateStatus $Version | ConvertTo-Json -Compress
   return
 }
@@ -493,7 +552,16 @@ $primaryFailure = $false
 $releaseUrl = $null
 $releaseSha = $null
 $releaseSize = [long]0
+$attendedBinding = $null
 try {
+  if ($UpdateOnly) {
+    if ($Version -or $SelectedTag -or $SelectedReleaseSha256 -or $OfflineArchive -or
+        $ExpectedSha256 -or $StageOnly -or $detachedUpgrade -or $detachedRequest -or
+        [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+      throw 'Attended update requires the local owner console and no other options'
+    }
+    $attendedBinding = Get-AttendedUpdateBinding
+  }
   if ($detachedUpgrade -and ($OfflineArchive -or -not $SelectedTag -or -not $SelectedReleaseSha256 -or $StageOnly)) {
     throw 'Detached upgrade requires a selected immutable stable Release'
   }
@@ -527,6 +595,13 @@ try {
     $releaseSha = [string]$latest.Sha
     $releaseUrl = [string]$latest.Url
     $releaseSize = [long]$latest.Size
+  }
+  if ($UpdateOnly) {
+    Assert-AttendedUpdateTarget $attendedBinding (Get-AttendedUpdateBinding)
+    if ($Version -ceq $attendedBinding.version) {
+      Write-Output "Already up to date: $Version"
+      return
+    }
   }
   Ensure-PrivateFolder ([IO.Path]::Combine($env:LOCALAPPDATA, 'mcp-workers'))
   Ensure-PrivateFolder $root
@@ -683,6 +758,10 @@ try {
     $task -and $task.State -eq 'Running' -and -not (Test-Path -LiteralPath ($identityFile + '.owner-stopped'))
   if ($StageOnly -and -not $upgradeExisting) {
     throw 'Staging requires an existing paired device with a strictly newer target version'
+  }
+  if ($UpdateOnly) {
+    if (-not $upgradeExisting) { throw 'Update cannot install or pair a device' }
+    Assert-AttendedUpdateTarget $attendedBinding (Get-AttendedUpdateBinding)
   }
   if (Test-Path -LiteralPath $target) {
     Assert-PrivateFolder $target

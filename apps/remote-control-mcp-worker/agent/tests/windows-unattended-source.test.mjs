@@ -63,3 +63,19 @@ test("native detached upgrade admits only reviewed existing Task switch, not onb
   assert.ok(complete.indexOf("-Action Switch -Version $Version -Direction Upgrade") < complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }"));
   assert.ok(complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }") < complete.indexOf("--pair-local"));
 });
+
+test("attended Latest update is limited to existing installation and the bare CLI verbs",()=>{
+  const builder=readFileSync(fileURLToPath(new URL("../scripts/build-windows-preview.mjs",import.meta.url)),"utf8");
+  assert(builder.includes('if "%~1"=="update" if "%2"=="" goto :attended_update'));
+  assert(builder.includes('if "%~1"=="upgrade" if "%2"=="" goto :attended_update'));
+  assert(builder.includes('--cli %*'));
+  assert(builder.includes('windows-stage-install.ps1" -UpdateOnly'));
+  const entry=text.indexOf('$attendedBinding = $null');
+  const preflight=text.indexOf('$attendedBinding = Get-AttendedUpdateBinding',entry);
+  const latest=text.indexOf('$latest = Resolve-LatestAgentRelease',preflight);
+  assert(entry>=0&&preflight>entry&&latest>preflight);
+  const complete=text.slice(text.indexOf("function Complete-NativeInstall"),text.indexOf("function Confirm-Upgrade"));
+  assert(complete.indexOf("Assert-AttendedUpdateTarget")<complete.indexOf("-Action Switch -Version"));
+  assert(complete.includes("Update cannot install or pair a device"));
+  assert(complete.includes("Owner STOP blocks attended native upgrade"));
+});

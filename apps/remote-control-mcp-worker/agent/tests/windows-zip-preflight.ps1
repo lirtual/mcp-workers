@@ -93,6 +93,25 @@ foreach ($bad in @('wrong-repo','string-immutable','string-size','fraction-size'
   if ($result.status -cne 'unknown' -or $null -ne $result.latest_version -or $script:fixtureRequests.Count -ne 1) { throw "Unsafe Latest accepted: $bad" }
 }
 'WINDOWS_LATEST_CHECK_CONTRACT_PASS'
+# The attended update path can never fall through to first install,
+# and must preserve its exact pre-download binding.
+$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-AttendedUpdateTarget'},$true)
+if (-not $fn) { throw 'Missing attended update target guard' }
+. ([scriptblock]::Create($fn.Extent.Text))
+$base=[pscustomobject]@{version='v0.1.60';key_hash=('A'*64);id_hash=('B'*64);execute='owned-exe';arguments='owned-service';working_directory='owned-directory'}
+Assert-AttendedUpdateTarget $base $base
+foreach ($field in @('version','key_hash','id_hash','execute','arguments','working_directory')) {
+  $next=$base.PSObject.Copy()
+  $next.$field='changed'
+  $refused=$false
+  try { Assert-AttendedUpdateTarget $base $next } catch { $refused=$true }
+  if (-not $refused) { throw "Changed attended update target admitted: $field" }
+}
+$refused=$false
+try { Assert-AttendedUpdateTarget $base $null } catch { $refused=$true }
+if (-not $refused) { throw 'Absent attended update target admitted' }
+'WINDOWS_ATTENDED_TARGET_CONTRACT_PASS'
+
 Remove-Item Function:\Invoke-WebRequest
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem

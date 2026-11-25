@@ -87,7 +87,21 @@ export function buildWindowsPreview(args) {
     "apps/remote-control-agent/.build/rca-standard-windows-candidate.exe": rustAgentHash,
   };
   if (rustSessionHash) hashes["apps/remote-control-agent/.build/rca-session-windows-candidate.exe"] = rustSessionHash;
-  const launcherSource = '@echo off\nsetlocal DisableDelayedExpansion\n"%~dp0apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe" --cli %*\nexit /b %ERRORLEVEL%\n';
+  // The local attended installer must not have the old Rust Agent CLI
+  // as a waiting parent when the existing Task controller checks exit.
+  // Only the two bare verbs use this path; all flags stay with Rust.
+  const launcherSource = [
+    '@echo off',
+    'setlocal DisableDelayedExpansion',
+    'if "%~1"=="update" if "%2"=="" goto :attended_update',
+    'if "%~1"=="upgrade" if "%2"=="" goto :attended_update',
+    '"%~dp0apps\\remote-control-agent\\.build\\rca-standard-windows-candidate.exe" --cli %*',
+    'exit /b %ERRORLEVEL%',
+    ':attended_update',
+    '"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -ExecutionPolicy Bypass -File "%~dp0apps\\remote-control-agent\\scripts\\windows-stage-install.ps1" -UpdateOnly',
+    'exit /b %ERRORLEVEL%',
+    '',
+  ].join('\n');
   const launcherBytes = Buffer.from(launcherSource.replace(/\r?\n/g, "\r\n"));
   writeFileSync(path.join(stage, "rca.cmd"), launcherBytes, { mode: 0o600 });
   hashes["rca.cmd"] = digest(launcherBytes);
