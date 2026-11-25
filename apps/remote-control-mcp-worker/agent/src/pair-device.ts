@@ -23,12 +23,10 @@ export interface PendingEnrollmentResult {
 /** Enrollment data belongs only to its original endpoint. */
 export function approvalInstruction(endpoint: string, pending: Pick<PendingEnrollmentResult,"code"|"fingerprint">, mode: "permanent"|"temporary"): string {
   const canonical=new URL(endpoint).href==="https://rca.lirtual.dpdns.org/";
-  return (canonical
-    ? "Authorize device (10 min): https://rca.lirtual.dpdns.org/pair#"+pending.code
-    : "Pairing code (10 min): "+pending.code)
-    +"\nLocal public key fingerprint: "+pending.fingerprint+"\n"
+  return (canonical ? "Authorize device (10 min): https://rca.lirtual.dpdns.org/pair#"+pending.code+"\n" : "")
+    +"Local public key fingerprint: "+pending.fingerprint+"\n"
     +(canonical ? "Confirm the fingerprint and "+mode+" mode in your browser."
-      : "Browser approval is unavailable on this endpoint; use the existing authenticated owner approval for "+mode+" mode.")+"\n";
+      : "Browser approval is unavailable on this endpoint for "+mode+" mode. Use the official RCA installer for the canonical endpoint.")+"\n";
 }
 
 export class PendingIdentityConflictError extends Error {

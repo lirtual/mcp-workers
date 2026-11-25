@@ -263,7 +263,7 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.match(html, /@media\(max-width:520px\)/);
   assert.match(html, /<html lang="en">/);
   assert.match(html, /Install or upgrade your device/);
-  assert.match(html, /For a new installation, approve pairing in MCP/);
+  assert.match(html, /For a new installation, open the Agent authorization link in your browser/);
   assert.match(html, /Copy install command/);
   assert.doesNotMatch(html, /[\u3400-\u9fff]/, "install page must use English throughout");
   assert.match(html, /-webkit-text-size-adjust:100%/);

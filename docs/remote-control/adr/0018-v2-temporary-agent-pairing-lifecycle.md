@@ -11,6 +11,8 @@ The owner initially chose **Q1=C** (temporary identity revoked on voluntary Agen
 
 Current v2 Draft PR #58 has `install-v2.mjs --foreground` without creating a systemd unit, but it uses a normal persistent approved identity and does not distinguish a short-lived authorized identity. The following is a **design target**, not a description of deployed behavior.
 
+The one-code approval ingress described below is historical; ADR-0015 and #1018 replace MCP lookup/approval with the browser without changing temporary grant duration or signed recovery.
+
 ## Accepted owner decisions
 
 1. **24-hour, nonrenewable temporary authorization.** A newly approved *temporary* device identity is valid for exactly **24 hours from the server's successful atomic pairing approval**, not from pending pairing-code creation, installer start, first WSS connection, or last activity. Define `expires_at = approved_at + 86_400_000 ms` using the server clock; the approved type is permanent or temporary. Reconnects, reads and writes **do not refresh** this deadline. Existing permanent device identities have no such temporary expiry.

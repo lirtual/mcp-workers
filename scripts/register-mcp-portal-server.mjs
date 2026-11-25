@@ -2,12 +2,12 @@
 // Never log Cloudflare bearer, upstream secret, or sensitive tools payloads.
 import assert from 'node:assert/strict';
 import { portalServerMapping, assertSamePortalMappings } from './register-workflow-portal.mjs';
-import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
+import { verifyMcpAccessPolicies, PORTAL_ID, PORTAL_NAME, PORTAL_HOSTNAME } from './verify-mcp-access-policies.mjs';
 
 export function portalPlan(portal) {
-  assert.equal(portal?.id, 'mcp', 'portal_identity_drift');
-  assert.equal(portal?.name, 'MCP', 'portal_identity_drift');
-  assert.equal(portal?.hostname, 'mcp-portal.lirtual.dpdns.org', 'portal_identity_drift');
+  assert.equal(portal?.id, PORTAL_ID, 'portal_identity_drift');
+  assert.equal(portal?.name, PORTAL_NAME, 'portal_identity_drift');
+  assert.equal(portal?.hostname, PORTAL_HOSTNAME, 'portal_identity_drift');
   assert.ok(Array.isArray(portal.servers) && portal.servers.length >= 9,
     'portal_existing_servers_missing');
   const servers = portal.servers.map(portalServerMapping);
@@ -49,7 +49,7 @@ export async function attachFixedPortalServer(env, target, transport = fetch) {
     if (json?.success !== true || json.result == null) throw Error('portal_api_unavailable');
     return json.result;
   };
-  const before = portalPlan(await request('GET', '/portals/mcp'));
+  const before = portalPlan(await request('GET', '/portals/' + PORTAL_ID));
   assert.ok(before.servers.filter(x => x.server_id === id).length <= 1,
     'portal_duplicate_' + id);
   const existing = await request('GET', '/servers');
@@ -88,15 +88,15 @@ export async function attachFixedPortalServer(env, target, transport = fetch) {
   await verifyMcpAccessPolicies(env, { id, name }, transport);
   console.log(id.toUpperCase() + '_ACCESS_POLICIES_VERIFIED');
   console.log(id.toUpperCase() + '_PORTAL_TOOLS_SYNCED');
-  const fresh = portalPlan(await request('GET', '/portals/mcp'));
+  const fresh = portalPlan(await request('GET', '/portals/' + PORTAL_ID));
   assertSamePortalMappings(before.servers, fresh.servers);
   if (!fresh.servers.some(x => x.server_id === id)) {
-    const updated = await request('PUT', '/portals/mcp', {
+    const updated = await request('PUT', '/portals/' + PORTAL_ID, {
       ...fresh, servers: [...fresh.servers, { server_id: id, on_behalf: false, default_disabled: false }],
     });
     assert.ok(updated.servers?.some(x => x.server_id === id), 'portal_' + id + '_attach_failed');
   }
-  const after = portalPlan(await request('GET', '/portals/mcp'));
+  const after = portalPlan(await request('GET', '/portals/' + PORTAL_ID));
   const priorIds = new Set(before.servers.map(x => x.server_id));
   assertSamePortalMappings(before.servers, after.servers.filter(x => priorIds.has(x.server_id)));
   assert.equal(after.servers.filter(x => x.server_id === id).length, 1, 'portal_' + id + '_attach_failed');

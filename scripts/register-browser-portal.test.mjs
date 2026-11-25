@@ -1,20 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { accessApplications } from './portal-access.test-fixture.mjs';
 import {readFileSync} from 'node:fs';
 import {attachBrowserPortal,BROWSER_TOOLS,BROWSER_UUIDV7_PATTERN,verifyBrowserToolSchemas} from './register-browser-portal.mjs';
 const ids=['workflow','database','ima','raindrop','sentry','ssh','remote-control','github-actions','git-guardian','kdocs','apifox'];
-const newPortal=()=>({id:'mcp',name:'MCP',hostname:'mcp-portal.lirtual.dpdns.org',code_mode:'opt_in',secure_web_gateway:true,servers:ids.map(server_id=>({server_id,default_disabled:false}))});
+const newPortal=()=>({id:'mcp-portal',name:'MCP Portal',hostname:'mcp-portal.lirtual.dpdns.org',code_mode:'opt_in',secure_web_gateway:true,servers:ids.map(server_id=>({server_id,default_disabled:false}))});
 const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-fixture',MCP_ACCESS_TOKEN:'shared-fixture'};
-const policies=[
-  {id:'7cec582c-4038-4fb0-9ad8-fcdb04af4adc',
-    name:'WORKFLOWS',decision:'non_identity',reusable:true,precedence:1,
-    include:[{service_token:{token_id:'fixture'}}]},
-  {id:'07204847-0459-4197-b3c3-2dbe2a47a550',
-    name:'MCP Portal and Browser Owners',decision:'allow',
-    reusable:true,precedence:2,
-    include:[{email:{email:'lirtual@qq.com'}},
-      {email:{email:'lirtual@outlook.com'}}]},
-];
 const intentTools=new Set(['browser_click','browser_fill','browser_keypress','browser_scroll','browser_select','browser_tab_open','browser_tab_navigate','browser_tab_close','browser_operation_status','browser_cdp']);
 const freshTools=()=>BROWSER_TOOLS.map(name=>{
   const tool={name};
@@ -26,9 +17,7 @@ const freshTools=()=>BROWSER_TOOLS.map(name=>{
     required:['endpoint_id'],additionalProperties:false};
   return tool;
 });
-const browserPolicies=()=>structuredClone(policies);
-const apps=(enabled=true)=>[{name:'MCP',type:'mcp_portal',domain:'mcp-portal.lirtual.dpdns.org',policies},
-  ...(enabled?[{name:'Browser',type:'mcp',policies:browserPolicies()}]:[])];
+const apps=(enabled=true)=>enabled?accessApplications('Browser'):accessApplications('Browser').slice(0,1);
 test('the exact 17 tools preserve the original 15 and match public Browser MCP plus five interaction actions',()=>{
   const source=readFileSync(new URL('../apps/browser-mcp-worker/src/worker.ts',import.meta.url),'utf8');
   const interactions=readFileSync(new URL('../apps/browser-mcp-worker/src/interactions.ts',import.meta.url),'utf8');
@@ -48,7 +37,7 @@ test('idempotent Browser registration preserves all existing MCP Portal mappings
     const url=new URL(req.url),path=url.pathname.split('/access/ai-controls/mcp')[1];
     if(req.method==='GET'&&url.pathname.endsWith('/access/apps'))return Response.json({success:true,result:apps(),result_info:{total_pages:1}});
     let result;
-    if(req.method==='GET'&&path==='/portals/mcp')result=structuredClone(portal);
+    if(req.method==='GET'&&path==='/portals/mcp-portal')result=structuredClone(portal);
     else if(req.method==='GET'&&path==='/servers')result=[...ids.map(id=>({id})),...(browser?[browser]:[])];
     else if(req.method==='POST'&&path==='/servers'){
       const body=await req.json();assert.equal(body.id,'browser');assert.equal(body.auth_type,'bearer');
@@ -56,7 +45,7 @@ test('idempotent Browser registration preserves all existing MCP Portal mappings
       created++;browser={id:'browser',hostname:body.hostname,auth_type:'bearer',status:'ready',tools:freshTools()};result={id:'browser'};
     }else if(req.method==='POST'&&path==='/servers/browser/sync'){synced++;result={status:'ready'};}
     else if(req.method==='GET'&&path==='/servers/browser')result=structuredClone(browser);
-    else if(req.method==='PUT'&&path==='/portals/mcp'){
+    else if(req.method==='PUT'&&path==='/portals/mcp-portal'){
       const body=await req.json();assert.equal(body.code_mode,'opt_in');assert.equal(body.secure_web_gateway,true);
       portal.servers=body.servers;attached++;result=structuredClone(portal);
     }else throw Error('unexpected fixture route '+req.method+' '+path);
@@ -71,6 +60,8 @@ test('idempotent Browser registration preserves all existing MCP Portal mappings
 test('rejects legacy Portal id, old name or changed hostname before any write',async()=>{
   for(const mutation of [
     p=>{p.id='one-mcp';},
+    p=>{p.id='mcp';},
+    p=>{p.name='MCP';},
     p=>{p.name='One-MCP';},
     p=>{p.hostname='changed.invalid';},
   ]){
@@ -79,7 +70,7 @@ test('rejects legacy Portal id, old name or changed hostname before any write',a
     const transport=async req=>{
       calls++;
       assert.equal(req.method,'GET');
-      assert.equal(new URL(req.url).pathname.endsWith('/portals/mcp'),true);
+      assert.equal(new URL(req.url).pathname.endsWith('/portals/mcp-portal'),true);
       return Response.json({success:true,result:portal});
     };
     await assert.rejects(()=>attachBrowserPortal(env,transport),/portal_identity_drift/);
@@ -96,7 +87,7 @@ test('fail closed for absent Access, wrong tools, or missing shared Bearer',asyn
       if(req.method==='GET'&&url.pathname.endsWith('/access/apps'))return Response.json({success:true,result:apps(false),result_info:{total_pages:1}});
       if(req.method==='PUT')attached=true;
       let result;
-      if(req.method==='GET'&&path==='/portals/mcp')result=portal;
+      if(req.method==='GET'&&path==='/portals/mcp-portal')result=portal;
       else if(req.method==='GET'&&path==='/servers')result=[...ids.map(id=>({id})),{id:'browser',hostname:'https://browser.lirtual.dpdns.org/mcp',auth_type:'bearer'}];
       else if(req.method==='POST'&&path==='/servers/browser/sync')result={status:'ready'};
       else if(req.method==='GET'&&path==='/servers/browser')result={id:'browser',hostname:'https://browser.lirtual.dpdns.org/mcp',auth_type:'bearer',status:'ready',tools:(variant==='wrong_tools'?[{name:'bad'}]:freshTools())};
@@ -117,7 +108,7 @@ test('ready sync with stale Browser tool schemas fails before Portal attachment'
     const transport=async req=>{
       const url=new URL(req.url),path=url.pathname.split('/access/ai-controls/mcp')[1];
       let result;
-      if(req.method==='GET'&&path==='/portals/mcp')result=structuredClone(portal);
+      if(req.method==='GET'&&path==='/portals/mcp-portal')result=structuredClone(portal);
       else if(req.method==='GET'&&path==='/servers')result=[...ids.map(id=>({id})),
         {id:'browser',hostname:'https://browser.lirtual.dpdns.org/mcp',auth_type:'bearer'}];
       else if(req.method==='POST'&&path==='/servers/browser/sync'){synced++;result={status:'ready'};}

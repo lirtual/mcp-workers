@@ -74,6 +74,21 @@ test("production Portal authentication fails closed before DO dispatch", async (
   assert.equal(f.legacyCalls(), 0);
 });
 
+test("#1018 retired pairing tools are absent and stale calls cannot dispatch", async () => {
+  const f = fixture(async () => { throw new Error("retired pairing must never dispatch"); });
+  const listed = await rpc(f.env, "tools/list", {});
+  for (const [name, args] of [
+    ["pairing_lookup", {code:"AAAAAAAAAA"}],
+    ["pairing_approve", {pairing_id:deviceId,expected_fingerprint:"a".repeat(24),expected_grant_type:"permanent"}],
+  ] as const) {
+    assert.equal(listed.body.result?.tools?.some(tool => tool.name === name), false, name);
+    const stale = await rpc(f.env, "tools/call", {name,arguments:args});
+    assert.equal(stale.body.result?.isError, true, name);
+  }
+  assert.equal(f.calls.length, 0);
+  assert.equal(f.legacyCalls(), 0);
+});
+
 test("production tools require explicit device_id and retain owner controls", async () => {
   const f = fixture(async () => Response.json([]));
   const listed = await rpc(f.env, "tools/list", {});
@@ -86,7 +101,7 @@ test("production tools require explicit device_id and retain owner controls", as
     assert.ok(t.inputSchema.required?.includes("device_id"),
       "device_id is required for " + name);
   }
-  for (const name of ["pairing_lookup", "pairing_approve", "list_devices", "revoke_device"]) {
+  for (const name of ["list_devices", "device_rename", "revoke_device"]) {
     assert.ok(tools.some(item => item.name === name), "missing owner tool " + name);
   }
   const file = tools.find(item => item.name === "read_file");

@@ -3,7 +3,6 @@ import { handleAgentInstallerRequest, renderLinuxLatestInstallShell } from "./in
 import { handleLatestMacInstallRequest, rejectLatestInstallRequest } from "./install-macos-latest.ts";
 import { handleBrowserPairing, isBrowserPairingPath } from "./browser-pairing.ts";
 import type { ClerkOwnerConfig } from "./clerk-owner-session.ts";
-import { approvalArgs, pairingCode, lookupOwnerPairing, approveOwnerPairing } from "./pairing-owner.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
 export class DeviceCoordinator extends PreviewCoordinator {}
@@ -19,7 +18,7 @@ function pairedOnly(env: Env): boolean {
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
-const OWNER_TOOLS = new Set(["pairing_lookup", "pairing_approve", "list_devices", "device_rename", "revoke_device"]);
+const OWNER_TOOLS = new Set(["list_devices", "device_rename", "revoke_device"]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -257,61 +256,6 @@ async function listPairedDevices(env: Env, id: unknown, args: unknown): Promise<
   } catch { return toolError(id, "Device listing is unavailable."); }
 }
 
-const PAIRING_APPROVE_TOOL = {
-  name: "pairing_approve",
-  title: "Approve exactly one pending device",
-  description: "Mutating owner approval for the reviewed pending public key and explicitly selected permanent/temporary grant. This creates a device grant; it does not grant Shell/write. MCP credentials do not cryptographically prove human presence.",
-  inputSchema: {
-    type: "object",
-    properties: {
-      pairing_id: {type:"string"},
-      expected_fingerprint: {type:"string"},
-      expected_grant_type: {type:"string",enum:["permanent","temporary"]},
-    },
-    required: ["pairing_id","expected_fingerprint","expected_grant_type"],
-    additionalProperties: false,
-  },
-  annotations: {readOnlyHint:false,destructiveHint:false,openWorldHint:false},
-} as const;
-
-async function approvePendingDevice(env: Env, id: unknown, input: unknown): Promise<Response> {
-  const args=approvalArgs(input);
-  if (!args) return toolError(id,"The device approval was rejected.");
-  const owner=pendingOwner(env);
-  if (!owner) return toolError(id,"Device enrollment is disabled.");
-  try {
-    const response=await approveOwnerPairing(owner,args);
-    if (!response.ok) return toolError(id,"Device approval denied, expired or conflicting.");
-    return toolText(id,JSON.stringify(await response.json()));
-  } catch {return toolError(id,"Device approval is unavailable.");}
-}
-
-const PAIRING_LOOKUP_TOOL = {
-  name: "pairing_lookup",
-  title: "Inspect pending local device",
-  description: "Read a pending Agent label and key fingerprint. Never approves or activates a device.",
-  inputSchema: {
-    type: "object",
-    properties: { code: { type: "string", minLength: 10, maxLength: 10 } },
-    required: ["code"],
-    additionalProperties: false,
-  },
-  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-} as const;
-
-async function lookupPendingDevice(env: Env, code: unknown, id: unknown): Promise<Response> {
-  if (!pairingCode(code)) return toolError(id, "The pairing code was rejected.");
-  const owner = pendingOwner(env);
-  if (!owner) return toolError(id, "Device enrollment is disabled.");
-  try {
-    const response = await lookupOwnerPairing(owner,code);
-    if (!response.ok) return toolError(id, "The pairing code was not found or expired.");
-    const detail = await response.json() as unknown;
-    return toolText(id, JSON.stringify(detail));
-  } catch {
-    return toolError(id, "Pending device lookup is unavailable.");
-  }
-}
 
 import {
   parseFileInfo,
@@ -990,10 +934,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
             required: [...("required" in tool.inputSchema ? tool.inputSchema.required : []), "device_id"],
           },
         })),
-        PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
+        LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
       ] });
     }
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, PAIRING_LOOKUP_TOOL, PAIRING_APPROVE_TOOL, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -1033,17 +977,6 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     }
     if (call.name === "list_devices" && pendingOwner(env)) {
       return listPairedDevices(env, rpcMessage.id, call.arguments ?? {});
-    }
-    if (call.name === "pairing_approve" && pendingOwner(env)) {
-      return approvePendingDevice(env,rpcMessage.id,call.arguments);
-    }
-    if (call.name === "pairing_lookup" && pendingOwner(env)) {
-      const args = call.arguments;
-      if (!args || typeof args !== "object" || Array.isArray(args) ||
-          Object.keys(args).length !== 1 || !Object.hasOwn(args, "code")) {
-        return toolError(rpcMessage.id, "The pairing lookup was rejected.");
-      }
-      return lookupPendingDevice(env, (args as { code?: unknown }).code, rpcMessage.id);
     }
     // A production or Preview owner never falls back to the v1 VPC.
     if (pairedOnly(env)) return toolError(rpcMessage.id, "The requested paired-device tool is unavailable.");
