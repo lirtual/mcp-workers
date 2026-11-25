@@ -179,8 +179,7 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
     for (const [id, at] of secureInputSeen) if (now - at > 24 * 60 * 60_000) secureInputSeen.delete(id);
     if (secureInputSeen.has(requestId)) return { status: "failed", error_code: "input_rejected" };
     if (secureInputSeen.size >= 128) {
-      const oldest = [...secureInputSeen].sort((a, b) => a[1] - b[1])[0];
-      if (oldest) secureInputSeen.delete(oldest[0]);
+      return { status: "failed", error_code: "input_rejected" };
     }
     secureInputSeen.set(requestId, now);
     const secret = secretValue;

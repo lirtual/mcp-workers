@@ -65,7 +65,7 @@ export function validateAgentSecureInputSecret(value: unknown): value is string 
 }
 
 type Provider = "github" | "cloudflare";
-type CommandResult = { code: number | null; stdout: string; timedOut: boolean; aborted: boolean; spawnError: boolean };
+type CommandResult = { code: number | null; stdout: string; timedOut: boolean; aborted: boolean; spawnError: boolean; inputError: boolean };
 
 function providerEnvironment(provider: Provider, accountId?: string): NodeJS.ProcessEnv {
   const keys = provider === "github"
@@ -86,13 +86,13 @@ function runProviderCommand(
 ): Promise<CommandResult> {
   return new Promise(resolve => {
     let child: ReturnType<typeof spawn>;
-    let stdout = "", timedOut = false, aborted = false, spawnError = false, settled = false;
+    let stdout = "", timedOut = false, aborted = false, spawnError = false, inputError = false, settled = false;
     const finish = (code: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       options.signal.removeEventListener("abort", abort);
-      resolve({ code, stdout, timedOut, aborted, spawnError });
+      resolve({ code, stdout, timedOut, aborted, spawnError, inputError });
     };
     const terminate = () => {
       if (!child?.pid) return;
@@ -131,8 +131,14 @@ function runProviderCommand(
       });
     }
     if (options.input !== undefined) {
-      try { child.stdin?.end(options.input, "utf8"); }
-      catch { terminate(); }
+      if (!child.stdin) {
+        inputError = true;
+        terminate();
+      } else {
+        child.stdin.once("error", () => { inputError = true; terminate(); });
+        try { child.stdin.end(options.input, "utf8"); }
+        catch { inputError = true; terminate(); }
+      }
     }
     if (options.signal.aborted) abort();
     else options.signal.addEventListener("abort", abort, { once: true });
@@ -155,18 +161,23 @@ function principalMatches(expected: unknown, actual: AgentSecureInputPrincipal):
 }
 
 function commandFailure(result: CommandResult, phase: "prepare" | "write"): SecureInputOutcome | null {
+  if (phase === "write" && result.inputError) return { status: "unknown", error_code: "execution_interrupted" };
   if (result.spawnError) return { status: "failed", error_code: "provider_cli_unavailable" };
-  if (result.aborted) return { status: "unknown", error_code: "execution_interrupted" };
-  if (result.timedOut) return { status: "unknown", error_code: "timed_out" };
+  if (result.aborted) return phase === "prepare"
+    ? { status: "failed", error_code: "execution_interrupted" }
+    : { status: "unknown", error_code: "execution_interrupted" };
+  if (result.timedOut) return phase === "prepare"
+    ? { status: "failed", error_code: "timed_out" }
+    : { status: "unknown", error_code: "timed_out" };
   if (result.code !== 0) return phase === "prepare"
     ? { status: "failed", error_code: "target_not_accessible" }
     : { status: "unknown", error_code: "provider_write_failed" };
   return null;
 }
 
-async function prepareGitHub(target: GitHubTarget, signal: AbortSignal): Promise<AgentSecureInputPrincipal | SecureInputOutcome> {
+async function prepareGitHub(target: GitHubTarget, signal: AbortSignal, deadline: number): Promise<AgentSecureInputPrincipal | SecureInputOutcome> {
   const userResult = await runProviderCommand("github", "gh", ["api", "user"], {
-    signal, timeoutMs: 20_000, captureStdout: true,
+    signal, timeoutMs: Math.max(1, Math.min(20_000, deadline - Date.now())), captureStdout: true,
   });
   const userFailure = commandFailure(userResult, "prepare");
   if (userFailure) return userFailure;
@@ -174,7 +185,7 @@ async function prepareGitHub(target: GitHubTarget, signal: AbortSignal): Promise
   if (!user || typeof user.login !== "string" || !user.login) return { status: "failed", error_code: "provider_auth_unavailable" };
 
   const repoResult = await runProviderCommand("github", "gh", ["api", "repos/" + target.repository], {
-    signal, timeoutMs: 20_000, captureStdout: true,
+    signal, timeoutMs: Math.max(1, Math.min(20_000, deadline - Date.now())), captureStdout: true,
   });
   const repoFailure = commandFailure(repoResult, "prepare");
   if (repoFailure) return repoFailure;
@@ -187,7 +198,7 @@ async function prepareGitHub(target: GitHubTarget, signal: AbortSignal): Promise
   if (target.kind === "github_environment_secret" || target.kind === "github_environment_variable") {
     const envResult = await runProviderCommand("github", "gh", [
       "api", "repos/" + target.repository + "/environments/" + encodeURIComponent(target.environment),
-    ], { signal, timeoutMs: 20_000, captureStdout: true });
+    ], { signal, timeoutMs: Math.max(1, Math.min(20_000, deadline - Date.now())), captureStdout: true });
     const envFailure = commandFailure(envResult, "prepare");
     if (envFailure) return envFailure;
     const environment = parseJson(envResult.stdout);
@@ -200,11 +211,11 @@ async function prepareGitHub(target: GitHubTarget, signal: AbortSignal): Promise
 }
 
 async function prepareCloudflare(
-  target: Extract<AgentSecureInputTarget, { kind: "cloudflare_worker_secret" }>, signal: AbortSignal,
+  target: Extract<AgentSecureInputTarget, { kind: "cloudflare_worker_secret" }>, signal: AbortSignal, deadline: number,
 ): Promise<AgentSecureInputPrincipal | SecureInputOutcome> {
   const identityResult = await runProviderCommand("cloudflare", "wrangler",
     ["whoami", "--account", target.account_id, "--json"],
-    { accountId: target.account_id, signal, timeoutMs: 20_000, captureStdout: true });
+    { accountId: target.account_id, signal, timeoutMs: Math.max(1, Math.min(20_000, deadline - Date.now())), captureStdout: true });
   const identityFailure = commandFailure(identityResult, "prepare");
   if (identityFailure) return identityFailure;
   const identityData = parseJson(identityResult.stdout);
@@ -216,7 +227,7 @@ async function prepareCloudflare(
   const args = ["deployments", "list", "--name", target.worker_name, "--json"];
   if (target.environment !== "default") args.push("--env", target.environment);
   const workerResult = await runProviderCommand("cloudflare", "wrangler", args, {
-    accountId: target.account_id, signal, timeoutMs: 20_000, captureStdout: true,
+    accountId: target.account_id, signal, timeoutMs: Math.max(1, Math.min(20_000, deadline - Date.now())), captureStdout: true,
   });
   const workerFailure = commandFailure(workerResult, "prepare");
   if (workerFailure) return workerFailure;
@@ -235,11 +246,12 @@ export async function prepareSecureInputProvider(
 ): Promise<AgentSecureInputPrincipal | SecureInputOutcome | undefined> {
   if (target.kind === "task_process") return undefined;
   if (signal.aborted) return { status: "failed", error_code: "execution_interrupted" };
+  const deadline = Date.now() + 25_000;
   if (target.kind === "github_repository_secret" || target.kind === "github_repository_variable" ||
       target.kind === "github_environment_secret" || target.kind === "github_environment_variable") {
-    return prepareGitHub(target, signal);
+    return prepareGitHub(target, signal, deadline);
   }
-  return prepareCloudflare(target as Extract<AgentSecureInputTarget, { kind: "cloudflare_worker_secret" }>, signal);
+  return prepareCloudflare(target as Extract<AgentSecureInputTarget, { kind: "cloudflare_worker_secret" }>, signal, deadline);
 }
 
 export async function executeSecureInputProvider(

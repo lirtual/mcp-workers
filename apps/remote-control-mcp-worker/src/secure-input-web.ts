@@ -51,6 +51,25 @@ const form = document.getElementById("secure-form"), field = document.getElement
 const submit = document.getElementById("submit"), status = document.getElementById("status");
 let ownerToken = null;
 function text(id, value) { document.getElementById(id).textContent = value == null ? "—" : String(value); }
+function effectAndRecovery(target) {
+  if (target.kind === "task_process") return {
+    effect: "Deliver this one-time value to the named running process through its input stream.",
+    recovery: "Bytes already delivered cannot be recalled. The process lifetime bounds future reuse."
+  };
+  if (target.kind.startsWith("github_")) return {
+    effect: "Set or replace the named GitHub " + (target.kind.endsWith("_variable") ? "Variable" : "Secret") +
+      (target.environment ? " for the selected repository Environment." : " for the selected repository."),
+    recovery: "The previous Secret value cannot be read back; recover by setting a replacement or removing it. This does not deploy code by itself."
+  };
+  if (target.kind === "cloudflare_worker_secret") return target.mode === "deploy" ? {
+    effect: "Set the Worker Secret and immediately create and deploy a new Worker version.",
+    recovery: "The previous Secret value cannot be read back. Recovery requires replacing the Secret and, if needed, separately deploying a known-good version."
+  } : {
+    effect: "Set the Worker Secret on a new version without deploying it.",
+    recovery: "The new version stays inactive until separately deployed. The previous Secret value cannot be read back."
+  };
+  return { effect: "Review the exact target operation.", recovery: "Check the original request if the result is uncertain; do not resubmit." };
+}
 function showState(value) {
   text("state", value.state);
   const pending = value.state === "pending";
@@ -71,6 +90,10 @@ async function details() {
 async function refresh() {
   const value = await details();
   text("purpose", value.purpose); text("target", JSON.stringify(value.target));
+  const impact = effectAndRecovery(value.target);
+  text("effect", impact.effect); text("recovery", impact.recovery);
+  text("production", value.is_production ? "Production target: separate explicit authorization required" : "Caller marked this non-production. Verify the exact resource; the page does not independently verify that classification.");
+  document.getElementById("production-authorization").hidden = !value.is_production;
   text("execution", JSON.stringify(value.execution));
   text("principal", value.provider_principal ? JSON.stringify(value.provider_principal) : "Not applicable");
   text("expires", new Date(value.expires_at).toLocaleString()); showState(value);
@@ -91,12 +114,17 @@ form.addEventListener("submit", async event => {
   if (submit.disabled || !ownerToken) return;
   const value = field.value;
   if (!value.trim()) { status.textContent = "Enter a non-empty value."; return; }
+  const targetConfirmed = document.getElementById("target-confirmed").checked;
+  const productionAuthorized = document.getElementById("production-authorized").checked;
+  if (!targetConfirmed || (document.getElementById("production-authorization").hidden === false && !productionAuthorized)) {
+    status.textContent = "Confirm the exact target and separately authorize the production effect."; return;
+  }
   field.value = ""; submit.disabled = true; status.textContent = "Submitting once. Do not submit again.";
   try {
     const response = await fetch("/secure-input/" + requestId + "/submit", {
       method: "POST", cache: "no-store",
       headers: { authorization: "Bearer " + ownerToken, "content-type": "application/json" },
-      body: JSON.stringify({ secret: value })
+      body: JSON.stringify({ secret: value, target_confirmed: targetConfirmed, production_authorized: productionAuthorized })
     });
     const result = await response.json();
     if (!response.ok) { status.textContent = "Input not accepted or request already consumed. Do not retry."; return; }
@@ -125,6 +153,8 @@ button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
 <h2>Review the exact target</h2>
 <p><strong>Purpose</strong></p><pre id="purpose"></pre>
 <p><strong>Target resource and operation</strong></p><pre id="target"></pre>
+<p><strong>Effect</strong></p><pre id="effect"></pre>
+<p><strong>Recovery</strong></p><pre id="recovery"></pre>
 <p><strong>Execution location</strong></p><pre id="execution"></pre>
 <p><strong>Provider principal</strong></p><pre id="principal"></pre>
 <p><strong>Expires</strong> <span id="expires"></span></p>
@@ -132,6 +162,10 @@ button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
 <form id="secure-form" hidden>
 <label for="secret">Credential value</label>
 <textarea id="secret" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
+<p id="production" class="warning"></p>
+<label><input id="target-confirmed" type="checkbox" required> I verified the exact target and authorize this one-time delivery.</label>
+<div id="production-authorization" hidden><p class="warning">Production writes may persist a secret and may deploy a Worker version. Recovery may require replacing the value or reverting a separate deployment.</p>
+<label><input id="production-authorized" type="checkbox"> I separately authorize this production write/deployment.</label></div>
 <p class="warning">Submitted once to the bound Agent. Never paste this value into ChatGPT.</p>
 <button id="submit" type="submit">Submit once</button>
 </form>
@@ -187,14 +221,17 @@ export async function handleSecureInput(
       return json(result, response.status);
     } catch { return json({ error: "unavailable" }, 503); }
   }
-  if (!exact(body, ["secret"]) || !validateSecureInputSecret(body.secret)) {
+  if (!exact(body, ["secret", "target_confirmed", "production_authorized"]) ||
+      body.target_confirmed !== true || typeof body.production_authorized !== "boolean" ||
+      !validateSecureInputSecret(body.secret)) {
     return json({ error: "bad_request" }, 400);
   }
   let secret = body.secret;
   try {
     const response = await owner.fetch("https://v2.internal/secure-input/submit", {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ owner_user_id: ownerUserId, request_id: requestId, secret }),
+      body: JSON.stringify({ owner_user_id: ownerUserId, request_id: requestId, secret,
+        target_confirmed: body.target_confirmed, production_authorized: body.production_authorized }),
     });
     secret = "";
     body.secret = "";

@@ -47,6 +47,8 @@ export interface SecureInputRecord {
   target: SecureInputTarget;
   execution: SecureInputExecution;
   provider_principal?: SecureInputProviderPrincipal;
+  is_production: boolean;
+  production_authorized_at?: number;
   target_binding: string;
   state: SecureInputState;
   created_at: number;
@@ -62,6 +64,7 @@ export type ParsedSecureInputRequest = {
   purpose: string;
   target: SecureInputTarget;
   execution: { device_id: string };
+  is_production: boolean;
 };
 
 const exact = (value: Record<string, unknown>, keys: string[]) =>
@@ -73,7 +76,9 @@ const cleanText = (value: unknown, max: number): value is string =>
   value.trim() === value && !/[\x00-\x1f\x7f]/.test(value);
 
 export function parseSecureInputRequest(value: unknown): ParsedSecureInputRequest | null {
-  if (!object(value) || !exact(value, ["purpose", "execution", "target"]) ||
+  if (!object(value) || (!exact(value, ["purpose", "execution", "target"]) &&
+      !exact(value, ["purpose", "execution", "target", "is_production"])) ||
+      (value.is_production !== undefined && typeof value.is_production !== "boolean") ||
       !cleanText(value.purpose, 256) || !object(value.execution) ||
       !exact(value.execution, ["device_id"]) || typeof value.execution.device_id !== "string" ||
       !ID.test(value.execution.device_id) || !object(value.target)) return null;
@@ -105,7 +110,8 @@ export function parseSecureInputRequest(value: unknown): ParsedSecureInputReques
     target = { kind: t.kind, account_id: t.account_id, worker_name: t.worker_name,
       environment: t.environment, mode: t.mode, name: t.name };
   } else return null;
-  return { purpose: value.purpose, target, execution: { device_id: value.execution.device_id } };
+  return { purpose: value.purpose, target, execution: { device_id: value.execution.device_id },
+    is_production: value.is_production === undefined ? true : value.is_production };
 }
 
 export function validateSecureInputSecret(value: unknown): value is string {
@@ -117,11 +123,12 @@ export function validateSecureInputSecret(value: unknown): value is string {
 }
 
 export async function secureInputTargetBinding(record: Pick<SecureInputRecord,
-  "request_id" | "task_id" | "owner_user_id" | "purpose" | "target" | "execution"> &
+  "request_id" | "task_id" | "owner_user_id" | "purpose" | "target" | "execution" | "is_production"> &
   Partial<Pick<SecureInputRecord, "provider_principal">>): Promise<string> {
   const canonical = JSON.stringify({
     request_id: record.request_id, task_id: record.task_id, owner_user_id: record.owner_user_id,
     purpose: record.purpose, target: record.target, execution: record.execution,
+    is_production: record.is_production,
     ...(record.provider_principal ? { provider_principal: record.provider_principal } : {}),
   });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
@@ -139,7 +146,7 @@ export async function createSecureInputRecord(
   const requestId = crypto.randomUUID();
   const base = {
     request_id: requestId, task_id: requestId, owner_user_id: ownerUserId,
-    purpose: input.purpose, target: input.target, execution,
+    purpose: input.purpose, target: input.target, execution, is_production: input.is_production,
     ...(providerPrincipal ? { provider_principal: providerPrincipal } : {}),
   };
   const record: SecureInputRecord = {
@@ -203,19 +210,24 @@ export async function cancelSecureInputRecord(
 
 /** Atomic one-time consume. Secret bytes are deliberately not an argument. */
 export async function consumeSecureInputRecord(
-  store: SecureInputStore, requestId: string, ownerUserId: string, now = Date.now(),
+  store: SecureInputStore, requestId: string, ownerUserId: string,
+  confirmation: { target_confirmed: boolean; production_authorized: boolean }, now = Date.now(),
 ): Promise<{ status: number; body: object; record?: SecureInputRecord }> {
   if (!ID.test(requestId)) return reject(400, "bad_request");
   return store.transaction(async tx => {
     const current = await tx.get<SecureInputRecord>(keyFor(requestId));
     if (!current || current.owner_user_id !== ownerUserId) return reject(404, "not_found");
     if (current.state !== "pending") return reject(409, "already_consumed");
+    if (!confirmation.target_confirmed || (current.is_production && !confirmation.production_authorized)) {
+      return reject(403, current.is_production ? "production_authorization_required" : "target_confirmation_required");
+    }
     if (current.expires_at <= now) {
       await tx.put(keyFor(requestId), { ...current, state: "expired", updated_at: now });
       return reject(410, "expired");
     }
     const consumed: SecureInputRecord = {
       ...current, state: "unknown", consumed_at: now, updated_at: now,
+      ...(current.is_production ? { production_authorized_at: now } : {}),
     };
     await tx.put(keyFor(requestId), consumed);
     return { status: 200, body: { request_id: requestId, state: "unknown" }, record: consumed };
@@ -268,9 +280,10 @@ export async function updateSecureInputStatus(
 export function publicSecureInputRecord(record: SecureInputRecord): object {
   return {
     request_id: record.request_id, task_id: record.task_id, purpose: record.purpose,
-    target: record.target,
+    target: record.target, is_production: record.is_production,
     execution: {
       device_id: record.execution.device_id, grant_type: record.execution.grant_type,
+      ...(record.execution.session_attempt_id ? { session_attempt_id: record.execution.session_attempt_id } : {}),
       ...(record.execution.session_run_id ? { session_run_id: record.execution.session_run_id } : {}),
       ...(record.execution.session_run_attempt ? { session_run_attempt: record.execution.session_run_attempt } : {}),
       ...(record.execution.session_workflow_name ? { session_workflow_name: record.execution.session_workflow_name } : {}),

@@ -8,6 +8,7 @@ import {
 } from "../src/v2-secure-input.ts";
 
 const MINUTE = 60_000;
+const confirmed = { target_confirmed: true, production_authorized: true } as const;
 function makeStore() {
   const rows = new Map<string, unknown>();
   let tail = Promise.resolve();
@@ -69,6 +70,7 @@ test("request metadata binds target and execution epoch without storing credenti
   assert.equal(record.owner_user_id, "owner_user_1");
   assert.equal(record.execution.epoch, "current-epoch");
   assert.equal(record.provider_principal?.identity, "lirtual");
+  assert.equal(record.is_production, true);
   assert.equal(record.expires_at, now + 5 * MINUTE);
   assert.match(record.target_binding, /^[a-f0-9]{64}$/);
   assert.equal(await secureInputTargetBinding(record), record.target_binding);
@@ -90,8 +92,8 @@ test("secret validation rejects empty, NUL and oversized values", () => {
 test("consumption is atomic and a request can be submitted only once", async () => {
   const store = makeStore(), record = await createPending(store);
   const results = await Promise.all([
-    consumeSecureInputRecord(store as never, record.request_id, "owner_user_1"),
-    consumeSecureInputRecord(store as never, record.request_id, "owner_user_1"),
+    consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed),
+    consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed),
   ]);
   assert.equal(results.filter(result => result.status === 200).length, 1);
   assert.equal(results.filter(result => result.status === 409).length, 1);
@@ -108,19 +110,19 @@ test("owner mismatch, expiry and cancellation cannot consume a request", async (
   const store = makeStore(), now = 1_800_000_000_000;
   const record = await createPending(store, now);
   assert.equal((await getSecureInputRecord(store as never, record.request_id, "other-owner", now)).status, 404);
-  assert.equal((await consumeSecureInputRecord(store as never, record.request_id, "other-owner", now)).status, 404);
+  assert.equal((await consumeSecureInputRecord(store as never, record.request_id, "other-owner", confirmed, now)).status, 404);
   assert.equal((await cancelSecureInputRecord(store as never, record.request_id, "owner_user_1", now)).status, 200);
-  assert.equal((await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", now)).status, 409);
+  assert.equal((await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed, now)).status, 409);
 
   const expired = await createPending(store, now);
-  assert.equal((await consumeSecureInputRecord(store as never, expired.request_id, "owner_user_1", expired.expires_at)).status, 410);
+  assert.equal((await consumeSecureInputRecord(store as never, expired.request_id, "owner_user_1", confirmed, expired.expires_at)).status, 410);
   assert.equal((await getSecureInputRecord(store as never, expired.request_id, "owner_user_1", expired.expires_at)).status, 200);
   assert.equal((store.rows.get("secure-input:" + expired.request_id) as SecureInputRecord).state, "expired");
 });
 
 test("Agent status updates are bound to the exact device epoch and monotonic state", async () => {
   const store = makeStore(), record = await createPending(store);
-  await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1");
+  await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed);
   await startSecureInputDispatch(store as never, record.request_id, deviceId, "current-epoch");
   assert.equal((await updateSecureInputStatus(store as never, record.request_id, randomUUID(), "current-epoch", "accepted")).status, 404);
   assert.equal((await updateSecureInputStatus(store as never, record.request_id, deviceId, "old-epoch", "accepted")).status, 404);
@@ -136,10 +138,22 @@ test("Agent status updates are bound to the exact device epoch and monotonic sta
 test("stale accepted/running requests become unknown, never replayed", async () => {
   const store = makeStore(), now = 1_800_000_000_000;
   const record = await createPending(store, now);
-  await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", now);
+  await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed, now);
   await startSecureInputDispatch(store as never, record.request_id, deviceId, "current-epoch", now);
   await updateSecureInputStatus(store as never, record.request_id, deviceId, "current-epoch", "accepted", undefined, now + 1);
   const result = await getSecureInputRecord(store as never, record.request_id, "owner_user_1", now + 3 * MINUTE);
   assert.equal(result.status, 200);
   assert.equal((result.body as SecureInputRecord).state, "unknown");
+});
+
+
+test("production delivery requires a separate explicit authorization before one-time consume", async () => {
+  const store = makeStore(), record = await createPending(store);
+  const denied = await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1",
+    { target_confirmed: true, production_authorized: false });
+  assert.equal(denied.status, 403);
+  assert.equal((store.rows.get("secure-input:" + record.request_id) as SecureInputRecord).state, "pending");
+  const accepted = await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed);
+  assert.equal(accepted.status, 200);
+  assert.equal(typeof accepted.record?.production_authorized_at, "number");
 });

@@ -7,7 +7,7 @@ import { secureInputTargetBinding, validateSecureInputSecret, type SecureInputRe
 
 type Store = Pick<DurableObjectStorage, "get" | "put" | "delete" | "transaction">;
 type Action = "stop" | "resume" | "secure_input";
-type Challenge = { action: Action; nonce: string; generation: number; expires_at: number; request_id?: string; target_binding?: string };
+type Challenge = { action: Action; nonce: string; generation: number; expires_at: number; request_id?: string; target_binding?: string; target_confirmed?: boolean; production_authorized?: boolean };
 type CommitResult = { status: number; body: object; secureInput?: { record: SecureInputRecord; secret: string } };
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const NONCE = /^[A-Za-z0-9_-]{24}$/;
@@ -21,8 +21,13 @@ const reject = (status: number, error: string) => ({ status, body: { error } });
 export function ownerIntentTranscript(action: "stop" | "resume", id: string, nonce: string, generation: number, publicKey: string): string {
   return "remote-control:v2:owner-intent:v1:" + action + ":" + id + ":" + generation + ":" + nonce + ":" + publicKey;
 }
-export function secureInputOwnerIntentTranscript(requestId: string, id: string, generation: number, binding: string, nonce: string, publicKey: string): string {
-  return "remote-control:v2:secure-input-owner-intent:v1:" + requestId + ":" + id + ":" + generation + ":" + binding + ":" + nonce + ":" + publicKey;
+export function secureInputOwnerIntentTranscript(
+  requestId: string, id: string, generation: number, binding: string, nonce: string,
+  targetConfirmed: boolean, productionAuthorized: boolean, publicKey: string,
+): string {
+  return "remote-control:v2:secure-input-owner-intent:v1:" + requestId + ":" + id + ":" +
+    generation + ":" + binding + ":" + nonce + ":" + Number(targetConfirmed) + ":" +
+    Number(productionAuthorized) + ":" + publicKey;
 }
 
 export async function issueOwnerIntentChallenge(store: Store, input: unknown, idleMs = PERMANENT_IDLE_MS): Promise<{ status: number; body: object }> {
@@ -54,11 +59,14 @@ export async function issueOwnerIntentChallenge(store: Store, input: unknown, id
       purpose: request.purpose, target: request.target,
       execution: {
         device_id: request.execution.device_id, grant_type: request.execution.grant_type,
+        ...(request.execution.session_attempt_id ? { session_attempt_id: request.execution.session_attempt_id } : {}),
         ...(request.execution.session_run_id ? { session_run_id: request.execution.session_run_id } : {}),
         ...(request.execution.session_run_attempt ? { session_run_attempt: request.execution.session_run_attempt } : {}),
         ...(request.execution.session_workflow_name ? { session_workflow_name: request.execution.session_workflow_name } : {}),
+        ...(request.execution.expires_at ? { expires_at: request.execution.expires_at } : {}),
       },
       ...(request.provider_principal ? { provider_principal: request.provider_principal } : {}),
+      is_production: request.is_production,
     } };
   }
   if (Object.keys(p).sort().join(",") !== "action,device_id" ||
@@ -83,7 +91,9 @@ async function validSignature(device: V2Device, rec: Challenge, proof: unknown):
     if (sig.length !== 64) return false;
     const key = await crypto.subtle.importKey("spki", der.buffer as ArrayBuffer, { name: "Ed25519" }, false, ["verify"]);
     const transcript = rec.action === "secure_input"
-      ? secureInputOwnerIntentTranscript(rec.request_id!, device.device_id, rec.generation, rec.target_binding!, rec.nonce, device.public_key)
+      ? secureInputOwnerIntentTranscript(
+        rec.request_id!, device.device_id, rec.generation, rec.target_binding!, rec.nonce,
+        rec.target_confirmed === true, rec.production_authorized === true, device.public_key)
       : ownerIntentTranscript(rec.action, device.device_id, rec.nonce, rec.generation, device.public_key);
     return crypto.subtle.verify("Ed25519", key, sig.buffer as ArrayBuffer,
       new TextEncoder().encode(transcript).buffer as ArrayBuffer);
@@ -91,8 +101,9 @@ async function validSignature(device: V2Device, rec: Challenge, proof: unknown):
 }
 
 async function commitSecureInputOwnerIntent(store: Store, p: Record<string, unknown>): Promise<CommitResult> {
-  if (Object.keys(p).sort().join(",") !== "action,device_id,generation,nonce,proof,request_id,secret" ||
+  if (Object.keys(p).sort().join(",") !== "action,device_id,generation,nonce,production_authorized,proof,request_id,secret,target_confirmed" ||
       p.action !== "secure_input" || typeof p.device_id !== "string" || !ID.test(p.device_id) ||
+      p.target_confirmed !== true || typeof p.production_authorized !== "boolean" ||
       typeof p.request_id !== "string" || !ID.test(p.request_id) ||
       typeof p.nonce !== "string" || !NONCE.test(p.nonce) || !safe(p.generation) ||
       !validateSecureInputSecret(p.secret)) return reject(400, "bad_request");
@@ -106,7 +117,9 @@ async function commitSecureInputOwnerIntent(store: Store, p: Record<string, unkn
       challenge.nonce !== p.nonce || challenge.generation !== p.generation ||
       challenge.expires_at <= Date.now() || !request || request.state !== "pending" ||
       request.expires_at <= Date.now() || await secureInputTargetBinding(request) !== challenge.target_binding ||
-      !await validSignature(device, challenge, p.proof)) return reject(401, "unauthorized");
+      (request.is_production && p.production_authorized !== true) ||
+      !await validSignature(device, { ...challenge, target_confirmed: p.target_confirmed,
+        production_authorized: p.production_authorized } as Challenge, p.proof)) return reject(401, "unauthorized");
 
   const secret = p.secret;
   const result = await store.transaction(async tx => {
@@ -133,6 +146,7 @@ async function commitSecureInputOwnerIntent(store: Store, p: Record<string, unkn
     }
     const consumed: SecureInputRecord = {
       ...currentRequest, state: "unknown", consumed_at: now, updated_at: now,
+      ...(currentRequest.is_production ? { production_authorized_at: now } : {}),
     };
     await tx.put("secure-input:" + p.request_id, consumed);
     await tx.delete(keyFor(device.device_id));

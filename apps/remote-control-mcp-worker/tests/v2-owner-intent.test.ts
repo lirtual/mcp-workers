@@ -95,10 +95,16 @@ test('secure input Owner Intent binds the exact request and atomically consumes 
   assert.equal(challenge.status,200);
   const c=challenge.body as {nonce:string;generation:number;target_binding:string};
   const proof=Buffer.from(sign(null,Buffer.from(secureInputOwnerIntentTranscript(
-   record.request_id,ownerId,c.generation,c.target_binding,c.nonce,owner.public_key,
+   record.request_id,ownerId,c.generation,c.target_binding,c.nonce,true,true,owner.public_key,
   )),createPrivateKey(material.privateKeyPem))).toString('base64url');
   const input={action:'secure_input',device_id:ownerId,request_id:record.request_id,
-   nonce:c.nonce,generation:c.generation,proof,secret:'one-time-value'};
+   nonce:c.nonce,generation:c.generation,target_confirmed:true,production_authorized:true,proof,secret:'one-time-value'};
+  const nonProductionProof=Buffer.from(sign(null,Buffer.from(secureInputOwnerIntentTranscript(
+   record.request_id,ownerId,c.generation,c.target_binding,c.nonce,true,false,owner.public_key,
+  )),createPrivateKey(material.privateKeyPem))).toString('base64url');
+  const denied=await commitOwnerIntent(store as never,{...input,production_authorized:false,proof:nonProductionProof});
+  assert.equal(denied.status,401);
+  assert.equal((rows.get('secure-input:'+record.request_id) as {state:string}).state,'pending');
   const committed=await commitOwnerIntent(store as never,input);
   assert.equal(committed.status,200);
   assert.deepEqual(committed.body,{status:'unknown',request_id:record.request_id});
@@ -106,6 +112,7 @@ test('secure input Owner Intent binds the exact request and atomically consumes 
   const stored=rows.get('secure-input:'+record.request_id) as Record<string,unknown>;
   assert.equal(stored.state,'unknown');
   assert.equal(typeof stored.consumed_at,'number');
+  assert.equal(typeof stored.production_authorized_at,'number');
   assert.equal(Object.hasOwn(stored,'secret'),false);
   assert.equal(Object.hasOwn(stored,'secret_digest'),false);
   assert.equal((await commitOwnerIntent(store as never,input)).status,401);
@@ -138,11 +145,12 @@ test('secure input intent refuses a changed target epoch before consuming the re
   assert.equal(challenge.status,200);
   const c=challenge.body as {nonce:string;generation:number;target_binding:string};
   const proof=Buffer.from(sign(null,Buffer.from(secureInputOwnerIntentTranscript(
-   record.request_id,ownerId,c.generation,c.target_binding,c.nonce,owner.public_key,
+   record.request_id,ownerId,c.generation,c.target_binding,c.nonce,true,true,owner.public_key,
   )),createPrivateKey(material.privateKeyPem))).toString('base64url');
   rows.set('session:epoch:'+targetId,'target-epoch-2');
   const result=await commitOwnerIntent(store as never,{action:'secure_input',device_id:ownerId,
-   request_id:record.request_id,nonce:c.nonce,generation:c.generation,proof,secret:'value'});
+   request_id:record.request_id,nonce:c.nonce,generation:c.generation,
+   target_confirmed:true,production_authorized:true,proof,secret:'value'});
   assert.equal(result.status,409);
   assert.equal((rows.get('secure-input:'+record.request_id) as {state:string}).state,'pending');
  }finally{Date.now=initial;}

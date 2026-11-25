@@ -33,6 +33,7 @@ use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tungstenite::Message;
 use url::Url;
+use zeroize::Zeroize;
 
 #[derive(Debug, Error)]
 pub enum SessionError {
@@ -184,6 +185,13 @@ impl ExecutionLease {
     pub(crate) fn same_incarnation(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.live, &other.live)
     }
+
+    pub(crate) fn response(&self, frame: String) -> ExecutionResponse {
+        ExecutionResponse {
+            frame,
+            lease: self.clone(),
+        }
+    }
 }
 
 /// An operation may only begin while its connection lease remains active.
@@ -224,6 +232,26 @@ impl ExecutionRequest {
 pub struct ExecutionResponse {
     frame: String,
     lease: ExecutionLease,
+}
+
+/// Dedicated bounded queue item for Secure Input. It never enters the
+/// generic operation request queue or receipt/digest path.
+pub struct SecureInputRequest {
+    command: crate::secure_input::SecureInputCommand,
+    lease: ExecutionLease,
+}
+
+impl SecureInputRequest {
+    fn new(command: crate::secure_input::SecureInputCommand, lease: ExecutionLease) -> Self {
+        Self { command, lease }
+    }
+
+    pub(crate) fn command_mut(&mut self) -> &mut crate::secure_input::SecureInputCommand {
+        &mut self.command
+    }
+    pub(crate) fn lease(&self) -> &ExecutionLease {
+        &self.lease
+    }
 }
 
 pub struct AuthenticatedSocket {
@@ -470,6 +498,7 @@ impl AuthenticatedSocket {
         incoming: &SyncSender<ExecutionRequest>,
         outgoing: &mut Receiver<ExecutionResponse>,
         managed: &Arc<ManagedSessions>,
+        secure_input: &SyncSender<SecureInputRequest>,
     ) -> Result<(), SessionError> {
         let lease = ExecutionLease::new(stop);
         let result = self.pump_scoped(
@@ -481,7 +510,10 @@ impl AuthenticatedSocket {
                 CleanupState::Confirmed => CleanupStatus::Confirmed,
                 CleanupState::Unknown => CleanupStatus::Uncertain,
             },
-            FramePolicy::NativeManaged(Arc::clone(managed)),
+            FramePolicy::NativeManaged {
+                managed: Arc::clone(managed),
+                secure_input: secure_input.clone(),
+            },
         );
         lease.revoke();
         result
@@ -539,7 +571,7 @@ impl AuthenticatedSocket {
                 if stop.load(Ordering::Acquire) {
                     return Ok(());
                 }
-                if let Some(frame) = frame {
+                if let Some(mut frame) = frame {
                     if let Some(request_id) = revocation_request_id(&frame)? {
                         lease.revoke(); // Abort queued and in-flight operations before cleanup.
                         let status = cleanup();
@@ -557,6 +589,28 @@ impl AuthenticatedSocket {
                         .await;
                         return Err(SessionError::Policy);
                     }
+                    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+                    if let FramePolicy::NativeManaged { secure_input, .. } = &policy {
+                        let kind = serde_json::from_str::<Value>(&frame)
+                            .ok()
+                            .and_then(|value| {
+                                value.get("kind").and_then(Value::as_str).map(str::to_owned)
+                            });
+                        if matches!(
+                            kind.as_deref(),
+                            Some("secure_input_prepare" | "secure_input")
+                        ) {
+                            let parsed = crate::secure_input::parse_command(&frame);
+                            frame.zeroize();
+                            let command = parsed
+                                .map_err(|_| SessionError::Protocol)?
+                                .ok_or(SessionError::Protocol)?;
+                            secure_input
+                                .try_send(SecureInputRequest::new(command, lease.clone()))
+                                .map_err(|_| SessionError::Queue)?;
+                            continue;
+                        }
+                    }
                     let permitted = match &policy {
                         FramePolicy::Any => true,
                         FramePolicy::ReadOnly => parse_read_frame(&frame).is_ok(),
@@ -564,7 +618,7 @@ impl AuthenticatedSocket {
                             crate::native_file::parse_native_file_frame(&frame).is_ok()
                         }
                         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                        FramePolicy::NativeManaged(_) => {
+                        FramePolicy::NativeManaged { .. } => {
                             crate::native_file::parse_native_managed_frame(&frame).is_ok()
                         }
                     };
@@ -682,7 +736,10 @@ enum FramePolicy {
     ReadOnly,
     NativeFiles,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-    NativeManaged(Arc<ManagedSessions>),
+    NativeManaged {
+        managed: Arc<ManagedSessions>,
+        secure_input: SyncSender<SecureInputRequest>,
+    },
 }
 
 struct TransportMode {
@@ -784,6 +841,7 @@ pub struct ManagedTransportConfig {
     pub receipt_health: Arc<AtomicBool>,
     pub timing: HeartbeatTiming,
     pub managed: Arc<ManagedSessions>,
+    pub secure_input: SyncSender<SecureInputRequest>,
     pub on_connected: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_disconnected: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_diagnostic: Option<DiagnosticSink>,
@@ -809,7 +867,10 @@ pub fn maintain_native_managed_transport(
         TransportMode {
             receipt_health: Some(config.receipt_health),
             timing: config.timing,
-            policy: FramePolicy::NativeManaged(config.managed),
+            policy: FramePolicy::NativeManaged {
+                managed: config.managed,
+                secure_input: config.secure_input,
+            },
             on_connected: config.on_connected,
             on_disconnected: config.on_disconnected,
             on_diagnostic: config.on_diagnostic,
@@ -858,9 +919,16 @@ fn maintain_transport_mode(
                             socket.pump_native_file(stop, incoming, outgoing)
                         }
                         #[cfg(any(target_os = "linux", target_os = "macos", windows))]
-                        FramePolicy::NativeManaged(managed) => {
-                            socket.pump_native_managed(stop, incoming, outgoing, managed)
-                        }
+                        FramePolicy::NativeManaged {
+                            managed,
+                            secure_input,
+                        } => socket.pump_native_managed(
+                            stop,
+                            incoming,
+                            outgoing,
+                            managed,
+                            secure_input,
+                        ),
                     };
                     if let Some(on_disconnected) = mode.on_disconnected.as_ref() {
                         on_disconnected();

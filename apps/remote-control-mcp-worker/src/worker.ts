@@ -277,6 +277,7 @@ const REQUEST_SECURE_INPUT_TOOL = {
     type: "object",
     properties: {
       purpose: { type: "string", minLength: 1, maxLength: 256 },
+      is_production: { type: "boolean", default: true, description: "Defaults to production. Set false only when the exact target is verified to be non-production; the Owner must still confirm the target in the secure input page." },
       execution: { type: "object", properties: { device_id: { type: "string", format: "uuid" } }, required: ["device_id"], additionalProperties: false },
       target: { oneOf: SECURE_INPUT_TARGET_SCHEMAS },
     },

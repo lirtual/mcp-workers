@@ -230,11 +230,14 @@ export class V2SecureInputCoordinator {
   private async submit(request: Request): Promise<Response> {
     let body: unknown;
     try { body = await boundedJson(request); } catch { return json({ error: "bad_request" }, 400); }
-    if (!isObject(body) || !exact(body, ["owner_user_id", "request_id", "secret"]) ||
+    if (!isObject(body) || !exact(body, ["owner_user_id", "request_id", "secret", "target_confirmed", "production_authorized"]) ||
         typeof body.owner_user_id !== "string" || !OWNER.test(body.owner_user_id) ||
         typeof body.request_id !== "string" || !ID.test(body.request_id) ||
-        !validateSecureInputSecret(body.secret)) return json({ error: "bad_request" }, 400);
-    const consumed = await consumeSecureInputRecord(this.state.storage, body.request_id, body.owner_user_id);
+        !validateSecureInputSecret(body.secret) || typeof body.target_confirmed !== "boolean" ||
+        typeof body.production_authorized !== "boolean") return json({ error: "bad_request" }, 400);
+    const consumed = await consumeSecureInputRecord(this.state.storage, body.request_id, body.owner_user_id, {
+      target_confirmed: body.target_confirmed, production_authorized: body.production_authorized,
+    });
     if (consumed.status !== 200 || !consumed.record) return json(consumed.body, consumed.status);
     return this.dispatchConsumed(consumed.record, body.secret);
   }

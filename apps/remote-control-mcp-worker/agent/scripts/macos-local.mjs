@@ -214,8 +214,9 @@ export function ownerCliText(root){
   const manager=path.join(root,"apps/remote-control-agent/scripts/macos-local.mjs");
   return '#!/bin/sh\nset -eu\ncase "${1:-}" in\n'+
     '  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'+
+    '  secure-input) [ "$#" -eq 2 ] || exit 2; case "$2" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case "$2" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n'+
     '  *) echo "Use the reviewed macOS installer for install/upgrade." >&2; exit 2 ;;\n'+
-    'esac\nexec '+quote(node)+' '+quote(manager)+' "$1"\n';
+    'esac\nexec '+quote(node)+' '+quote(manager)+' "$@"\n';
 }
 async function approved(key){
   if(!await checked(key,{optional:true,mode:0o600})||
@@ -249,6 +250,103 @@ async function confirm(question){
     });
   });
 }
+export function readHiddenSecret({input=process.stdin,output=process.stdout}={}) {
+  if(!input.isTTY||!output.isTTY||typeof input.setRawMode!=="function")
+    throw Error("Owner terminal required for hidden input.");
+  const priorRaw=!!input.isRaw,buffer=Buffer.alloc(8192);
+  return new Promise((resolve,reject)=>{
+    let length=0,settled=false;
+    const cleanup=()=>{
+      input.off("data",onData);input.off("error",onError);
+      try{input.setRawMode(priorRaw);}catch{}
+      input.pause();
+    };
+    const finish=(error,value)=>{
+      if(settled)return;settled=true;cleanup();output.write("\n");buffer.fill(0);
+      if(error)reject(error);else resolve(value);
+    };
+    const onError=()=>finish(Error("Hidden input failed."));
+    const onData=chunk=>{
+      for(const byte of Buffer.from(chunk)){
+        if(byte===3){finish(Error("Owner cancelled secure input."));return;}
+        if(byte===10||byte===13){
+          try{
+            const value=new TextDecoder("utf-8",{fatal:true}).decode(buffer.subarray(0,length));
+            if(!value.trim()||value.includes("\0"))throw Error();
+            finish(null,value);
+          }catch{finish(Error("Input must be valid UTF-8 and non-empty."));}
+          return;
+        }
+        if(byte===127||byte===8){
+          if(length){length--;while(length>0&&(buffer[length]&0xc0)===0x80)length--;}
+          continue;
+        }
+        if(length>=buffer.length){finish(Error("Input exceeds the 8192-byte limit."));return;}
+        buffer[length++]=byte;
+      }
+    };
+    input.setRawMode(true);input.resume();input.on("data",onData);input.once("error",onError);
+  });
+}
+
+function secureInputEffect(target) {
+  if(target?.kind==="task_process")return [
+    "Deliver this credential once to the named running process input stream.",
+    "Bytes already delivered cannot be recalled; the process lifetime bounds future reuse."];
+  if(typeof target?.kind==="string"&&target.kind.startsWith("github_"))return [
+    "Set or replace the named GitHub "+(target.kind.endsWith("_variable")?"Variable":"Secret")+
+      (target.environment?" for the selected repository Environment.":" for the selected repository."),
+    "The previous Secret value cannot be read back; recover by replacing or removing it. This does not deploy code by itself."];
+  if(target?.kind==="cloudflare_worker_secret")return target.mode==="deploy"?[
+    "Set the Worker Secret and immediately create and deploy a new Worker version.",
+    "The previous Secret value cannot be read back. Recovery requires replacing it and, if needed, separately deploying a known-good version."]: [
+    "Set the Worker Secret on a new version without deploying it.",
+    "The new version stays inactive until separately deployed. The previous Secret value cannot be read back."];
+  return ["Review the exact target operation.","If the result is uncertain, check the same request; do not submit again."];
+}
+
+export async function secureInputMacAction(requestId,{home=os.homedir(),terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
+  ask=confirm,readSecret=readHiddenSecret,getChallenge,sendIntent}={}) {
+  if(process.platform!=="darwin"||!terminal())throw Error("Interactive macOS Owner terminal required.");
+  if(!ID.test(requestId))throw Error("A valid secure input request ID is required.");
+  const identity=path.join(home,...ROOT),macos=path.join(identity,"macos");
+  const key=path.join(identity,"v2-identity.pem"),endpointFile=path.join(macos,"endpoint");
+  await checked(identity,{dir:true});await checked(macos,{dir:true});
+  await checked(key,{mode:0o600});await checked(key+".device-id",{mode:0o600});
+  await checked(endpointFile,{mode:0o600});
+  const endpoint=verifiedEndpoint((await readFile(endpointFile,"utf8")).trim());
+  if(!getChallenge||!sendIntent){
+    const client=await import("../src/v2-session-client.js");
+    getChallenge??=client.getSecureInputOwnerChallenge;
+    sendIntent??=client.sendSignedSecureInputOwnerIntent;
+  }
+  const challenge=await getChallenge(endpoint,key,requestId);
+  const [effect,recovery]=secureInputEffect(challenge.target);
+  process.stdout.write("Secure input request "+requestId+"\nPurpose: "+challenge.purpose+
+    "\nTarget: "+JSON.stringify(challenge.target)+"\nExecution: "+JSON.stringify(challenge.execution)+
+    "\nProvider principal: "+JSON.stringify(challenge.provider_principal??null)+
+    "\nEffect: "+effect+"\nRecovery: "+recovery+
+    "\nClassification: "+(challenge.is_production?"PRODUCTION unless reviewed":"caller marked non-production; verify exact resource")+"\n");
+  if(!await ask("I verified the exact target and authorize this one-time delivery?"))
+    throw Error("Owner declined target confirmation.");
+  let productionAuthorized=false;
+  if(challenge.is_production){
+    if(!await ask("I separately authorize this production write/deployment and accept the stated effect and recovery?"))
+      throw Error("Production authorization declined.");
+    productionAuthorized=true;
+  }else if(!await ask("I independently verified this exact resource is non-production?")){
+    throw Error("Non-production target was not confirmed.");
+  }
+  let secret="";
+  try{
+    process.stdout.write("Credential value (hidden): ");
+    secret=await readSecret();
+    const result=await sendIntent(endpoint,key,challenge,secret,true,productionAuthorized);
+    return {status:"unknown",request_id:result.request_id,
+      message:"Submitted once. Query this same request status before continuing; never retry the input."};
+  }finally{secret="";}
+}
+
 /** Host mutation only after local owner consent and a pinned source candidate. */
 export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,endpoint,
   invoke=run,ask=confirm,online=observeOnline,freezeAgent=freeze,ownerIntent,

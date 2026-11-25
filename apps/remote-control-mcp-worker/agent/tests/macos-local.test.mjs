@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
+import {EventEmitter} from "node:events";
 import {randomUUID} from "node:crypto";
 import {chmod,cp,lstat,mkdir,mkdtemp,readFile,rm,symlink,writeFile} from "node:fs/promises";
 import {spawnSync} from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {acceptsOwnerConfirmation,admitsMacOwnerUpgrade,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,observeOnline,ownedWrite,ownerCliText,parsePlist,plistText,stopLaunchdForSwitch,verifiedEndpoint} from
+import {acceptsOwnerConfirmation,admitsMacOwnerUpgrade,awaitLaunchctlUnregistered,candidateName,checked,launchctlServiceState,localMacAction,observeOnline,ownedWrite,ownerCliText,parsePlist,plistText,readHiddenSecret,stopLaunchdForSwitch,verifiedEndpoint} from
   "../scripts/macos-local.mjs";
 import {parsePermanentMacArgs} from "../src/macos-permanent.ts";
 const ID="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -128,6 +129,31 @@ test("#660 owner-local rca executable quotes paths and refuses unverified comman
   }
   assert.match(script,/status\|stop\|start/);
   assert.ok(script.includes("o'\"'\"'neill"));
+});
+
+test("#1039 owner CLI accepts one validated secure input request ID",async t=>{
+  const root="/Users/owner/.local/share/mcp-workers/remote-control/macos/programs/v0.1.0-darwin-arm64";
+  const script=ownerCliText(root),temp=await mkdtemp(path.join(os.tmpdir(),"rca1039-cli-"));
+  t.after(()=>rm(temp,{recursive:true,force:true}));
+  const file=path.join(temp,"rca");await writeFile(file,script,{mode:0o700});
+  assert.equal(spawnSync("/bin/sh",["-n",file]).status,0);
+  assert.equal(spawnSync("/bin/sh",[file,"secure-input"],{encoding:"utf8"}).status,2);
+  assert.equal(spawnSync("/bin/sh",[file,"secure-input","bad"],{encoding:"utf8"}).status,2);
+  const valid=spawnSync("/bin/sh",[file,"secure-input",ID],{encoding:"utf8"});
+  assert.equal(valid.status,127,"validated ID reaches the version-pinned manager");
+});
+
+test("#1039 hidden input disables echo and decodes split UTF-8 without loss",async()=>{
+  const input=new EventEmitter(),written=[],raw=[];
+  input.isTTY=true;input.isRaw=false;input.setRawMode=value=>{input.isRaw=value;raw.push(value);};
+  input.resume=()=>{};input.pause=()=>{};
+  const output={isTTY:true,write:value=>written.push(value)};
+  const pending=readHiddenSecret({input,output});
+  const bytes=Buffer.from("päss🔑\n");
+  const split=bytes.indexOf(Buffer.from("🔑"))+2;
+  input.emit("data",bytes.subarray(0,split));input.emit("data",bytes.subarray(split));
+  assert.equal(await pending,"päss🔑");
+  assert.deepEqual(raw,[true,false]);assert.deepEqual(written,["\n"]);
 });
 
 test("#660 permanent service accepts only exact approved existing grant and managed generation",()=>{
