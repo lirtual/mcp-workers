@@ -71,6 +71,20 @@ export function verifyMcpNoDispatchEvidence(data,native){
   return EIGHTH_MCP_RUN_ID;
 }
 
+// #1046: reuse the exact prior protected proof only during v22 backfill.
+export function historicalMcpNoDispatchTerminalProof(d1,priorRun,priorJobs){
+  const native=verifyPriorMcpNoDispatchProof(priorRun,priorJobs);
+  const id=verifyMcpNoDispatchEvidence(d1,native);
+  const job=priorJobs.jobs.find(j=>j.id===PRIOR_JOB_ID);
+  const step=job.steps.find(s=>s.name===PRIOR_PROOF_STEP);
+  const at=Date.parse(step.completed_at);
+  requireProof(d1[0].results[0].instance_id===id&&Number.isSafeInteger(at)&&at>0,
+    'historical native identity or observation time unavailable');
+  return {instance_id:id,status:'errored',observed_at:at,
+    historical_source:{release_run_id:priorRun.id,job_id:job.id,step:step.name},
+    no_dispatch_step_id:d1[1].results[0].step_id};
+}
+
 async function main(){
   const d1=JSON.parse(readFileSync(0,'utf8'));
   requireProof(process.env.CLOUDFLARE_API_TOKEN&&process.env.CLOUDFLARE_ACCOUNT_ID,

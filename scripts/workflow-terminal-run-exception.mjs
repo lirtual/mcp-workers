@@ -594,6 +594,25 @@ export function verifyTwelfthTerminalEvidence(d1,native,github){
   return TWELFTH_TERMINAL_RUN_ID;
 }
 
+// #1046 one-time v22 migration: convert the reviewed, expiring native and
+// GitHub evidence into facts, never an exemption or a rewritten outcome.
+export function historicalArtifactTerminalProof(d1,priorRun,priorJobs,github,observedAt){
+  const native=verifyRecentPriorNativeProof(priorRun,priorJobs,'twelfth');
+  verifyTwelfthTerminalEvidence(d1,native,github);
+  const job=priorJobs.jobs.find(j=>j.id===RECENT_PRIOR_JOB_ID);
+  const step=job.steps.find(s=>s.name===RECENT_PROOF_STEPS.twelfth);
+  const at=Date.parse(step.completed_at);
+  const attempt=d1[3].results[0], receipt=d1[4].results[0], run=d1[0].results[0];
+  requireValid(run.instance_id===run.id&&receipt.attempt_id===attempt.attempt_id&&
+    Number.isSafeInteger(at)&&at>0&&Number.isSafeInteger(observedAt)&&observedAt>=at,
+    'historical Artifact proof identity or observation time unavailable');
+  return {instance_id:run.instance_id,status:'complete',observed_at:at,
+    historical_source:{release_run_id:priorRun.id,job_id:job.id,step:step.name},
+    github_attempt:{attempt_id:attempt.attempt_id,repository_id:String(github.repository.id),
+      run_id:github.id,run_attempt:github.run_attempt,workflow_ref:attempt.workflow_ref,
+      head_sha:github.head_sha,conclusion:github.conclusion,observed_at:observedAt}};
+}
+
 async function main() {
   const kind=process.env.TERMINAL_PROOF_KIND;
   requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",

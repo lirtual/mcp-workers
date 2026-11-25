@@ -132,3 +132,32 @@ test('the protected release supplies GitHub read token only to pinned eighth pro
   assert.match(step,/GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(step,/workflow-mcp-no-dispatch-proof\.mjs/);
 });
+
+test('#1046 carries exact no-dispatch terminal fact without rewriting a running Step',async()=>{
+  const {historicalMcpNoDispatchTerminalProof}=await import('./workflow-mcp-no-dispatch-proof.mjs');
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const {run,jobs}=priorSuccess();
+  jobs.jobs[0].steps[0].completed_at='2026-11-02T13:15:36Z';
+  const {d1}=sample();
+  const r=d1[0].results[0];r.instance_id=r.id;
+  const evidence={steps:d1[1].results,attempts:[],sessions:[],callbacks:[],children:[],
+    invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],
+    childCancellations:[],gates:[],approvals:[],waits:[]};
+  const proof=historicalMcpNoDispatchTerminalProof(d1,run,jobs);
+  assert.equal(proof.observed_at,Date.parse('2026-11-02T13:15:36Z'));
+  assert.deepEqual(verifyWorkflowTerminalEvidence(r,proof,evidence),proof);
+  assert.equal(r.outcome,'indeterminate');
+  assert.equal(evidence.steps[0].status,'running');
+  const {no_dispatch_step_id,...native}=proof;
+  assert.throws(()=>verifyWorkflowTerminalEvidence(r,native,evidence),/terminal evidence/);
+  assert.throws(()=>verifyWorkflowTerminalEvidence(r,{...proof,status:'complete'},evidence),/terminal evidence/);
+  assert.throws(()=>verifyWorkflowTerminalEvidence(r,{...proof,no_dispatch_step_id:'other'},evidence),/terminal evidence/);
+  for(const bad of [
+    {...evidence,mcpFences:[{run_id:r.id,step_id:'create_note'}]},
+    {...evidence,steps:[{...evidence.steps[0],status:'succeeded'}]},
+    {...evidence,steps:[...evidence.steps,{run_id:r.id,step_id:'other',status:'running'}]},
+    {...evidence,invocations:[{run_id:r.id,step_id:'create_note'}]},
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(r,proof,bad),/terminal evidence/);
+  const changed=structuredClone(d1);changed[2].results.push({run_id:r.id,step_id:'create_note'});
+  assert.throws(()=>historicalMcpNoDispatchTerminalProof(changed,run,jobs),/blocked/);
+});

@@ -752,14 +752,46 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
   require(keys.every(key=>Array.isArray(evidence?.[key])),'incomplete D1 projection');
   for(const key of keys.filter(k=>k!=='children'&&k!=='childCancellations'))
     require(evidence[key].every(row=>row.run_id===run.id),key+' identity mismatch');
-  require(evidence.steps.every(step=>['succeeded','failed','skipped','cancelled','indeterminate'].includes(step.status)),
-    'Step execution unresolved');
+  if(native.no_dispatch_step_id){
+    // The historical failed MCP invocation was independently proven never
+    // dispatched. Its stale running Step is not physical activity.
+    require(native.status==='errored'&&run.outcome==='indeterminate'&&
+      run.error_code==='execution_interrupted'&&native.historical_source&&
+      evidence.steps.length===1&&evidence.steps[0].step_id===native.no_dispatch_step_id&&
+      evidence.steps[0].status==='running'&&evidence.steps[0].error_code===null&&
+      keys.filter(key=>key!=='steps').every(key=>evidence[key].length===0),
+      'no-dispatch Step identity or related execution unresolved');
+  }else{
+    require(evidence.steps.every(step=>['succeeded','failed','skipped','cancelled','indeterminate'].includes(step.status)),
+      'Step execution unresolved');
+  }
   const positive=n=>Number.isSafeInteger(n)&&n>0;
+  let claimedProofUsed=false;
   for(const attempt of evidence.attempts){
     require(evidence.steps.some(step=>step.step_id===attempt.step_id),'Attempt Step identity mismatch');
     if(attempt.state==='rejected'){
       require(attempt.candidate_run_id===null&&attempt.candidate_run_attempt===null&&
         attempt.owner_run_id===null&&attempt.owner_run_attempt===null,'rejected Attempt has a physical identity');
+      continue;
+    }
+    if(attempt.state==='claimed'&&native.github_attempt){
+      const fact=native.github_attempt;
+      // This is a physical Task proof, not a signed result alone. It is
+      // bound to the unchanged registered Attempt and delivered receipt.
+      require(!claimedProofUsed&&attempt.capability_id==='github.action'&&
+        fact.attempt_id===attempt.attempt_id&&fact.repository_id===attempt.repository_id&&
+        positive(fact.run_id)&&positive(fact.run_attempt)&&
+        fact.run_id===attempt.candidate_run_id&&fact.run_id===attempt.owner_run_id&&
+        fact.run_attempt===attempt.candidate_run_attempt&&fact.run_attempt===attempt.owner_run_attempt&&
+        typeof fact.workflow_ref==='string'&&fact.workflow_ref===attempt.workflow_ref&&
+        fact.workflow_ref.endsWith('@'+attempt.ref)&&/^[0-9a-f]{40}$/.test(fact.head_sha)&&
+        (attempt.resolved_sha===null||fact.head_sha===attempt.resolved_sha)&&
+        fact.conclusion==='success'&&positive(fact.observed_at)&&
+        !evidence.sessions.some(s=>s.step_id===attempt.step_id)&&
+        evidence.callbacks.some(c=>c.attempt_id===attempt.attempt_id&&c.step_id===attempt.step_id&&
+          c.outcome==='succeeded'&&c.notification_delivered===1),
+        'claimed Attempt '+attempt.attempt_id+' physical proof or delivered receipt unresolved');
+      claimedProofUsed=true;
       continue;
     }
     require(['succeeded','failed','cancelled'].includes(attempt.state)&&
@@ -768,6 +800,7 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
         (attempt.state!=='succeeded'&&attempt.owner_run_id===null&&attempt.owner_run_attempt===null)),
       'Attempt '+attempt.attempt_id+' physical termination or identity unresolved');
   }
+  require(!native.github_attempt||claimedProofUsed,'GitHub physical proof has no matching claimed Attempt');
   for(const session of evidence.sessions)
     require(session.state==='terminated'&&evidence.attempts.some(a=>a.step_id===session.step_id&&a.state!=='rejected'),
       'Session '+session.step_id+' physical termination unresolved');
@@ -785,7 +818,10 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
   for(const key of ['children','invocations','mcpFences','cloudflareCancellations',
     'childCancellations','gates','approvals','waits'])
     require(evidence[key].length===0,key+' requires related terminal evidence');
-  return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at};
+  return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at,
+    ...(native.historical_source?{historical_source:native.historical_source}:{}),
+    ...(claimedProofUsed?{github_attempt:native.github_attempt}:{}),
+    ...(native.no_dispatch_step_id?{no_dispatch_step_id:native.no_dispatch_step_id}:{})};
 }
 
 /**

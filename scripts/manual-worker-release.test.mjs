@@ -1604,3 +1604,67 @@ test('verified terminal execution is independent of Unknown business result (#10
   ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
   assert.throws(()=>verifyWorkflowTerminalEvidence({...run,outcome:'running'},native,evidence),/terminal evidence/);
 });
+
+// Actual #179 historical Artifact receipt. Native history expired; the
+// protected release step and current physical GitHub run were re-read.
+test('historical claimed Artifact requires matched physical proof and delivered receipt (#1046)',async()=>{
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const {historicalArtifactTerminalProof}=await import('./workflow-terminal-run-exception.mjs');
+  const id='f99bb918-2909-46df-b196-d07faa64df27';
+  const run={id,instance_id:id,workflow_id:'685026cf-abaa-4618-a363-5944fac729d2',
+    version_id:'88158dd2-25c9-4e66-b98a-51ac34f829e0',outcome:'indeterminate',
+    start_state:'started',error_code:'github_dispatch_unknown'};
+  const step={run_id:id,step_id:'verify',status:'indeterminate',error_code:'github_dispatch_unknown'};
+  const attempt={run_id:id,step_id:'verify',attempt_id:'c7893834-10ff-41d5-b784-a33d00cc20f5',
+    state:'claimed',capability_id:'github.action',repository:'lirtual/github-actions',repository_id:'1430925009',
+    workflow_ref:'lirtual/github-actions/.github/workflows/verify-action.yml@refs/tags/v0.1.42-rc.10',
+    ref:'refs/tags/v0.1.42-rc.10',owner_run_id:41182432750,owner_run_attempt:1,
+    candidate_run_id:41182432750,candidate_run_attempt:1,resolved_sha:null};
+  const receipt={run_id:id,step_id:'verify',attempt_id:attempt.attempt_id,outcome:'succeeded',notification_delivered:1};
+  const evidence={steps:[step],attempts:[attempt],sessions:[],callbacks:[receipt],children:[],
+    invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],
+    childCancellations:[],gates:[],approvals:[],waits:[]};
+  const d1=[[run],[step],[],[attempt],[receipt],[],[]].map(results=>({success:true,results}));
+  const sha='21d6583fe2b43fbb58f93c68e44cc936fb02b0fb';
+  const prior={id:41429815494,workflow_id:394912681,head_sha:sha,event:'workflow_dispatch',
+    head_branch:'main',run_attempt:1,status:'completed',conclusion:'success'};
+  const steps=[
+    'Verify seventh terminal download Run proof (read-only)',
+    'Verify ninth terminal Saga Run proof (read-only)',
+    'Verify tenth terminal Saga Run proof (read-only)',
+    'Verify eleventh terminal generic Action proof (read-only)',
+    'Verify twelfth terminal Artifact Task proof (read-only)'
+  ].map((name,i)=>({name,status:'completed',conclusion:'success',
+    completed_at:['2026-11-02T10:35:16Z','2026-11-02T10:35:19Z','2026-11-02T10:35:21Z',
+      '2026-11-02T10:35:22Z','2026-11-02T10:35:24Z'][i]}));
+  const jobs={jobs:[{id:125225662362,name:'Manual selected Worker release',head_sha:sha,
+    status:'completed',conclusion:'success',steps}]};
+  const github={id:41182432750,repository:{id:1430925009,full_name:'lirtual/github-actions'},
+    workflow_id:394689660,path:'.github/workflows/verify-action.yml',event:'workflow_dispatch',
+    run_attempt:1,head_branch:'v0.1.42-rc.10',head_sha:'f5d44ff5a5dbd5b1b444c907e3654266a465da85',
+    status:'completed',conclusion:'success'};
+  const now=Date.parse('2026-11-25T15:55:19Z');
+  const proof=historicalArtifactTerminalProof(d1,prior,jobs,github,now);
+  assert.equal(proof.observed_at,Date.parse('2026-11-02T10:35:24Z'));
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,proof,evidence),proof);
+  assert.equal(run.outcome,'indeterminate');
+  assert.equal(attempt.state,'claimed');
+  const {github_attempt,...native}=proof;
+  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,evidence),/terminal evidence/);
+  for(const patch of [{attempt_id:'wrong'},{repository_id:'wrong'},{run_id:41182432751},
+    {run_attempt:2},{conclusion:'failure'},{observed_at:0}]){
+    assert.throws(()=>verifyWorkflowTerminalEvidence(run,{...proof,github_attempt:{...github_attempt,...patch}},evidence),/terminal evidence/);
+  }
+  for(const bad of [
+    {...evidence,callbacks:[]},
+    {...evidence,callbacks:[{...receipt,notification_delivered:0}]},
+    {...evidence,callbacks:[{...receipt,outcome:'failed'}]},
+    {...evidence,attempts:[{...attempt,owner_run_attempt:2}]},
+    {...evidence,attempts:[{...attempt,ref:'refs/heads/main'}]},
+    {...evidence,sessions:[{run_id:id,step_id:'verify',state:'terminated'}]},
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,proof,bad),/terminal evidence/);
+  for(const bad of [{...github,status:'in_progress'},{...github,run_attempt:2},{...github,head_sha:'0'.repeat(40)}])
+    assert.throws(()=>historicalArtifactTerminalProof(d1,prior,jobs,bad,now),/blocked/);
+  const badJobs=structuredClone(jobs);badJobs.jobs[0].steps.at(-1).conclusion='skipped';
+  assert.throws(()=>historicalArtifactTerminalProof(d1,prior,badJobs,github,now),/blocked/);
+});
