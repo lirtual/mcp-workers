@@ -2,6 +2,7 @@
 import {createConnection} from "node:net";
 import {randomUUID} from "node:crypto";
 import {spawnSync} from "node:child_process";
+import {createInterface} from "node:readline";
 import {cp,lstat,mkdir,readFile,rename,rm,writeFile} from "node:fs/promises";
 import {realpathSync} from "node:fs";
 import path from "node:path";
@@ -218,7 +219,7 @@ export function ownerCliText(root,legacy=false){
     (legacy
       ?'  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'
       :'  status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n'+
-       '  stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n')+
+       '  stop|start|--help|--version) [ "$#" -eq 1 ] || exit 2 ;;\n')+
     '  *) echo "Use the reviewed macOS installer for install/upgrade." >&2; exit 2 ;;\n'+
     'esac\nexec '+quote(node)+' '+quote(manager)+(legacy?' "$1"\n':' "$@"\n');
 }
@@ -244,13 +245,14 @@ export async function observeOnline(identity,generation,now=Date.now){
 export function acceptsOwnerConfirmation(input){
   return /^(?:y|yes)$/i.test(input.trim());
 }
-async function confirm(question){
+export async function confirm(question){
   if(!process.stdin.isTTY||!process.stdout.isTTY)throw Error("Owner terminal required.");
-  process.stdout.write(question+" Confirm [y/N]: ");
+  const reader=createInterface({input:process.stdin,output:process.stdout,terminal:false});
   return await new Promise(resolve=>{
-    process.stdin.resume();
-    process.stdin.once("data",data=>{
-      process.stdin.pause();resolve(acceptsOwnerConfirmation(String(data)));
+    reader.once("close",()=>resolve(false));
+    reader.question(question+" Confirm [y/N]: ",answer=>{
+      resolve(acceptsOwnerConfirmation(answer));
+      reader.close();
     });
   });
 }
@@ -538,6 +540,21 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
 }
 async function main(){
   const [action,...params]=process.argv.slice(2);
+  if(action==="--help"&&params.length===0){
+    console.log("Usage: rca [status [--json]|doctor [--json]|start|stop|--version|--help]");
+    console.log("Use the reviewed macOS installer for install/upgrade; other lifecycle commands are not yet supported.");
+    return;
+  }
+  if(action==="--version"&&params.length===0){
+    const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../../..");
+    await checked(root,{dir:true});
+    const manifest=path.join(root,"bundle.json");
+    await checked(manifest,{mode:0o600});
+    const meta=JSON.parse(await readFile(manifest,"utf8"));
+    if(path.basename(root)!==candidateName(meta,meta.source_commit))throw Error("Untrusted installed version.");
+    console.log(meta.version);
+    return;
+  }
   if((action==="status"||action==="doctor")&&params.length===1&&params[0]==="--json")params.pop();
   if(action==="doctor"&&params.length)throw Error("Doctor accepts only --json.");
   const args={};

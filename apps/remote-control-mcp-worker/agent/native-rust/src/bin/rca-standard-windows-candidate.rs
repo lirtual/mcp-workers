@@ -548,6 +548,11 @@ mod windows {
         }
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
+                [_, command] if command == "--help" || command == "help" => {
+                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update --version <staged-tag>|recover|--version|--help]");
+                    println!("upgrade is an alias for the reviewed staged-version switch. Use the official installer for initial installation and Latest selection.");
+                    Ok(())
+                }
                 [_, command] if command == "status" || command == "doctor" => {
                     local_status(command == "doctor")
                 }
@@ -592,7 +597,9 @@ mod windows {
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     Ok(())
                 }
-                [_, command, flag, version] if command == "upgrade" && flag == "--version" => {
+                [_, command, flag, version]
+                    if (command == "upgrade" || command == "update") && flag == "--version" =>
+                {
                     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
                         return Err(());
                     }
@@ -635,7 +642,7 @@ mod windows {
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     Ok(())
                 }
-                [_, command] if command == "version" => {
+                [_, command] if command == "version" || command == "--version" => {
                     let (_, tag) = program_root()?;
                     println!("{tag}");
                     Ok(())

@@ -41,6 +41,10 @@ fn owner_readonly_status_and_doctor_are_json_without_creating_state() {
             .output()
             .unwrap()
     };
+    let help = invoke(&["--cli", "--help"]);
+    assert!(help.status.success(), "{:?}", help);
+    assert!(String::from_utf8_lossy(&help.stdout).contains("doctor"));
+    assert!(!invoke(&["--cli", "--help", "extra"]).status.success());
     let status = invoke(&["--cli", "status", "--json"]);
     assert!(status.status.success(), "{:?}", status);
     let state: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();

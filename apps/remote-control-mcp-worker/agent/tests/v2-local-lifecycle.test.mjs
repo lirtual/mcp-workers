@@ -218,7 +218,7 @@ print("T09_SAFE_IDENTITY_ONLY_PURGE_OK")
 });
 test("#78 optional identity purge cannot run non-interactively",()=>{
  const r=spawnSync("python3",["-B",script,"--purge-local-identity"],
-   {encoding:"utf8",input:"PURGE-V2-IDENTITY\n",timeout:15000});
+   {encoding:"utf8",input:"y\n",timeout:15000});
  assert.equal(r.status,1);
  assert.match(r.stderr,/non-root interactive terminal/);
 });
@@ -247,11 +247,11 @@ with tempfile.TemporaryDirectory(prefix="rc-v2-identity-cli-") as home:
             except OSError:break
             if not chunk:break
             output+=chunk
-        if b"PURGE-V2-IDENTITY to irreversibly remove" in output and not written:
+        if b"Irreversibly remove only the listed keys/IDs?" in output and not written:
             assert str(key).encode() in output and str(did).encode() in output
             assert b"Cloud authorization has NOT been revoked" in output
             assert b"SQLite receipts" in output
-            os.write(master,b"PURGE-V2-IDENTITY\n");written=True
+            os.write(master,b"y\n");written=True
         if child.poll() is not None:
             break
     os.close(master)

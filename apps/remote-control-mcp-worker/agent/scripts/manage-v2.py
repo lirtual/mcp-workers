@@ -10,6 +10,7 @@ import sys
 
 APP = Path("apps/remote-control-agent")
 UNIT = "remote-control-agent.service"
+USAGE = "Usage: rca [status|doctor|pair|logs|stop|start|update|recover|uninstall|--version|--help]"
 VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 ASSET_SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -127,7 +128,7 @@ def pair(root, bootstrap, arguments):
         raise ValueError("Supply an approved HTTPS origin: pair https://example.org/")
     if temporary:
         return bootstrap.native_temporary(Path.home(), root, endpoint)
-    if input("Type NATIVE-INSTALL for permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
+    if not bootstrap.confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
         raise ValueError("Native installation not confirmed")
     print(json.dumps(bootstrap.native_pair_or_install(Path.home(), root, endpoint), indent=2))
     return 0
@@ -167,7 +168,9 @@ def upgrade(bootstrap, arguments):
 
 def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
-        print("Usage: rca [status|doctor|pair|logs|stop|start|update|recover|uninstall]")
+        if args:
+            raise ValueError("help takes no arguments")
+        print(USAGE)
         print("Permanent pairing / re-pair and pair --temporary are supported.")
         print("Without arguments: open the interactive local Agent manager.")
         print("Check the reviewed stable Latest without installing: rca update --check.")
@@ -178,6 +181,8 @@ def dispatch(command, args, root, info, bootstrap):
         print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
         return 0
     if command in ("--version", "version"):
+        if args:
+            raise ValueError("version takes no arguments")
         print(info["version"])
         return 0
     if command in ("status", "doctor"):
@@ -223,7 +228,7 @@ def dispatch(command, args, root, info, bootstrap):
         if args:
             raise ValueError("uninstall takes no arguments")
         return bootstrap_action(bootstrap, ["--uninstall"])
-    raise ValueError("Usage: rca [status|logs|pair|update|uninstall]")
+    raise ValueError(USAGE)
 
 
 def main():
@@ -237,15 +242,18 @@ def main():
         print("1. Status   2. " + "Pair / repair" + "   3. Logs")
         print("4. Update   5. Uninstall       6. Exit")
         print("7. Recover interrupted installation/upgrade   8. Doctor")
-        choice = input("Choose an option: ").strip()
+        print("9. Start   10. Stop")
+        try:
+            choice = input("Choose an option: ").strip()
+        except EOFError:
+            return 0
         if choice in ("6", "q", "Q"):
             return 0
-        mapping = {"1": "status", "2": "pair", "3": "logs", "4": "upgrade",
-                   "5": "uninstall"}
-        mapping["7"] = "recover"
-        mapping["8"] = "doctor"
+        mapping = {"1": "status", "2": "pair", "3": "logs", "4": "update",
+                   "5": "uninstall", "7": "recover", "8": "doctor",
+                   "9": "start", "10": "stop"}
         if choice not in mapping:
-            print("Choose 1–8.")
+            print("Choose 1–10.")
             continue
         action = mapping[choice]
         if action == "pair" and not installed_endpoint(bootstrap):
@@ -265,6 +273,9 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except (EOFError, KeyboardInterrupt):
+        print("Local operation cancelled; check status for any already completed effects.", file=sys.stderr)
+        sys.exit(1)
     except (ValueError, OSError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
         print("Remote Control Agent manager refused unsafe or unavailable local state.", file=sys.stderr)
         sys.exit(1)

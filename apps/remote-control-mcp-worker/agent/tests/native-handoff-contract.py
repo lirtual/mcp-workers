@@ -139,6 +139,24 @@ def fake_services(home, old, new, proof_good=True, abort=False, rollback_failure
                    "native_consent": consent}, verify
 
 
+def verify_owner_confirmation():
+    with (patch.object(sys.stdin, "isatty", return_value=True),
+          patch.object(sys.stdout, "isatty", return_value=True)):
+        for answer in ("y", "Y", "yes", " YES "):
+            with patch("builtins.input", return_value=answer) as read:
+                assert bootstrap.confirm_owner("Confirm test action?")
+                assert read.call_args.args[0].endswith("[y/N] ")
+        for answer in ("", "n", "No", "maybe", "TEMPORARY", "NATIVE-INSTALL"):
+            with patch("builtins.input", return_value=answer):
+                assert not bootstrap.confirm_owner("Confirm test action?")
+        with patch("builtins.input", side_effect=EOFError):
+            assert not bootstrap.confirm_owner("Confirm test action?")
+    with (patch.object(sys.stdin, "isatty", return_value=False),
+          patch("builtins.input", side_effect=AssertionError("must not read piped input"))):
+        assert not bootstrap.confirm_owner("Confirm test action?")
+    print("OWNER_CONFIRMATION_CONTRACT_PASS")
+
+
 def verify_temporary_install():
     ctx, home, old, new, unit, launcher, key, receipts = fixture()
     try:
@@ -146,7 +164,7 @@ def verify_temporary_install():
         calls = []
         with (patch.object(bootstrap.sys.stdin, "isatty", return_value=True),
               patch.object(bootstrap.sys.stdout, "isatty", return_value=True),
-              patch("builtins.input", return_value="TEMPORARY"),
+              patch("builtins.input", return_value="y"),
               patch.object(bootstrap, "native_pair_local", side_effect=lambda *a, **kw: calls.append((a,kw)))):
             # Worker origins must not be checked against GitHub download hosts.
             assert bootstrap.native_temporary(home,new,ENDPOINT,"test",
@@ -996,7 +1014,7 @@ def verify_public_native_archive():
                 except ValueError:
                     pass
             assert not pair.called and not temporary.called
-            with patch("builtins.input", side_effect=["1","NATIVE-INSTALL"]):
+            with patch("builtins.input", side_effect=["1","y"]):
                 bootstrap.install(tag, None, ENDPOINT, native_install=True,
                                   asset_sha256=digest, latest_archive=archive)
             dest = bootstrap.program_home(home) / (tag+"-"+target)
@@ -1891,6 +1909,7 @@ if __name__ == "__main__":
         finally:
             ctx.cleanup()
     else:
+        verify_owner_confirmation()
         verify_service_start()
         verify_public_native_archive()
         verify_native_owner_lifecycle()

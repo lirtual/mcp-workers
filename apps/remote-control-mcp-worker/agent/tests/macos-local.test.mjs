@@ -45,6 +45,41 @@ test("#660 owner confirmation is case-insensitive, empty input denies",()=>{
     assert.equal(acceptsOwnerConfirmation(value),false);
 });
 
+test("#1035 attended confirmation handles EOF and refuses piped input",{skip:process.platform==="win32"},()=>{
+  const moduleUrl=new URL("../scripts/macos-local.mjs",import.meta.url).href;
+  const code='import {confirm} from '+JSON.stringify(moduleUrl)+'; console.log("RESULT="+await confirm("Confirm test?"));';
+  const pipe=spawnSync(process.execPath,["--input-type=module","-e",code],{
+    input:"y\n",encoding:"utf8",timeout:5000});
+  assert.notEqual(pipe.status,0);
+  assert.match(pipe.stderr,/Owner terminal required/);
+  const pty=String.raw`import os,pty,select,subprocess,sys,time
+for response,expected in [(b"y\n",b"RESULT=true"),(b"\n",b"RESULT=false"),(b"\x04",b"RESULT=false")]:
+    master,slave=pty.openpty()
+    child=subprocess.Popen([sys.argv[1],"--input-type=module","-e",sys.argv[2]],stdin=slave,stdout=slave,stderr=slave)
+    os.close(slave)
+    out=b"";sent=False;deadline=time.monotonic()+4
+    try:
+        while time.monotonic()<deadline:
+            if select.select([master],[],[],0.1)[0]:
+                try: chunk=os.read(master,4096)
+                except OSError: break
+                if not chunk: break
+                out+=chunk
+            if b"[y/N]" in out and not sent:
+                os.write(master,response);sent=True
+            if child.poll() is not None: break
+        assert sent and expected in out,(response,out)
+        assert child.wait(timeout=2)==0,out
+    finally:
+        if child.poll() is None: child.kill();child.wait()
+        os.close(master)
+print("CONFIRM_PTY_PASS")
+`;
+  const result=spawnSync("python3",["-B","-c",pty,process.execPath,code],{encoding:"utf8",timeout:16000});
+  assert.equal(result.status,0,result.stderr);
+  assert.match(result.stdout,/CONFIRM_PTY_PASS/);
+});
+
 test("#660 launch locations permit owner 0755 but not group/other writes",async t=>{
   const root=await mkdtemp(path.join(os.tmpdir(),"rca-parent-mode-"));
   t.after(()=>rm(root,{recursive:true,force:true}));
@@ -139,12 +174,12 @@ test("#1035 macOS read-only CLI accepts JSON and doctor without opening mutation
   const file=path.join(root,"rca");
   await writeFile(file,ownerCliText(root),{mode:0o700});
   const invoke=args=>spawnSync("/bin/sh",[file,...args],{encoding:"utf8"});
-  for(const args of [["status","--json"],["doctor"],["doctor","--json"]]){
+  for(const args of [["status","--json"],["doctor"],["doctor","--json"],["--help"],["--version"]]){
     const result=invoke(args);
     assert.equal(result.status,0,result.stderr);
     assert.deepEqual(result.stdout.trim().split("\n").slice(1),args);
   }
-  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["upgrade"],["install"]])
+  for(const args of [["status","--repair"],["doctor","--repair"],["start","--json"],["--help","extra"],["--version","extra"],["upgrade"],["install"]])
     assert.equal(invoke(args).status,2,args.join(" "));
 });
 
@@ -350,6 +385,12 @@ test("#660 native offline install → stopped state → upgrade without restart"
   assert.equal(await readFile(cli,"utf8"),ownerCliText(firstRoot));
   assert.equal((await lstat(cli)).mode&0o777,0o700);
   assert.equal(spawnSync("/bin/sh",["-n",cli]).status,0);
+  const help=spawnSync("/bin/sh",[cli,"--help"],{encoding:"utf8"});
+  assert.equal(help.status,0,help.stderr);
+  assert.match(help.stdout,/doctor/);
+  const version=spawnSync("/bin/sh",[cli,"--version"],{encoding:"utf8"});
+  assert.equal(version.status,0,version.stderr);
+  assert.equal(version.stdout.trim(),f.version);
   assert.equal(spawnSync("/bin/sh",[cli,"upgrade"]).status,2,
     "raw, unpinned local CLI upgrade must be refused");
   const state=await localMacAction("status",{home:f.home,invoke:f.invoke});

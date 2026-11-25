@@ -475,6 +475,16 @@ def native_latest_context(endpoint, expected_root=None):
     return info, binding
 
 
+def confirm_owner(question):
+    """One attended confirmation; absent/closed input never authorizes an effect."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    try:
+        return input(question + " [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
 def native_check_latest(endpoint):
     """Observe metadata only; never stage, lock or switch an installation."""
     info, _ = native_latest_context(endpoint)
@@ -694,7 +704,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                     temporary = mode == "2"
             if temporary:
                 return native_temporary(pathlib.Path.home(), version, endpoint, name)
-            if input("Type NATIVE-INSTALL for owner-reviewed permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
+            if not confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
                 raise ValueError("Native installation not confirmed")
             print(json.dumps(native_pair_or_install(pathlib.Path.home(), version, endpoint, name), indent=2))
             return
@@ -713,7 +723,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             if detached_upgrade:
                 if not approved_native_detached_worker(expected_binding[1]):
                     raise ValueError("Detached worker admission lost")
-            elif input("Type NATIVE-UPGRADE for this owner-local service switch: ").strip() != "NATIVE-UPGRADE":
+            elif not confirm_owner("Switch the local Agent to " + tag + "?"):
                 raise ValueError("Native service switch not confirmed")
             if detached_upgrade:
                 result = native_cutover_when_idle(pathlib.Path.home(), version, endpoint,
@@ -1400,7 +1410,7 @@ def native_temporary(home, root, endpoint, name=None, process_check=None):
     if not (process_check or no_running_programs)(versions):
         raise ValueError("Running or uncertain Agent owns the local runtime; no temporary pairing")
     native_receipts_compatible(home)
-    if input("Type TEMPORARY for an owner-reviewed 24h foreground grant: ").strip() != "TEMPORARY":
+    if not confirm_owner("Start a 24h foreground Agent at " + endpoint + " (no service installed)?"):
         raise ValueError("Temporary pairing not confirmed")
     print("Foreground only; no service will be installed. Closing the terminal disconnects, not revokes.")
     print("Reviewed local manager: " + str(root / APP / "scripts/rca.sh"), flush=True)
@@ -2506,7 +2516,7 @@ def main():
             if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
                 raise ValueError("Native recovery requires an owner interactive terminal")
             print("Recover the previous local Agent service, or remove an interrupted first activation; identity retained.")
-            if input("Type RECOVER-NATIVE to confirm: ").strip() != "RECOVER-NATIVE":
+            if not confirm_owner("Recover the local Agent service?"):
                 raise ValueError("Native recovery not confirmed")
             print(json.dumps(native_recover(pathlib.Path.home()), indent=2))
         elif args.uninstall:
@@ -2516,7 +2526,7 @@ def main():
             print("Owned local v2 versions:", ", ".join(v.name for v in versions))
             print("Device IDs (cloud grants will NOT be revoked):", ids)
             print("Private keys and SQLite receipts will be retained; use MCP revoke_device separately.")
-            if input("Type UNINSTALL-V2 to confirm local removal: ").strip() != "UNINSTALL-V2":
+            if not confirm_owner("Remove the listed local Agent installations?"):
                 raise ValueError("Local uninstall not confirmed")
             print(json.dumps(local_uninstall(os.path.expanduser("~"), True, systemctl_user), indent=2))
         elif args.purge_local_identity:
@@ -2548,8 +2558,7 @@ def main():
                       "call revoke_device separately BEFORE discarding the local key.")
                 print("SQLite receipts and historical/local operation evidence are",
                       "shared and WILL NOT be deleted. Already executed effects persist.")
-                if input("Type PURGE-V2-IDENTITY to irreversibly remove only the listed keys/IDs: "
-                         ).strip() != "PURGE-V2-IDENTITY":
+                if not confirm_owner("Irreversibly remove only the listed keys/IDs?"):
                     raise ValueError("Local identity purge not confirmed")
                 print(json.dumps(local_identity_purge(home, True), indent=2))
         elif args.latest_archive is not None:
@@ -2563,6 +2572,9 @@ def main():
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
                     args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install, args.temporary)
+    except (EOFError, KeyboardInterrupt):
+        print("Local operation cancelled; check status for any already completed effects.", file=sys.stderr)
+        return 1
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)
