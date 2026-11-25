@@ -12,6 +12,7 @@ Remote Control is a single-owner MCP Worker backed by a signed per-device WebSoc
 **Effects and recovery**
 
 - Mutating requests have stable operation identities and local receipts. An Unknown response is not permission to retry an external effect; reconcile the original operation before continuing.
+- Secure Input (#1039) binds one-time delivery to the exact approved target and live device/Workflow Attempt, outside generic command arguments and receipt digests. Task stdin delivery irreversibly suppresses all captured output for that session before writing, while continuing to drain its pipes; other sessions retain ordinary output. The selected process itself must be trusted not to disclose the value through its own files, network, or other side effects.
 - A cancellation or Worker acknowledgment does not itself prove physical job or subprocess termination. Distinguish Agent-managed session, actual OS process, GitHub job and temporary device cleanup.
 - Installation, Agent Release publication, Worker publication, native upgrade, pairing and production acceptance are separate operations. An upgrade must preserve identity and historical receipts; an unknown or unsafe upgrade must not silently re-pair or discard history.
 - Distributing public installers does not authorize pairing. Artifact integrity checks are not independent proof of production deployment or physical-device acceptance.

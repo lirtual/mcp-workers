@@ -11,6 +11,7 @@ const te = new TextEncoder();
 import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, PERMANENT_IDLE_MS, parsePermanentIdleMs, recordVerifiedSocketClose, grantCurrent, revokedSessionAttemptKey, type V2Device, type SessionCheck } from "./v2-session.ts";
 import { sessionAllowedByWorkflow, type WorkflowSessionAuthorization } from "./session-workflow-authorization.ts";
 import {issueOwnerIntentChallenge,commitOwnerIntent} from './v2-owner-intent.ts';
+import { V2SecureInputCoordinator } from "./v2-secure-input-coordinator.ts";
 import {registerSessionDevice} from "./session-device-registration.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
@@ -300,6 +301,7 @@ export class V2OwnerCoordinator {
     resolve: (response: Response) => void;
     kind: "read" | "operation"; operationId?: string;
   }>();
+  private readonly secureInput: V2SecureInputCoordinator;
 
   private async readFile(request: Request, isOperation = false): Promise<Response> {
     let body: unknown;
@@ -604,6 +606,7 @@ export class V2OwnerCoordinator {
 
   async webSocketClose(socket: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
     this.rejectSocketReads(socket);
+    await this.secureInput.socketClosed(socket);
     try { await recordVerifiedSocketClose(this.state, socket, this.idleMs); }
     catch { /* Silent-partition checkpoint bounds expiry when close persistence fails. */ }
     try { socket.close(code, reason); } catch { /* Already disconnected. */ }
@@ -611,6 +614,7 @@ export class V2OwnerCoordinator {
 
   async webSocketError(socket: WebSocket, _error: unknown): Promise<void> {
     this.rejectSocketReads(socket);
+    await this.secureInput.socketClosed(socket);
     try { await recordVerifiedSocketClose(this.state, socket, this.idleMs); }
     catch { /* Keep the original socket teardown despite a storage outage. */ }
     try { socket.close(1011, "connection unavailable"); } catch { /* Already disconnected. */ }
@@ -621,6 +625,7 @@ export class V2OwnerCoordinator {
     this.state = state;
     this.env = env;
     this.sessionCheck = sessionAllowedByWorkflow(env?.WORKFLOW_SESSION_AUTHORIZATION);
+    this.secureInput = new V2SecureInputCoordinator(state, this.sessionCheck);
     // Cloudflare replies to these liveness frames without waking a hibernating
     // DO. The response is NOT proof of current authorization; every future
     // application command must independently check the durable device/epoch.
@@ -631,6 +636,7 @@ export class V2OwnerCoordinator {
     }
   }
   async webSocketMessage(socket: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (await this.secureInput.handleSocketMessage(socket, message)) return;
     if (typeof message === "string" && this.handleCleanupAck(socket, message)) return;
     if (typeof message === "string" && await this.handleReadResult(socket, message)) return;
     if (await handleDeviceInfoMessage(this.state, socket, message, this.sessionCheck)) return;
@@ -642,18 +648,31 @@ export class V2OwnerCoordinator {
     }
     if (request.method !== "POST") return new Response(null, { status: 405 });
     const path = new URL(request.url).pathname;
+    if (path.startsWith("/secure-input/")) return this.secureInput.fetch(request);
     if (path === "/rename") {
       try { return await this.renameDevice(request); }
       catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
     if (path === "/owner/intent/challenge" || path === "/owner/intent") {
       try {
-        const payload = await limitedJson(request, MAX_BOOTSTRAP_BODY);
-        const output = path === "/owner/intent/challenge"
-          ? await issueOwnerIntentChallenge(this.state.storage,payload,this.idleMs)
-          : await commitOwnerIntent(this.state.storage,payload,this.idleMs);
-        return Response.json(output.body,{status:output.status,headers:{"cache-control":"no-store"}});
-      } catch { return Response.json({error:"unavailable"},{status:503}); }
+        const payload = await limitedJson(request, path === "/owner/intent" ? 65_536 : MAX_BOOTSTRAP_BODY);
+        const input = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+        if (input.action === "secure_input" &&
+            (typeof input.request_id !== "string" || !await this.secureInput.validateTarget(input.request_id))) {
+          return Response.json({ error: "target_changed" }, { status: 409 });
+        }
+        if (path === "/owner/intent/challenge") {
+          const challenge = await issueOwnerIntentChallenge(this.state.storage, payload, this.idleMs);
+          return Response.json(challenge.body, { status: challenge.status, headers: { "cache-control": "no-store" } });
+        }
+        const output = await commitOwnerIntent(this.state.storage, payload, this.idleMs);
+        if (output.secureInput) {
+          const secret = output.secureInput.secret;
+          output.secureInput.secret = "";
+          return this.secureInput.dispatchConsumed(output.secureInput.record, secret);
+        }
+        return Response.json(output.body, { status: output.status, headers: { "cache-control": "no-store" } });
+      } catch { return Response.json({ error: "unavailable" }, { status: 503 }); }
     }
     if (path === "/revoke") {
       try { return await this.revokeDevice(request); }

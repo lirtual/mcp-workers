@@ -427,3 +427,49 @@ fn revoked_session_rejects_new_stdin_effect() {
         CleanupState::Confirmed
     );
 }
+
+#[test]
+#[ignore = "requires disposable Ubuntu and native C helper"]
+fn secure_stdin_suppresses_echo_and_preserves_unrelated_output() {
+    use rca_native_agent::linux_managed::InputOutcome;
+    let registry = sessions(Duration::from_secs(5));
+    let target = registry
+        .start(
+            "printf before; IFS= read -r value && [ \"$value\" = synthetic-1039-marker ] && printf '%s' \"$value\" && printf '%s' \"$value\" >&2",
+        )
+        .unwrap();
+    let other = registry.start("printf unrelated").unwrap();
+    assert_eq!(
+        registry.write_secure_input(&target.session_id, "synthetic-1039-marker\n"),
+        InputOutcome::Completed
+    );
+    assert_eq!(
+        until_finished(&registry, &target.session_id).state,
+        SessionState::Completed
+    );
+    assert_eq!(
+        until_finished(&registry, &other.session_id).state,
+        SessionState::Completed
+    );
+    let page = registry
+        .read_output(&target.session_id, 0, 1024)
+        .unwrap()
+        .unwrap()
+        .page;
+    assert!(page.sensitive);
+    assert_eq!(
+        page.output,
+        "[output suppressed after secure input was delivered]"
+    );
+    let unrelated = registry
+        .read_output(&other.session_id, 0, 1024)
+        .unwrap()
+        .unwrap()
+        .page;
+    assert!(!unrelated.sensitive);
+    assert_eq!(unrelated.output, "unrelated");
+    assert_eq!(
+        registry.write_secure_input(&target.session_id, "not delivered"),
+        InputOutcome::Failed
+    );
+}

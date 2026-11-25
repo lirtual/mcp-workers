@@ -103,7 +103,11 @@ pub fn run_disposable_file_session(
 // This is the Gate 1 native file-session candidate. The older disposable
 // Gate 0 probe above remains an isolated regression fixture until migration.
 #[cfg(target_os = "macos")]
+use crate::darwin_managed::InputOutcome as ManagedInputOutcome;
+#[cfg(target_os = "macos")]
 use crate::darwin_managed::{CleanupState, DarwinManagedSessions as ManagedSessions};
+#[cfg(target_os = "linux")]
+use crate::linux_managed::InputOutcome as ManagedInputOutcome;
 #[cfg(target_os = "linux")]
 use crate::linux_managed::LinuxManagedSessions as ManagedSessions;
 #[cfg(target_os = "linux")]
@@ -119,10 +123,13 @@ use crate::upgrade_control::{UpgradeCommand, UpgradeRequest, UpgradeServer};
 #[cfg(windows)]
 use crate::windows_job::JobCleanup as CleanupState;
 #[cfg(windows)]
+use crate::windows_managed::InputOutcome as ManagedInputOutcome;
+#[cfg(windows)]
 use crate::windows_managed::WindowsManagedSessions as ManagedSessions;
 #[cfg(windows)]
 use crate::windows_upgrade_control::{UpgradeCommand, UpgradeRequest, UpgradeServer};
 use serde_json::{json, Value};
+use zeroize::Zeroize;
 
 pub(crate) enum NativeFileCommand {
     Read(ReadCommand),
@@ -320,6 +327,8 @@ struct LocalControl {
     connected: Arc<AtomicBool>,
 }
 
+// Keep each platform-owned queue explicit; combining them would obscure their distinct lifetimes.
+#[allow(clippy::too_many_arguments)]
 fn execute_native_file(
     mut writes: NativeWriteExecutor,
     #[cfg(any(target_os = "linux", target_os = "macos", windows))] managed: Option<
@@ -331,6 +340,9 @@ fn execute_native_file(
     #[cfg(any(unix, windows))] local_control: Option<LocalControl>,
     stop: &Arc<AtomicBool>,
     requests: &Receiver<ExecutionRequest>,
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))] secure_requests: Option<
+        &Receiver<session::SecureInputRequest>,
+    >,
     replies: &Sender<ExecutionResponse>,
 ) -> Result<(), NativeFileError> {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -350,6 +362,108 @@ fn execute_native_file(
     let mut searches = SearchSessions::with_boundary(writes.boundary().clone());
     let result = (|| -> Result<(), NativeFileError> {
         while !stop.load(Ordering::Acquire) {
+            // Secure Input has its own bounded queue and bypasses generic operations and receipts.
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            if let Some(queue) = secure_requests {
+                if let Ok(mut secure) = queue.try_recv() {
+                    if !secure.lease().is_active() {
+                        continue;
+                    }
+                    let secure_lease = secure.lease().clone();
+                    let response = match secure.command_mut() {
+                        crate::secure_input::SecureInputCommand::Prepare { id, target } => {
+                            match target {
+                                crate::secure_input::SecureInputTarget::TaskProcess {
+                                    session_id,
+                                    ..
+                                } => {
+                                    if processes.as_ref().is_some_and(|engine| {
+                                        engine.sessions.secure_input_ready(session_id)
+                                    }) {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"ready"})
+                                    } else {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"failed","error_code":"process_unavailable"})
+                                    }
+                                }
+                                _ => match crate::secure_input::prepare(target) {
+                                    Ok(provider_principal) => {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"ready","provider_principal":provider_principal})
+                                    }
+                                    Err(error_code) => {
+                                        json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"failed","error_code":error_code})
+                                    }
+                                },
+                            }
+                        }
+                        crate::secure_input::SecureInputCommand::Submit {
+                            id,
+                            target,
+                            principal,
+                            secret,
+                        } => {
+                            let request_id = id.clone();
+                            if replies.try_send(secure_lease.response(json!({"kind":"secure_input_ack","request_id":request_id,"status":"accepted"}).to_string())).is_err()
+                                || replies.try_send(secure_lease.response(json!({"kind":"secure_input_progress","request_id":request_id,"status":"running"}).to_string())).is_err() {
+                                stop.store(true, Ordering::Release);
+                                return Err(NativeFileError::Queue);
+                            }
+                            let mut secret = std::mem::take(secret);
+                            let (status, error_code) = match target {
+                                crate::secure_input::SecureInputTarget::TaskProcess {
+                                    session_id,
+                                    ..
+                                } => {
+                                    let mut input = zeroize::Zeroizing::new(String::with_capacity(
+                                        secret.len() + 1,
+                                    ));
+                                    input.push_str(&secret);
+                                    secret.zeroize();
+                                    input.push('\n');
+                                    let outcome = processes
+                                        .as_ref()
+                                        .map(|engine| {
+                                            engine
+                                                .sessions
+                                                .write_secure_input(session_id.as_str(), &input)
+                                        })
+                                        .unwrap_or(ManagedInputOutcome::NotFound);
+                                    match outcome {
+                                        ManagedInputOutcome::Completed => ("succeeded", None),
+                                        ManagedInputOutcome::Failed => {
+                                            ("failed", Some("target_not_accessible"))
+                                        }
+                                        ManagedInputOutcome::Unknown => {
+                                            ("unknown", Some("execution_interrupted"))
+                                        }
+                                        ManagedInputOutcome::NotFound => {
+                                            ("failed", Some("target_not_accessible"))
+                                        }
+                                    }
+                                }
+                                provider_target => {
+                                    let outcome = crate::secure_input::execute(
+                                        provider_target,
+                                        principal,
+                                        secret,
+                                        || !secure_lease.is_active(),
+                                    );
+                                    (outcome.status, outcome.error_code)
+                                }
+                            };
+                            json!({"kind":"secure_input_result","request_id":request_id,"status":status,"error_code":error_code})
+                        }
+                    };
+                    if secure.lease().is_active()
+                        && replies
+                            .try_send(secure_lease.response(response.to_string()))
+                            .is_err()
+                    {
+                        stop.store(true, Ordering::Release);
+                        return Err(NativeFileError::Queue);
+                    }
+                    continue;
+                }
+            }
             // Expire idle cursors even if the Owner never sends another request.
             searches.expire();
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
@@ -705,6 +819,8 @@ pub fn run_native_file_session(
             None,
             &worker_stop,
             &requests,
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+            None,
             &reply_sender,
         );
         if result.is_err() {
@@ -896,6 +1012,7 @@ fn run_native_managed_session_inner(
         (None, None)
     };
     let (request_sender, requests) = sync_channel(4);
+    let (secure_sender, secure_requests) = sync_channel(4);
     let (reply_sender, mut replies) = tokio::sync::mpsc::channel(4);
     let worker_stop = Arc::clone(stop);
     let worker_managed = Arc::clone(&managed);
@@ -911,6 +1028,7 @@ fn run_native_managed_session_inner(
             local_control,
             &worker_stop,
             &requests,
+            Some(&secure_requests),
             &reply_sender,
         );
         if result.is_err() {
@@ -929,6 +1047,7 @@ fn run_native_managed_session_inner(
             receipt_health: health,
             timing: options.timing,
             managed: Arc::clone(&managed),
+            secure_input: secure_sender,
             on_connected,
             on_disconnected,
             on_diagnostic: options.on_diagnostic,

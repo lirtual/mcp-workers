@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::System::IO::CancelSynchronousIo;
+use zeroize::Zeroize;
 
 pub const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 pub const MAX_PAGE_BYTES: usize = 64 * 1024;
@@ -19,6 +20,7 @@ const MAX_FINISH_WAIT: Duration = Duration::from_secs(5);
 
 struct Capture {
     bytes: Vec<u8>,
+    sensitive: bool,
     truncated: bool,
     eof_streams: u8,
     interrupted: bool,
@@ -29,6 +31,7 @@ pub struct OutputPage {
     pub offset: usize,
     pub next_offset: usize,
     pub output: String,
+    pub sensitive: bool,
     pub eof: bool,
     pub truncated: bool,
 }
@@ -49,7 +52,7 @@ fn lock(capture: &Mutex<Capture>) -> std::sync::MutexGuard<'_, Capture> {
 }
 
 fn append(state: &mut Capture, chunk: &[u8]) {
-    if state.truncated {
+    if state.sensitive || state.truncated {
         return;
     }
     let available = MAX_OUTPUT_BYTES.saturating_sub(state.bytes.len());
@@ -81,7 +84,10 @@ fn drain(mut stream: File, capture: Arc<Mutex<Capture>>) {
     let eof = loop {
         match stream.read(&mut buffer) {
             Ok(0) => break true,
-            Ok(count) => append(&mut lock(&capture), &buffer[..count]),
+            Ok(count) => {
+                append(&mut lock(&capture), &buffer[..count]);
+                buffer[..count].zeroize();
+            }
             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
             Err(_) => break false,
         }
@@ -105,6 +111,7 @@ impl WindowsJobOutput {
         } = io;
         let capture = Arc::new(Mutex::new(Capture {
             bytes: Vec::new(),
+            sensitive: false,
             truncated: false,
             eof_streams: 0,
             interrupted: false,
@@ -126,6 +133,14 @@ impl WindowsJobOutput {
         ))
     }
 
+    /// Irreversibly discard captured and future output before writing secure stdin.
+    /// Keep draining both pipes so sensitive tasks retain normal lifecycle semantics.
+    pub(crate) fn suppress_sensitive(&self) {
+        let mut state = lock(&self.capture);
+        state.sensitive = true;
+        state.bytes.zeroize();
+    }
+
     pub fn page(&self, offset: usize, length: usize) -> io::Result<OutputPage> {
         if offset > MAX_OUTPUT_BYTES || !(1..=MAX_PAGE_BYTES).contains(&length) {
             return Err(io::Error::new(
@@ -134,6 +149,16 @@ impl WindowsJobOutput {
             ));
         }
         let state = lock(&self.capture);
+        if state.sensitive {
+            return Ok(OutputPage {
+                offset: 0,
+                next_offset: 0,
+                output: "[output suppressed after secure input was delivered]".into(),
+                sensitive: true,
+                eof: state.eof_streams == 2,
+                truncated: true,
+            });
+        }
         let mut start = offset.min(state.bytes.len());
         while start > 0 && start < state.bytes.len() && (state.bytes[start] & 0xc0) == 0x80 {
             start -= 1;
@@ -154,6 +179,7 @@ impl WindowsJobOutput {
             offset: start,
             next_offset: end,
             output: String::from_utf8_lossy(&state.bytes[start..end]).into_owned(),
+            sensitive: false,
             eof: state.eof_streams == 2 && end == state.bytes.len(),
             truncated: state.truncated || state.interrupted,
         })
@@ -201,6 +227,45 @@ impl Drop for WindowsJobOutput {
     fn drop(&mut self) {
         if !self.workers.is_empty() {
             let _ = self.finish(Duration::from_millis(100));
+        }
+    }
+}
+
+#[cfg(test)]
+mod secure_capture_tests {
+    use super::*;
+
+    // #1039 secure capture: preexisting output is removed and no page exposes later output.
+    #[test]
+    fn secure_input_irreversibly_suppresses_output_pages() {
+        let capture = Arc::new(Mutex::new(Capture {
+            bytes: b"ordinary-before-input".to_vec(),
+            sensitive: false,
+            truncated: false,
+            eof_streams: 0,
+            interrupted: false,
+        }));
+        let output = WindowsJobOutput {
+            capture: Arc::clone(&capture),
+            workers: vec![],
+        };
+        assert_eq!(output.page(0, 64).unwrap().output, "ordinary-before-input");
+        output.suppress_sensitive();
+        {
+            let mut state = capture.lock().unwrap();
+            assert!(state.sensitive);
+            append(&mut state, b"synthetic-after-input");
+            assert!(state.bytes.is_empty());
+            state.eof_streams = 2;
+        }
+        for offset in [0, 3, MAX_OUTPUT_BYTES] {
+            let page = output.page(offset, 64).unwrap();
+            assert!(page.sensitive && page.truncated && page.eof);
+            assert_eq!(page.next_offset, 0);
+            assert_eq!(
+                page.output,
+                "[output suppressed after secure input was delivered]"
+            );
         }
     }
 }

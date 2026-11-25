@@ -2,6 +2,8 @@ import { authenticatePortalRequest } from "@mcp-workers/portal-auth";
 import { handleAgentInstallerRequest, renderLinuxLatestInstallShell } from "./install-bootstrap.ts";
 import { handleLatestMacInstallRequest, rejectLatestInstallRequest } from "./install-macos-latest.ts";
 import { handleBrowserPairing, isBrowserPairingPath } from "./browser-pairing.ts";
+import { handleSecureInput, isSecureInputPath } from "./secure-input-web.ts";
+import { clerkOwnerConfigured, clerkOwnerOrigin } from "./clerk-owner-session.ts";
 import type { ClerkOwnerConfig } from "./clerk-owner-session.ts";
 export { V2OwnerCoordinator } from "./v2-pairing.ts";
 import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
@@ -18,7 +20,8 @@ function pairedOnly(env: Env): boolean {
 }
 // Preview operations use existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
-const OWNER_TOOLS = new Set(["list_devices", "device_rename", "revoke_device"]);
+const SECURE_INPUT_TOOL_NAMES = ["request_secure_input", "get_secure_input_status", "cancel_secure_input"] as const;
+const OWNER_TOOLS = new Set(["list_devices", "device_rename", "revoke_device", ...SECURE_INPUT_TOOL_NAMES]);
 function pendingOwner(env: Env): DurableObjectStub | null {
   const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
@@ -254,6 +257,89 @@ async function listPairedDevices(env: Env, id: unknown, args: unknown): Promise<
     if (!response.ok) return toolError(id, "Device listing is unavailable.");
     return toolText(id, JSON.stringify(await response.json()));
   } catch { return toolError(id, "Device listing is unavailable."); }
+}
+
+const SECURE_INPUT_TARGET_SCHEMAS = [
+  { type: "object", properties: { kind: { const: "task_process" }, session_id: { type: "string", format: "uuid" }, name: { type: "string", pattern: "^[A-Z_][A-Z0-9_]{0,99}$" } }, required: ["kind", "session_id", "name"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "github_repository_secret" }, repository: { type: "string" }, name: { type: "string", pattern: "^[A-Z_][A-Z0-9_]{0,99}$" } }, required: ["kind", "repository", "name"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "github_environment_secret" }, repository: { type: "string" }, environment: { type: "string" }, name: { type: "string", pattern: "^[A-Z_][A-Z0-9_]{0,99}$" } }, required: ["kind", "repository", "environment", "name"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "github_repository_variable" }, repository: { type: "string" }, name: { type: "string", pattern: "^[A-Z_][A-Z0-9_]{0,99}$" } }, required: ["kind", "repository", "name"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "github_environment_variable" }, repository: { type: "string" }, environment: { type: "string" }, name: { type: "string", pattern: "^[A-Z_][A-Z0-9_]{0,99}$" } }, required: ["kind", "repository", "environment", "name"], additionalProperties: false },
+  { type: "object", properties: { kind: { const: "cloudflare_worker_secret" }, account_id: { type: "string", pattern: "^[a-f0-9]{32}$" }, worker_name: { type: "string" }, environment: { type: "string" }, mode: { type: "string", enum: ["deploy", "version"] }, name: { type: "string", pattern: "^[A-Z_][A-Z0-9_]{0,99}$" } }, required: ["kind", "account_id", "worker_name", "environment", "mode", "name"], additionalProperties: false },
+] as const;
+
+const REQUEST_SECURE_INPUT_TOOL = {
+  name: "request_secure_input",
+  title: "Request one-time secure input",
+  description: "Create a short-lived, one-time credential input request. Pass only non-sensitive purpose, target and execution metadata; NEVER include the secret value. The returned RCA link requires the configured Clerk Owner session. The target Agent preflights the provider identity and exact resource before the request is created.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      purpose: { type: "string", minLength: 1, maxLength: 256 },
+      is_production: { type: "boolean", default: true, description: "Defaults to production. Set false only when the exact target is verified to be non-production; the Owner must still confirm the target in the secure input page." },
+      execution: { type: "object", properties: { device_id: { type: "string", format: "uuid" } }, required: ["device_id"], additionalProperties: false },
+      target: { oneOf: SECURE_INPUT_TARGET_SCHEMAS },
+    },
+    required: ["purpose", "execution", "target"],
+    additionalProperties: false,
+  },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+} as const;
+
+const GET_SECURE_INPUT_STATUS_TOOL = {
+  name: "get_secure_input_status",
+  title: "Get secure input status",
+  description: "Read metadata-only status for a one-time secure input request. Never returns the submitted value.",
+  inputSchema: { type: "object", properties: { request_id: { type: "string", format: "uuid" } }, required: ["request_id"], additionalProperties: false },
+  annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+} as const;
+
+const CANCEL_SECURE_INPUT_TOOL = {
+  name: "cancel_secure_input",
+  title: "Cancel pending secure input",
+  description: "Cancel a request only while it is pending. Once consumed/dispatched, it cannot be cancelled or replayed; query the same request_id and treat uncertain outcomes as unknown.",
+  inputSchema: { type: "object", properties: { request_id: { type: "string", format: "uuid" } }, required: ["request_id"], additionalProperties: false },
+  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+} as const;
+
+async function callSecureInputTool(
+  request: Request, env: Env, id: unknown, name: string, args: unknown,
+): Promise<Response> {
+  const owner = pendingOwner(env);
+  const config = env as V2Env;
+  if (!owner || !clerkOwnerConfigured(config) || !config.CLERK_OWNER_USER_ID) {
+    return toolError(id, "Clerk Owner secure input is not configured.");
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) return toolError(id, "Invalid secure input request.");
+  const record = args as Record<string, unknown>;
+  const requestId = record.request_id;
+  if (name === "request_secure_input") {
+    const keys = Object.keys(record).sort().join(",");
+    if ((keys !== "execution,purpose,target" && keys !== "execution,is_production,purpose,target") ||
+        (Object.hasOwn(record, "is_production") && typeof record.is_production !== "boolean")) {
+      return toolError(id, "Invalid secure input request.");
+    }
+  } else if (Object.keys(record).length !== 1 || typeof requestId !== "string" ||
+      !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(requestId)) {
+    return toolError(id, "Invalid secure input request.");
+  }
+  const route = name === "request_secure_input" ? "request" : name === "get_secure_input_status" ? "status" : "cancel";
+  const payload = name === "request_secure_input"
+    ? { owner_user_id: config.CLERK_OWNER_USER_ID, request: record }
+    : { owner_user_id: config.CLERK_OWNER_USER_ID, request_id: requestId };
+  try {
+    const response = await owner.fetch("https://v2.internal/secure-input/" + route, {
+      method: "POST", headers: { "content-type": "application/json", "cache-control": "no-store" },
+      body: JSON.stringify(payload),
+    });
+    const result = await response.json() as Record<string, unknown>;
+    if (!response.ok) return toolError(id, "Secure input request failed: " + String(result.error ?? "unavailable"));
+    if (name === "request_secure_input") {
+      if (typeof result.request_id !== "string") return toolError(id, "Secure input request was not confirmed.");
+      result.input_url = new URL("/secure-input/" + result.request_id, clerkOwnerOrigin).toString();
+    }
+    return toolText(id, JSON.stringify(result));
+  } catch { return toolError(id, "Secure input service is unavailable."); }
 }
 
 
@@ -921,7 +1007,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       capabilities: { tools: { listChanged: false } },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
       instructions:
-        "File and Shell tools execute with the authorized Agent account's OS permissions. When a user identifies a device by name, list devices first; if names are duplicated, ask for an exact device choice rather than guessing. Always use a full device_id for calls. Each mutation requires a stable operation ID; query the original ID after an uncertain response, and use a new ID only for a new intent. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed.",
+        "File and Shell tools execute with the authorized Agent account's OS permissions. When a user identifies a device by name, list devices first; if names are duplicated, ask for an exact device choice rather than guessing. Always use a full device_id for calls. Each mutation requires a stable operation ID; query the original ID after an uncertain response, and use a new ID only for a new intent. Managed sessions accept bounded stdin and stop requests only while the Agent can verify ownership; after restart, stale session actions are rejected and uncertain operations are never replayed. Never ask the user to paste a secret into chat. Use request_secure_input with only non-sensitive target/purpose metadata, deliver the returned one-time RCA link, and poll get_secure_input_status. The secret is not returned to MCP; never log it or retry an unknown/consumed request.",
     });
   }
 
@@ -935,9 +1021,13 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
           },
         })),
         LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
+        REQUEST_SECURE_INPUT_TOOL, GET_SECURE_INPUT_STATUS_TOOL, CANCEL_SECURE_INPUT_TOOL,
       ] });
     }
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [...LOCAL_TOOLS, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL] : LOCAL_TOOLS });
+    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [
+      ...LOCAL_TOOLS, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
+      REQUEST_SECURE_INPUT_TOOL, GET_SECURE_INPUT_STATUS_TOOL, CANCEL_SECURE_INPUT_TOOL,
+    ] : LOCAL_TOOLS });
   }
 
   if (rpcMessage.method === "tools/call") {
@@ -977,6 +1067,10 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
     }
     if (call.name === "list_devices" && pendingOwner(env)) {
       return listPairedDevices(env, rpcMessage.id, call.arguments ?? {});
+    }
+    if (typeof call.name === "string" && SECURE_INPUT_TOOL_NAMES.includes(call.name as typeof SECURE_INPUT_TOOL_NAMES[number]) &&
+        pendingOwner(env)) {
+      return callSecureInputTool(request, env, rpcMessage.id, call.name, call.arguments);
     }
     // A production or Preview owner never falls back to the v1 VPC.
     if (pairedOnly(env)) return toolError(rpcMessage.id, "The requested paired-device tool is unavailable.");
@@ -1044,6 +1138,11 @@ export default {
       return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
     }
     const url = new URL(request.url);
+    if (isSecureInputPath(url.pathname)) {
+      const owner = pendingOwner(env);
+      if (!owner) return jsonError(404, "not_found", "The route was not found.");
+      return handleSecureInput(request, env as V2Env, owner);
+    }
     if (isBrowserPairingPath(url.pathname)) {
       return handleBrowserPairing(request, env as V2Env, ()=>pendingOwner(env), readBounded);
     }
@@ -1086,7 +1185,9 @@ export default {
         return jsonError(405, "method_not_allowed", "The request was rejected.");
       }
       try {
-        const raw = await readBounded(request, url.pathname === "/agent/pair/start" ? 10_000 : 4096);
+        const bodyLimit = url.pathname === "/agent/pair/start" ? 10_000 :
+          url.pathname === "/agent/owner/intent" ? 65_536 : 4096;
+        const raw = await readBounded(request, bodyLimit);
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
         return await pendingOwner(env)!.fetch(url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
           url.pathname === "/agent/session/recover" ? "https://v2.internal/session/recover" :

@@ -1,6 +1,7 @@
 /** Device-key-authenticated WSS, deliberately without remote operation handlers. */
 import { createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { parseAgentSecureInputTarget, validateAgentSecureInputSecret, type AgentSecureInputTarget } from "./secure-input.ts";
 
 const SESSION_DOMAIN = "remote-control:v2:session:";
 
@@ -144,6 +145,117 @@ export async function sendSignedOwnerIntent(
      !Number.isSafeInteger(result.result.idle_expires_at))
     throw Error('Cloud owner intent was not confirmed.');
   return {status:result.result.status,idle_expires_at:result.result.idle_expires_at};
+}
+
+export type SecureInputOwnerChallenge = {
+  request_id: string;
+  device_id: string;
+  nonce: string;
+  generation: number;
+  expires_at: number;
+  target_binding: string;
+  purpose: string;
+  target: AgentSecureInputTarget;
+  execution: Record<string, unknown>;
+  provider_principal?: Record<string, unknown>;
+  is_production: boolean;
+};
+
+const secureInputNonce = /^[A-Za-z0-9_-]{24}$/;
+const targetBinding = /^[a-f0-9]{64}$/;
+const isObject = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+export function secureInputOwnerIntentProof(
+  pem: string, challenge: SecureInputOwnerChallenge, targetConfirmed: boolean, productionAuthorized: boolean,
+): string {
+  if (!UUID.test(challenge.request_id) || !UUID.test(challenge.device_id) ||
+      !secureInputNonce.test(challenge.nonce) || !targetBinding.test(challenge.target_binding) ||
+      !Number.isSafeInteger(challenge.generation) || challenge.generation < 0 ||
+      challenge.generation >= Number.MAX_SAFE_INTEGER || targetConfirmed !== true ||
+      typeof productionAuthorized !== "boolean" || (challenge.is_production && !productionAuthorized)) {
+    throw new Error("Invalid secure input Owner Intent.");
+  }
+  const privateKey = createPrivateKey(pem);
+  const publicKey = Buffer.from(createPublicKey(privateKey).export({ type: "spki", format: "der" })).toString("base64");
+  const transcript = "remote-control:v2:secure-input-owner-intent:v1:" +
+    challenge.request_id + ":" + challenge.device_id + ":" + challenge.generation + ":" +
+    challenge.target_binding + ":" + challenge.nonce + ":" + Number(targetConfirmed) + ":" +
+    Number(productionAuthorized) + ":" + publicKey;
+  return encode64url(Buffer.from(sign(null, Buffer.from(transcript), privateKey)));
+}
+
+export async function getSecureInputOwnerChallenge(
+  origin: string, keyPath: string, requestId: string, send: typeof fetch = fetch,
+): Promise<SecureInputOwnerChallenge> {
+  if (!UUID.test(requestId)) throw new Error("A valid secure input request ID is required.");
+  const base = endpoint(origin);
+  const [deviceId, pem] = await Promise.all([
+    readFile(keyPath + ".device-id", "utf8").then(value => value.trim()),
+    readFile(keyPath, "utf8"),
+  ]);
+  if (!UUID.test(deviceId)) throw new Error("Invalid existing Owner device identity.");
+  const response = await postJson(base, "/agent/owner/intent/challenge",
+    { action: "secure_input", device_id: deviceId, request_id: requestId }, send);
+  rejectPermanentStatus(response.status);
+  const value = response.result;
+  const target = parseAgentSecureInputTarget(value.target);
+  if (response.status !== 200 || value.action !== "secure_input" || value.device_id !== deviceId ||
+      value.request_id !== requestId || !secureInputNonce.test(value.nonce) ||
+      !Number.isSafeInteger(value.generation) || value.generation < 0 ||
+      !Number.isSafeInteger(value.expires_at) || value.expires_at <= Date.now() ||
+      typeof value.target_binding !== "string" || !targetBinding.test(value.target_binding) ||
+      typeof value.purpose !== "string" || !value.purpose.trim() || value.purpose.length > 256 ||
+      !target || typeof value.is_production !== "boolean" || !isObject(value.execution) ||
+      !UUID.test(String(value.execution.device_id)) ||
+      !["permanent", "session"].includes(String(value.execution.grant_type)) ||
+      (value.provider_principal !== undefined && !isObject(value.provider_principal))) {
+    throw new Error("Secure input Owner challenge is unavailable or mismatched.");
+  }
+  // Confirm the local private key is readable before showing the challenge.
+  createPublicKey(createPrivateKey(pem));
+  return {
+    request_id: requestId, device_id: deviceId, nonce: value.nonce, generation: value.generation,
+    expires_at: value.expires_at, target_binding: value.target_binding, purpose: value.purpose,
+    target, execution: value.execution, provider_principal: value.provider_principal,
+    is_production: value.is_production,
+  };
+}
+
+/** Signs and submits a secret once. A transport error must be resolved by status, never resubmitted. */
+export async function sendSignedSecureInputOwnerIntent(
+  origin: string, keyPath: string, challenge: SecureInputOwnerChallenge, secret: string,
+  targetConfirmed: boolean, productionAuthorized: boolean, send: typeof fetch = fetch,
+): Promise<{ request_id: string; state: "unknown" }> {
+  if (!validateAgentSecureInputSecret(secret) || targetConfirmed !== true ||
+      (challenge.is_production && productionAuthorized !== true)) {
+    throw new Error("Secure input submission was rejected before dispatch.");
+  }
+  const base = endpoint(origin);
+  const deviceId = (await readFile(keyPath + ".device-id", "utf8")).trim();
+  const pem = await readFile(keyPath, "utf8");
+  if (!UUID.test(deviceId) || deviceId !== challenge.device_id ||
+      !UUID.test(challenge.request_id) || !secureInputNonce.test(challenge.nonce) ||
+      !targetBinding.test(challenge.target_binding) || challenge.expires_at <= Date.now()) {
+    throw new Error("Secure input Owner challenge expired or no longer matches this device.");
+  }
+  const proof = secureInputOwnerIntentProof(pem, challenge, targetConfirmed, productionAuthorized);
+  let response: { status: number; result: any };
+  try {
+    response = await postJson(base, "/agent/owner/intent", {
+      action: "secure_input", device_id: deviceId, request_id: challenge.request_id,
+      nonce: challenge.nonce, generation: challenge.generation, target_confirmed: true,
+      production_authorized: productionAuthorized, proof, secret,
+    }, send);
+  } catch {
+    throw new Error("Submission outcome is unknown. Check this request status; do not submit it again.");
+  }
+  if (response.status !== 200 || response.result.request_id !== challenge.request_id ||
+      response.result.state !== "unknown") {
+    rejectPermanentStatus(response.status);
+    throw new Error("Secure input was not confirmed. Check this same request status before continuing.");
+  }
+  return { request_id: challenge.request_id, state: "unknown" };
 }
 
 /** Read-only signed approval proof; never creates an incomplete .device-id file. */

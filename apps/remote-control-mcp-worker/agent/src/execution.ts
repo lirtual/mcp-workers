@@ -14,6 +14,10 @@ import {
 import { operationDigest, ReceiptStore, type OperationReceipt } from "./operations.ts";
 
 import { executeReadTool } from "./read-execution.ts";
+import {
+  executeSecureInputProvider, parseAgentSecureInputTarget, prepareSecureInputProvider,
+  validateAgentSecureInputSecret, type SecureInputOutcome,
+} from "./secure-input.ts";
 import { SearchSessions } from "./search.ts";
 import {
   ManagedSessions, parseForceTerminate, parseInteractWithProcess,
@@ -51,6 +55,12 @@ export interface AgentExecutionReply {
   body: unknown;
 }
 export interface AgentExecutionEngine {
+  prepareSecureInput(target: unknown, signal: AbortSignal): Promise<{
+    status: "ready" | "failed"; provider_principal?: unknown; error_code?: string;
+  }>;
+  executeSecureInput(
+    requestId: string, target: unknown, providerPrincipal: unknown, secret: unknown, signal: AbortSignal,
+  ): Promise<SecureInputOutcome>;
   executeTool(
     body: { tool?: unknown; arguments?: unknown; operation_id?: unknown },
     signal: AbortSignal,
@@ -117,6 +127,74 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
   let activeCalls = 0;
   let upgradeFrozen = false;
   let stopped = false;
+  let secureInputActive = 0;
+  const secureInputControllers = new Set<AbortController>();
+  const secureInputSeen = new Map<string, number>();
+
+  async function withSecureInput<T>(
+    signal: AbortSignal, work: (secureSignal: AbortSignal) => Promise<T>, unavailable: T,
+  ): Promise<T> {
+    if (stopped || upgradeFrozen || signal.aborted || secureInputActive >= 1) return unavailable;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener("abort", abort, { once: true });
+    secureInputControllers.add(controller);
+    secureInputActive++;
+    try {
+      if (signal.aborted || stopped) controller.abort();
+      return await work(controller.signal);
+    } finally {
+      signal.removeEventListener("abort", abort);
+      secureInputControllers.delete(controller);
+      secureInputActive--;
+    }
+  }
+
+  async function prepareSecureInput(targetValue: unknown, signal: AbortSignal): Promise<{
+    status: "ready" | "failed"; provider_principal?: unknown; error_code?: string;
+  }> {
+    const target = parseAgentSecureInputTarget(targetValue);
+    if (!target) return { status: "failed", error_code: "input_rejected" };
+    return withSecureInput(signal, async secureSignal => {
+      if (target.kind === "task_process") {
+        const session = sessions.get(target.session_id);
+        return session?.state === "running" ? { status: "ready" as const }
+          : { status: "failed" as const, error_code: "process_unavailable" };
+      }
+      const principal = await prepareSecureInputProvider(target, secureSignal);
+      if (!principal) return { status: "failed", error_code: "unknown" };
+      if ("status" in principal) return { status: "failed", error_code: principal.error_code };
+      return { status: "ready", provider_principal: principal };
+    }, { status: "failed", error_code: "provider_cli_unavailable" });
+  }
+
+  async function executeSecureInput(
+    requestId: string, targetValue: unknown, providerPrincipal: unknown, secretValue: unknown, signal: AbortSignal,
+  ): Promise<SecureInputOutcome> {
+    if (!/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(requestId) ||
+        !validateAgentSecureInputSecret(secretValue)) return { status: "failed", error_code: "input_rejected" };
+    const target = parseAgentSecureInputTarget(targetValue);
+    if (!target) return { status: "failed", error_code: "input_rejected" };
+    const now = Date.now();
+    for (const [id, at] of secureInputSeen) if (now - at > 24 * 60 * 60_000) secureInputSeen.delete(id);
+    if (secureInputSeen.has(requestId)) return { status: "failed", error_code: "input_rejected" };
+    if (secureInputSeen.size >= 128) {
+      return { status: "failed", error_code: "input_rejected" };
+    }
+    secureInputSeen.set(requestId, now);
+    const secret = secretValue;
+    return withSecureInput(signal, async secureSignal => {
+      if (target.kind === "task_process") {
+        const session = sessions.get(target.session_id);
+        if (!session || session.state !== "running") return { status: "failed", error_code: "process_unavailable" };
+        const result = await sessions.writeSecureInput(target.session_id, secret + "\n");
+        return result === "completed" ? { status: "succeeded" }
+          : result === "unknown" ? { status: "unknown", error_code: "execution_interrupted" }
+          : { status: "failed", error_code: "process_unavailable" };
+      }
+      return executeSecureInputProvider(target, providerPrincipal, secret, secureSignal);
+    }, { status: "unknown", error_code: "execution_interrupted" });
+  }
 
   type MutationTool = "write_file" | "create_directory" | "edit_block" | "move_file" | "delete_file";
   type MutationArgs =
@@ -624,7 +702,7 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
       last_activity_ms: lastActivityMs,
       state: idleUnknown || !Number.isSafeInteger(now) ||
         (lastActivityMs !== null && lastActivityMs > now + 1000) ? "unknown" :
-        activeCalls > 0 || inFlight.size > 0 || !sessions.isQuiescentForUpgrade()
+        activeCalls > 0 || inFlight.size > 0 || secureInputActive > 0 || !sessions.isQuiescentForUpgrade()
           ? "busy" : "idle",
     };
   }
@@ -633,7 +711,7 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
     if (upgradeFrozen) return false;
     // Freeze first: all requests subsequently observe the admission gate.
     upgradeFrozen = true;
-    if (activeCalls > 0 || inFlight.size > 0 || !sessions.isQuiescentForUpgrade()) {
+    if (activeCalls > 0 || inFlight.size > 0 || secureInputActive > 0 || !sessions.isQuiescentForUpgrade()) {
       upgradeFrozen = false;
       return false;
     }
@@ -641,13 +719,15 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
   }
 
   return {
+    prepareSecureInput,
+    executeSecureInput,
     executeTool,
     resetReadSessions: () => searches.close(),
     freezeForUpgrade: freeze,
     sessionIdleSnapshot: snapshot,
     freezeForIdle: () => snapshot()?.state === "idle" && freeze(),
     verifyUpgradeFreeze: () => upgradeFrozen && !stopped &&
-      activeCalls === 0 && inFlight.size === 0 &&
+      activeCalls === 0 && inFlight.size === 0 && secureInputActive === 0 &&
       sessions.isQuiescentForUpgrade(),
     releaseUpgradeFreeze: () => { upgradeFrozen = false; },
     getReceipt: async (id: string) => {
@@ -656,9 +736,10 @@ export function createAgentExecutionEngine(options: AgentExecutionOptions = {}):
     },
     stopOwnedForRevocation: async () => {
       stopped = true;
+      for (const controller of secureInputControllers) controller.abort();
       // Operations already admitted before the tombstone may still be
       // starting a supervised process: never overclaim complete cleanup.
-      const pendingEffects = inFlight.size > 0;
+      const pendingEffects = inFlight.size > 0 || secureInputActive > 0;
       const result = await sessions.stopOwnedForRevocation();
       return pendingEffects ? "uncertain" : result;
     },

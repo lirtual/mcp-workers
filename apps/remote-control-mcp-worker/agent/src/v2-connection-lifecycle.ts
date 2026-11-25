@@ -11,6 +11,7 @@ import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, p
 import { createAgentExecutionEngine, type AgentExecutionEngine } from "./execution.ts";
 import { startUpgradeControl } from "./upgrade-control.ts";
 import { parseStartProcess, parseListSessions, parseReadProcessOutput, parseInteractWithProcess, parseForceTerminate } from "./sessions.ts";
+import { parseAgentSecureInputTarget, validateAgentSecureInputSecret } from "./secure-input.ts";
 
 /** One bounded Session read adapter, shared by the Agent and MCP/WSS tests. */
 export async function executeV2SessionRead(
@@ -78,6 +79,7 @@ export function monitorDeviceSocket(
   operation?: (tool: V2FileOperation, args: unknown, operationId: string, signal: AbortSignal) => Promise<Record<string, unknown> | null>,
   allowShell = false,
   revokeCleanup?: () => Promise<"confirmed" | "uncertain">,
+  secureInput?: Pick<AgentExecutionEngine, "prepareSecureInput" | "executeSecureInput">,
 ): Promise<SocketEnd> {
   const authEvery = timing.authIntervalMs ?? AUTH_INTERVAL_MS;
   if (!Number.isFinite(timing.intervalMs) || timing.intervalMs <= 0 ||
@@ -94,6 +96,7 @@ export function monitorDeviceSocket(
     let awaitingPong = false;
     let revocationStarted = false;
     let readsInFlight = 0;
+    let secureInputInFlight = 0;
     let awaitingAuth: string | undefined;
     let watchdog: ReturnType<typeof setTimeout> | undefined;
     let authWatchdog: ReturnType<typeof setTimeout> | undefined;
@@ -146,7 +149,7 @@ export function monitorDeviceSocket(
         return;
       }
       if (typeof event.data === "string" && event.data.length <= 65_536 &&
-          event.data.startsWith("{") && (readOnly || operation || revokeCleanup)) {
+          event.data.startsWith("{") && (readOnly || operation || revokeCleanup || secureInput)) {
         let request: Record<string, unknown> | undefined;
         try {
           const decoded = JSON.parse(event.data) as unknown;
@@ -154,6 +157,81 @@ export function monitorDeviceSocket(
             request = decoded as Record<string, unknown>;
           }
         } catch { /* Not an authorized read frame. */ }
+        if (request?.kind === "secure_input_prepare") {
+          const validFrame = Object.keys(request).sort().join(",") === "kind,preflight_id,target" &&
+            typeof request.preflight_id === "string" &&
+            /^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(request.preflight_id);
+          const target = parseAgentSecureInputTarget(request.target);
+          const id = request.preflight_id as string;
+          if (!validFrame || !target) {
+            if (validFrame && socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify({ kind: "secure_input_prepare_result", preflight_id: id, status: "failed", error_code: "input_rejected" }));
+            }
+            return;
+          }
+          if (!allowShell || !secureInput || secureInputInFlight >= 1) {
+            socket.send(JSON.stringify({ kind: "secure_input_prepare_result", preflight_id: id, status: "failed", error_code: "provider_cli_unavailable" }));
+            return;
+          }
+          secureInputInFlight++;
+          void Promise.resolve().then(() => secureInput.prepareSecureInput(target, socketWork.signal))
+            .then(result => {
+              if (settled || socketWork.signal.aborted || socket.readyState !== WebSocket.OPEN) return;
+              socket.send(JSON.stringify({
+                kind: "secure_input_prepare_result", preflight_id: id, status: result.status,
+                ...(result.provider_principal ? { provider_principal: result.provider_principal } : {}),
+                ...(result.error_code ? { error_code: result.error_code } : {}),
+              }));
+            }).catch(() => {
+              if (!settled && !socketWork.signal.aborted && socket.readyState === WebSocket.OPEN) {
+                try { socket.send(JSON.stringify({ kind: "secure_input_prepare_result", preflight_id: id, status: "failed", error_code: "unknown" })); }
+                catch { finish("offline"); }
+              }
+            }).finally(() => { secureInputInFlight--; });
+          return;
+        }
+        if (request?.kind === "secure_input") {
+          const keys = Object.keys(request).sort().join(",");
+          const validFrame = keys === "kind,request_id,secret,target" ||
+            keys === "kind,provider_principal,request_id,secret,target";
+          const id = request.request_id;
+          const target = parseAgentSecureInputTarget(request.target);
+          if (typeof id !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(id)) return;
+          if (!validFrame || !target || !validateAgentSecureInputSecret(request.secret)) {
+            socket.send(JSON.stringify({ kind: "secure_input_result", request_id: id, status: "failed", error_code: "input_rejected" }));
+            return;
+          }
+          if (!allowShell || !secureInput || secureInputInFlight >= 1) {
+            socket.send(JSON.stringify({ kind: "secure_input_result", request_id: id, status: "failed", error_code: "input_rejected" }));
+            return;
+          }
+          secureInputInFlight++;
+          const secret = request.secret;
+          request.secret = "";
+          try {
+            socket.send(JSON.stringify({ kind: "secure_input_ack", request_id: id, status: "accepted" }));
+            socket.send(JSON.stringify({ kind: "secure_input_progress", request_id: id, status: "running" }));
+          } catch {
+            secureInputInFlight--;
+            finish("offline");
+            return;
+          }
+          void Promise.resolve().then(() =>
+            secureInput.executeSecureInput(id, target, request.provider_principal, secret, socketWork.signal))
+            .then(result => {
+              if (settled || socketWork.signal.aborted || socket.readyState !== WebSocket.OPEN) return;
+              socket.send(JSON.stringify({
+                kind: "secure_input_result", request_id: id, status: result.status,
+                ...(result.error_code ? { error_code: result.error_code } : {}),
+              }));
+            }).catch(() => {
+              if (!settled && !socketWork.signal.aborted && socket.readyState === WebSocket.OPEN) {
+                try { socket.send(JSON.stringify({ kind: "secure_input_result", request_id: id, status: "unknown", error_code: "execution_interrupted" })); }
+                catch { finish("offline"); }
+              }
+            }).finally(() => { secureInputInFlight--; });
+          return;
+        }
         if (request?.kind === "revoke_cleanup" &&
             Object.keys(request).length === 2 &&
             typeof request.request_id === "string" &&
@@ -410,7 +488,12 @@ export async function maintainAuthenticatedDeviceSession(
                 executeV2FileOperation(execution,tool,args,operationId,requestSignal)
             : undefined,
           shellAvailable,
-          full && execution ? () => execution.stopOwnedForRevocation() : undefined);
+          full && execution ? () => execution.stopOwnedForRevocation() : undefined,
+          full && execution ? {
+            prepareSecureInput: (target, requestSignal) => execution.prepareSecureInput(target, requestSignal),
+            executeSecureInput: (requestId, target, principal, secret, requestSignal) =>
+              execution.executeSecureInput(requestId, target, principal, secret, requestSignal),
+          } : undefined);
       } finally {
         authenticatedOnline = false;
         await execution.resetReadSessions();

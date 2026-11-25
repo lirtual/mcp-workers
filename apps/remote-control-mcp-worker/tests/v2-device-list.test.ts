@@ -155,16 +155,19 @@ test("v2 Preview lists per-device Shell and files but never implicitly routes to
   }), env);
 
   const list = await (await rpc("tools/list")).json() as { result: { tools: Array<{
-    name: string; inputSchema: { required?: string[] };
+    name: string; inputSchema: { required?: string[]; properties?: Record<string, { required?: string[] }> };
   }> } };
   const exposed = new Set(list.result.tools.map(x => x.name));
   for (const supported of ["run_command", "write_file", "delete_file", "move_file",
       "create_directory", "replace_text", "list_sessions", "read_session_output", "stop_session", "send_input"]) {
     assert.equal(exposed.has(supported), true, supported);
   }
-  for (const item of list.result.tools.filter(x => !["list_devices", "device_rename", "revoke_device"].includes(x.name))) {
+  for (const item of list.result.tools.filter(x => !["list_devices", "device_rename", "revoke_device",
+      "request_secure_input", "get_secure_input_status", "cancel_secure_input"].includes(x.name))) {
     assert.ok(item.inputSchema.required?.includes("device_id"), item.name);
   }
+  const secureRequest = list.result.tools.find(x => x.name === "request_secure_input");
+  assert.ok(secureRequest?.inputSchema.properties?.execution?.required?.includes("device_id"));
   for (const [name, args] of [
     ["read_file", { path: "/tmp/test" }],
     ["run_command", { operation_id: "safe-1", command: "date" }],
