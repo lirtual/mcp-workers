@@ -151,19 +151,6 @@ if ($Action -eq 'VerifyActivation') {
   'authenticated-activation-observed'
   exit 0
 }
-if ($Action -eq 'Status') {
-  if (-not $task) {
-    '{"installed":false,"running":false,"autostart":"at-user-logon"}'
-    exit 0
-  }
-  Check-Existing
-  $running = ($task.State -eq 'Running')
-  $launch = Read-TaskLaunch $task.Actions[0]
-  $versionDir = [IO.Path]::GetFullPath($launch.Entry).Substring($root.Length + 1).Split('\')[0]
-  $installed = $versionDir.Substring(0, $versionDir.Length - '-windows-x64'.Length)
-  @{installed=$true;running=$running;autostart='at-user-logon';version=$installed} | ConvertTo-Json -Compress
-  exit 0
-}
 if ($Action -eq 'Endpoint') {
   Check-Existing
   (Read-TaskLaunch $task.Actions[0]).Endpoint
@@ -378,7 +365,59 @@ function Check-UpgradeStore {
 }
 # Reuse the installed Rust identity/policy reader and the live owner-local
 # signed-connection observation. Running Task or historical proof is not enough.
-function Assert-AutomaticEligibility($program,$expectedAction) {
+function Test-AutomaticResultTransition($prior,[string]$target,[string]$action) {
+  if ($prior -and $prior.status -ceq 'failed_recovered') {
+    if ($action -ceq 'waiting_idle') { return $false }
+    if ($action -ceq 'admit' -and $prior.target_version -ceq $target) { return $false }
+  }
+  return $true
+}
+function Get-NativeAutomaticResult {
+  $file = $identityFile + '.native-upgrade-result'
+  if (-not (Test-Path -LiteralPath $file)) { return }
+  Check-UpgradeStore
+  $item = Get-Item -LiteralPath $file -Force
+  if ($item.Length -lt 1 -or $item.Length -gt 512) { throw 'Untrusted automatic update result' }
+  $result = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
+  $stable = '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$'
+  if (@($result.PSObject.Properties).Count -ne 6 -or
+      $result.device_id -isnot [string] -or
+      $result.device_id -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+      $result.operation_id -isnot [string] -or $result.operation_id -cnotmatch '^[a-f0-9]{32}$' -or
+      $result.target_version -isnot [string] -or $result.target_version -cnotmatch $stable -or
+      $result.installed_version -isnot [string] -or $result.installed_version -cnotmatch $stable -or
+      ($result.updated_at_unix_ms -isnot [long] -and $result.updated_at_unix_ms -isnot [int]) -or
+      $result.updated_at_unix_ms -lt 0 -or $result.updated_at_unix_ms -gt 9007199254740991 -or
+      $result.status -isnot [string] -or $result.status -cnotin @('success','failed_recovered','waiting_idle') -or
+      (($result.status -ceq 'success') -ne ($result.installed_version -ceq $result.target_version))) {
+    throw 'Untrusted automatic update result'
+  }
+  if ($result.device_id -ceq (Get-Content -LiteralPath ($identityFile + '.device-id') -Raw).Trim()) { return $result }
+}
+function Write-NativeAutomaticResult($record,[string]$status) {
+  Assert-UpgradeIdentity $record
+  $prior = Get-NativeAutomaticResult
+  if (-not (Test-AutomaticResultTransition $prior $record.target $status)) { return }
+  $result = @{
+    device_id=(Get-Content -LiteralPath ($identityFile + '.device-id') -Raw).Trim()
+    operation_id=[guid]::NewGuid().ToString('N')
+    target_version=$record.target
+    installed_version=$(if ($status -ceq 'success') { $record.target } else { $record.original })
+    status=$status
+    updated_at_unix_ms=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+  }
+  $file = $identityFile + '.native-upgrade-result'
+  $stage = Join-Path $identityRoot ('.auto-result-' + [guid]::NewGuid().ToString('N'))
+  try {
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($result | ConvertTo-Json -Compress))
+    $stream = [IO.File]::Open($stage,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+    try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    if (Test-Path -LiteralPath $file) { [IO.File]::Replace($stage,$file,[NullString]::Value) }
+    else { [IO.File]::Move($stage,$file) }
+    Check-UpgradeStore
+  } finally { if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage } }
+}
+function Assert-AutomaticEligibility($program,$expectedAction,[string]$target='') {
   Check-UpgradeStore
   if ($program.Tag -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
     throw 'Automatic update requires Stable'
@@ -396,6 +435,10 @@ function Assert-AutomaticEligibility($program,$expectedAction) {
   $facts = $raw | ConvertFrom-Json
   if ($facts.identity_present -ne $true -or $facts.automatic_update -cne 'on') {
     throw 'Automatic update policy is not enabled'
+  }
+  $prior = Get-NativeAutomaticResult
+  if ($target -and -not (Test-AutomaticResultTransition $prior $target 'admit')) {
+    throw 'Previously recovered failed version suppressed for automatic update'
   }
   Invoke-AgentUpgradeFreeze $identityFile 'verify-online'
   $after = Get-OwnedAgentProcess $program
@@ -500,7 +543,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   }
   if ($Automatic) {
     if ($newVersion -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') { throw 'Automatic target must be Stable' }
-    Assert-AutomaticEligibility $original $oldAction
+    Assert-AutomaticEligibility $original $oldAction $newVersion
   }
   Wait-VersionExited $target $managementCaller
   $raw = & $target.Entry --cli status
@@ -539,7 +582,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
       $modeGuard = [IO.File]::Open(($identityFile + '.install-mode'),
         [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
       try {
-        Assert-AutomaticEligibility $original $oldAction
+        Assert-AutomaticEligibility $original $oldAction $newVersion
         Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
         Assert-UpgradeIdentity $record
         $switchStarted = $true
@@ -573,6 +616,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
       Start-Sleep -Milliseconds 500
     }
     if (-not $confirmed) { throw 'New Rust signed WSS not confirmed' }
+    if ($Automatic) { Invoke-AgentUpgradeFreeze $identityFile 'verify-online' }
     $observed = Read-OwnedTask
     if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $newAction)) {
       throw 'Task changed after activation observation'
@@ -612,9 +656,19 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
       } catch { Write-Verbose ('Native restore refused: ' + $_.Exception.Message) }
     }
   } finally {
-    $stream.Dispose()
-    if ($complete -or $restored -or $deferred) { Remove-Item -LiteralPath $nativeJournal -ErrorAction Stop }
+    try {
+      if ($Automatic -and ($complete -or $restored -or $deferred)) {
+        $status = if ($complete) {'success'} elseif ($restored) {'failed_recovered'} else {'waiting_idle'}
+        # Commit the result while the journal is held; failed writes retain intent.
+        Write-NativeAutomaticResult $record $status
+      }
+    } finally { $stream.Dispose() }
+    if ($complete -or $restored -or $deferred) {
+      Remove-Item -LiteralPath $nativeJournal -ErrorAction Stop
+    }
   }
+  if ($Automatic -and $deferred) { return 'automatic-waiting-idle' }
+  if ($Automatic -and $restored) { return 'automatic-failed-recovered' }
   if ($deferred) { throw 'Native upgrade deferred; Agent busy; retry later' }
   if ($complete) { return 'switched-authenticated-upgrade' }
   if ($restored) { throw ('Native upgrade refused at ' + $stage + '; previous task restored') }
@@ -779,8 +833,39 @@ if ($Action -eq 'ActivateNative') {
   exit 0
 }
 
+if ($Action -eq 'Status') {
+  if (-not $task) {
+    '{"installed":false,"running":false,"autostart":"at-user-logon"}'
+    exit 0
+  }
+  Check-Existing
+  $running = ($task.State -eq 'Running')
+  $launch = Read-TaskLaunch $task.Actions[0]
+  $versionDir = [IO.Path]::GetFullPath($launch.Entry).Substring($root.Length + 1).Split('\')[0]
+  $installed = $versionDir.Substring(0, $versionDir.Length - '-windows-x64'.Length)
+  $activity = $null
+  $result = $null
+  if (Test-Path -LiteralPath $nativeJournal) { $activity = 'needs_attention' }
+  try {
+    $result = Get-NativeAutomaticResult
+    if ($result) {
+      $current = $result.installed_version -ceq $installed
+      $result | Add-Member -NotePropertyName current -NotePropertyValue $current
+      if (-not $activity -and $current) {
+        $activity = switch ($result.status) {
+          'success' {'success'}
+          'failed_recovered' {'recovered'}
+          'waiting_idle' {'waiting_idle'}
+        }
+      }
+    }
+  } catch { $activity = 'unknown'; $result = @{status='unknown'} }
+  @{installed=$true;running=$running;autostart='at-user-logon';version=$installed;
+    automatic_update_activity=$activity;automatic_update_result=$result} | ConvertTo-Json -Compress -Depth 4
+  exit 0
+}
 if ($Action -eq 'VerifyAutomatic') {
-  if ($Endpoint -or $Direction -or $Version) { throw 'Unexpected automatic eligibility arguments' }
+  if ($Endpoint -or $Direction) { throw 'Unexpected automatic eligibility arguments' }
   Check-Existing
   if (Test-Path -LiteralPath $nativeJournal) { throw 'Unresolved native upgrade' }
   $launch = Read-TaskLaunch $task.Actions[0]
@@ -789,7 +874,7 @@ if ($Action -eq 'VerifyAutomatic') {
   $installed = $directory.Substring(0,$directory.Length - '-windows-x64'.Length)
   $program = Get-ReviewedProgram $installed
   $expected = New-ReviewedAction $program $launch.Endpoint $launch.Generation
-  Assert-AutomaticEligibility $program $expected
+  Assert-AutomaticEligibility $program $expected $Version
   'automatic-eligible'
   exit 0
 }

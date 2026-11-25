@@ -2,6 +2,7 @@
 //! private identity, and explicit same-owner service launch contract.
 #[cfg(windows)]
 mod windows {
+    use rca_native_agent::automatic_update::{automatic_jitter, AutomaticCheckSchedule};
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::native_file::{
         run_native_managed_session_with_upgrade, NativeFileError, UpgradeRuntimeOptions,
@@ -16,7 +17,7 @@ mod windows {
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use windows_sys::Win32::System::Console::{
         SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
     };
@@ -103,6 +104,22 @@ mod windows {
             }
             _ => "off",
         };
+        let task = program_root()
+            .ok()
+            .and_then(|(directory, _)| task_command(&directory, &["-Action", "Status"]).ok())
+            .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok());
+        let activity = task
+            .as_ref()
+            .and_then(|value| value["automatic_update_activity"].as_str());
+        let activity = match (activity, policy) {
+            (Some("needs_attention"), _) => "needs_attention",
+            (Some("upgrading"), _) => "upgrading",
+            (Some("unknown"), _) | (_, "unknown") => "unknown",
+            (Some("waiting_idle"), "off") => "disabled",
+            (Some(value), _) => value,
+            (_, "off") => "disabled",
+            _ => "unknown",
+        };
         Ok(serde_json::json!({
             "platform": "win32",
             "mode": "native-user-agent",
@@ -110,7 +127,9 @@ mod windows {
             "device_id": id,
             "remote_connection": "unconfirmed",
             "automatic_update": policy,
-            "automatic_update_activity": if policy == "off" { "disabled" } else { "unknown" },
+            "automatic_update_activity": activity,
+            "automatic_update_result": task.as_ref().map(|value| &value["automatic_update_result"]),
+            "installed_version": task.as_ref().and_then(|value| value["version"].as_str()),
             "shell": true,
             "write_file": true
         }))
@@ -834,6 +853,92 @@ mod windows {
         run_agent(endpoint, &key, &private_pem, &id, Some(generation))
     }
 
+    fn automatic_installer(root: &Path, key: &Path) -> Option<(PathBuf, PathBuf)> {
+        if key != root.join("v2-identity.pem") {
+            return None;
+        }
+        let (directory, tag) = program_root().ok()?;
+        let parts = tag.strip_prefix('v')?.split('.').collect::<Vec<_>>();
+        if parts.len() != 3
+            || parts.iter().any(|part| {
+                part.is_empty()
+                    || !part.bytes().all(|b| b.is_ascii_digit())
+                    || (part.len() > 1 && part.starts_with('0'))
+            })
+        {
+            return None;
+        }
+        let installer =
+            directory.join("apps/remote-control-agent/scripts/windows-stage-install.ps1");
+        validate_windows_private_path(&installer, false).ok()?;
+        let system = PathBuf::from(std::env::var_os("SystemRoot")?);
+        if !system.is_absolute() {
+            return None;
+        }
+        Some((
+            system.join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            installer,
+        ))
+    }
+
+    fn automatic_monitor(
+        root: PathBuf,
+        device_id: String,
+        stop: Arc<AtomicBool>,
+        powershell: PathBuf,
+        installer: PathBuf,
+    ) {
+        let mut schedule = AutomaticCheckSchedule::new(Instant::now(), automatic_jitter(240));
+        let mut checker: Option<std::process::Child> = None;
+        while !stop.load(Ordering::Acquire) {
+            if let Some(child) = checker.as_mut() {
+                match child.try_wait() {
+                    Ok(None) => (),
+                    Ok(Some(status)) => {
+                        if !status.success() {
+                            windows_log::record(&root, "automatic_check_refused");
+                        }
+                        checker = None;
+                    }
+                    Err(_) => {
+                        checker = None;
+                        windows_log::record(&root, "automatic_check_unconfirmed");
+                    }
+                }
+            }
+            let now = Instant::now();
+            if checker.is_none()
+                && schedule.is_due(now)
+                && schedule.take_due(now, automatic_jitter(1800))
+                && rca_native_agent::device_pairing::windows_auto_policy(&root, &device_id) == "on"
+            {
+                // The packaged manager revalidates permanent identity, live signed
+                // connection, policy and the exact installed Task. It only submits
+                // the existing demand-start owner upgrade Task; never blocks WSS.
+                match Command::new(&powershell)
+                    .args([
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                    ])
+                    .arg(&installer)
+                    .arg("-Automatic")
+                    .env_remove("RCA_UNATTENDED_UPGRADE")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => checker = Some(child),
+                    Err(_) => windows_log::record(&root, "automatic_check_launch_failed"),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
     fn run_agent(
         endpoint: &str,
         key: &Path,
@@ -864,6 +969,13 @@ mod windows {
                     }
                     std::thread::sleep(Duration::from_millis(50));
                 }
+            }))
+        } else if let Some((powershell, installer)) = automatic_installer(&root, key) {
+            let monitor_root = root.clone();
+            let monitor_id = device_id.to_owned();
+            let flag = Arc::clone(&stop);
+            Some(std::thread::spawn(move || {
+                automatic_monitor(monitor_root, monitor_id, flag, powershell, installer)
             }))
         } else {
             None

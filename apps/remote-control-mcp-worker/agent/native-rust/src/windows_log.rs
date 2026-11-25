@@ -37,6 +37,9 @@ fn known(event: &str) -> bool {
             | "execution_unavailable"
             | "upgrade_control_unavailable"
             | "cleanup_uncertain"
+            | "automatic_check_refused"
+            | "automatic_check_unconfirmed"
+            | "automatic_check_launch_failed"
     )
 }
 fn unsafe_log() -> io::Error {

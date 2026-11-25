@@ -1,5 +1,7 @@
 //! Nonproduction RCA Rust candidate. No production entrypoint or release integration.
 //! Only publish after #914 Gate 0–3, independently authorized per platform.
+#[cfg(any(target_os = "linux", windows))]
+pub mod automatic_update;
 #[cfg(target_os = "macos")]
 #[path = "unix_managed.rs"]
 pub mod darwin_managed;

@@ -323,7 +323,7 @@ export function build(args) {
   const lifecycleSource=darwin ? readFileSync(path.join(source,"v2-connection-lifecycle.ts"),"utf8") : "";
   if(darwin && (!/const full = options\.capability !== "read-only"/.test(lifecycleSource) ||
      !/receiptDirectory:\s*options\.receiptDirectory/.test(lifecycleSource) ||
-     !/startUpgradeControl\(execution(?:!)?, keyPath\)/.test(lifecycleSource) ||
+     !/startUpgradeControl\(execution(?:!)?, keyPath, \(\) => authenticatedOnline && !signal\.aborted && !options\.sessionIdle\)/.test(lifecycleSource) ||
      !/executeV2FileOperation\(execution,/.test(lifecycleSource) ||
      !/executeV2SessionRead\(execution,/.test(lifecycleSource))) {
     throw new Error("Reviewed paired full-tools release profile is not proven.");

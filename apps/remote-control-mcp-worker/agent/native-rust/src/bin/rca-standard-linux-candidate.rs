@@ -2,6 +2,7 @@
 //! Shares the existing owner-reviewed permanent and temporary v2 identities.
 #[cfg(target_os = "linux")]
 mod linux {
+    use rca_native_agent::automatic_update::{automatic_jitter, AutomaticCheckSchedule};
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::linux_managed::LinuxManagedSessions;
     use rca_native_agent::native_file::{
@@ -880,34 +881,6 @@ mod linux {
         run_agent(&endpoint, &home, &key)
     }
 
-    struct AutomaticCheckSchedule {
-        next_check: Instant,
-    }
-
-    impl AutomaticCheckSchedule {
-        fn new(now: Instant, jitter_seconds: u64) -> Self {
-            Self {
-                next_check: now + Duration::from_secs(60 + jitter_seconds.min(240)),
-            }
-        }
-
-        fn take_due(&mut self, now: Instant, jitter_seconds: u64) -> bool {
-            if now < self.next_check {
-                return false;
-            }
-            self.next_check = now + Duration::from_secs(6 * 3600 - 900 + jitter_seconds.min(1800));
-            true
-        }
-    }
-
-    fn automatic_jitter(max: u64) -> u64 {
-        let mut bytes = [0u8; 8];
-        if getrandom::fill(&mut bytes).is_err() {
-            return 0;
-        }
-        u64::from_le_bytes(bytes) % (max + 1)
-    }
-
     fn automatic_manager(home: &Path, key: &Path, executable: &Path) -> Option<PathBuf> {
         if key != pairing_key(home, false) {
             return None;
@@ -978,7 +951,7 @@ mod linux {
                 {
                     let now = Instant::now();
                     if checker.is_none()
-                        && now >= schedule.next_check
+                        && schedule.is_due(now)
                         && schedule.take_due(now, automatic_jitter(1800))
                     {
                         // Manager revalidates the installed permanent identity,
@@ -1041,19 +1014,6 @@ mod linux {
         const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
 
         const NEW_ID: &str = "123e4567-e89b-42d3-a456-426614174002";
-
-        #[test]
-        fn automatic_check_has_bounded_startup_and_low_frequency_cadence() {
-            let start = std::time::Instant::now();
-            let mut schedule = AutomaticCheckSchedule::new(start, 120);
-            assert!(!schedule.take_due(start + Duration::from_secs(179), 0));
-            assert!(schedule.take_due(start + Duration::from_secs(180), 900));
-            assert!(!schedule.take_due(start + Duration::from_secs(181), 0));
-            assert!(!schedule.take_due(start + Duration::from_secs(180 + 6 * 3600 - 1), 0));
-            assert!(schedule.take_due(start + Duration::from_secs(180 + 6 * 3600), 1800));
-            assert!(!schedule.take_due(start + Duration::from_secs(180 + 12 * 3600), 0));
-            assert!(schedule.take_due(start + Duration::from_secs(180 + 12 * 3600 + 900), 0));
-        }
 
         #[test]
         fn temporary_launcher_is_owner_local_and_never_replaces_existing_command() {

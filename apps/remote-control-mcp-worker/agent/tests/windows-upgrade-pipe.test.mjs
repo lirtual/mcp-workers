@@ -220,3 +220,25 @@ Write-Output 'strict-frame-pass'
   assert.equal(result.status,0,result.stderr);
   assert.equal(result.stdout.trim(),"strict-frame-pass");
 });
+
+test("automatic result suppresses only a verified failed target and preserves history on busy",async t=>{
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const fn=source.match(/^function Test-AutomaticResultTransition\([\s\S]*?^\}/m)?.[0];
+  assert(fn);
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+$prior=[pscustomobject]@{status='failed_recovered';target_version='v0.1.62'}
+if (Test-AutomaticResultTransition $prior 'v0.1.62' 'admit') {throw 'Failed target admitted'}
+if (-not (Test-AutomaticResultTransition $prior 'v0.1.63' 'admit')) {throw 'New target refused'}
+if (Test-AutomaticResultTransition $prior 'v0.1.63' 'waiting_idle') {throw 'Busy overwrote failure evidence'}
+if (-not (Test-AutomaticResultTransition $prior 'v0.1.63' 'success')) {throw 'Success did not replace failure'}
+if (-not (Test-AutomaticResultTransition $null 'v0.1.63' 'waiting_idle')) {throw 'Initial busy result refused'}
+Write-Output 'automatic-result-pass'
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"automatic-result-pass");
+});

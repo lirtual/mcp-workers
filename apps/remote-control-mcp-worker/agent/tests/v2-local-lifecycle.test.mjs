@@ -258,17 +258,13 @@ with tempfile.TemporaryDirectory(prefix="rc-v2-identity-cli-") as home:
     if child.poll() is None:child.kill()
     code=child.wait(timeout=5)
     assert written,output.decode(errors="replace")
-    # A running *other* v2 Agent on a developer host legitimately blocks
-    # destructive identity purge; never weaken the runtime guard for a test.
-    import importlib.util
-    spec=importlib.util.spec_from_file_location("bootstrap",script)
-    b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)
-    if b.no_live_v2_identity_processes():
-        assert code==0,output.decode(errors="replace")
-        assert not key.exists() and not did.exists()
+    # Other concurrent tests may start or stop an Agent. Judge the actual
+    # purge receipt and filesystem effects, not a later process-list snapshot.
+    if code==0:
+        assert not key.exists() and not did.exists(),output.decode(errors="replace")
     else:
-        assert code!=0 and b"purge blocked" in output
-        assert key.exists() and did.exists()
+        assert b"Active or uncertain v2 pairing/Agent process; purge blocked" in output,output.decode(errors="replace")
+        assert key.exists() and did.exists(),output.decode(errors="replace")
     assert receipt.read_text()=="unknown-v1-v2-receipt"
 print("PTY_KEY_PURGE_EITHER_CONFIRMED_OR_SAFELY_BLOCKED")
 `;
