@@ -137,6 +137,7 @@ test('structured uncertainty, invalid receipts and missing success identifier ne
   ['missing identity',(p:any)=>({status:'rejected',input_digest:p.input_digest,error_code:'E_REJECTED'}),'cloudflare_outcome_unknown'],
   ['wrong identity',(p:any)=>({status:'rejected',input_digest:p.input_digest,invocation_id:'wrong',deployment_id:p.deployment_id,error_code:'E_REJECTED'}),'cloudflare_digest_conflict'],
   ['unexpected output',(p:any)=>({status:'rejected',input_digest:p.input_digest,invocation_id:p.invocation_id,deployment_id:p.deployment_id,error_code:'E_REJECTED',body:'private'}),'cloudflare_outcome_unknown'],
+  ['malformed code-free rejection',(p:any)=>({status:'rejected',input_digest:p.input_digest,body:'private'}),'cloudflare_outcome_unknown'],
   ['missing id',(p:any)=>({status:'accepted',input_digest:p.input_digest}),'cloudflare_output_unreviewed'],
   ['lost ack',()=>{throw Error('private raw exception');},'cloudflare_outcome_unknown'],
  ] as const)await t.test(name,async t=>{

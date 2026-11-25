@@ -61,12 +61,15 @@ export async function runGenericJsonAction(env:Env,plan:Plan,step:Step,runId:str
      if(output.status==='rejected'||output.status==='unknown'){
        // Old contracts retain their generic status codes. New structured receipts
        // must match the exact sealed declaration and the complete invocation identity.
-       if(Array.isArray(manifest.error_codes)&&receipt.error_code!==undefined){
-         if(receipt.invocation_id!==invocation_id||receipt.deployment_id!==deployment||
-            Object.keys(receipt).some(k=>!['status','input_digest','invocation_id','deployment_id','error_code'].includes(k))||
-            typeof receipt.error_code!=='string'||!manifest.error_codes.includes(receipt.error_code))
+       if(Array.isArray(manifest.error_codes)){
+         if(Object.keys(receipt).some(k=>!['status','input_digest','invocation_id','deployment_id','error_code'].includes(k)))
            return unknown();
-         return output.status==='rejected'?failed(receipt.error_code):unknown(receipt.error_code);
+         if(receipt.error_code!==undefined){
+           if(receipt.invocation_id!==invocation_id||receipt.deployment_id!==deployment||
+              typeof receipt.error_code!=='string'||!manifest.error_codes.includes(receipt.error_code))
+             return unknown();
+           return output.status==='rejected'?failed(receipt.error_code):unknown(receipt.error_code);
+         }
        }
      }
      if(output.status==='accepted'){

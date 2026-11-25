@@ -357,7 +357,7 @@ export class WorkflowService {
       const resolved=await resolvePublicActionDefinition(definition,this.env);
       const {digest,plan}=await compilePublicPlan(resolved.definition,resolved.manifests);
       const reviewed_actions=await this.checkedGitHubActions(plan);
-      const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
+      const reviewedCloudflare=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
           const manifest=(plan.cloudflare_action_contracts?.[s.id]??await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
@@ -366,10 +366,13 @@ export class WorkflowService {
           let live=null;
           try{live=this.env.ACTIONS?await this.env.ACTIONS.getContract(manifest.action,manifest.contract_digest):null;}
           catch{/* Unavailable Provider must not become an approval. */}
-          return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
+          return {explicit:needsExplicitCloudflareEffectGrant(manifest),grant:{
+            executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,
-            deployment_id:reviewedActionDeployment(live,manifest.contract_digest)};
+            deployment_id:reviewedActionDeployment(live,manifest.contract_digest)}};
         }));
+      const reviewed_cloudflare_actions=reviewedCloudflare.map(x=>x.grant);
+      const required_cloudflare_actions=reviewedCloudflare.filter(x=>x.explicit).map(x=>x.grant);
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
@@ -387,6 +390,7 @@ export class WorkflowService {
           'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(reviewed_cloudflare_actions.length?{reviewed_cloudflare_actions,requires_cloudflare_execution_approval:true}:{}),
+        ...(required_cloudflare_actions.length?{required_cloudflare_actions}:{}),
         ...(required_approvals.length?{required_approvals,
           ...(required_approvals.some(x=>x.scope==='write')?{requires_mcp_write_execution_approval:true}:{})}:{}),
         ...(required_http_operations.length?{required_http_operations,requires_http_execution_approval:true}:{}),
@@ -454,6 +458,7 @@ export class WorkflowService {
   async publishReviewed(workflow_id:string,expected_revision:number,options:{
     approved_operations?:ReadonlyOperation[];accept_target_risks?:boolean;
     approved_http_operations?:HttpOperation[];approve_http_execution?:boolean;
+    approved_cloudflare_actions?:NonNullable<Plan['cloudflare_action_approvals']>;
     approve_mcp_write_execution?:boolean;approve_saga_compensation?:boolean;
   }={}){
     assertId(workflow_id);
@@ -463,7 +468,7 @@ export class WorkflowService {
     // publish() would scan it again in the same request.
     return this.publish(workflow_id,expected_revision,
       options.approved_operations??[],options.accept_target_risks===true,
-      false,[],[],[],false,options.approved_http_operations??[],
+      false,[],[],options.approved_cloudflare_actions??[],false,options.approved_http_operations??[],
       options.approve_http_execution===true,options.approve_mcp_write_execution===true,
       options.approve_saga_compensation===true,true);
   }
@@ -518,22 +523,28 @@ if(required.length){
     if(cloudflareSteps.length){
       const provider=this.env.ACTIONS;
       if(!provider)throw new StateError('cloudflare_provider_not_configured');
-      cloudflareGrants=await Promise.all(cloudflareSteps.map(async step=>{
+      const reviewedCloudflare=await Promise.all(cloudflareSteps.map(async step=>{
         const bark=step.with.provider==='bark';
         const contract=(plan.cloudflare_action_contracts?.[step.id]??await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
         // Each business effect and the optional Bark has its own reviewed grant.
-        if(selfApproved&&needsExplicitCloudflareEffectGrant(contract))
-          throw new StateError('cloudflare_action_explicit_authorization_required');
         let live;
         try{live=await provider.getContract(contract.action,contract.contract_digest);}
         catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
         const deployment=reviewedActionDeployment(live,contract.contract_digest);
         if(!deployment)throw new StateError('cloudflare_provider_identity_mismatch');
-        return {executor:'cloudflare' as const,provider:contract.provider as string,
+        return {explicit:needsExplicitCloudflareEffectGrant(contract),grant:{
+          executor:'cloudflare' as const,provider:contract.provider as string,
           action:contract.action as string,contract_digest:contract.contract_digest as string,
-          deployment_id:deployment};
+          deployment_id:deployment}};
       }));
+      cloudflareGrants=reviewedCloudflare.map(x=>x.grant);
       if(selfApproved){
+        // The caller supplies only independently approved new effects. Existing
+        // reviewed effects still derive their grants from the live catalog.
+        const required=reviewedCloudflare.filter(x=>x.explicit).map(x=>x.grant);
+        const exact=(grants:typeof cloudflareGrants)=>grants.map(canonicalJsonString).sort();
+        if(JSON.stringify(exact(required))!==JSON.stringify(exact(approved_cloudflare_actions)))
+          throw new StateError('cloudflare_action_explicit_authorization_required');
         approve_cloudflare_execution=true;
         approved_cloudflare_actions=cloudflareGrants;
       }
