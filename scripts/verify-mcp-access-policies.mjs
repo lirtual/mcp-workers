@@ -2,18 +2,20 @@
 // Registration and tool-sync alone are not evidence that an MCP Access app can
 // authenticate callers. This check is read-only: it never creates broad Allow
 // rules, edits policies, or discloses selectors/credentials in errors or logs.
-const PORTAL = 'MCP';
-const PORTAL_HOSTNAME = 'mcp-portal.lirtual.dpdns.org';
-// The Portal/Browser Owner policy was deliberately narrowed to two emails.
-// Workflow and other MCP workers still use the separately reviewed rule.
-const SERVICE_POLICY_ID='7cec582c-4038-4fb0-9ad8-fcdb04af4adc';
-const OWNER_POLICIES={
-  portal:{id:'07204847-0459-4197-b3c3-2dbe2a47a550',
-    name:'MCP Portal and Browser Owners',
-    emails:['lirtual@qq.com','lirtual@outlook.com']},
-  default:{id:'659d043c-e957-4c91-9f33-2416c52ecbe5',
-    name:'Default Allow Rule',
-    emails:['lirtual@qq.com','lirtual@outlook.com','lirtual@gmail.com']},
+// Current reviewed Portal identity and reusable policies (Spec #878).
+export const PORTAL_ID = 'mcp-portal';
+export const PORTAL_NAME = 'MCP Portal';
+export const PORTAL_HOSTNAME = 'mcp-portal.lirtual.dpdns.org';
+const SERVICE_POLICY = {
+  id:'b3dcac1d-c37e-40f0-b201-1d5f08f81577',
+  name:'MCP Gateway Service Auth',decision:'non_identity',
+  selector:'service_token',field:'token_id',
+  values:['93f24170-6bf8-4a06-bf97-fb11bd9268bf','8624dd66-918c-41bf-9637-676da2503524'],
+};
+const OWNER_POLICY = {
+  id:'659d043c-e957-4c91-9f33-2416c52ecbe5',
+  name:'Default Allow Rule',decision:'allow',selector:'email',field:'email',
+  values:['lirtual@qq.com','lirtual@outlook.com','lirtual@gmail.com'],
 };
 
 function fail(code) { throw new Error('portal_access_policy_' + code); }
@@ -22,38 +24,32 @@ function one(items, predicate) {
   if (found.length !== 1) fail('app_missing_or_ambiguous');
   return found[0];
 }
-function signature(app, ownerProfile) {
-  const owner=OWNER_POLICIES[ownerProfile];
+function signature(app, serviceFirst) {
   const policies = app?.policies;
   if (!Array.isArray(policies) || policies.length !== 2) fail('missing');
-  const expected = [
-    { name: 'WORKFLOWS', decision: 'non_identity', selector: 'service_token' },
-    { name:owner.name,
-      decision: 'allow', selector: 'email' },
-  ];
-  return policies.map((p, i) => {
-    const spec = expected[i];
+  // Portal and Browser use service-first precedence; the other reviewed
+  // MCP applications use owner-first precedence. Both keep the same exact
+  // reusable policy identities and selectors.
+  const expected = serviceFirst ? [SERVICE_POLICY, OWNER_POLICY] : [OWNER_POLICY, SERVICE_POLICY];
+  for (const [i, spec] of expected.entries()) {
+    const p=policies[i];
     if (!p || p.name !== spec.name || p.decision !== spec.decision ||
-        p.id !== (i === 0 ? SERVICE_POLICY_ID : owner.id) ||
-        p.reusable !== true || p.precedence !== i + 1 ||
-        typeof p.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(p.id) ||
-        !Array.isArray(p.include) || p.include.length < 1 ||
-        !p.include.every(s => s && typeof s === 'object' && !Array.isArray(s) &&
-          Object.keys(s).length === 1 && Object.hasOwn(s, spec.selector)) ||
-        (Array.isArray(p.exclude) && p.exclude.length !== 0) ||
-        (Array.isArray(p.require) && p.require.length !== 0))
+        p.id !== spec.id || p.reusable !== true || p.precedence !== i+1 ||
+        !Array.isArray(p.include) || p.include.length !== spec.values.length ||
+        !Array.isArray(p.exclude) || p.exclude.length !== 0 ||
+        !Array.isArray(p.require) || p.require.length !== 0)
       fail('baseline_drift');
-    if (i === 1) {
-      const emails=p.include.map(x=>x.email);
-      if (emails.length !== owner.emails.length ||
-          !emails.every(x=>x && typeof x === 'object' &&
-            !Array.isArray(x) && Object.keys(x).length === 1 &&
-            typeof x.email === 'string' && owner.emails.includes(x.email)) ||
-          new Set(emails.map(x=>x.email)).size !== emails.length)
-        fail('owner_drift');
+    const seen=new Set();
+    for(const selector of p.include) {
+      const value=selector?.[spec.selector];
+      if (!selector || typeof selector !== 'object' || Array.isArray(selector) ||
+          Object.keys(selector).length !== 1 ||
+          !value || typeof value !== 'object' || Array.isArray(value) ||
+          Object.keys(value).length !== 1 || !spec.values.includes(value[spec.field]) ||
+          seen.has(value[spec.field])) fail('selector_drift');
+      seen.add(value[spec.field]);
     }
-    return p.id;
-  });
+  }
 }
 
 export async function verifyMcpAccessPolicies(env, target, transport = fetch) {
@@ -82,11 +78,11 @@ export async function verifyMcpAccessPolicies(env, target, transport = fetch) {
   if (data?.success !== true || !Array.isArray(data.result) ||
       data.result_info?.total_pages !== 1 || data.result.length < 2 ||
       data.result.length > 100) fail('inventory_unverifiable');
-  const portal = one(data.result, app => app.name === PORTAL &&
+  const portal = one(data.result, app => app.name === PORTAL_NAME &&
     app.type === 'mcp_portal' && app.domain === PORTAL_HOSTNAME);
   const application = one(data.result, app => app.name === target.name &&
     app.type === 'mcp');
-  signature(portal,'portal');
-  signature(application,target.id === 'browser' ? 'portal' : 'default');
+  signature(portal,true);
+  signature(application,target.id === 'browser');
   return true;
 }

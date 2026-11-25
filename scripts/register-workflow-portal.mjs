@@ -4,12 +4,11 @@
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
-import { verifyMcpAccessPolicies } from './verify-mcp-access-policies.mjs';
+import { verifyMcpAccessPolicies, PORTAL_ID, PORTAL_NAME, PORTAL_HOSTNAME } from './verify-mcp-access-policies.mjs';
 
 const ROOT='https://api.cloudflare.com/client/v4/accounts/';
 const BASE='/access/ai-controls/mcp';
 const ORIGIN='https://workflow.lirtual.dpdns.org/mcp';
-const PORTAL_HOST='mcp-portal.lirtual.dpdns.org';
 export const EXPECTED_TOOLS=[
   'workflow_action_list',
   'workflow_connection_status','workflow_connection_revoke','workflow_connection_enable',
@@ -58,9 +57,9 @@ export function assertSamePortalMappings(expected,actual){
 }
 
 export function buildPortalUpdate(portal,server){
-  assert.equal(portal?.id,'mcp','portal_identity_drift');
-  assert.equal(portal?.hostname,PORTAL_HOST,'portal_identity_drift');
-  assert.equal(portal?.name,'MCP','portal_identity_drift');
+  assert.equal(portal?.id,PORTAL_ID,'portal_identity_drift');
+  assert.equal(portal?.hostname,PORTAL_HOSTNAME,'portal_identity_drift');
+  assert.equal(portal?.name,PORTAL_NAME,'portal_identity_drift');
   assert.ok(Array.isArray(portal.servers) && portal.servers.length>=9,
     'portal_existing_servers_missing');
   const preserved=portal.servers.map(portalServerMapping);
@@ -102,7 +101,7 @@ export async function attachWorkflowPortal(env,transport=fetch){
       throw Error('portal_api_unavailable');
     return json.result;
   };
-  const portal=await request('GET','/portals/mcp');
+  const portal=await request('GET','/portals/' + PORTAL_ID);
   const before=buildPortalUpdate(portal);
   const old=await request('GET','/servers');
   assert.ok(Array.isArray(old)&&old.length>=9,'portal_server_inventory_incomplete');
@@ -142,15 +141,15 @@ export async function attachWorkflowPortal(env,transport=fetch){
   console.log('WORKFLOW_ACCESS_POLICIES_VERIFIED');
   console.log('WORKFLOW_PORTAL_TOOLS_SYNCED');
   // Re-read just before updating to guard against concurrent Portal edits.
-  const fresh=await request('GET','/portals/mcp');
+  const fresh=await request('GET','/portals/' + PORTAL_ID);
   const body=buildPortalUpdate(fresh,details);
   assertSamePortalMappings(before.servers,body.servers);
   if(!fresh.servers.some(x=>x.server_id==='workflow')){
-    const updated=await request('PUT','/portals/mcp',body);
+    const updated=await request('PUT','/portals/' + PORTAL_ID,body);
     assert.ok(updated.servers?.some(x=>x.server_id==='workflow'),
       'portal_attach_unconfirmed');
   }
-  const final=await request('GET','/portals/mcp');
+  const final=await request('GET','/portals/' + PORTAL_ID);
   const normalized=buildPortalUpdate(final,details);
   assertSamePortalMappings(before.servers,normalized.servers);
   assert.equal(normalized.servers.filter(x=>x.server_id==='workflow').length,1,
@@ -161,7 +160,7 @@ export async function attachWorkflowPortal(env,transport=fetch){
   assert.equal(final.code_mode,portal.code_mode,'portal_auth_mode_changed');
   assert.equal(final.secure_web_gateway,portal.secure_web_gateway,
     'portal_gateway_mode_changed');
-  console.log('WORKFLOW_PORTAL_ATTACHED_OK: mcp, exact tools, unchanged previous servers');
+  console.log('WORKFLOW_PORTAL_ATTACHED_OK: mcp-portal, exact tools, unchanged previous servers');
   return true;
 }
 

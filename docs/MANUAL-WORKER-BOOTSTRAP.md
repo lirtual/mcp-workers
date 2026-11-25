@@ -93,4 +93,4 @@ Access Application/Audience、Owner Allow 邮箱、15m、Worker 运行时绑定�
 
 ### Spec #878 Gateway 受控手动发布
 
-`mcp-gateway-worker` 只能在 `main` 上由 Owner 手动使用 `Release Worker` 发布。仓库级 Secret `MCP_GATEWAY_PORTAL_CLIENT_SECRET` 在暂存时映射为运行时 `CF_ACCESS_CLIENT_SECRET`；Client ID 和现有 Clerk Resource 身份来自仓库级 Variables，运行时 `GATEWAY_ORIGIN` 从当前 `mcp-gateway.lirtual.dpdns.org` Wrangler Custom Domain 派生。Gateway 与 Workflow 使用各自独立的 Service Token Client ID/Secret，Access 侧共用包含两枚 Token Include 规则的 `MCP Gateway Service Auth` 可复用 Policy；不复用机器凭据。发布代码不能代替对特定 Portal 上游、Access Policy 和 Clerk Resource 的逐项授权及 E2E 验收；生产变更仍须另行授权并按实际回读确认。
+`mcp-gateway-worker` 只能在 `main` 上由 Owner 手动使用 `Release Worker` 发布。仓库级 Secret `MCP_GATEWAY_PORTAL_CLIENT_SECRET` 在暂存时映射为运行时 `CF_ACCESS_CLIENT_SECRET`；Client ID 和现有 Clerk Resource 身份来自仓库级 Variables，运行时 `GATEWAY_ORIGIN` 从当前唯一 Wrangler Custom Domain（`mcp.lirtual.dpdns.org`） 派生。Gateway 与 Workflow 使用各自独立的 Service Token Client ID/Secret，Access 侧共用包含两枚 Token Include 规则的 `MCP Gateway Service Auth` 可复用 Policy；不复用机器凭据。发布代码不能代替对特定 Portal 上游、Access Policy 和 Clerk Resource 的逐项授权及 E2E 验收；生产变更仍须另行授权并按实际回读确认。

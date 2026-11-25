@@ -1,5 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import { accessApplications } from './portal-access.test-fixture.mjs';
 import {
   EXPECTED_TOOLS,portalServerMapping,buildPortalUpdate,
   assertSamePortalMappings,attachWorkflowPortal,
@@ -14,7 +15,7 @@ const entry=(name)=>({
     {name:name+'_danger',enabled:false,alias:'hidden'}],
 });
 const portal=(hasWorkflow=false)=>({
-  id:'mcp',name:'MCP',hostname:'mcp-portal.lirtual.dpdns.org',
+  id:'mcp-portal',name:'MCP Portal',hostname:'mcp-portal.lirtual.dpdns.org',
   code_mode:'opt_in',secure_web_gateway:true,description:'Private production portal',
   servers:[...oldServers.map(entry),...(hasWorkflow?[entry('workflow')]:[])],
 });
@@ -55,6 +56,8 @@ test('never accepts a renamed/replaced Portal or incomplete inventory',()=>{
   for(const mutation of [
     p=>{p.hostname='attacker.example';},
     p=>{p.id='one-mcp';},
+    p=>{p.id='mcp';},
+    p=>{p.name='MCP';},
     p=>{p.name='One-MCP';},
     p=>{p.name='not MCP';},
     p=>{p.servers=[];},
@@ -64,22 +67,6 @@ test('never accepts a renamed/replaced Portal or incomplete inventory',()=>{
     assert.throws(()=>buildPortalUpdate(p),/portal_/);
   }
 });
-function accessApplications(name, withPolicies=true){
-  const policies=(portal=false)=>[
-    {id:'7cec582c-4038-4fb0-9ad8-fcdb04af4adc',name:'WORKFLOWS',
-      decision:'non_identity',precedence:1,reusable:true,
-      include:[{service_token:{token_id:'fixture'}}]},
-    {id:portal?'07204847-0459-4197-b3c3-2dbe2a47a550':
-      '659d043c-e957-4c91-9f33-2416c52ecbe5',
-      name:portal?'MCP Portal and Browser Owners':'Default Allow Rule',
-      decision:'allow',precedence:2,reusable:true,
-      include:(portal?['lirtual@qq.com','lirtual@outlook.com']:
-        ['lirtual@qq.com','lirtual@outlook.com','lirtual@gmail.com'])
-        .map(email=>({email:{email}}))},
-  ];
-  return [{name:'MCP',type:'mcp_portal',domain:'mcp-portal.lirtual.dpdns.org',policies:policies(true)},
-    {name,type:'mcp',policies:withPolicies?policies():[]}];
-}
 function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true,
   toolNames=EXPECTED_TOOLS,alreadyRegistered=false){
   let current=portal(alreadyRegistered);
@@ -96,7 +83,7 @@ function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true,
         result:accessApplications('Workflow',withPolicies),
         result_info:{total_pages:1}});
 
-    if(request.method==='GET'&&tail==='/portals/mcp')return res(200,current);
+    if(request.method==='GET'&&tail==='/portals/mcp-portal')return res(200,current);
     if(request.method==='GET'&&tail==='/servers')
       return res(200,[...oldServers.map(id=>({id})),...(upstream?[upstream]:[])]);
     if(request.method==='POST'&&tail==='/servers'){
@@ -109,9 +96,9 @@ function fake(expectedToken=env.MCP_ACCESS_TOKEN,withPolicies=true,
     }
     if(request.method==='POST'&&tail==='/servers/workflow/sync')return res(200,{status:'ready'});
     if(request.method==='GET'&&tail==='/servers/workflow')return res(200,upstream);
-    if(request.method==='PUT'&&tail==='/portals/mcp'){
+    if(request.method==='PUT'&&tail==='/portals/mcp-portal'){
       const value=JSON.parse(await request.text());
-      assert.equal(value.name,'MCP');
+      assert.equal(value.name,'MCP Portal');
       assert.equal(value.code_mode,'opt_in');
       assert.deepEqual(value.servers.slice(0,11),portal().servers.map(portalServerMapping));
       // Cloudflare reorders server entries after the PUT, although
