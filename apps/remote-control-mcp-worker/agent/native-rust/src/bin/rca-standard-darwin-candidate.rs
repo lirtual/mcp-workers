@@ -262,7 +262,8 @@ mod darwin {
     use super::darwin_lifecycle::{
         connection_time, diagnostic_response, installed_generation, iso_time, native_cli,
         native_plist, new_generation, no_other_programs, registration, resume_owned, stop_owned,
-        switch_outcome, unregister_owned, Registration, SwitchOutcome, SwitchRecord, LABEL,
+        switch_outcome, unregister_owned, Registration, RestartRecord, SwitchOutcome, SwitchRecord,
+        LABEL,
     };
     use super::darwin_package;
     use super::unix_pairing::{
@@ -1059,6 +1060,204 @@ mod darwin {
         }) && await_online(current, key, after)
     }
 
+    fn restart_binding(home: &Path, base: &Path, current: &Installed) -> Result<String, ()> {
+        use sha2::{Digest, Sha256};
+        let key = base.join("v2-identity.pem");
+        let checked = installed(home, base)?;
+        if checked.executable != current.executable
+            || checked.generation != current.generation
+            || checked.endpoint != current.endpoint
+            || owner_stopped(&key)?
+            || exists_owned_path(&base.join("macos/remote-upgrades/active.json"))?
+            || exists_owned_path(&sidecar(&key, ".re-pair-transition"))?
+        {
+            return Err(());
+        }
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        let (_, cli) = startup_paths(home)?;
+        let fields = [
+            pem,
+            id,
+            read_private(&checked.plist, 65536)?.ok_or(())?,
+            read_executable(&cli)?.ok_or(())?,
+            read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?,
+        ];
+        let mut digest = Sha256::new();
+        for field in fields {
+            digest.update((field.len() as u64).to_be_bytes());
+            digest.update(field.as_bytes());
+        }
+        Ok(format!("{:x}", digest.finalize()))
+    }
+
+    fn restart_local() -> Result<(), ()> {
+        use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        let base = identity_directory(&home, false)?;
+        let _lock = lock_identity_directory(&base)?;
+        let key = base.join("v2-identity.pem");
+        let journal = base.join("macos/switch.json");
+        if exists_owned_path(&journal)? {
+            return Err(());
+        }
+        let current = installed(&home, &base)?;
+        let binding = restart_binding(&home, &base, &current)?;
+        let Registration::Present(Some(pid)) = observe_registration(&current.executable) else {
+            return Err(());
+        };
+        if !connection_evidence(&current, &key, pid).is_some_and(|(_, _, online)| online) {
+            return Err(());
+        }
+        owner_confirm("Restart this Owner-ON LaunchAgent, retaining identity and receipts?")?;
+        if restart_binding(&home, &base, &current)? != binding
+            || observe_registration(&current.executable) != Registration::Present(Some(pid))
+        {
+            return Err(());
+        }
+        let mut record = RestartRecord {
+            phase: "restart_preparing".to_owned(),
+            version: format!("{}-{}", current.version, native_target()),
+            generation: current.generation.clone(),
+            binding,
+            pid,
+        };
+        let raw = format!("{}\n", serde_json::to_string(&record).map_err(|_| ())?);
+        write_new(&journal, raw.as_bytes())?;
+        let unchanged = |record: &RestartRecord, raw: &str| -> Result<(), ()> {
+            if restart_binding(&home, &base, &current)? != record.binding
+                || read_private(&journal, 65536)?.as_deref() != Some(raw)
+            {
+                return Err(());
+            }
+            Ok(())
+        };
+        if !gate(&key, Gate::Freeze)? {
+            unchanged(&record, &raw)?;
+            sync_remove(&journal)?;
+            return Err(());
+        }
+        unchanged(&record, &raw)?;
+        if observe_registration(&current.executable) != Registration::Present(Some(pid))
+            || !gate(&key, Gate::VerifyFrozen)?
+        {
+            return Err(());
+        }
+        unchanged(&record, &raw)?;
+        if observe_registration(&current.executable) != Registration::Present(Some(pid)) {
+            return Err(());
+        }
+        // Before any possibly ambiguous restart request, persist the phase.
+        // A preparing journal can release the original frozen Agent; after
+        // the request boundary only a proven replacement may retire it.
+        record.phase = "restart_pending".to_owned();
+        let pending = format!("{}\n", serde_json::to_string(&record).map_err(|_| ())?);
+        replace_owned(&journal, &raw, &pending, 0o600)?;
+        let raw = pending;
+        unchanged(&record, &raw)?;
+        if observe_registration(&current.executable) != Registration::Present(Some(pid)) {
+            return Err(());
+        }
+        let after = now_ms()?;
+        if !launchctl(&["kickstart", "-k", &service_target()])
+            .is_ok_and(|(code, _, _)| code == Some(0))
+        {
+            return Err(());
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            let registration = observe_registration(&current.executable);
+            let online = match &registration {
+                Registration::Present(Some(next)) if *next != pid => {
+                    connection_evidence(&current, &key, *next)
+                        .is_some_and(|(_, at, online)| online && at >= after)
+                }
+                _ => false,
+            };
+            if online
+                && record.replacement_proven(
+                    &restart_binding(&home, &base, &current)?,
+                    &registration,
+                    online,
+                )
+            {
+                unchanged(&record, &raw)?;
+                if observe_registration(&current.executable) != registration {
+                    return Err(());
+                }
+                sync_remove(&journal)?;
+                println!(
+                    "{}",
+                    serde_json::json!({"status":"restarted","signed_wss":"connected_observed"})
+                );
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        eprintln!(
+            "Replacement signed Agent unconfirmed; use recover to inspect the retained journal."
+        );
+        Err(())
+    }
+
+    fn recover_restart(
+        home: &Path,
+        base: &Path,
+        key: &Path,
+        journal: &Path,
+        raw: &str,
+        record: &RestartRecord,
+    ) -> Result<(), ()> {
+        let current = installed(home, base)?;
+        if record.version != format!("{}-{}", current.version, native_target())
+            || record.generation != current.generation
+        {
+            return Err(());
+        }
+        let evidence = || -> Result<(bool, bool), ()> {
+            if read_private(journal, 65536)?.as_deref() != Some(raw) {
+                return Err(());
+            }
+            let binding = restart_binding(home, base, &current)?;
+            let registration = observe_registration(&current.executable);
+            let online = match &registration {
+                Registration::Present(Some(pid)) => {
+                    connection_evidence(&current, key, *pid).is_some_and(|(_, _, online)| online)
+                }
+                _ => false,
+            };
+            Ok((
+                record.replacement_proven(&binding, &registration, online),
+                record.original_recoverable(&binding, &registration, online),
+            ))
+        };
+        let outcome = evidence()?;
+        let prompt = match outcome {
+            (true, false) => {
+                "Retire the completed restart journal? Identity and receipts are retained."
+            }
+            (false, true) => "Abandon the restart before dispatch and release the original Agent?",
+            _ => return Err(()),
+        };
+        owner_confirm(prompt)?;
+        if evidence()? != outcome {
+            return Err(());
+        }
+        if outcome.1 {
+            use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
+            if !gate(key, Gate::Release)? || evidence()? != outcome {
+                return Err(());
+            }
+        }
+        if read_private(journal, 65536)?.as_deref() != Some(raw) {
+            return Err(());
+        }
+        sync_remove(journal)?;
+        println!("Restart reconciled; identity and receipts retained.");
+        Ok(())
+    }
+
     fn upgrade_local(endpoint: &str, version: &str, source: &str) -> Result<(), ()> {
         use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
         let bundle = current_bundle()?;
@@ -1340,6 +1539,9 @@ mod darwin {
             println!("No unresolved switch.");
             return Ok(());
         };
+        if let Ok(restart) = RestartRecord::parse(&raw, native_target()) {
+            return recover_restart(&home, &base, &key, &journal, &raw, &restart);
+        }
         let record = SwitchRecord::parse(&raw, native_target())?;
         if owner_stopped(&key)? != record.stopped {
             return Err(());
@@ -1574,6 +1776,9 @@ mod darwin {
             }
             if action == "recover" {
                 return recover_switch();
+            }
+            if action == "restart" {
+                return restart_local();
             }
             if matches!(action.as_str(), "status" | "doctor" | "logs") {
                 return diagnose(action);

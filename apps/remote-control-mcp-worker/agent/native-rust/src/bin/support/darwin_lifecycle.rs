@@ -274,7 +274,7 @@ pub(super) fn native_cli(executable: &Path) -> Result<String, ()> {
         return Err(());
     }
     let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
-    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|doctor) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && [ \"$2\" = --json ]; }} || exit 2 ;;\nlogs|stop|start|recover|uninstall) [ \"$#\" -eq 1 ] || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
+    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|doctor) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && [ \"$2\" = --json ]; }} || exit 2 ;;\nlogs|stop|start|restart|recover|uninstall) [ \"$#\" -eq 1 ] || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
 }
 
 pub(super) fn new_generation() -> Result<String, ()> {
@@ -371,6 +371,66 @@ impl SwitchRecord {
     }
 }
 
+// Same-config restart reuses the switch journal; a changed PID alone is
+// not evidence that the replacement has the same identity and signed WSS.
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RestartRecord {
+    pub phase: String,
+    pub version: String,
+    pub generation: String,
+    pub binding: String,
+    pub pid: u32,
+}
+
+impl RestartRecord {
+    pub fn parse(raw: &str, target: &str) -> Result<Self, ()> {
+        let record: Self = serde_json::from_str(raw).map_err(|_| ())?;
+        let version = record
+            .version
+            .strip_suffix(&format!("-{target}"))
+            .ok_or(())?;
+        if !matches!(
+            record.phase.as_str(),
+            "restart_preparing" | "restart_pending"
+        ) || !valid_device_id(&record.generation)
+            || !super::darwin_package::valid_version(version)
+            || record.pid == 0
+            || record.binding.len() != 64
+            || !record
+                .binding
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(());
+        }
+        Ok(record)
+    }
+
+    pub fn original_recoverable(
+        &self,
+        binding: &str,
+        registration: &Registration,
+        signed: bool,
+    ) -> bool {
+        self.phase == "restart_preparing"
+            && self.binding == binding
+            && signed
+            && *registration == Registration::Present(Some(self.pid))
+    }
+
+    pub fn replacement_proven(
+        &self,
+        binding: &str,
+        registration: &Registration,
+        signed: bool,
+    ) -> bool {
+        self.binding == binding
+            && signed
+            && matches!(registration, Registration::Present(Some(pid)) if *pid != self.pid)
+    }
+}
+
 pub(super) fn no_other_programs(raw: &str, programs: &Path, uid: u32, own_pid: u32) -> bool {
     let Some(root) = programs.to_str() else {
         return false;
@@ -403,6 +463,69 @@ mod tests {
     use super::*;
     const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
     const ENDPOINT: &str = "https://example.invalid/";
+
+    #[test]
+    fn restart_requires_same_binding_and_distinct_signed_process() {
+        let record = RestartRecord {
+            phase: "restart_pending".into(),
+            version: "v0.1.61-darwin-arm64".into(),
+            generation: ID.into(),
+            binding: "a".repeat(64),
+            pid: 42,
+        };
+        let raw = serde_json::to_string(&record).unwrap();
+        let record = RestartRecord::parse(&raw, "darwin-arm64").unwrap();
+        assert!(RestartRecord::parse(&raw, "darwin-x64").is_err());
+        assert!(RestartRecord::parse(&raw.replace("42}", "0}"), "darwin-arm64").is_err());
+        assert!(record.replacement_proven(&"a".repeat(64), &Registration::Present(Some(43)), true));
+        assert!(!record.replacement_proven(
+            &"b".repeat(64),
+            &Registration::Present(Some(43)),
+            true
+        ));
+        assert!(!record.replacement_proven(
+            &"a".repeat(64),
+            &Registration::Present(Some(42)),
+            true
+        ));
+        assert!(!record.replacement_proven(
+            &"a".repeat(64),
+            &Registration::Present(Some(43)),
+            false
+        ));
+        assert!(!record.replacement_proven(&"a".repeat(64), &Registration::Absent, true));
+        assert!(!record.replacement_proven(&"a".repeat(64), &Registration::Unknown, true));
+        assert!(!record.original_recoverable(
+            &"a".repeat(64),
+            &Registration::Present(Some(42)),
+            true
+        ));
+        let preparing = RestartRecord::parse(
+            &raw.replace("restart_pending", "restart_preparing"),
+            "darwin-arm64",
+        )
+        .unwrap();
+        assert!(preparing.original_recoverable(
+            &"a".repeat(64),
+            &Registration::Present(Some(42)),
+            true
+        ));
+        assert!(!preparing.original_recoverable(
+            &"a".repeat(64),
+            &Registration::Present(Some(43)),
+            true
+        ));
+        assert!(!preparing.original_recoverable(
+            &"a".repeat(64),
+            &Registration::Present(Some(42)),
+            false
+        ));
+        assert!(!preparing.original_recoverable(
+            &"b".repeat(64),
+            &Registration::Present(Some(42)),
+            true
+        ));
+    }
 
     #[test]
     fn resume_requires_authority_and_fresh_online_or_restores_off() {
@@ -660,6 +783,7 @@ mod tests {
             &["logs"],
             &["stop"],
             &["start"],
+            &["restart"],
         ] {
             let output = invoke(args);
             assert!(output.status.success(), "{args:?}");
