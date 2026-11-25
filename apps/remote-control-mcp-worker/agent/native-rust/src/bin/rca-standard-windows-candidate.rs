@@ -120,12 +120,25 @@ mod windows {
             (_, "off") => "disabled",
             _ => "unknown",
         };
+        let local_service = match task.as_ref() {
+            Some(value) if value["installed"] == false => "not_installed",
+            Some(value) => value["local_service"].as_str().unwrap_or("unconfirmed"),
+            None => "unconfirmed",
+        };
+        let signed = task
+            .as_ref()
+            .and_then(|value| value["signed_wss"].as_str())
+            .unwrap_or("unconfirmed");
         Ok(serde_json::json!({
             "platform": "win32",
+            "arch": "x64",
+            "local_service": local_service,
+            "signed_wss": signed,
+            "last_online_unix_ms": task.as_ref().and_then(|value|value["last_online_unix_ms"].as_u64()),
             "mode": "native-user-agent",
             "identity_present": pem.is_some(),
             "device_id": id,
-            "remote_connection": "unconfirmed",
+            "remote_connection": signed,
             "automatic_update": policy,
             "automatic_update_activity": activity,
             "automatic_update_result": task.as_ref().map(|value| &value["automatic_update_result"]),
@@ -142,11 +155,19 @@ mod windows {
             if state["identity_present"] == false || state["device_id"].is_null() {
                 findings.push("local_identity_unconfirmed");
             }
-            findings.extend([
-                "local_service_unconfirmed",
-                "cloud_authorization_unconfirmed",
-                "signed_wss_unconfirmed",
-            ]);
+            if state["local_service"] != "running_observed" {
+                findings.push("local_service_unconfirmed");
+            }
+            findings.push("cloud_authorization_unconfirmed");
+            if state["signed_wss"] != "connected_observed" {
+                findings.push("signed_wss_unconfirmed");
+            }
+            if matches!(
+                state["automatic_update_activity"].as_str(),
+                Some("unknown" | "needs_attention")
+            ) {
+                findings.push("update_state_needs_review");
+            }
             println!(
                 "{}",
                 serde_json::json!({"status": state, "findings": findings})
@@ -659,6 +680,19 @@ mod windows {
         Ok(())
     }
 
+    fn normal_restart() -> Result<(), ()> {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        let _guard =
+            rca_native_agent::device_pairing::lock_windows_permanent_mode(&root).map_err(|_| ())?;
+        let output = task_command(&directory, &["-Action", "Restart"])?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        Ok(())
+    }
+
     pub fn run() -> Result<(), ()> {
         if !cfg!(target_arch = "x86_64")
             || rca_native_agent::is_windows_system_identity().map_err(|_| ())?
@@ -677,10 +711,32 @@ mod windows {
         if args.as_slice() == ["--verify-upgrade-state"] {
             return verify_upgrade_state();
         }
+        if args.as_slice() == ["--menu-choice"] {
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                return Err(());
+            }
+            println!("1. Status   2. Pair / repair   3. Logs\n4. Update   5. Uninstall   6. Exit\n7. Recover   8. Doctor\n9. Start   10. Stop   11. Restart");
+            print!("Choose an option: ");
+            std::io::stdout().flush().map_err(|_| ())?;
+            let mut choice = String::new();
+            if std::io::stdin().read_line(&mut choice).map_err(|_| ())? == 0 {
+                return Ok(());
+            }
+            match choice.trim() {
+                "6" | "" => return Ok(()),
+                value => {
+                    let n = value.parse::<i32>().map_err(|_| ())?;
+                    if !(1..=11).contains(&n) || n.to_string() != value {
+                        return Err(());
+                    }
+                    std::process::exit(10 + n);
+                }
+            }
+        }
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
                 [_, command] if command == "--help" || command == "help" => {
-                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|update [--check|--auto [on|off]|--version <staged-tag>]|recover|--version|--help]");
+                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|update [--check|--auto [on|off]|--version <staged-tag>]|pair|recover|uninstall|--version|--help]");
                     println!("Bare update or upgrade uses the packaged owner installer from rca.cmd. Use the official installer for initial installation.");
                     Ok(())
                 }
@@ -701,6 +757,20 @@ mod windows {
                 }
                 [_, command] if command == "stop" => owner_lifecycle(false),
                 [_, command] if command == "start" => owner_lifecycle(true),
+                [_, command] if command == "restart" => normal_restart(),
+                [_, command] if command == "pair" => {
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(());
+                    }
+                    let (directory, _) = program_root()?;
+                    let output = task_command(&directory, &["-Action", "Endpoint"])?;
+                    let endpoint = std::str::from_utf8(&output.stdout).map_err(|_| ())?.trim();
+                    reconcile_existing(endpoint)
+                }
+                [_, command] if command == "uninstall" => {
+                    eprintln!("Use the installed rca.cmd uninstall entrypoint.");
+                    Err(())
+                }
                 [_, command, flag, endpoint] if command == "re-pair" && flag == "--endpoint" => {
                     let name =
                         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows".to_owned());

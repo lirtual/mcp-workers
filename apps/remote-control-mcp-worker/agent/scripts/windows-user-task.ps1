@@ -2,7 +2,7 @@
 # Does not create an elevated service, use a password or touch cloud grants.
 [CmdletBinding()]
 param(
-  [Parameter(Mandatory=$true)][ValidateSet('Start','Stop','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative','EnableNative','ConfirmStopped','VerifyAutomatic')][string]$Action,
+  [Parameter(Mandatory=$true)][ValidateSet('Start','Stop','Restart','Uninstall','Disable','Status','Switch','Endpoint','VerifyActivation','RecoverNativeUpgrade','ActivateNative','EnableNative','ConfirmStopped','VerifyAutomatic')][string]$Action,
   [string]$Endpoint,
   [string]$Version, [ValidateSet('Upgrade')][string]$Direction,
   [string]$Generation,
@@ -25,7 +25,9 @@ $sid = $identity.User.Value
 $name = 'RCA-Remote-Control-v2-' + $sid.Replace('-', '_')
 $root = [IO.Path]::GetFullPath([IO.Path]::Combine(
   $env:LOCALAPPDATA,'mcp-workers','remote-control','programs'))
-$task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+$tasks = @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -ieq $name })
+if ($tasks.Count -gt 1) { throw 'Ambiguous owner Task' }
+$task = if ($tasks.Count -eq 1) { $tasks[0] } else { $null }
 function Check-Program([string]$launcherPath, [string]$entryPath) {
   if ($launcherPath -match '[";]' -or $entryPath -match '[";]') { throw 'Invalid program path' }
   $n = [IO.Path]::GetFullPath($launcherPath)
@@ -275,9 +277,12 @@ function Read-OwnedTask {
   Check-Existing
   $task
 }
-function Get-OwnedAgentProcess($program) {
+function Get-OwnedAgentProcess($program,$managementCaller=$null) {
   $matches = @(Get-CimInstance Win32_Process -Filter ("Name = '" + [IO.Path]::GetFileName($program.Process) + "'") -ErrorAction Stop |
-    Where-Object { $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$program.Process,[StringComparison]::OrdinalIgnoreCase) })
+    Where-Object {
+      $_.ExecutablePath -and [string]::Equals($_.ExecutablePath,$program.Process,[StringComparison]::OrdinalIgnoreCase) -and
+        (-not $managementCaller -or $_.ProcessId -ne $managementCaller.ProcessId -or $_.CreationDate -ne $managementCaller.CreationDate)
+    })
   if ($matches.Count -ne 1 -or (Invoke-CimMethod -InputObject $matches[0] -MethodName GetOwnerSid).Sid -cne $sid) {
     throw 'Unique owner Agent process not confirmed'
   }
@@ -305,9 +310,14 @@ function Get-LocalSwitchCaller([string]$directionValue,[string]$versionTag) {
       $expected += '--cli\s+(?:upgrade|update)\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
     } elseif ($directionValue -eq 'Recover') {
       $expected += '--cli\s+recover\s*$'
+    } elseif ($directionValue -eq 'Restart') {
+      $expected += '--cli\s+restart\s*$'
+    } elseif ($directionValue -eq 'Status') {
+      $expected += '--cli\s+(?:status|doctor)(?:\s+--json)?\s*$'
     } elseif ($directionValue -in @('RePair','Onboard')) {
       $command = if ($directionValue -eq 'RePair') {'re-pair'} else {'onboard'}
-      $expected += '--cli\s+' + $command + '\s+--endpoint\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+      $explicit = '--cli\s+' + $command + '\s+--endpoint\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+      $expected += if ($directionValue -eq 'Onboard') { '(?:' + $explicit + '|--cli\s+pair\s*$)' } else { $explicit }
     } else { return }
   } else { return }
   if ($caller.CommandLine -notmatch $expected -or
@@ -443,7 +453,7 @@ function Assert-AutomaticEligibility($program,$expectedAction,[string]$target=''
     throw 'Automatic update target changed'
   }
   $before = Get-OwnedAgentProcess $program
-  $raw = & $program.Entry --cli status
+  $raw = & $program.Entry --cli status --json
   if ($LASTEXITCODE -ne 0) { throw 'Automatic update policy unconfirmed' }
   $facts = $raw | ConvertFrom-Json
   if ($facts.identity_present -ne $true -or $facts.automatic_update -cne 'on') {
@@ -568,7 +578,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     Assert-AutomaticEligibility $original $oldAction $newVersion
   }
   Wait-VersionExited $target $managementCaller
-  $raw = & $target.Entry --cli status
+  $raw = & $target.Entry --cli status --json
   if ($LASTEXITCODE -ne 0) { throw 'Candidate local identity validation failed' }
   $localStatus = $raw | ConvertFrom-Json
   if ($localStatus.identity_present -ne $true -or
@@ -720,7 +730,7 @@ if ($Action -eq 'RecoverNativeUpgrade') {
   Invoke-NativeRecovery
   exit 0
 }
-if (Test-Path -LiteralPath $nativeJournal) { throw 'Unreconciled native upgrade; preserve versions and recover explicitly' }
+if ($Action -ne 'Status' -and (Test-Path -LiteralPath $nativeJournal)) { throw 'Unreconciled native upgrade; preserve versions and recover explicitly' }
 
 if ($Action -eq 'ConfirmStopped') {
   if ($Version -or $Direction -or
@@ -895,7 +905,29 @@ if ($Action -eq 'Status') {
       }
     }
   } catch { if (-not $activity) { $activity = 'unknown' }; $result = @{status='unknown'} }
+  $localService = if ($running) {'running_unverified'} else {'not_running'}
+  $signed = 'unconfirmed'
+  $lastOnline = $null
+  if ($running) {
+    try {
+      $program = [pscustomobject]@{Process=$launch.Entry;Launcher=$task.Actions[0].Execute}
+      $caller = Get-LocalSwitchCaller 'Status' ''
+      $before = Get-OwnedAgentProcess $program $caller
+      $localService = 'running_observed'
+      $raw = & $launch.Entry --verify-activation-proof $launch.Generation 2>$null
+      if ($LASTEXITCODE -ne 0) { throw 'Prior signed activation not observed' }
+      $lastOnline = ($raw | ConvertFrom-Json).at
+      Invoke-AgentUpgradeFreeze $identityFile 'verify-online'
+      $after = Get-OwnedAgentProcess $program $caller
+      $again = Read-OwnedTask
+      if ($again.State -eq 'Running' -and (Test-SameAction $again.Actions[0] $task.Actions[0]) -and
+          $after.ProcessId -eq $before.ProcessId -and $after.CreationDate -eq $before.CreationDate) {
+        $signed = 'connected_observed'
+      }
+    } catch { }
+  }
   @{installed=$true;running=$running;autostart='at-user-logon';version=$installed;
+    local_service=$localService;signed_wss=$signed;last_online_unix_ms=$lastOnline;
     automatic_update_activity=$activity;automatic_update_result=$result} | ConvertTo-Json -Compress -Depth 4
   exit 0
 }
@@ -912,6 +944,164 @@ if ($Action -eq 'VerifyAutomatic') {
   Assert-AutomaticEligibility $program $expected $Version
   'automatic-eligible'
   exit 0
+}
+if ($Action -eq 'Uninstall') {
+  if ($Version -or $Direction -or $Endpoint -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+    throw 'Explicit local owner terminal required for uninstall'
+  }
+  Check-UpgradeStore
+  $modeGuard = [IO.File]::Open(($identityFile + '.install-mode'),
+    [IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::Read)
+  try {
+    function Get-UninstallPrograms {
+      $items = @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop)
+      foreach ($item in $items) {
+        if (-not $item.PSIsContainer -or $item.Name -cnotmatch '^(v[0-9]+\.[0-9]+\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?)-windows-x64$') {
+          throw 'Unreviewed installed program; preserve files'
+        }
+        Get-ReviewedProgram $Matches[1]
+      }
+    }
+    function Assert-UninstallAvailable {
+      foreach ($file in @($nativeJournal,($identityFile + '.activation-pending'),($identityFile + '.device-id.pending'))) {
+        if (Test-Path -LiteralPath $file) { throw 'Unresolved lifecycle transaction; recover before uninstall' }
+      }
+      $id = (Get-Content -LiteralPath ($identityFile + '.device-id') -Raw).Trim()
+      if ($id -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$') { throw 'Unconfirmed paired identity' }
+      $autoName = 'RCA-Upgrade-' + $id.Replace('-','')
+      foreach ($job in @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -like 'RCA-Upgrade-*' })) {
+        if ($job.TaskName -ieq $autoName -or $job.State -in @('Running','Queued','Unknown')) {
+          throw 'Outstanding upgrade task; inspect before uninstall'
+        }
+      }
+    }
+    Assert-UninstallAvailable
+    $programs = @(Get-UninstallPrograms)
+    if ($programs.Count -eq 0) { throw 'No reviewed installed software' }
+    Write-Host ("Uninstall {0} reviewed Agent version(s) and startup mechanism? Identity, receipts and cloud authorization are retained." -f $programs.Count)
+    $answer = Read-Host 'Confirm [y/N]'
+    if ($answer -notmatch '^\s*(y|yes)\s*$') { throw 'Owner declined' }
+    Assert-UninstallAvailable
+    if (((@((Get-UninstallPrograms).Tag) | Sort-Object) -join ',') -cne ((@($programs.Tag) | Sort-Object) -join ',')) {
+      throw 'Installed inventory changed'
+    }
+    if ($task) {
+      $task = Read-OwnedTask
+      $launch = Read-TaskLaunch $task.Actions[0]
+      $tag = ([IO.Path]::GetFullPath($launch.Entry).Substring($root.Length + 1).Split('\')[0]) -replace '-windows-x64$',''
+      $program = Get-ReviewedProgram $tag
+      $expected = New-ReviewedAction $program $launch.Endpoint $launch.Generation
+      if (-not (Test-SameAction $task.Actions[0] $expected)) { throw 'Task definition changed' }
+      if ($task.State -eq 'Running') {
+        $before = Get-OwnedAgentProcess $program
+        if ((Invoke-AgentUpgradeFreeze $identityFile 'freeze' $true) -ceq 'busy') { throw 'Agent busy; uninstall deferred' }
+        try {
+          Assert-UninstallAvailable
+          $task = Read-OwnedTask
+          $current = Get-OwnedAgentProcess $program
+          if ($task.State -ne 'Running' -or -not (Test-SameAction $task.Actions[0] $expected) -or
+              $current.ProcessId -ne $before.ProcessId -or $current.CreationDate -ne $before.CreationDate) { throw 'Uninstall target changed' }
+          Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
+          Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+          Wait-VersionExited ([pscustomobject]@{Root=$root})
+        } finally {
+          $same = $false
+          try {
+            $current = Get-OwnedAgentProcess $program
+            $same = $current.ProcessId -eq $before.ProcessId -and $current.CreationDate -eq $before.CreationDate
+          } catch { }
+          if ($same) { Invoke-AgentUpgradeFreeze $identityFile 'release' }
+        }
+      }
+      Wait-VersionExited ([pscustomobject]@{Root=$root})
+      $task = Read-OwnedTask
+      if ($task.State -eq 'Running' -or -not (Test-SameAction $task.Actions[0] $expected)) { throw 'Owned Task exit unconfirmed' }
+      Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop
+    }
+    Assert-UninstallAvailable
+    if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -ieq $name }).Count) {
+      throw 'Task removal unconfirmed'
+    }
+    Wait-VersionExited ([pscustomobject]@{Root=$root})
+    foreach ($program in $programs) {
+      $null = Get-ReviewedProgram $program.Tag
+      Remove-Item -LiteralPath $program.Root -Recurse -Force -ErrorAction Stop
+    }
+    if (@(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop).Count) { throw 'Software removal incomplete' }
+    @{status='uninstalled';removed_versions=@($programs.Tag);identity_preserved=$true;receipts_preserved=$true;cloud_revocation='not_performed'} | ConvertTo-Json -Compress
+  } finally { $modeGuard.Dispose() }
+  exit 0
+}
+if ($Action -eq 'Restart') {
+  if ($Version -or $Direction -or $Endpoint) { throw 'Unexpected restart arguments' }
+  Check-Existing
+  Check-UpgradeStore
+  $caller = Get-LocalSwitchCaller 'Restart' ''
+  if (-not $caller) { throw 'Explicit local restart caller required' }
+  foreach ($suffix in @('.owner-stopped','.activation-pending','.device-id.pending')) {
+    if (Test-Path -LiteralPath ($identityFile + $suffix)) { throw 'Owner STOP or lifecycle pending blocks restart' }
+  }
+  $launch = Read-TaskLaunch $task.Actions[0]
+  $tag = ([IO.Path]::GetFullPath($launch.Entry).Substring($root.Length + 1).Split('\')[0]) -replace '-windows-x64$',''
+  $program = Get-ReviewedProgram $tag
+  $expected = New-ReviewedAction $program $launch.Endpoint $launch.Generation
+  $record = @{ key_hash=(Get-FileHash -LiteralPath $identityFile -Algorithm SHA256).Hash;
+    id_hash=(Get-FileHash -LiteralPath ($identityFile + '.device-id') -Algorithm SHA256).Hash }
+  $before = Get-OwnedAgentProcess $program $caller
+  $recheck = {
+    Assert-UpgradeIdentity $record
+    if (Test-Path -LiteralPath $nativeJournal) { throw 'Upgrade transaction blocks restart' }
+    $observed = Read-OwnedTask
+    $process = Get-OwnedAgentProcess $program $caller
+    if ($observed.State -ne 'Running' -or -not (Test-SameAction $observed.Actions[0] $expected) -or
+        $process.ProcessId -ne $before.ProcessId -or $process.CreationDate -ne $before.CreationDate) {
+      throw 'Restart target changed'
+    }
+  }
+  & $recheck
+  Invoke-AgentUpgradeFreeze $identityFile 'verify-online'
+  if ((Invoke-AgentUpgradeFreeze $identityFile 'freeze' $true) -ceq 'busy') { throw 'Agent busy; restart deferred' }
+  try {
+    & $recheck
+    Invoke-AgentUpgradeFreeze $identityFile 'verify-frozen'
+    & $recheck
+    Stop-ScheduledTask -TaskName $name -ErrorAction Stop
+    Wait-VersionExited $program $caller
+    Assert-UpgradeIdentity $record
+    $observed = Read-OwnedTask
+    if ($observed.State -eq 'Running' -or -not (Test-SameAction $observed.Actions[0] $expected)) {
+      throw 'Task changed after stop'
+    }
+    Start-ScheduledTask -TaskName $name -ErrorAction Stop
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
+    while ($deadline.Elapsed.TotalSeconds -lt 60) {
+      try {
+        $after = Get-OwnedAgentProcess $program $caller
+        if ($after.ProcessId -ne $before.ProcessId -or $after.CreationDate -ne $before.CreationDate) {
+          $observed = Read-OwnedTask
+          if ($observed.State -eq 'Running' -and (Test-SameAction $observed.Actions[0] $expected)) {
+            Invoke-AgentUpgradeFreeze $identityFile 'verify-online'
+            $confirmed = Get-OwnedAgentProcess $program $caller
+            if ($confirmed.ProcessId -eq $after.ProcessId -and $confirmed.CreationDate -eq $after.CreationDate) {
+              Assert-UpgradeIdentity $record
+              '{"local":"restarted","signed_wss":"connected_observed"}'
+              exit 0
+            }
+          }
+        }
+      } catch { }
+      Start-Sleep -Milliseconds 500
+    }
+    throw 'Replacement signed Agent unconfirmed; inspect local status'
+  } finally {
+    # Only the original process can own the freeze we acquired.
+    $same = $false
+    try {
+      $observed = Get-OwnedAgentProcess $program $caller
+      $same = $observed.ProcessId -eq $before.ProcessId -and $observed.CreationDate -eq $before.CreationDate
+    } catch { }
+    if ($same) { Invoke-AgentUpgradeFreeze $identityFile 'release' }
+  }
 }
 if ($Action -eq 'Switch') {
   Check-Existing

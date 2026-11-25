@@ -1113,6 +1113,63 @@ def verify_native_owner_lifecycle():
     print("NATIVE_OWNER_LIFECYCLE_CONTRACT_PASS")
 
 
+def verify_normal_restart():
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        marker = Path(str(key) + ".owner-stopped")
+        exe = old / APP / ".build/rca-standard-linux-candidate"
+        original = key.read_bytes()
+        state = {"pid": 100, "freeze": "ready", "events": [], "failed": False}
+        def consent(_key, action):
+            assert _key == key
+            state["events"].append(action)
+            return state["freeze"] if action == "freeze" else ("released" if action == "release" else "ready")
+        def control(*args):
+            assert args == ("restart", bootstrap.UNIT)
+            assert not marker.exists()
+            state["events"].append("restart")
+            if state["failed"]:
+                raise ValueError("fixture restart refused")
+            state["pid"] = 101
+        def started(expected):
+            assert expected == exe
+            return state["pid"]
+        with patch.object(sys.stdin, "isatty", return_value=True), patch.object(sys.stdout, "isatty", return_value=True), patch.multiple(
+            bootstrap, native_main_pid=lambda:state["pid"], native_process_executable=lambda _:exe,
+            native_consent=consent, native_systemctl=control, native_wait_started=started,
+            native_wait_online=lambda *args:True, native_signed_owner_intent=lambda *args: (_ for _ in ()).throw(AssertionError("Restart must not change cloud intent"))):
+            def refused():
+                try:
+                    bootstrap.native_owner_lifecycle(home,"restart")
+                except ValueError:
+                    return
+                raise AssertionError("Unsafe restart admitted")
+            owned_file(marker,b"stopped\n")
+            refused()
+            assert not state["events"]
+            marker.unlink()
+            pending=Path(str(key)+".native-upgrade-intent")
+            owned_file(pending)
+            refused()
+            pending.unlink()
+            assert not state["events"]
+            state["freeze"]="busy"
+            refused()
+            assert state["events"]==["verify-online","freeze"]
+            state.update(freeze="ready",events=[],failed=True)
+            refused()
+            assert state["events"]==["verify-online","freeze","verify-frozen","restart","release"]
+            state.update(events=[],failed=False)
+            result=bootstrap.native_owner_lifecycle(home,"restart")
+            assert result["local"]=="restarted" and result["signed_wss"]=="connected_observed"
+            assert state["events"]==["verify-online","freeze","verify-frozen","restart"]
+            assert not marker.exists() and key.read_bytes()==original
+            assert b"disposable-receipt-history" in receipts.read_bytes()
+    finally:
+        ctx.cleanup()
+    print("NATIVE_NORMAL_RESTART_CONTRACT_PASS")
+
+
 def verify_automatic_update_policy():
     import contextlib
     import io
@@ -1943,6 +2000,7 @@ if __name__ == "__main__":
         verify_service_start()
         verify_public_native_archive()
         verify_native_owner_lifecycle()
+        verify_normal_restart()
         verify_automatic_update_policy()
         verify_read_only_update_check()
         verify_latest_selection()

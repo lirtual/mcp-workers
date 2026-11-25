@@ -10,7 +10,7 @@ import sys
 
 APP = Path("apps/remote-control-agent")
 UNIT = "remote-control-agent.service"
-USAGE = "Usage: rca [status|doctor|pair|logs|stop|start|update|recover|uninstall|--version|--help]"
+USAGE = "Usage: rca [status|doctor|pair|logs|stop|start|restart|update|recover|uninstall|--version|--help]"
 VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 ASSET_SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -197,9 +197,9 @@ def dispatch(command, args, root, info, bootstrap):
         return 0
     if command == "pair":
         return pair(root, bootstrap, args)
-    if command in ("stop", "start"):
+    if command in ("stop", "start", "restart"):
         if args:
-            raise ValueError("Stop/Start takes no arguments")
+            raise ValueError("Lifecycle command takes no arguments")
         print(json.dumps(bootstrap.native_owner_lifecycle(Path.home(), command)))
         return 0
     if command in ("update", "upgrade"):
@@ -242,7 +242,7 @@ def main():
         print("1. Status   2. " + "Pair / repair" + "   3. Logs")
         print("4. Update   5. Uninstall       6. Exit")
         print("7. Recover interrupted installation/upgrade   8. Doctor")
-        print("9. Start   10. Stop")
+        print("9. Start   10. Stop   11. Restart")
         try:
             choice = input("Choose an option: ").strip()
         except EOFError:
@@ -251,9 +251,9 @@ def main():
             return 0
         mapping = {"1": "status", "2": "pair", "3": "logs", "4": "update",
                    "5": "uninstall", "7": "recover", "8": "doctor",
-                   "9": "start", "10": "stop"}
+                   "9": "start", "10": "stop", "11": "restart"}
         if choice not in mapping:
-            print("Choose 1–10.")
+            print("Choose 1–11.")
             continue
         action = mapping[choice]
         if action == "pair" and not installed_endpoint(bootstrap):

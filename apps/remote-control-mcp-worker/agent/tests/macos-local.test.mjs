@@ -304,10 +304,10 @@ test("#660 owner-local rca executable quotes paths and refuses unverified comman
   for(const action of ["upgrade","install","status",""]) {
     const args=action?[action]:[];
     const r=spawnSync("/bin/sh",[file,...args],{encoding:"utf8",cwd:temp});
-    if(action==="status"||action==="upgrade"){
+    if(action==="status"||action==="upgrade"||action===""){
       assert.equal(r.status,0,r.stderr);
       assert.deepEqual(r.stdout.trim().split("\n"),[
-        path.join(root,"apps/remote-control-agent/scripts/macos-local.mjs"),action]);
+        path.join(root,"apps/remote-control-agent/scripts/macos-local.mjs"),...(action?[action]:[])]);
     }else{
       assert.equal(r.status,2);
       assert.equal(r.stdout,"");
@@ -315,7 +315,7 @@ test("#660 owner-local rca executable quotes paths and refuses unverified comman
   }
   await assert.rejects(lstat(path.join(temp,"BAD")),{code:"ENOENT"});
   assert.match(script,/status\|doctor/);
-  assert.match(script,/stop\|start/);
+  assert.match(script,/stop\|start\|restart/);
   assert.ok(script.includes("o'\"'\"'neill"));
 });
 
@@ -1024,4 +1024,109 @@ test("#1035 direct installed automatic-check CLI exits cleanly with consent off"
     {env:{...process.env,HOME:f.home},encoding:"utf8",timeout:10000});
   assert.equal(result.status,0,result.stderr);
   assert.deepEqual(JSON.parse(result.stdout),{status:"disabled"});
+});
+
+test("#1035 normal macOS restart is idle-only, preserves the same authorization and rejects STOP", {skip:!native},async t=>{
+  const f=await fixture(t), key=path.join(f.identity,"v2-identity.pem");
+  const mac=path.join(f.identity,"macos"), journal=path.join(mac,"switch.json");
+  const stopMark=path.join(mac,"stopped"),marker=path.join(f.identity,"macos-connection.json");
+  await localMacAction("install",{home:f.home,bundle,sourceSha:f.sourceSha,endpoint:ENDPOINT,
+    invoke:f.invoke,ask:async()=>true,online:async()=>true});
+  const plist=path.join(f.home,"Library/LaunchAgents/org.mcp-workers.remote-control-agent.plist");
+  const current=parsePlist(await readFile(plist,"utf8"),path.join(mac,"programs"),ENDPOINT);
+  const executable=current.agentRuntime==="rust-standard-darwin-v1"
+    ?path.join(current.root,"apps/remote-control-agent/.build/rca-standard-darwin-candidate")
+    :path.join(current.root,"bin/node");
+  let pid=123,answer="busy",failure=false,events=[];
+  const record=()=>writeFile(marker,JSON.stringify({generation:current.generation,pid,state:"connected",at:Date.now()}),{mode:0o600});
+  await record();
+  const invoke=(_binary,args)=>{
+    if(args[0]==="print")return {status:0,stdout:"service = {\n program = "+executable+"\n pid = "+pid+"\n}\n"};
+    assert.deepEqual(args.slice(0,2),["kickstart","-k"]);
+    events.push("restart");if(failure)return {status:1};
+    pid=124;return {status:0};
+  };
+  const opts={home:f.home,terminal:()=>true,invoke,online:async()=>{await record();return true;},
+    ownerIntent:async()=>{throw Error("Restart must not change cloud intent");},
+    freezeAgent:async(_key,action)=>{events.push(action??"freeze");return !action?answer:action==="release"?"released":"ready";}};
+  const original=await readFile(key,"utf8");
+  await writeFile(stopMark,"stopped\n",{mode:0o600});
+  await assert.rejects(localMacAction("restart",opts),/Owner-ON/);
+  assert.deepEqual(events,[]);
+  await rm(stopMark);
+  await assert.rejects(localMacAction("restart",opts),/Busy or uncertain/);
+  assert(!events.includes("restart"));
+  await assert.rejects(lstat(journal),{code:"ENOENT"});
+  answer="ready";failure=true;events=[];
+  await assert.rejects(localMacAction("restart",opts),/Restart request unconfirmed/);
+  assert(events.includes("release"));
+  await assert.rejects(lstat(journal),{code:"ENOENT"});
+  failure=false;events=[];
+  assert.deepEqual(await localMacAction("restart",opts),{status:"restarted",signed_wss:"connected_observed"});
+  assert(events.includes("restart"));assert(!events.includes("release"));
+  assert.equal(await readFile(key,"utf8"),original);
+  assert.equal(await readFile(key+".device-id","utf8"),ID+"\n");
+  await assert.rejects(lstat(journal),{code:"ENOENT"});
+});
+
+test("#1035 macOS removal inventory rejects foreign files, links and active program processes",async t=>{
+  const {reviewedMacPrograms,noOtherMacPrograms}=await import("../scripts/macos-local.mjs");
+  const programs=await mkdtemp(path.join(os.tmpdir(),"rca-uninstall-inventory-"));
+  t.after(()=>rm(programs,{recursive:true,force:true}));
+  const name="v1.2.3-darwin-"+process.arch,root=path.join(programs,name),app="apps/remote-control-agent";
+  const meta={name:"remote-control-agent",version:"v1.2.3",target:"darwin-"+process.arch,source_commit:"a".repeat(40),
+    artifact_schema:1,device_protocol:2,receipt_schema:1,candidate_profile:"darwin-permanent-local-v1",
+    native_supervisor:"darwin-owned-group-v1",agent_runtime:"node-v2",modules:["macos-permanent.ts","v2-session-client.ts"]};
+  const members=["bundle.json","bin/node",app+"/package.json",app+"/scripts/macos-local.mjs",
+    app+"/scripts/macos-remote-upgrade.mjs",app+"/.build/darwin-session-supervisor",app+"/src/macos-permanent.js",app+"/src/v2-session-client.js"];
+  for(const member of members){
+    const file=path.join(root,member);await mkdir(path.dirname(file),{recursive:true,mode:0o700});
+    await writeFile(file,member==="bundle.json"?JSON.stringify(meta):"fixture",{mode:member==="bin/node"||member.includes("/.build/")?0o700:0o600});
+  }
+  assert.deepEqual(await reviewedMacPrograms(programs),[root]);
+  const foreign=path.join(root,"unexpected");await writeFile(foreign,"foreign",{mode:0o600});
+  await assert.rejects(reviewedMacPrograms(programs),/Unexpected file/);
+  await rm(foreign);await symlink(path.join(root,"bin/node"),foreign);
+  await assert.rejects(reviewedMacPrograms(programs));
+  await rm(foreign);
+  const uid=process.getuid(),own=100;
+  const ps=text=>()=>({status:0,stdout:text});
+  assert(noOtherMacPrograms(programs,ps(own+" "+uid+" "+root+"/bin/node manager\n101 "+uid+" /bin/ps\n"),own,uid));
+  assert(!noOtherMacPrograms(programs,ps("101 "+uid+" "+root+"/bin/node --service\n"),own,uid));
+  assert(!noOtherMacPrograms(programs,ps("invalid record"),own,uid));
+  assert(!noOtherMacPrograms(programs,()=>({status:1}),own,uid));
+});
+
+test("#1035 macOS uninstall preserves original identity and receipts; cancellation is non-mutating",{skip:!native},async t=>{
+  const f=await fixture(t),key=path.join(f.identity,"v2-identity.pem");
+  await localMacAction("install",{home:f.home,bundle,sourceSha:f.sourceSha,endpoint:ENDPOINT,
+    invoke:f.invoke,ask:async()=>true,online:async()=>true});
+  const mac=path.join(f.identity,"macos"),programs=path.join(mac,"programs");
+  const plist=path.join(f.home,"Library/LaunchAgents/org.mcp-workers.remote-control-agent.plist");
+  const cli=path.join(f.home,".local/bin/rca"),current=parsePlist(await readFile(plist,"utf8"),programs,ENDPOINT);
+  const exe=current.agentRuntime==="rust-standard-darwin-v1"?path.join(current.root,"apps/remote-control-agent/.build/rca-standard-darwin-candidate"):path.join(current.root,"bin/node");
+  const sqlite=path.join(f.home,".local/state/mcp-workers/remote-control-agent/operation-receipts.sqlite");
+  await writeFile(sqlite,"receipt-fixture",{mode:0o600});
+  let present=true,events=[],accepted=false;
+  const invoke=(binary,args)=>{
+    if(binary==="/bin/ps")return {status:0,stdout:process.pid+" "+process.getuid()+" "+process.execPath};
+    if(args[0]==="print")return present?{status:0,stdout:"service = {\n program = "+exe+"\n pid = 123\n}\n"}:{status:113,stderr:"Could not find service"};
+    assert.equal(args[0],"bootout");events.push("bootout");present=false;return {status:0};
+  };
+  const opts={home:f.home,invoke,terminal:()=>true,ask:async()=>accepted,pauseLaunchd:async()=>{},
+    freezeAgent:async(_key,command)=>{events.push(command??"freeze");return "ready";},
+    ownerIntent:async()=>{throw Error("Uninstall must not change cloud authorization");}};
+  const keyBefore=await readFile(key,"utf8");
+  await assert.rejects(localMacAction("uninstall",opts),/Owner declined/);
+  assert.deepEqual(events,[]);
+  assert.equal((await lstat(cli)).isFile(),true);
+  accepted=true;
+  const result=await localMacAction("uninstall",opts);
+  assert.equal(result.status,"uninstalled");assert.equal(result.cloud_revocation,"not_performed");
+  assert.deepEqual(events,["freeze","verify-frozen","bootout"]);
+  assert.deepEqual(await readdir(programs),[]);
+  await assert.rejects(lstat(cli),{code:"ENOENT"});await assert.rejects(lstat(plist),{code:"ENOENT"});
+  assert.equal(await readFile(key,"utf8"),keyBefore);
+  assert.equal(await readFile(key+".device-id","utf8"),ID+"\n");
+  assert.equal(await readFile(sqlite,"utf8"),"receipt-fixture");
 });

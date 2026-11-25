@@ -3,7 +3,7 @@ import {createConnection} from "node:net";
 import {createHash,randomUUID} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {createInterface} from "node:readline";
-import {cp,lstat,mkdir,readFile,rename,rm,writeFile} from "node:fs/promises";
+import {cp,lstat,mkdir,readdir,readFile,rename,rm,writeFile} from "node:fs/promises";
 import {realpathSync} from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -383,7 +383,7 @@ export function ownerCliText(root,legacy=false){
       ?'  status|stop|start) [ "$#" -eq 1 ] || exit 2 ;;\n'
       :'  status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n'+
        '  update|upgrade) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && { [ "$2" = --check ] || [ "$2" = --auto ]; }; } || { [ "$#" -eq 3 ] && [ "$2" = --auto ] && { [ "$3" = on ] || [ "$3" = off ]; }; } || exit 2 ;;\n'+
-       '  stop|start|--help|--version) [ "$#" -eq 1 ] || exit 2 ;;\n')+
+       '  \"\"|stop|start|restart|pair|recover|logs|uninstall|--help|--version) [ "$#" -le 1 ] || exit 2 ;;\n')+
     '  *) echo "Use the reviewed macOS installer for install/upgrade." >&2; exit 2 ;;\n'+
     'esac\nexec '+quote(node)+' '+quote(manager)+(legacy?' "$1"\n':' "$@"\n');
 }
@@ -495,6 +495,64 @@ export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,jou
     stop:await read(stopMark,0o600,true),
     keyHash:await hash(key),idHash:await hash(key+".device-id")};
 }
+// Only the exact reviewed installed program inventory is removable.
+export async function reviewedMacPrograms(programs){
+  await checked(programs,{dir:true});
+  const roots=[];
+  for(const name of await readdir(programs)){
+    const root=path.join(programs,name);
+    await checked(root,{dir:true});
+    const manifest=path.join(root,"bundle.json");
+    await checked(manifest,{mode:0o600});
+    const meta=JSON.parse(await readFile(manifest,"utf8"));
+    if(name!==await checkCandidate(root,meta.source_commit))
+      throw Error("Unreviewed installed program.");
+    const app="apps/remote-control-agent";
+    const expected=new Set(["bundle.json","bin/node",app+"/package.json",
+      app+"/scripts/macos-local.mjs",app+"/scripts/macos-remote-upgrade.mjs",
+      app+"/.build/darwin-session-supervisor"]);
+    for(const module of meta.modules){
+      if(!/^[a-z0-9-]+\.ts$/.test(module))throw Error("Unreviewed module inventory.");
+      expected.add(app+"/src/"+module.replace(/\.ts$/,".js"));
+    }
+    if(meta.agent_runtime==="rust-standard-darwin-v1")
+      expected.add(app+"/.build/rca-standard-darwin-candidate");
+    // Older verified Node bundles predate the packaged updater.
+    const updater=app+"/scripts/macos-update.sh";
+    if(await statMaybe(path.join(root,updater)))expected.add(updater);
+    const dirs=new Set();
+    for(const file of expected){
+      for(let parent=path.dirname(file);parent!==".";parent=path.dirname(parent))dirs.add(parent);
+    }
+    const walk=async(dir,relative="")=>{
+      for(const entry of await readdir(dir)){
+        const rel=relative?relative+"/"+entry:entry;
+        const item=path.join(dir,entry);
+        if(dirs.has(rel)){
+          await checked(item,{dir:true});await walk(item,rel);
+        }else{
+          if(!expected.delete(rel))throw Error("Unexpected file in reviewed program.");
+          await checked(item,{mode:rel==="bin/node"||rel.includes("/.build/")?0o700:0o600});
+        }
+      }
+    };
+    await walk(root);
+    if(expected.size)throw Error("Incomplete installed program inventory.");
+    roots.push(root);
+  }
+  return roots.sort();
+}
+// Native ps is a conservative exit observation, never a termination mechanism.
+export function noOtherMacPrograms(programs,invoke=run,ownPid=process.pid,uid=process.getuid?.()){
+  const result=invoke("/bin/ps",["-axww","-o","pid=,uid=,command="]);
+  if(result.error||result.status!==0||!String(result.stdout??"").trim())return false;
+  for(const line of String(result.stdout).trim().split("\n")){
+    const row=/^\s*([0-9]+)\s+([0-9]+)\s+(.+)$/.exec(line);
+    if(!row)return false;
+    if(Number(row[1])!==ownPid&&Number(row[2])===uid&&row[3].includes(programs+"/"))return false;
+  }
+  return true;
+}
 // The existing recovery journal is also the exclusive admission marker.
 // Unlike rename(), an exclusive create cannot overwrite a competing claim.
 export async function reserveMacSwitch(journal,record,recheck,requestFreeze,onBusy){
@@ -525,11 +583,7 @@ export async function reserveMacSwitch(journal,record,recheck,requestFreeze,onBu
 export function macBindingDigest(binding){
   return createHash("sha256").update(JSON.stringify(binding)).digest("hex");
 }
-// Status observes OS registration, the matching connection marker, and the
-// existing read-only local control socket; never contact GitHub or the Worker.
-export async function observeMacLocalService(identity,current,service,invoke,request=freeze){
-  const facts={local_service:"present_unverified",signed_wss:"unconfirmed",last_online:"unconfirmed"};
-  const readPid=()=>{
+function macServicePid(current,service,invoke){
     const result=invoke("/bin/launchctl",["print",service]);
     if(result.error||result.status!==0)return null;
     const output=String(result.stdout??"");
@@ -540,7 +594,12 @@ export async function observeMacLocalService(identity,current,service,invoke,req
     if(programs.length!==1||programs[0]!=="program = "+executable)return null;
     const matches=[...output.matchAll(/(?:^|\n)\s*pid = ([1-9][0-9]*)(?=\n|$)/g)];
     return matches.length===1&&Number.isSafeInteger(Number(matches[0][1]))?Number(matches[0][1]):null;
-  };
+}
+// Status observes OS registration, the matching connection marker, and the
+// existing read-only local control socket; never contact GitHub or the Worker.
+export async function observeMacLocalService(identity,current,service,invoke,request=freeze){
+  const facts={local_service:"present_unverified",signed_wss:"unconfirmed",last_online:"unconfirmed"};
+  const readPid=()=>macServicePid(current,service,invoke);
   try{
     const pid=readPid();
     if(!pid)return facts;
@@ -594,7 +653,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   invoke=run,ask=confirm,online=observeOnline,freezeAgent=freeze,ownerIntent,
   runTemporary=spawnSync,runUpdate=spawnSync,terminal=()=>!!(process.stdin.isTTY&&process.stdout.isTTY),
   pauseLaunchd=ms=>new Promise(resolve=>setTimeout(resolve,ms)),doFetch=fetch}={}){
-  if(!["install","upgrade","status","doctor","check-update","update-latest","automatic-check","update-policy","stop","start","temporary"].includes(action))
+  if(!["install","upgrade","status","doctor","check-update","update-latest","automatic-check","update-policy","stop","start","restart","pair","recover","logs","uninstall","temporary"].includes(action))
     throw Error("Unsupported local action.");
   if(process.platform!=="darwin"||!["arm64","x64"].includes(process.arch)||
     Number.parseInt(os.release(),10)<24||process.getuid?.()===0)
@@ -605,7 +664,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     throw Error("Invalid automatic upgrade context.");
   if(policyAction!==undefined&&(action!=="update-policy"||!["on","off"].includes(policyAction)))
     throw Error("Invalid automatic update policy action.");
-  const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest"||action==="automatic-check"||action==="update-policy";
+  const readOnly=action==="status"||action==="doctor"||action==="check-update"||action==="update-latest"||action==="automatic-check"||action==="update-policy"||action==="logs"||action==="pair"||action==="recover"||action==="uninstall";
   if(!readOnly)process.umask(0o077);
   if(action==="temporary"){
     // Reuse the signed 24-hour foreground Agent: no LaunchAgent, no service
@@ -634,11 +693,12 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
   const agents=await directories(home,["Library","LaunchAgents"],!readOnly);
   const plist=path.join(agents,LABEL+".plist");
   const stopMark=path.join(macos,"stopped"), journal=path.join(macos,"switch.json");
-  if(await checked(journal,{optional:true,mode:0o600})){
+  const journalPresent=await checked(journal,{optional:true,mode:0o600});
+  if(journalPresent&&action!=="recover"){
     // A switch may have left plist and CLI at different generations.
     // Report only established facts; never interpret the journal as a
     // successful switch. Revoking continuing consent needs no cutover.
-    if(action==="status"||action==="doctor"||
+    if(action==="status"||action==="doctor"||action==="logs"||
        (action==="update-policy"&&policyAction!=="on")){
       const key=path.join(identity,"v2-identity.pem");
       let deviceId=null,policy="unknown";
@@ -659,7 +719,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
         cloud_approval:"unconfirmed",signed_wss:"unconfirmed",
         last_online:"unconfirmed",receipts:"preserved_unverified",
         automatic_update:policy,automatic_update_activity:"needs_attention"};
-      return action==="status"?state:{status:state,findings:[
+      return action==="status"||action==="logs"?state:{status:state,findings:[
         "unresolved_upgrade_journal","local_service_unconfirmed",
         "cloud_authorization_unconfirmed","signed_wss_unconfirmed"]};
     }
@@ -703,6 +763,104 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     if(typeof sendSignedOwnerIntent!=="function")throw Error("Candidate does not support owner intent.");
     return sendSignedOwnerIntent(bound,key,action);
   };
+  if(action==="uninstall"){
+    if(!terminal()||!current||!previousCli||!await approved(key))
+      throw Error("Owner terminal and reviewed permanent installation required.");
+    if(await statMaybe(path.join(macos,"remote-upgrades","active.json")))
+      throw Error("Unresolved detached upgrade; preserve recovery files.");
+    const roots=await reviewedMacPrograms(programs);
+    if(!roots.includes(current.root))throw Error("Installed service missing from reviewed inventory.");
+    if(!await ask("Uninstall "+roots.length+" reviewed Agent version(s) and the local startup mechanism? Identity, receipts and cloud authorization are retained."))
+      throw Error("Owner declined.");
+    const files={key,plist,cli,endpointFile,stopMark,journal};
+    const binding=await macUpgradeBinding(files),before=launchctlServiceState(service,invoke);
+    if(before==="unknown"||(stopped&&before!=="absent")||(!stopped&&before!=="present"))
+      throw Error("Local service state uncertain; inspect before uninstall.");
+    const pid=before==="present"?macServicePid(current,service,invoke):null;
+    if(before==="present"&&!pid)throw Error("Owned Agent process not established.");
+    const record=JSON.stringify({phase:"uninstall_pending",version:path.basename(current.root),
+      generation:current.generation,binding:macBindingDigest(binding)})+"\n";
+    const recheck=async()=>{
+      if(macBindingDigest(await macUpgradeBinding(files,record))!==macBindingDigest(binding)||
+         JSON.stringify(await reviewedMacPrograms(programs))!==JSON.stringify(roots)||
+         await statMaybe(path.join(macos,"remote-upgrades","active.json")))
+        throw Error("Uninstall target changed.");
+    };
+    await reserveMacSwitch(journal,record,recheck,pid?()=>freezeAgent(key):null);
+    let stoppedLocal=false;
+    try{
+      await recheck();
+      if(pid){
+        if(macServicePid(current,service,invoke)!==pid||await freezeAgent(key,"verify-frozen")!=="ready")
+          throw Error("Uninstall freeze unconfirmed.");
+        await stopLaunchdForSwitch(service,invoke,pauseLaunchd);
+      }else await stopLaunchdForSwitch(service,invoke,pauseLaunchd,false);
+      stoppedLocal=true;
+      if(!noOtherMacPrograms(programs,invoke))throw Error("Other Agent processes may still be active.");
+      await recheck();
+      // Only remove the reviewed program tree and startup entries. The
+      // identity store and shared SQLite receipts are outside these paths.
+      await rm(plist);
+      await rm(cli);
+      for(const root of roots)await rm(root,{recursive:true});
+      if(await statMaybe(plist)||await statMaybe(cli)||(await readdir(programs)).length!==0||
+         launchctlServiceState(service,invoke)!=="absent")
+        throw Error("Software removal unconfirmed.");
+      if(await readFile(journal,"utf8")!==record)throw Error("Uninstall journal changed.");
+      await rm(journal);
+      return {status:"uninstalled",removed_versions:roots.map(root=>path.basename(root)),
+        identity_preserved:true,receipts_preserved:true,cloud_revocation:"not_performed"};
+    }catch(error){
+      if(!stoppedLocal&&pid&&macServicePid(current,service,invoke)===pid){
+        try{
+          await recheck();
+          if(await freezeAgent(key,"release")!=="released")throw Error("Freeze release unconfirmed.");
+          if(await readFile(journal,"utf8")!==record)throw Error("Uninstall journal changed.");
+          await rm(journal);
+        }catch{throw Error("Uninstall outcome unknown; journal retained.");}
+      }
+      throw error;
+    }
+  }
+  if(action==="recover"){
+    if(!terminal())throw Error("Owner terminal required for recovery.");
+    if(!journalPresent){
+      await reconcileAutomaticMacJob(home,invoke,pauseLaunchd);
+      return {status:"no_unresolved_switch",identity_preserved:true};
+    }
+    // Only the same-configuration restart can be retired from a proven
+    // replacement process. Unknown upgrade states need existing reviewed recovery.
+    const raw=await readFile(journal,"utf8"),record=JSON.parse(raw);
+    if(!current||stopped||record.phase!=="restart_pending"||
+       record.version!==path.basename(current.root)||record.generation!==current.generation||
+       !Number.isSafeInteger(record.pid)||record.pid<=0||!(/^[a-f0-9]{64}$/).test(record.binding??"")||
+       await statMaybe(path.join(macos,"remote-upgrades","active.json")))
+      throw Error("Unresolved upgrade: retain journal and use reviewed recovery.");
+    const files={key,plist,cli,endpointFile,stopMark,journal};
+    const verify=async()=>{
+      const pid=macServicePid(current,service,invoke);
+      return pid&&pid!==record.pid&&
+        macBindingDigest(await macUpgradeBinding(files,raw))===record.binding&&
+        (await observeMacLocalService(identity,current,service,invoke,freezeAgent)).signed_wss==="connected_observed";
+    };
+    if(!await verify())throw Error("Replacement signed Agent not established; preserve journal.");
+    if(!await ask("Retire the completed restart journal? Identity and receipts are retained."))
+      throw Error("Owner declined.");
+    if(!await verify()||await readFile(journal,"utf8")!==raw)
+      throw Error("Restart evidence changed; journal retained.");
+    await rm(journal);
+    return {status:"restart_reconciled",identity_preserved:true};
+  }
+  if(action==="pair"){
+    if(!terminal()||!current||!bound||!await approved(key))
+      throw Error("Owner terminal and existing approved installation required; use the reviewed installer otherwise.");
+    const entry=path.join(current.root,"apps/remote-control-agent/src/macos-permanent.js");
+    await checked(entry,{mode:0o600});
+    const result=runTemporary(path.join(current.root,"bin/node"),[entry,"--endpoint",bound],{stdio:"inherit"});
+    if(result.error||result.signal||result.status!==0)
+      throw Error("Signed identity reconciliation unavailable; preserve the original identity.");
+    return {status:"existing_identity_reconciled"};
+  }
   if(readOnly){
     let deviceId=null,policy="off";
     if(current){
@@ -750,7 +908,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
         }
       }catch{state.automatic_update_activity="unknown";state.automatic_update_result={status:"unknown"};}
     }
-    if(action==="status"||action==="doctor"){
+    if(action==="status"||action==="doctor"||action==="logs"){
       if(current&&!stopped)Object.assign(state,await observeMacLocalService(identity,current,service,invoke,freezeAgent));
       try{
         const active=path.join(macos,"remote-upgrades","active.json");
@@ -762,6 +920,9 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       }catch{state.update_transaction="unknown";state.automatic_update_activity="unknown";}
     }
     if(action==="status")return state;
+    if(action==="logs")return {source:"retained_local_connection_and_update_evidence",
+      connection:state.signed_wss,last_online:state.last_online,update_activity:state.automatic_update_activity,
+      update_result:state.automatic_update_result??null,transaction:state.update_transaction??null};
     if(action==="check-update"||action==="update-latest"||action==="automatic-check"){
       if(!current)throw Error("No existing managed macOS Agent.");
       const manifest=path.join(current.root,"bundle.json");
@@ -800,6 +961,65 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     if(["unknown","needs_attention"].includes(state.automatic_update_activity)||state.update_transaction)
       findings.push("update_state_needs_review");
     return {status:state,findings};
+  }
+  if(action==="restart"){
+    if(!terminal()||!current||stopped||!await approved(key))
+      throw Error("Normal restart requires the local owner terminal and Owner-ON service.");
+    if(await statMaybe(path.join(macos,"remote-upgrades","active.json")))
+      throw Error("Unresolved detached upgrade; inspect before restart.");
+    const files={key,plist,cli,endpointFile,stopMark,journal};
+    const binding=await macUpgradeBinding(files);
+    if(binding.plist!==old||binding.cli!==previousCli||binding.stop!==null)
+      throw Error("Restart target changed.");
+    const pid=macServicePid(current,service,invoke);
+    if(!pid||(await observeMacLocalService(identity,current,service,invoke,freezeAgent)).signed_wss!=="connected_observed")
+      throw Error("Current owned signed Agent not established.");
+    const record=JSON.stringify({phase:"restart_pending",version:path.basename(current.root),
+      generation:current.generation,binding:macBindingDigest(binding),pid})+"\n";
+    const recheck=async()=>{
+      if(macBindingDigest(await macUpgradeBinding(files,record))!==macBindingDigest(binding)||
+        macServicePid(current,service,invoke)!==pid||await statMaybe(path.join(macos,"remote-upgrades","active.json")))
+        throw Error("Restart target changed.");
+    };
+    await reserveMacSwitch(journal,record,recheck,()=>freezeAgent(key));
+    const retire=async()=>{
+      if(await readFile(journal,"utf8")!==record)throw Error("Restart journal changed.");
+      await rm(journal);
+    };
+    try{
+      await recheck();
+      if(await freezeAgent(key,"verify-frozen")!=="ready")
+        throw Error("Restart freeze unconfirmed.");
+      await recheck();
+      // Same registered service, no STOP, re-pair or version change.
+      if(!launch(["kickstart","-k",service],invoke))
+        throw Error("Restart request unconfirmed.");
+      if(!await online(identity,current.generation))
+        throw Error("New signed connection unconfirmed.");
+      let confirmed=false;
+      for(let attempt=0;attempt<20;attempt++){
+        const next=macServicePid(current,service,invoke);
+        if(next&&next!==pid&&
+           (await observeMacLocalService(identity,current,service,invoke,freezeAgent)).signed_wss==="connected_observed"){
+          confirmed=true;break;
+        }
+        if(attempt<19)await pauseLaunchd(250);
+      }
+      if(!confirmed||macBindingDigest(await macUpgradeBinding(files,record))!==macBindingDigest(binding))
+        throw Error("Replacement signed Agent unconfirmed.");
+      await retire();
+      return {status:"restarted",signed_wss:"connected_observed"};
+    }catch(error){
+      // Only release the precise still-running Agent that granted this freeze.
+      if(macServicePid(current,service,invoke)===pid){
+        try{
+          await recheck();
+          if(await freezeAgent(key,"release")!=="released")throw Error("Freeze release unconfirmed.");
+          await retire();
+        }catch{throw Error("Restart outcome unknown; journal retained.");}
+      }
+      throw error;
+    }
   }
   if(action==="stop"){
     if(!current||!await approved(key))throw Error("Existing approved LaunchAgent required.");
@@ -1059,8 +1279,22 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       " ("+reason+"); "+recovery+". Identity, receipts and staged candidate retained.");
   }
 }
-async function main(){
-  let [action,...params]=process.argv.slice(2),policyAction;
+const MAC_MENU=["status","pair","logs","update","uninstall","exit","recover","doctor","start","stop","restart"];
+async function main(argv=process.argv.slice(2)){
+  if(argv.length===0){
+    if(!process.stdin.isTTY||!process.stdout.isTTY)
+      throw Error("Interactive menu requires a local terminal; use status --json.");
+    console.log("1. Status   2. Pair / repair   3. Logs\n4. Update   5. Uninstall   6. Exit\n7. Recover   8. Doctor\n9. Start   10. Stop   11. Restart");
+    const reader=createInterface({input:process.stdin,output:process.stdout,terminal:false});
+    const choice=await new Promise(resolve=>{
+      reader.once("close",()=>resolve(""));
+      reader.question("Choose an option: ",answer=>{resolve(answer.trim());reader.close();});
+    });
+    if(choice===""||choice==="6")return;
+    if(!/^([1-9]|10|11)$/.test(choice)||!MAC_MENU[Number(choice)-1])throw Error("Invalid choice.");
+    return main([MAC_MENU[Number(choice)-1]]);
+  }
+  let [action,...params]=argv,policyAction;
   if((action==="update"||action==="upgrade")&&params[0]==="--auto"&&
      (params.length===1||(params.length===2&&["on","off"].includes(params[1])))){
     policyAction=params[1];action="update-policy";params=[];
@@ -1070,7 +1304,7 @@ async function main(){
     action="update-latest";
   }else if(action==="check-update"||action==="update-latest"||action==="update-policy")throw Error("Use update [--check].");
   if(action==="--help"&&params.length===0){
-    console.log("Usage: rca [status [--json]|doctor [--json]|update [--check|--auto [on|off]]|start|stop|--version|--help]");
+    console.log("Usage: rca [status [--json]|doctor [--json]|update [--check|--auto [on|off]]|logs|start|stop|restart|pair|recover|uninstall|--version|--help]");
     console.log("Use the reviewed macOS installer for first installation; update uses the installed package.");
     return;
   }
@@ -1085,7 +1319,8 @@ async function main(){
     return;
   }
   if((action==="status"||action==="doctor")&&params.length===1&&params[0]==="--json")params.pop();
-  if(action==="doctor"&&params.length)throw Error("Doctor accepts only --json.");
+  if(["status","doctor","logs","pair","recover","stop","start","restart","uninstall"].includes(action)&&params.length)
+    throw Error("Unexpected local action arguments.");
   const args={};
   for(let i=0;i<params.length;i+=2){
     if(!["--bundle","--source-sha","--endpoint","--expected-binding"].includes(params[i])||

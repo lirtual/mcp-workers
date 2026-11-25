@@ -1020,9 +1020,9 @@ def native_verify_stopped():
 
 def native_owner_lifecycle(home, action):
     """Retain the signed owner STOP/Resume and systemd lifecycle contract."""
-    if action not in ("stop", "start") or os.getuid() == 0 or not (
+    if action not in ("stop", "start", "restart") or os.getuid() == 0 or not (
             sys.stdin.isatty() and sys.stdout.isatty()):
-        raise ValueError("Owner-local Stop/Start requires a real terminal")
+        raise ValueError("Owner-local lifecycle requires a real terminal")
     home = pathlib.Path(home)
     _, _, _, unit, ids = local_inventory(home)
     if not unit or "permanent" not in ids:
@@ -1052,16 +1052,51 @@ def native_owner_lifecycle(home, action):
             raise ValueError("Existing device identity has changed")
         endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=") for line in unit.splitlines()
                         if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
-        pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
-        pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
-            ".native-upgrade-intent", ".native-upgrade-proof", ".activation-pending",
-            ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+        pending = native_pending_lifecycle(key, unit_file)
         if any(os.path.lexists(path) for path in pending):
-            raise ValueError("Unreconciled identity or activation; recover before Stop/Start")
+            raise ValueError("Unreconciled identity or activation; recover before lifecycle change")
         marker = pathlib.Path(str(key) + ".owner-stopped")
         saved = native_owned_file(marker, 32) if os.path.lexists(marker) else None
         if saved is not None and saved != b"stopped\n":
             raise ValueError("Unexpected owner STOP intent")
+        if action == "restart":
+            if saved is not None:
+                raise ValueError("Owner STOP blocks normal restart; use start to explicitly resume")
+            # Restart keeps the same service, key, version and authorization.
+            # Use the existing lock and idle admission, never STOP + Resume.
+            exe = root / APP / ".build/rca-standard-linux-candidate"
+            pid = native_main_pid()
+            original_key = native_owned_file(key, 8192)
+            if native_process_executable(pid) != exe or native_consent(key, "verify-online") != "ready":
+                raise ValueError("Current owned signed Agent not established")
+            if native_consent(key, "freeze") != "ready":
+                raise ValueError("Agent busy or freeze ownership uncertain")
+            try:
+                if (native_consent(key, "verify-frozen") != "ready" or native_main_pid() != pid
+                        or native_process_executable(pid) != exe
+                        or unit_file.read_text("utf8") != unit or os.path.lexists(marker)
+                        or native_owned_file(key, 8192) != original_key
+                        or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]):
+                    raise ValueError("Restart target changed during freeze")
+                native_systemctl("restart", UNIT)
+                next_pid = native_wait_started(exe)
+                if next_pid == pid:
+                    raise ValueError("Replacement process not established")
+                if (native_owned_file(key, 8192) != original_key
+                        or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]):
+                    raise ValueError("Restart identity changed")
+                if not native_wait_online(key, next_pid, exe):
+                    raise ValueError("Local restart observed; current signed WSS unconfirmed")
+                return {"local": "restarted", "signed_wss": "connected_observed"}
+            finally:
+                # Release only the same process that granted this freeze.
+                # Never release an unknown freeze or a replacement process.
+                try:
+                    same = native_main_pid() == pid and native_process_executable(pid) == exe
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    same = False
+                if same and native_consent(key, "release") != "released":
+                    raise ValueError("Restart freeze release unconfirmed")
         if action == "stop":
             if saved is None:
                 native_atomic_file(marker, b"stopped\n")

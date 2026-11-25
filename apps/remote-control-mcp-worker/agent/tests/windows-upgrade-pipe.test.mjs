@@ -339,3 +339,107 @@ Write-Output 'mode-share-pass'
   assert.equal(result.status,0,result.stderr);
   assert.equal(result.stdout.trim(),"mode-share-pass");
 });
+
+test("#1035 Windows normal restart keeps owner intent and refuses busy or changed process",async t=>{
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const body=source.slice(source.indexOf("if ($Action -eq 'Restart') {"),source.indexOf("if ($Action -eq 'Switch') {"));
+  assert(body.includes("Wait-VersionExited"));
+  const fn=body.replace("if ($Action -eq 'Restart') {","function Invoke-TestRestart {").replace("exit 0","return");
+  const command=fn+String.raw`
+$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$dir=Join-Path ([IO.Path]::GetTempPath()) ('rca-restart-contract-'+[guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($dir)
+try {
+  $root=$dir
+  $identityFile=Join-Path $dir 'key'
+  $nativeJournal=Join-Path $dir 'journal'
+  [IO.File]::WriteAllText($identityFile,'synthetic')
+  [IO.File]::WriteAllText($identityFile+'.device-id','aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee')
+  $name='fixture';$Version='';$Direction='';$Endpoint=''
+  $script:events=@();$script:pidValue=100;$script:busy=$false;$script:failure=$false
+  $script:task=[pscustomobject]@{State='Running';Actions=@('reviewed')}
+  function Check-Existing {}
+  function Check-UpgradeStore {}
+  function Get-LocalSwitchCaller { @{ProcessId=200;CreationDate=1} }
+  function Read-TaskLaunch { @{Entry=($root+'\v1.2.3-windows-x64\entry');Endpoint='https://example.test/';Generation='fixture'} }
+  function Get-ReviewedProgram { @{Tag='v1.2.3'} }
+  function New-ReviewedAction { 'reviewed' }
+  function Get-OwnedAgentProcess {
+    if ($script:task.State -ne 'Running') { throw 'No Agent' }
+    [pscustomobject]@{ProcessId=$script:pidValue;CreationDate=1}
+  }
+  function Assert-UpgradeIdentity { if(Test-Path ($identityFile+'.owner-stopped')){throw 'STOP changed'} }
+  function Read-OwnedTask { $script:task }
+  function Test-SameAction($a,$b) { $a -ceq $b }
+  function Invoke-AgentUpgradeFreeze($key,$action,$allowBusy=$false) {
+    $script:events+=@($action)
+    if ($action -eq 'freeze' -and $script:busy) { return 'busy' }
+  }
+  function Stop-ScheduledTask {
+    $script:events+=@('stop-task')
+    if ($script:failure) { throw 'Fixture stop failed' }
+    $script:task.State='Ready'
+  }
+  function Wait-VersionExited { if($script:task.State -eq 'Running'){throw 'Old process remains'} }
+  function Start-ScheduledTask {
+    $script:events+=@('start-task')
+    $script:task.State='Running';$script:pidValue=101
+  }
+  function Start-Sleep {}
+  function Refused {
+    $failed=$false
+    try { Invoke-TestRestart | Out-Null } catch { $failed=$true }
+    if (-not $failed) { throw 'Unexpected restart success' }
+  }
+  [IO.File]::WriteAllText($identityFile+'.owner-stopped','stopped')
+  Refused
+  if($script:events.Count){throw 'STOP reached freeze'}
+  Remove-Item -LiteralPath ($identityFile+'.owner-stopped')
+  $script:busy=$true;Refused
+  if(($script:events -join ',') -ne 'verify-online,freeze'){throw 'Busy reached mutation'}
+  $script:busy=$false;$script:failure=$true;$script:events=@()
+  Refused
+  if(($script:events -join ',') -ne 'verify-online,freeze,verify-frozen,stop-task,release'){throw 'Wrong failed restart cleanup'}
+  $script:failure=$false;$script:events=@()
+  $result=Invoke-TestRestart | ConvertFrom-Json
+  if($result.local -ne 'restarted' -or $result.signed_wss -ne 'connected_observed'){throw 'Wrong restart receipt'}
+  if(($script:events -join ',') -ne 'verify-online,freeze,verify-frozen,stop-task,start-task,verify-online'){throw 'Wrong successful restart path'}
+  if([IO.File]::ReadAllText($identityFile) -ne 'synthetic' -or (Test-Path ($identityFile+'.owner-stopped'))){throw 'Identity or intent changed'}
+  'restart-contract-pass'
+} finally { Remove-Item -LiteralPath $dir -Recurse -Force }
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:15000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"restart-contract-pass");
+});
+
+test("#1035 Windows read-only status is allowed with a pending journal",async t=>{
+  const source=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const gate=source.split("\n").find(line=>line.includes("Unreconciled native upgrade; preserve versions"));
+  assert(gate);
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const command=String.raw`
+$ErrorActionPreference='Stop'
+$nativeJournal='fixture'
+function Test-Path { return $true }
+$Action='Status'
+`+gate+String.raw`
+foreach($Action in @('Switch','Restart','Stop','Start','Uninstall','VerifyAutomatic')){
+  $refused=$false
+  try {
+`+gate+String.raw`
+  }catch{$refused=$true}
+  if(-not $refused){throw "Pending journal admitted $Action"}
+}
+'journal-read-pass'
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"journal-read-pass");
+});
