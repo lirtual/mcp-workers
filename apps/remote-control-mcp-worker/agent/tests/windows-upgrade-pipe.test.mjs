@@ -50,6 +50,12 @@ function Get-CimInstance {
 }
 function Invoke-CimMethod { [pscustomobject]@{Sid=$script:owner} }
 if (-not (Get-LocalSwitchCaller 'Upgrade' 'v0.1.59-rust-candidate.1')) { throw 'Native upgrade caller not recognized' }
+$originalCommand=$script:parent.CommandLine
+$script:parent.CommandLine=$originalCommand -replace '--cli upgrade','--cli update'
+if (-not (Get-LocalSwitchCaller 'Upgrade' 'v0.1.59-rust-candidate.1')) { throw 'Native update alias caller not recognized' }
+if (Get-LocalSwitchCaller 'Upgrade' 'v0.1.60-rust-candidate.1') { throw 'Wrong alias target accepted' }
+$script:parent.CommandLine=$originalCommand
+
 if (Get-LocalSwitchCaller 'Upgrade' 'v0.1.60-rust-candidate.1') { throw 'Wrong target caller accepted' }
 $script:parent.CommandLine='"'+$exe+'" --service --endpoint "https://example.test/" --generation "test"'
 if (Get-LocalSwitchCaller 'Upgrade' 'v0.1.59-rust-candidate.1') { throw 'Service excluded from exit observation' }

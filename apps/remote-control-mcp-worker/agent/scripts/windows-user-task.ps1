@@ -293,7 +293,7 @@ function Get-LocalSwitchCaller([string]$directionValue,[string]$versionTag) {
   $expected = '^"?' + [regex]::Escape($exe) + '"?\s+'
   if ($relative -match ($versionPrefix + '\\apps\\remote-control-agent\\\.build\\rca-standard-windows-candidate\.exe$')) {
     if ($directionValue -eq 'Upgrade') {
-      $expected += '--cli\s+upgrade\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
+      $expected += '--cli\s+(?:upgrade|update)\s+--version\s+"?' + [regex]::Escape($versionTag) + '"?\s*$'
     } elseif ($directionValue -eq 'Recover') {
       $expected += '--cli\s+recover\s*$'
     } elseif ($directionValue -in @('RePair','Onboard')) {

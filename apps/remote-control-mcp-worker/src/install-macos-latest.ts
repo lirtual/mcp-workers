@@ -96,10 +96,14 @@ export function renderLatestMacInstallShell(origin: string): string {
     "else",
     "  entry=\"$stage/unpacked/apps/remote-control-agent/scripts/macos-local.mjs\"",
     "  [ -f \"$entry\" ] && [ ! -L \"$entry\" ] || exit 1",
-    "  if ! result=$(\"$node\" \"$entry\" \"$mode\" --bundle \"$stage/unpacked\" --source-sha \"$identity\" --endpoint " + shellQuote(endpoint) + " < /dev/tty); then",
+    // The verified attended manager owns confirmation, result reporting and
+    // its exit status. Capturing stdout would remove the required owner TTY
+    // and also break the foreground temporary Agent's terminal.
+    "  if ! \"$node\" \"$entry\" \"$mode\" --bundle \"$stage/unpacked\" --source-sha \"$identity\" --endpoint " + shellQuote(endpoint) + " < /dev/tty > /dev/tty; then",
     "    echo 'macOS upgrade stopped; local recovery evidence retained.' >&2",
     "    exit 1",
     "  fi",
+    "  exit 0",
     "fi",
     "case \"$result\" in",
     "  '{\"status\":\"launched\"'*|'{\"status\":\"connected_observed\"'*|'{\"status\":\"stopped_preserved\"'*|'{\"status\":\"temporary_session_ended\"'*) ;;",

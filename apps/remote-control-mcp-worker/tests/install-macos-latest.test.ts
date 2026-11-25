@@ -140,6 +140,8 @@ if [ "\${1:-}" = "-e" ]; then
   exec '${process.execPath}' "$@"
 fi
 case "\${RCA_NODE_MODE:-ok}" in
+  tty) [ -t 0 ] && [ -t 1 ] || { echo "Missing owner terminal" >&2; exit 1; }
+       printf '%s\\n' '{"status":"connected_observed"}'; exit 0 ;;
   fail) exit 1 ;;
   unknown) printf 'not-a-result\\n'; exit 0 ;;
 esac
@@ -187,7 +189,7 @@ function shellFor(bytes: { arm: Buffer; intel: Buffer }, body?: string): string 
   return renderLatestMacInstallShell(ORIGIN);
 }
 
-function runInstaller(script: string, arch: "arm64" | "x86_64", bytes: { arm: Buffer; intel: Buffer }, extra: Record<string, string> = {}, action = "--remote-upgrade") {
+function runInstaller(script: string, arch: "arm64" | "x86_64", bytes: { arm: Buffer; intel: Buffer }, extra: Record<string, string> = {}, action = "--remote-upgrade", tty = false) {
   const root = mkdtempSync(path.join(tmpdir(), "rca809-run-"));
   const bin = path.join(root, "bin");
   mkdirSync(bin, { mode: 0o755 });
@@ -238,13 +240,18 @@ echo Darwin
     "if [ -n \"$RCA_CURL_APPEND\" ]; then printf '%s' \"$RCA_CURL_APPEND\" >> \"$out\"; fi",
   ].join("\n") + "\n", { mode: 0o755 });
   for (const name of ["uname", "sw_vers", "curl"]) chmodSync(path.join(bin, name), 0o755);
-  const result = spawnSync("sh", ["-c", script, "macos-script", action], {
+  const scriptFile = path.join(root, "test-installer.sh");
+  writeFileSync(scriptFile, script, {mode:0o700});
+  const result = spawnSync(tty ? "script" : "sh", tty
+    ? ["-q","-e","-c",'sh "$RCA_TEST_SCRIPT" --upgrade',"/dev/null"]
+    : ["-c", script, "macos-script", action], {
     encoding: "utf8",
     timeout: 15000,
     env: {
       ...process.env,
       PATH: bin + ":" + process.env.PATH,
       TMPDIR: root,
+      RCA_TEST_SCRIPT: scriptFile,
       RCA_NODE_LOG: nodeLog,
       RCA_CURL_LOG: curlLog,
       RCA_MANIFEST_URL: LATEST_MANIFEST_URL,
@@ -294,6 +301,20 @@ test("#809 installer shell picks one arch asset from the snapshot and does not u
   assert.notEqual(noTty.result.status, 0);
   assert.match(noTty.result.stderr, /Ordinary interactive Terminal required/);
   assert.deepEqual(noTty.curls, []);
+});
+
+test("#1035 attended macOS installer preserves both owner terminal streams", {skip:process.platform!=="linux"}, () => {
+  const bytes = { arm: packArchive("darwin-arm64"), intel: packArchive("darwin-x64") };
+  const run = runInstaller(shellFor(bytes), "arm64", bytes, { RCA_NODE_MODE: "tty" }, "--upgrade", true);
+  assert.equal(run.result.status, 0, run.result.stdout + run.result.stderr);
+  assert.match(run.result.stdout, /connected_observed/);
+  assert.equal(run.curls.length,2);
+  assert.equal(run.left.length,0);
+  const failed = runInstaller(shellFor(bytes), "arm64", bytes, { RCA_NODE_MODE: "fail" }, "--upgrade", true);
+  assert.notEqual(failed.result.status,0);
+  assert.match(failed.result.stdout,/local recovery evidence retained/);
+  assert.equal(failed.curls.length,2);
+  assert.equal(failed.left.length,0);
 });
 
 test("#809 corrupt, redirected, wrong-arch, failed, and unknown upgrades stop once", () => {
