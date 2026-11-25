@@ -1568,11 +1568,29 @@ test('verified terminal execution is independent of Unknown business result (#10
   assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,evidence),
     {instance_id:id,status:'complete',observed_at:1795402100881});
   assert.equal(run.outcome,'indeterminate');
+  // A cancellation intent/ACK is retained even after a verified physical
+  // termination; it is neither a new active execution nor terminal proof.
+  const cancellation={run_id:id,step_id:attempt.step_id,attempt_id:attempt.attempt_id,
+    cancel_ack:'accepted',force_ack:null};
+  for(const ack of ['accepted','unknown']){
+    assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...evidence,
+      githubCancellations:[{...cancellation,cancel_ack:ack}]}),native);
+  }
+  const callback={run_id:id,step_id:attempt.step_id,attempt_id:attempt.attempt_id,
+    outcome:'failed',notification_delivered:1};
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...evidence,callbacks:[callback]}),native);
   for(const bad of [
     {...native,instance_id:'different'},{...native,status:'running'},
     {...native,status:'rollingBack'},null,
   ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,bad,evidence),/native/);
   for(const bad of [
+    {...evidence,callbacks:[{...callback,step_id:'notify_bark'}]},
+    {...evidence,callbacks:[{...callback,attempt_id:'different'}]},
+    {...evidence,githubCancellations:[{...cancellation,attempt_id:'different'}]},
+    {...evidence,githubCancellations:[{...cancellation,step_id:'notify_bark'}]},
+    {...evidence,githubCancellations:[cancellation],attempts:[{...attempt,state:'claimed'}]},
+    {...evidence,githubCancellations:[cancellation],attempts:[{...attempt,state:'rejected',
+      candidate_run_id:null,candidate_run_attempt:null,owner_run_id:null,owner_run_attempt:null}],sessions:[]},
     {...evidence,sessions:[{...evidence.sessions[0],state:'stopping'}]},
     {...evidence,attempts:[{...attempt,state:'claimed'}]},
     {...evidence,attempts:[{...attempt,state:'dispatch_unknown'}]},

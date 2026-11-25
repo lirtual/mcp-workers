@@ -772,10 +772,17 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
     require(session.state==='terminated'&&evidence.attempts.some(a=>a.step_id===session.step_id&&a.state!=='rejected'),
       'Session '+session.step_id+' physical termination unresolved');
   require(evidence.callbacks.every(c=>c.notification_delivered===1&&
-    evidence.attempts.some(a=>a.attempt_id===c.attempt_id)),'callback unresolved');
+    evidence.attempts.some(a=>a.attempt_id===c.attempt_id&&a.step_id===c.step_id)),'callback unresolved');
+  // Cancellation records are durable one-shot intents, not physical evidence.
+  // The matching terminal Attempt (and Session if present) was checked above.
+  for(const cancellation of evidence.githubCancellations)
+    require(evidence.attempts.some(a=>a.attempt_id===cancellation.attempt_id&&
+      a.step_id===cancellation.step_id&&a.capability_id==='github.action'&&
+      ['succeeded','failed','cancelled'].includes(a.state)),
+      'GitHub cancellation '+cancellation.step_id+' physical termination unresolved');
   // Until their evidence-specific slices are implemented, refuse all related
   // dependencies rather than inferring their terminal state from native alone.
-  for(const key of ['children','invocations','mcpFences','githubCancellations','cloudflareCancellations',
+  for(const key of ['children','invocations','mcpFences','cloudflareCancellations',
     'childCancellations','gates','approvals','waits'])
     require(evidence[key].length===0,key+' requires related terminal evidence');
   return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at};
