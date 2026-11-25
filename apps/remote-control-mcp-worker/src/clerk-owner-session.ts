@@ -1,6 +1,7 @@
 import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 
 export const pairingOrigin = "https://rca.lirtual.dpdns.org";
+export const clerkOwnerOrigin = pairingOrigin;
 export const clerkIssuer = "https://clerk.lirtual.dpdns.org";
 const jwks = createRemoteJWKSet(new URL(clerkIssuer + "/.well-known/jwks.json"), {
   [customFetch]: (input, init) => fetch(input, {...init, redirect:"manual"}),

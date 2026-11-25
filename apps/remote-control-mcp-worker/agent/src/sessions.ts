@@ -31,6 +31,7 @@ interface ManagedSession {
   chunks: Buffer[];
   outputBytes: number;
   truncated: boolean;
+  sensitive: boolean;
   exited: Promise<void>;
   closed: Promise<void>;
   deadlineExceeded: boolean;
@@ -49,6 +50,7 @@ export interface SessionSnapshot {
 }
 
 export interface OutputPage extends SessionSnapshot {
+  sensitive?: boolean;
   offset: number;
   next_offset: number;
   eof: boolean;
@@ -198,6 +200,7 @@ export class ManagedSessions {
       chunks: [],
       outputBytes: 0,
       truncated: false,
+      sensitive: false,
       exited: Promise.resolve(),
       closed: Promise.resolve(),
       deadlineExceeded: false,
@@ -222,7 +225,7 @@ export class ManagedSessions {
       session.truncated = true;
     };
     const capture = (chunk: Buffer) => {
-      if (session.truncated) return;
+      if (session.sensitive || session.truncated) return;
       const remaining = MAX_OUTPUT_BYTES - session.outputBytes;
       if (remaining <= 0) {
         markTruncated();
@@ -401,6 +404,31 @@ export class ManagedSessions {
     });
   }
 
+  /** Deliver one secret to an owned process while permanently suppressing its captured output. */
+  async writeSecureInput(sessionId: string, input: string): Promise<SessionActionResult> {
+    this.prune();
+    const session = this.sessions.get(sessionId);
+    if (!session) return "not_found";
+    const stdin = session.child.stdin;
+    if (!this.ownsRunningProcess(session) || !stdin?.writable) return "failed";
+    session.sensitive = true;
+    session.chunks = [];
+    session.outputBytes = 0;
+    session.truncated = false;
+    return await new Promise<SessionActionResult>((resolve) => {
+      let settled = false;
+      const finish = (result: SessionActionResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+      const timer = setTimeout(() => finish("unknown"), 1000);
+      try { stdin.write(input, "utf8", error => finish(error ? "unknown" : "completed")); }
+      catch { finish("failed"); }
+    });
+  }
+
   async terminate(sessionId: string): Promise<SessionActionResult> {
     this.prune();
     const session = this.sessions.get(sessionId);
@@ -452,6 +480,13 @@ export class ManagedSessions {
     this.prune();
     const session = this.sessions.get(sessionId);
     if (!session) return null;
+    if (session.sensitive) {
+      return {
+        ...snapshot(session), sensitive: true, offset: 0, next_offset: 0,
+        eof: !this.ownsRunningProcess(session), truncated: true,
+        output: "[output suppressed after secure input was delivered]",
+      };
+    }
     const data = Buffer.concat(session.chunks, session.outputBytes);
     // Offsets remain bytes, but pages must begin and end on UTF-8 code-point
     // boundaries; otherwise valid Chinese/emoji output becomes replacement text.
