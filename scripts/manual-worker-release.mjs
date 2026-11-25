@@ -733,6 +733,54 @@ export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSc
   return true;
 }
 
+/** Verify the first #1046 terminal-evidence slice independently of schema or
+ * business result. The caller supplies a complete, identity-scoped D1
+ * projection and a trusted native observation; this is not a release permit.
+ * Additional dependency-specific evidence must be checked before integration
+ * into the protected release entry point.
+ */
+export function verifyWorkflowTerminalEvidence(run,native,evidence) {
+  const require=(condition,reason)=>invariant(condition,
+    'Workflow terminal evidence blocked for '+String(run?.id??'unknown')+': '+reason);
+  require(run?.id && run.instance_id && run.start_state==='started' &&
+    ['succeeded','failed','cancelled','indeterminate'].includes(run.outcome),'Run execution unresolved');
+  require(native?.instance_id===run.instance_id &&
+    ['complete','errored','terminated'].includes(native?.status) &&
+    Number.isSafeInteger(native.observed_at) && native.observed_at>0,'native terminal observation unavailable or mismatched');
+  const keys=['steps','attempts','sessions','callbacks','children','invocations','mcpFences',
+    'githubCancellations','cloudflareCancellations','childCancellations','gates','approvals','waits'];
+  require(keys.every(key=>Array.isArray(evidence?.[key])),'incomplete D1 projection');
+  for(const key of keys.filter(k=>k!=='children'&&k!=='childCancellations'))
+    require(evidence[key].every(row=>row.run_id===run.id),key+' identity mismatch');
+  require(evidence.steps.every(step=>['succeeded','failed','skipped','cancelled','indeterminate'].includes(step.status)),
+    'Step execution unresolved');
+  const positive=n=>Number.isSafeInteger(n)&&n>0;
+  for(const attempt of evidence.attempts){
+    require(evidence.steps.some(step=>step.step_id===attempt.step_id),'Attempt Step identity mismatch');
+    if(attempt.state==='rejected'){
+      require(attempt.candidate_run_id===null&&attempt.candidate_run_attempt===null&&
+        attempt.owner_run_id===null&&attempt.owner_run_attempt===null,'rejected Attempt has a physical identity');
+      continue;
+    }
+    require(['succeeded','failed','cancelled'].includes(attempt.state)&&
+      positive(attempt.candidate_run_id)&&positive(attempt.candidate_run_attempt)&&
+      ((attempt.owner_run_id===attempt.candidate_run_id&&attempt.owner_run_attempt===attempt.candidate_run_attempt)||
+        (attempt.state!=='succeeded'&&attempt.owner_run_id===null&&attempt.owner_run_attempt===null)),
+      'Attempt '+attempt.attempt_id+' physical termination or identity unresolved');
+  }
+  for(const session of evidence.sessions)
+    require(session.state==='terminated'&&evidence.attempts.some(a=>a.step_id===session.step_id&&a.state!=='rejected'),
+      'Session '+session.step_id+' physical termination unresolved');
+  require(evidence.callbacks.every(c=>c.notification_delivered===1&&
+    evidence.attempts.some(a=>a.attempt_id===c.attempt_id)),'callback unresolved');
+  // Until their evidence-specific slices are implemented, refuse all related
+  // dependencies rather than inferring their terminal state from native alone.
+  for(const key of ['children','invocations','mcpFences','githubCancellations','cloudflareCancellations',
+    'childCancellations','gates','approvals','waits'])
+    require(evidence[key].length===0,key+' requires related terminal evidence');
+  return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at};
+}
+
 /**
  * #204: read-only database half of the migration fence.
  * It does not freeze ingress, inspect live Cloudflare Workflow instances,

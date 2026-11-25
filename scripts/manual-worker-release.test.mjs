@@ -1534,7 +1534,7 @@ test('historical Ubuntu terminal execution reproduces the old Unknown release ob
     db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,result,error_code,created_at,updated_at) VALUES(?,'fixture',?,?,'fixture','{}','started','indeterminate','null','github_session_no_ready',0,1795401799113)").run(id,version,id);
     db.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES(?,'ubuntu_session','indeterminate','github_session_no_ready',1795401798923),(?,'notify_bark','skipped',NULL,1795401799065)").run(id,id);
     db.prepare("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at) VALUES(?,'ubuntu_session',1,'terminated',0,0)").run(id);
-    db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at,resolved_sha) VALUES(?,?,'ubuntu_session','github.action','fixture','cancelled','fixture/session','1452488311','fixture','fixture',45101764677,1,45101764677,1,0,0,'dee9dbaf71c3c2e48bf31a8ad20bb24d21d31c27')").run(attempt,id);
+    db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at,resolved_sha) VALUES(?,?,'ubuntu_session','github.action','fixture','cancelled','autoactions/github-actions','1452488311','autoactions/github-actions/.github/workflows/ubuntu.yml@refs/heads/main','refs/heads/main',45101764677,1,45101764677,1,0,0,'dee9dbaf71c3c2e48bf31a8ad20bb24d21d31c27')").run(attempt,id);
     const row=db.prepare(WORKFLOW_MIGRATION_READINESS_SQL).get();
     assert.equal(row.nonterminal_runs,1);
     assert.equal(row.unresolved_steps,1);
@@ -1545,4 +1545,44 @@ test('historical Ubuntu terminal execution reproduces the old Unknown release ob
     assert.throws(()=>verifyWorkflowMigrationReadiness([{success:true,results:[row]}]),/nonterminal_runs/);
     assert.equal(db.prepare('SELECT outcome FROM runs WHERE id=?').get(id).outcome,'indeterminate');
   } finally {db.close();}
+});
+
+// This seam is the shared release verification boundary, not a Worker
+// status mutation. Source: #1046 comment 7166814978 and current Attempt readback.
+test('verified terminal execution is independent of Unknown business result (#1046)',async()=>{
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const id='77a9ef72-7e08-47ba-8f85-90f82f1656e8';
+  const run={id,instance_id:id,start_state:'started',outcome:'indeterminate'};
+  const native={instance_id:id,status:'complete',observed_at:1795402100881};
+  const attempt={attempt_id:'81fc4de2-4936-496a-b51a-7c4f8cac75a3',run_id:id,
+    step_id:'ubuntu_session',capability_id:'github.action',state:'cancelled',
+    repository_id:'1452488311',candidate_run_id:45101764677,candidate_run_attempt:1,
+    owner_run_id:45101764677,owner_run_attempt:1};
+  const evidence={
+    steps:[{run_id:id,step_id:'ubuntu_session',status:'indeterminate'},
+      {run_id:id,step_id:'notify_bark',status:'skipped'}],
+    attempts:[attempt],sessions:[{run_id:id,step_id:'ubuntu_session',state:'terminated'}],
+    callbacks:[],children:[],invocations:[],mcpFences:[],githubCancellations:[],
+    cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[],
+  };
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,evidence),
+    {instance_id:id,status:'complete',observed_at:1795402100881});
+  assert.equal(run.outcome,'indeterminate');
+  for(const bad of [
+    {...native,instance_id:'different'},{...native,status:'running'},
+    {...native,status:'rollingBack'},null,
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,bad,evidence),/native/);
+  for(const bad of [
+    {...evidence,sessions:[{...evidence.sessions[0],state:'stopping'}]},
+    {...evidence,attempts:[{...attempt,state:'claimed'}]},
+    {...evidence,attempts:[{...attempt,state:'dispatch_unknown'}]},
+    {...evidence,attempts:[{...attempt,owner_run_attempt:2}]},
+    {...evidence,callbacks:[{run_id:id,attempt_id:attempt.attempt_id,notification_delivered:0}]},
+    {...evidence,children:[{id:'child',parent_run_id:id,outcome:'succeeded'}]},
+    {...evidence,invocations:[{run_id:id,step_id:'notify_bark'}]},
+    {...evidence,mcpFences:[{run_id:id,step_id:'notify_bark'}]},
+    {...evidence,steps:[{run_id:id,step_id:'ubuntu_session',status:'running'}]},
+    {...evidence,waits:undefined},
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
+  assert.throws(()=>verifyWorkflowTerminalEvidence({...run,outcome:'running'},native,evidence),/terminal evidence/);
 });
