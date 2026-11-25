@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   cancelSecureInputRecord, consumeSecureInputRecord, createSecureInputRecord,
-  getSecureInputRecord, parseSecureInputRequest, secureInputTargetBinding,
+  getSecureInputRecord, parseSecureInputRequest, pruneSecureInputRecords, secureInputTargetBinding,
   startSecureInputDispatch, updateSecureInputStatus, validateSecureInputSecret, type SecureInputRecord,
 } from "../src/v2-secure-input.ts";
 
@@ -156,4 +156,34 @@ test("production delivery requires a separate explicit authorization before one-
   const accepted = await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed);
   assert.equal(accepted.status, 200);
   assert.equal(typeof accepted.record?.production_authorized_at, "number");
+});
+
+
+test("the retained-record limit admits exactly 64 even under concurrent creation", async () => {
+  const store = makeStore(), now = 1_800_000_000_000;
+  for (let i = 0; i < 63; i++) {
+    const record = await createPending(store, now);
+    assert.equal((await cancelSecureInputRecord(store as never, record.request_id, "owner_user_1", now)).status, 200);
+  }
+  const results = await Promise.allSettled([createPending(store, now), createPending(store, now)]);
+  assert.equal(results.filter(result => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter(result => result.status === "rejected").length, 1);
+  assert.equal(store.rows.size, 64);
+  await assert.rejects(createPending(store, now), /secure_input_capacity/);
+});
+
+test("bounded pruning recovers a previously over-capacity store without deleting retained evidence", async () => {
+  const store = makeStore(), now = 1_800_000_000_000;
+  const record = await createPending(store, now);
+  store.rows.clear();
+  for (let i = 0; i < 65; i++) {
+    const id = randomUUID();
+    store.rows.set("secure-input:" + id, { ...record, request_id: id, task_id: id, state: "cancelled",
+      expires_at: i === 0 ? now - 24 * 60 * MINUTE : now + 5 * MINUTE });
+  }
+  assert.equal(await pruneSecureInputRecords(store as never, now - 1), false);
+  assert.equal(store.rows.size, 65);
+  assert.equal(await pruneSecureInputRecords(store as never, now), true);
+  assert.equal(store.rows.size, 64);
+  await assert.rejects(createPending(store, now), /secure_input_capacity/);
 });

@@ -3,7 +3,8 @@ export const SECURE_INPUT_TTL_MS = 5 * 60_000;
 export const SECURE_INPUT_RETENTION_MS = 24 * 60 * 60_000;
 export const SECURE_INPUT_STALE_MS = 2 * 60_000;
 export const MAX_SECURE_INPUT_BYTES = 8_192;
-export const SECURE_INPUT_MAX_ACTIVE = 4;
+export const SECURE_INPUT_MAX_RECORDS = 64;
+const SECURE_INPUT_MAX_ACTIVE = 4;
 
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const KEY_NAME = /^[A-Z_][A-Z0-9_]{0,99}$/;
@@ -135,6 +136,13 @@ export async function secureInputTargetBinding(record: Pick<SecureInputRecord,
   return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
+export function hasSecureInputCapacity(rows: ReadonlyMap<string, SecureInputRecord>, deviceId: string): boolean {
+  const active = [...rows.values()].filter(row =>
+    row.state === "pending" || row.state === "accepted" || row.state === "running");
+  return rows.size < SECURE_INPUT_MAX_RECORDS && active.length < 16 &&
+    active.filter(row => row.execution.device_id === deviceId).length < SECURE_INPUT_MAX_ACTIVE;
+}
+
 export async function createSecureInputRecord(
   store: SecureInputStore,
   input: ParsedSecureInputRequest,
@@ -154,11 +162,8 @@ export async function createSecureInputRecord(
     created_at: now, updated_at: now, expires_at: now + SECURE_INPUT_TTL_MS,
   };
   await store.transaction(async tx => {
-    const rows = await tx.list<SecureInputRecord>({ prefix: "secure-input:", limit: 65 });
-    const active = [...rows.values()].filter(row =>
-      row.state === "pending" || row.state === "accepted" || row.state === "running");
-    if (rows.size > 64 || active.length >= 16 ||
-        active.filter(row => row.execution.device_id === execution.device_id).length >= SECURE_INPUT_MAX_ACTIVE) {
+    const rows = await tx.list<SecureInputRecord>({ prefix: "secure-input:", limit: SECURE_INPUT_MAX_RECORDS + 1 });
+    if (!hasSecureInputCapacity(rows, execution.device_id)) {
       throw new Error("secure_input_capacity");
     }
     await tx.put("secure-input:" + requestId, record);
@@ -299,7 +304,7 @@ export function publicSecureInputRecord(record: SecureInputRecord): object {
 export async function markSecureInputUnknownForSocket(
   store: SecureInputStore, deviceId: string, epoch: string, now = Date.now(),
 ): Promise<void> {
-  const rows = await store.list<SecureInputRecord>({ prefix: "secure-input:", limit: 64 });
+  const rows = await store.list<SecureInputRecord>({ prefix: "secure-input:", limit: SECURE_INPUT_MAX_RECORDS });
   for (const [key, current] of rows) {
     if (current.execution.device_id !== deviceId || current.execution.epoch !== epoch ||
         current.consumed_at === undefined || terminal(current.state)) continue;
@@ -313,13 +318,20 @@ export async function markSecureInputUnknownForSocket(
 }
 
 export async function pruneSecureInputRecords(store: SecureInputStore, now = Date.now()): Promise<boolean> {
-  const rows = await store.list<SecureInputRecord>({ prefix: "secure-input:", limit: 65 });
-  if (rows.size > 64) return false;
-  for (const [key, record] of rows) {
-    if (record.expires_at + SECURE_INPUT_RETENTION_MS <= now) await store.delete(key);
-    else if (record.state === "pending" && record.expires_at <= now) {
-      await store.put(key, { ...record, state: "expired", updated_at: now });
+  return store.transaction(async tx => {
+    const query = { prefix: "secure-input:", limit: SECURE_INPUT_MAX_RECORDS + 1 };
+    const rows = await tx.list<SecureInputRecord>(query);
+    let removed = false;
+    for (const [key, record] of rows) {
+      if (record.expires_at + SECURE_INPUT_RETENTION_MS <= now) {
+        await tx.delete(key);
+        removed = true;
+      } else if (record.state === "pending" && record.expires_at <= now) {
+        await tx.put(key, { ...record, state: "expired", updated_at: now });
+      }
     }
-  }
-  return true;
+    // Recover from an over-capacity store only by normal retention cleanup.
+    return rows.size <= SECURE_INPUT_MAX_RECORDS ||
+      (removed && (await tx.list<SecureInputRecord>(query)).size <= SECURE_INPUT_MAX_RECORDS);
+  });
 }

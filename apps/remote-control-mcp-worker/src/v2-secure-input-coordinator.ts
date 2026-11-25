@@ -2,7 +2,7 @@ import { deviceIsAuthorized, deviceStillGranted, type SessionCheck, type V2Devic
 import {
   cancelSecureInputRecord, consumeSecureInputRecord, createSecureInputRecord,
   getSecureInputRecord, markSecureInputUnknownForSocket, parseSecureInputRequest,
-  pruneSecureInputRecords, publicSecureInputRecord, SECURE_INPUT_MAX_ACTIVE,
+  pruneSecureInputRecords, publicSecureInputRecord, hasSecureInputCapacity, SECURE_INPUT_MAX_RECORDS,
   startSecureInputDispatch, updateSecureInputStatus, validateSecureInputSecret, type SecureInputProviderPrincipal,
   type SecureInputRecord,
 } from "./v2-secure-input.ts";
@@ -123,11 +123,8 @@ export class V2SecureInputCoordinator {
     const parsed = parseSecureInputRequest(body.request);
     if (!parsed) return json({ error: "bad_request" }, 400);
     if (!await pruneSecureInputRecords(this.state.storage)) return json({ error: "capacity" }, 503);
-    const rows = await this.state.storage.list<SecureInputRecord>({ prefix: "secure-input:", limit: 65 });
-    const active = [...rows.values()].filter(row =>
-      row.state === "pending" || row.state === "accepted" || row.state === "running");
-    if (rows.size > 64 || active.length >= 16 ||
-        active.filter(row => row.execution.device_id === parsed.execution.device_id).length >= SECURE_INPUT_MAX_ACTIVE) {
+    const rows = await this.state.storage.list<SecureInputRecord>({ prefix: "secure-input:", limit: SECURE_INPUT_MAX_RECORDS + 1 });
+    if (!hasSecureInputCapacity(rows, parsed.execution.device_id)) {
       return json({ error: "capacity" }, 429);
     }
     const [device, epoch] = await Promise.all([
