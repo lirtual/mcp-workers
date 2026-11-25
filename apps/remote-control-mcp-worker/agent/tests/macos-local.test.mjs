@@ -48,6 +48,34 @@ test("#1035 all macOS lifecycle paths recognize only exact owned launcher text",
     assert.equal(matchesOwnerCli(launcher,root+"-other"),false);
   }
 });
+test("#1035 existing macOS upgrade binds exact local identity and configuration",async t=>{
+  const {macUpgradeBinding}=await import("../scripts/macos-local.mjs");
+  const home=await mkdtemp(path.join(os.tmpdir(),"rca1035-binding-"));
+  t.after(()=>rm(home,{recursive:true,force:true}));
+  const files=Object.fromEntries(["key","plist","cli","endpointFile","stopMark","journal"].map(name=>[name,path.join(home,name)]));
+  const initial={key:"synthetic-key",plist:"old-plist",cli:"owned-launcher",endpointFile:ENDPOINT+"\n"};
+  for(const [name,value] of Object.entries(initial))await writeFile(files[name],value,{mode:name==="cli"?0o700:0o600});
+  await writeFile(files.key+".device-id",ID+"\n",{mode:0o600});
+  const before=await macUpgradeBinding(files);
+  assert.deepEqual(await macUpgradeBinding(files),before);
+  for(const [name,value] of Object.entries(initial)){
+    await writeFile(files[name],value+"changed",{mode:name==="cli"?0o700:0o600});
+    assert.notDeepEqual(await macUpgradeBinding(files),before,name);
+    await writeFile(files[name],value);
+  }
+  await writeFile(files.key+".device-id","bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee\n");
+  assert.notDeepEqual(await macUpgradeBinding(files),before);
+  await writeFile(files.key+".device-id",ID+"\n");
+  await writeFile(files.stopMark,"stopped\n",{mode:0o600});
+  assert.notDeepEqual(await macUpgradeBinding(files),before);
+  await rm(files.stopMark);
+  await writeFile(files.journal,"pending",{mode:0o600});
+  await assert.rejects(macUpgradeBinding(files),/Unresolved/);
+  await rm(files.journal);
+  await rm(files.key+".device-id");
+  await assert.rejects(macUpgradeBinding(files),/Approved/);
+});
+
 test("#1035 macOS Latest check observes the five-platform stable publication only",async()=>{
   const {checkLatestMacVersion}=await import("../scripts/macos-local.mjs");
   const {selectLatestAgentRelease}=await import("../../src/github-latest-agent-release.ts");
@@ -500,6 +528,26 @@ test("#660 first install bootstrap refusal preserves approved device and staged 
   const staged=path.join(f.identity,"macos/programs",f.version+"-darwin-"+process.arch);
   assert.equal((await lstat(staged)).isDirectory(),true);
   await assert.rejects(localMacAction("install",opts),/already staged; never overwrite/);
+});
+
+test("#1035 identity changed during owner confirmation refuses existing upgrade before staging",{
+  skip:!native},async t=>{
+  const f=await fixture(t);
+  const opts={home:f.home,bundle,sourceSha:f.sourceSha,endpoint:ENDPOINT,
+    invoke:f.invoke,ask:async()=>true,online:async()=>true};
+  await localMacAction("install",opts);
+  const alt=path.join(f.root,"changed-target");
+  await cp(bundle,alt,{recursive:true});
+  const manifestFile=path.join(alt,"bundle.json");
+  const meta=JSON.parse(await readFile(manifestFile,"utf8"));
+  meta.version=nextCandidateVersion(meta.version);
+  await writeFile(manifestFile,JSON.stringify(meta)+"\n",{mode:0o600});
+  const next=path.join(f.identity,"macos/programs",meta.version+"-darwin-"+process.arch);
+  await assert.rejects(localMacAction("upgrade",{...opts,bundle:alt,
+    ask:async()=>{await writeFile(path.join(f.identity,"v2-identity.pem"),"changed-synthetic-key");return true;},
+    freezeAgent:async()=>{throw Error("Changed target must not freeze");}
+  }),/Existing upgrade target changed/);
+  await assert.rejects(lstat(next),{code:"ENOENT"});
 });
 
 test("#660 native upgrade busy/activation failure retains identity and rolls back",{

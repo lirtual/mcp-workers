@@ -1,6 +1,6 @@
 /** #660 reviewed offline, owner-only macOS LaunchAgent install/upgrade candidate. */
 import {createConnection} from "node:net";
-import {randomUUID} from "node:crypto";
+import {createHash,randomUUID} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {createInterface} from "node:readline";
 import {cp,lstat,mkdir,readFile,rename,rm,writeFile} from "node:fs/promises";
@@ -286,6 +286,20 @@ async function approved(key){
      !await checked(key+".device-id",{optional:true,mode:0o600}))return false;
   return ID.test((await readFile(key+".device-id","utf8")).trim());
 }
+// Bind the attended operation to the existing local target, not to whatever
+// identity or LaunchAgent happens to be present after confirmation/staging.
+export async function macUpgradeBinding({key,plist,cli,endpointFile,stopMark,journal}){
+  if(await checked(journal,{optional:true,mode:0o600}))
+    throw Error("Unresolved upgrade journal: manual reconciliation required.");
+  if(!await approved(key))throw Error("Approved permanent identity required.");
+  const read=async(file,mode,optional=false)=>await checked(file,{mode,optional})
+    ?await readFile(file,"utf8"):null;
+  const hash=async file=>createHash("sha256").update(await readFile(file)).digest("hex");
+  return {plist:await read(plist,0o600),cli:await read(cli,0o700,true),
+    endpoint:(await read(endpointFile,0o600,true))?.trim()??null,
+    stop:await read(stopMark,0o600,true),
+    keyHash:await hash(key),idHash:await hash(key+".device-id")};
+}
 export async function observeOnline(identity,generation,now=Date.now){
   const start=now(),file=path.join(identity,"macos-connection.json");
   for(let i=0;i<50;i++){
@@ -478,13 +492,22 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
       candidateSourceCommit:sourceSha,
     })) throw Error("Downgrade or non-forward version is not permitted.");
   }
+  const bindingFiles={key,plist,cli,endpointFile,stopMark,journal};
+  const binding=action==="upgrade"?await macUpgradeBinding(bindingFiles):null;
+  if(binding&&(binding.plist!==old||binding.cli!==previousCli||
+    binding.endpoint!==stored||(binding.stop!==null)!==stopped||
+    (binding.stop!==null&&binding.stop!=="stopped\n")))
+    throw Error("Existing upgrade target changed.");
+  const recheckBinding=async()=>{
+    if(binding&&JSON.stringify(await macUpgradeBinding(bindingFiles))!==JSON.stringify(binding))
+      throw Error("Existing upgrade target changed.");
+  };
   const nextRoot=path.join(programs,version);
   if(await statMaybe(nextRoot))throw Error("Reviewed candidate already staged; never overwrite. " +
     "Inspect existing state and use a separately verified newer candidate; " +
     "the existing permanent identity and receipts remain unchanged.");
   if(!await ask("Install "+version+" into this personal Mac account?"))throw Error("Owner declined.");
-  if(action==="upgrade"&&!await approved(key))
-    throw Error("Approved key missing; never automatically re-pair.");
+  await recheckBinding();
   // Stage the verified candidate side by side; never overwrite old binaries.
   const stage=path.join(programs,".staging-"+randomUUID());
   await cp(bundle,stage,{recursive:true,errorOnExist:true,force:false});
@@ -498,6 +521,7 @@ export async function localMacAction(action,{home=os.homedir(),bundle,sourceSha,
     if(pair.error||pair.status!==0||!await approved(key))
       throw Error("Owner approval incomplete; staged candidate remains offline.");
   }
+  await recheckBinding();
   const active=!!current&&!stopped&&launch(["print",service],invoke);
   if(current&&!stopped&&!active)throw Error("Service state uncertain; refuse upgrade.");
   let frozen=false;
