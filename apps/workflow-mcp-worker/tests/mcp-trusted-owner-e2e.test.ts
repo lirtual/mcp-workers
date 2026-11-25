@@ -632,6 +632,16 @@ ${session?'    timeout-minutes: 360\n':''}    steps:
       .get(explicitPublished.published_version_id) as {plan:string}).plan);
     assert.deepEqual(explicitPlan.cloudflare_action_approvals,[explicitGrant]);
     assert.equal(privilegedCalls,0,'Publish never executes a new effect');
+    // An independently approved JSON effect is not a selected-file capability.
+    const priorInternetCalls=internetCalls;
+    await call('workflow_run',{workflow_id:privilegedDraft.workflow_id,
+      idempotency_key:'local-file-denied',
+      file:{file_id:'file_fixture',file_name:'fixture.txt',
+        download_url:'https://files.oaiusercontent.com/fixture?token=fake-only'}},
+      'litterbox_published_plan_required');
+    assert.equal(internetCalls,priorInternetCalls);
+    assert.equal(privilegedCalls,0);
+
     const explicitRun=await call('workflow_run',{workflow_id:privilegedDraft.workflow_id});
     await new WorkflowOrchestrator({} as ExecutionContext,env).run({
       payload:{run_id:explicitRun.run_id},
