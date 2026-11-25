@@ -12,7 +12,7 @@ This Skill documents static routing and DSL usage, not live contracts, credentia
 | Intent | Tool route |
 | --- | --- |
 | Run an existing Published Workflow with a known ID and known inputs | `workflow_run` → `workflow_result`; only use `workflow_status` when unsettled |
-| Unknown Workflow ID | `workflow_list` → choose exact ID |
+| Unknown Workflow ID | `workflow_list({query:"known name or ID"})` → choose exact ID |
 | Unknown Published input contract | `workflow_get` → `published_run_interface`; never infer from editable Draft |
 | Inspect a particular Workflow | `workflow_get` |
 | Author or edit | This Skill → discovery only for external Actions → `workflow_validate({definition})` → `workflow_create` or `workflow_update` |
@@ -20,7 +20,9 @@ This Skill documents static routing and DSL usage, not live contracts, credentia
 | Diagnose or cancel | `workflow_result` / `workflow_status` → `workflow_cancel` if explicitly required |
 | Pause, resume, or delete | Read current state, then the matching named tool only with authorization |
 
-Use `workflow_action_list({})` only to choose source-reviewed GitHub/Cloudflare `action.run` candidates. For an `mcp.call`, explicitly call `workflow_action_list({source:"portal"})` to obtain the separately scoped reviewed Portal tool, actual input/output schema, example arguments, and `schema_digest`. Absence of a read tool does **not** prove a write tool is approved or unavailable: inspect the separate scope statuses. `workflow_connection_status` checks connection generation; a discovered candidate never grants Publish or runtime access. Do not use arbitrary Portal URLs, tools or unreviewed writes.
+Use `workflow_action_list({query:"known keyword"})` to choose source-reviewed GitHub/Cloudflare `action.run` candidates. For an `mcp.call`, explicitly call `workflow_action_list({source:"portal",query:"known tool name"})` to obtain the separately scoped reviewed Portal tool, actual input/output schema, example arguments, and `schema_digest`. Absence of a read tool does **not** prove a write tool is approved or unavailable: inspect the separate scope statuses. `workflow_connection_status` checks connection generation; a discovered candidate never grants Publish or runtime access. Do not use arbitrary Portal URLs, tools or unreviewed writes.
+
+Search is literal (ASCII case-insensitive) and returns complete matching contracts, not an authorization or automatic selection. Use a narrower query on `result_too_large`; no match is not a reason to automatically fetch the entire catalog. Omit query only for inventory or when no useful keyword is known. Unfiltered Workflow List covers the latest 100 updated non-deleted workflows, not the entire history; targeted search covers all non-deleted workflows and retains global Session slots. Search optimizes response size, not underlying discovery calls.
 
 ## Draft language quick reference
 

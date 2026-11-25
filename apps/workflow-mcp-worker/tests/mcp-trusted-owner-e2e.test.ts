@@ -164,6 +164,15 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const actions=await call('workflow_action_list',{});
     assert.deepEqual(actions.actions,[]);
     assert.equal(internetCalls,0,'ordinary Action discovery never contacts Portal');
+    for(const name of ['workflow_list','workflow_action_list']){
+      assert.ok((listed.tools.find(x=>x.name===name)!.inputSchema as any).properties.query);
+      for(const query of ['', '   ', 'x'.repeat(257), ['x'], 123, null]){
+        const rejected=await client.callTool({name,arguments:{query}});
+        assert.equal(rejected.isError,true,JSON.stringify(query));
+      }
+    }
+    assert.deepEqual(await call('workflow_action_list',{query:'session'}),{actions:[]});
+    assert.equal(internetCalls,0);
     const portal=await call('workflow_action_list',{source:'portal'});
     assert.equal(portal.source,'portal_mcp');
     assert.equal(portal.read.availability,'verified_contract');
@@ -177,23 +186,27 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     }
     assert.equal(JSON.stringify(portal).includes(PORTAL_SECRET),false);
     assert.equal(JSON.stringify(portal).includes('admin_delete_everything'),false);
+    const readSearch=await call('workflow_action_list',{source:'portal',query:'  LIST_NOTEBOOKS  '});
+    assert.deepEqual(readSearch,{...portal,write:{...portal.write,tools:[]}});
+    const noPortalMatch=await call('workflow_action_list',{source:'portal',query:'admin_delete_everything'});
+    assert.deepEqual(noPortalMatch,{...portal,read:{...portal.read,tools:[]},write:{...portal.write,tools:[]}});
     portalListing='write_only';
     const onlyWrite=await call('workflow_action_list',{source:'portal'});
     assert.equal(onlyWrite.read.availability,'not_authorized');
     assert.equal(onlyWrite.write.availability,'verified_contract');
     portalListing='read_duplicate';
-    const duplicate=await call('workflow_action_list',{source:'portal'});
+    const duplicate=await call('workflow_action_list',{source:'portal',query:'create_note'});
     assert.equal(duplicate.read.availability,'not_authorized');
     assert.equal(duplicate.write.availability,'verified_contract');
     portalListing='write_drift';
-    const drifted=await call('workflow_action_list',{source:'portal'});
+    const drifted=await call('workflow_action_list',{source:'portal',query:'list_notebooks'});
     assert.equal(drifted.read.availability,'verified_contract');
     assert.equal(drifted.write.availability,'not_authorized');
     portalListing='reviewed';
     assert.equal(toolCalls,0,'discovery must not execute Portal tools');
     const beforeRevocation=internetCalls;
     await call('workflow_connection_revoke',{});
-    const revokedCatalog=await call('workflow_action_list',{source:'portal'});
+    const revokedCatalog=await call('workflow_action_list',{source:'portal',query:'missing'});
     assert.equal(revokedCatalog.availability,'revoked');
     assert.equal(revokedCatalog.read.availability,'revoked');
     assert.equal(revokedCatalog.write.availability,'revoked');
@@ -439,6 +452,38 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     } as any;
     const catalog=await call('workflow_action_list',{});
     assert.deepEqual(catalog.actions.map((action:any)=>action.action_id),['json.report']);
+    assert.deepEqual(await call('workflow_action_list',{query:'  JSON.REPORT  '}),catalog);
+    assert.deepEqual(await call('workflow_action_list',{query:'message'}),{actions:[]});
+    // Six individually valid manifests are below the Provider's 32-item
+    // and 16 KiB per-manifest limits but exceed the 64 KiB MCP UTF-8 budget.
+    const originalActions=env.ACTIONS!;
+    const manifests=Array.from({length:6},(_,i)=>({...jsonManifest,
+      action:'json.bulk_'+i,name:i===2?'json.bulk_0':'same',
+      description:'É中文'.repeat(1400)}));
+    const contracts=await Promise.all(manifests.map(async manifest=>({
+      manifest,deployment_id:jsonDeployment,
+      contract_digest:createHash('sha256').update(JSON.stringify(canonical(manifest))).digest('hex'),
+    })));
+    let badDigest=false,duplicateId=false;
+    env.ACTIONS={...originalActions,
+      listActions:async()=>[...manifests].reverse().map((m,i)=>({action_id:duplicateId&&i===5?manifests[1]!.action:m.action})),
+      getContract:async(id:string)=>{
+        const contract=contracts.find(c=>c.manifest.action===id)!;
+        return badDigest&&id==='json.bulk_5'?{...contract,contract_digest:'0'.repeat(64)}:contract;
+      },
+    } as any;
+    await call('workflow_action_list',{},'result_too_large');
+    await call('workflow_action_list',{query:'É中文'},'result_too_large');
+    assert.deepEqual(await call('workflow_action_list',{query:'é中文'}),{actions:[]});
+    const ordered=await call('workflow_action_list',{query:'json.bulk_0'});
+    assert.deepEqual(ordered.actions.map((a:any)=>a.action_id),['json.bulk_0','json.bulk_2']);
+    assert.equal(ordered.actions[0].contract_digest,contracts[0]!.contract_digest);
+    badDigest=true;
+    await call('workflow_action_list',{query:'json.bulk_0'},'internal_error');
+    badDigest=false;duplicateId=true;
+    await call('workflow_action_list',{query:'json.bulk_0'},'internal_error');
+    env.ACTIONS=originalActions;
+    assert.equal(jsonCalls,0);
     const jsonDefinition={version:1,name:'new-json-action',steps:[
       {id:'report',uses:'action.run',with:{action_id:'json.report',
         input:{message:{ref:'inputs.message'}}}},
