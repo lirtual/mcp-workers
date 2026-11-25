@@ -1,26 +1,21 @@
 //! Unshipped Standard macOS RCA entrypoint. No installed Agent path uses it.
 //! Reuses the permanent and temporary identity storage of the reviewed Unix Agent.
+#[cfg(any(target_os = "macos", all(test, unix)))]
+#[path = "support/darwin_lifecycle.rs"]
+mod darwin_lifecycle;
+
 #[cfg(target_os = "macos")]
 #[path = "support/unix_pairing.rs"]
 mod unix_pairing;
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
-fn pairing_store(
-    home: &std::path::Path,
-    temporary: bool,
-) -> Result<(std::path::PathBuf, std::fs::File), ()> {
+fn identity_directory(home: &std::path::Path, create: bool) -> Result<std::path::PathBuf, ()> {
     use std::fs;
     use std::io::ErrorKind;
-    use std::os::fd::AsRawFd;
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 
     let owner = unsafe { libc::geteuid() };
     let home = fs::canonicalize(home).map_err(|_| ())?;
-    let present = |p: &std::path::Path| match fs::symlink_metadata(p) {
-        Ok(_) => Ok(true),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
-        Err(_) => Err(()),
-    };
     let check_dir = |p: &std::path::Path, private: bool| {
         let info = fs::symlink_metadata(p).map_err(|_| ())?;
         if !info.is_dir()
@@ -32,6 +27,9 @@ fn pairing_store(
         Ok(())
     };
     let ensure_dir = |p: &std::path::Path, private: bool| {
+        if !create {
+            return check_dir(p, private);
+        }
         match fs::DirBuilder::new().mode(0o700).create(p) {
             Ok(()) => (),
             Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
@@ -48,6 +46,15 @@ fn pairing_store(
         base.push(part);
         ensure_dir(&base, index >= 2)?;
     }
+    Ok(base)
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn lock_identity_directory(base: &std::path::Path) -> Result<std::fs::File, ()> {
+    use std::fs;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let owner = unsafe { libc::geteuid() };
     let lock = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -66,11 +73,37 @@ fn pairing_store(
     {
         return Err(());
     }
+    Ok(lock)
+}
+
+#[cfg(any(target_os = "macos", all(test, unix)))]
+fn pairing_store(
+    home: &std::path::Path,
+    temporary: bool,
+) -> Result<(std::path::PathBuf, std::fs::File), ()> {
+    use std::fs;
+    use std::io::ErrorKind;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let base = identity_directory(home, true)?;
+    let home = fs::canonicalize(home).map_err(|_| ())?;
+    let lock = lock_identity_directory(&base)?;
+    let present = |p: &std::path::Path| match fs::symlink_metadata(p) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(()),
+    };
+    let check_dir = |p: &std::path::Path| {
+        let info = fs::symlink_metadata(p).map_err(|_| ())?;
+        if !info.is_dir() || info.uid() != unsafe { libc::geteuid() } || info.mode() & 0o077 != 0 {
+            return Err(());
+        }
+        Ok(())
+    };
     // Reuse the existing Mac journal and Linux installer lock contract. Do
     // not pair while an earlier management transaction remains unresolved.
     let macos = base.join("macos");
     if present(&macos)? {
-        check_dir(&macos, true)?;
+        check_dir(&macos)?;
     }
     for path in [
         macos.join("switch.json"),
@@ -92,7 +125,12 @@ fn pairing_store(
     }
     let directory = if temporary {
         let directory = base.join("temporary");
-        ensure_dir(&directory, true)?;
+        match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            Ok(()) => (),
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => (),
+            Err(_) => return Err(()),
+        }
+        check_dir(&directory)?;
         directory
     } else {
         base
@@ -210,8 +248,16 @@ fn record_connection(
 
 #[cfg(target_os = "macos")]
 mod darwin {
-    use super::unix_pairing::{pair_or_repair, read_private, sidecar};
-    use super::{owner_stopped, pairing_store, record_connection};
+    use super::darwin_lifecycle::{
+        installed_generation, registration, stop_owned, Registration, LABEL,
+    };
+    use super::unix_pairing::{
+        exists_owned_path, pair_or_repair, read_private, sidecar, write_new,
+    };
+    use super::{
+        identity_directory, lock_identity_directory, owner_stopped, pairing_store,
+        record_connection,
+    };
     use rca_native_agent::darwin_managed::DarwinManagedSessions;
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::native_file::{
@@ -355,47 +401,242 @@ mod darwin {
         Ok(())
     }
 
-    fn service_absent() -> Result<(), ()> {
+    // Drain both pipes while the bounded launchctl request runs.
+    fn launchctl(args: &[&str]) -> Result<(Option<i32>, String, String), ()> {
         use std::io::Read;
         use std::process::{Command, Stdio};
         use std::time::Instant;
-        let target = format!("gui/{}/org.mcp-workers.remote-control-agent", unsafe {
-            libc::geteuid()
-        });
         let mut child = Command::new("/bin/launchctl")
-            .args(["print", &target])
+            .args(args)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|_| ())?;
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    let mut stderr = String::new();
-                    child
-                        .stderr
-                        .take()
-                        .ok_or(())?
-                        .take(8192)
-                        .read_to_string(&mut stderr)
-                        .map_err(|_| ())?;
-                    return (status.code() == Some(113)
-                        && stderr.contains("Could not find service"))
-                    .then_some(())
-                    .ok_or(());
+        let stdout = child.stdout.take().ok_or(())?;
+        let stderr = child.stderr.take().ok_or(())?;
+        fn collect(
+            input: impl Read + Send + 'static,
+        ) -> std::thread::JoinHandle<Result<String, ()>> {
+            std::thread::spawn(move || {
+                let mut data = Vec::new();
+                input.take(65537).read_to_end(&mut data).map_err(|_| ())?;
+                if data.len() > 65536 {
+                    return Err(());
                 }
+                String::from_utf8(data).map_err(|_| ())
+            })
+        }
+        let out = collect(stdout);
+        let err = collect(stderr);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status.code()),
                 Ok(None) if Instant::now() < deadline => {
                     std::thread::sleep(Duration::from_millis(25))
                 }
                 _ => {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return Err(());
+                    break Err(());
                 }
             }
+        };
+        Ok((
+            status?,
+            out.join().map_err(|_| ())??,
+            err.join().map_err(|_| ())??,
+        ))
+    }
+
+    fn service_target() -> String {
+        format!("gui/{}/{LABEL}", unsafe { libc::geteuid() })
+    }
+
+    fn service_absent() -> Result<(), ()> {
+        let (code, out, err) = launchctl(&["print", &service_target()])?;
+        (registration(code, &out, &err, Path::new("/")) == Registration::Absent)
+            .then_some(())
+            .ok_or(())
+    }
+
+    fn observe_registration(executable: &Path) -> Registration {
+        match launchctl(&["print", &service_target()]) {
+            Ok((code, out, err)) => registration(code, &out, &err, executable),
+            Err(_) => Registration::Unknown,
         }
+    }
+
+    struct Installed {
+        executable: PathBuf,
+        endpoint: String,
+        version: String,
+        generation: String,
+    }
+
+    fn installed(home: &Path, base: &Path) -> Result<Installed, ()> {
+        let exe = std::env::current_exe().map_err(|_| ())?;
+        let version = rca_native_agent::installed_version(&exe).ok_or(())?;
+        let arch = if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        };
+        let mut expected = base.to_path_buf();
+        for part in [
+            "macos",
+            "programs",
+            &format!("{version}-darwin-{arch}"),
+            "apps",
+            "remote-control-agent",
+            ".build",
+        ] {
+            expected.push(part);
+            let info = fs::symlink_metadata(&expected).map_err(|_| ())?;
+            if !info.is_dir()
+                || info.uid() != unsafe { libc::geteuid() }
+                || info.mode() & 0o077 != 0
+            {
+                return Err(());
+            }
+        }
+        expected.push("rca-standard-darwin-candidate");
+        if exe != expected {
+            return Err(());
+        }
+        let info = fs::symlink_metadata(&exe).map_err(|_| ())?;
+        if !info.is_file()
+            || info.uid() != unsafe { libc::geteuid() }
+            || info.nlink() != 1
+            || info.mode() & 0o777 != 0o700
+        {
+            return Err(());
+        }
+        let mut agents = fs::canonicalize(home).map_err(|_| ())?;
+        for part in ["Library", "LaunchAgents"] {
+            agents.push(part);
+            let info = fs::symlink_metadata(&agents).map_err(|_| ())?;
+            if !info.is_dir()
+                || info.uid() != unsafe { libc::geteuid() }
+                || info.mode() & 0o022 != 0
+            {
+                return Err(());
+            }
+        }
+        let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
+        let endpoint = endpoint.trim().to_owned();
+        let plist = read_private(&agents.join(format!("{LABEL}.plist")), 65536)?.ok_or(())?;
+        let generation = installed_generation(&plist, &exe, &endpoint)?;
+        Ok(Installed {
+            executable: exe,
+            endpoint,
+            version,
+            generation,
+        })
+    }
+
+    fn manage(action: &str) -> Result<(), ()> {
+        use std::io::{IsTerminal, Write};
+        let home = home()?;
+        let base = identity_directory(&home, false)?;
+        let _lock = if action == "stop" {
+            Some(lock_identity_directory(&base)?)
+        } else {
+            None
+        };
+        let key = base.join("v2-identity.pem");
+        let mut unresolved = false;
+        for path in [
+            base.join("macos/switch.json"),
+            base.join("macos/remote-upgrades/active.json"),
+            sidecar(&key, ".re-pair-transition"),
+        ] {
+            unresolved |= exists_owned_path(&path)?;
+        }
+        if unresolved {
+            if action == "status" {
+                println!(
+                    "{}",
+                    serde_json::json!({"installed":null,"version":null,
+                    "installed_version":null,"platform":"darwin",
+                    "local_service":"unconfirmed","signed_wss":"unconfirmed",
+                    "cloud_authorization":"unconfirmed","last_online":"unconfirmed",
+                    "update_transaction":"pending_or_cleanup"})
+                );
+                return Ok(());
+            }
+            return Err(());
+        }
+        let current = installed(&home, &base)?;
+        let stopped = owner_stopped(&key)?;
+        if action == "status" {
+            let observed = observe_registration(&current.executable);
+            let local = match (stopped, observed) {
+                (true, Registration::Absent) => "intentionally_stopped",
+                (true, _) => "stopped_requested_unverified",
+                (false, Registration::Present(Some(_))) => "running_observed",
+                (false, Registration::Present(None)) => "present_unverified",
+                (false, Registration::Absent) => "not_running",
+                _ => "unconfirmed",
+            };
+            println!(
+                "{}",
+                serde_json::json!({"installed":true,"installed_version":current.version,
+                "version":current.version,"platform":"darwin","local_service":local,
+                "signed_wss":"unconfirmed","cloud_authorization":"unconfirmed","last_online":"unconfirmed"})
+            );
+            return Ok(());
+        }
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        let id = id.trim();
+        signed_session_proof(&pem, id, "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        let client = rca_native_agent::device_pairing::PairingClient::new(&current.endpoint)
+            .map_err(|_| ())?;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        print!("Intentionally stop this user LaunchAgent? Confirm [y/N]: ");
+        std::io::stdout().flush().map_err(|_| ())?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).map_err(|_| ())?;
+        if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+            return Err(());
+        }
+        let rechecked = installed(&home, &base)?;
+        if rechecked.executable != current.executable
+            || rechecked.endpoint != current.endpoint
+            || rechecked.generation != current.generation
+            || owner_stopped(&key)? != stopped
+            || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
+            || read_private(&sidecar(&key, ".device-id"), 128)?
+                .as_deref()
+                .map(str::trim)
+                != Some(id)
+        {
+            return Err(());
+        }
+        let marker = base.join("macos/stopped");
+        let confirmed = stop_owned(
+            || {
+                if stopped {
+                    Ok(())
+                } else {
+                    write_new(&marker, b"stopped\n")
+                }
+            },
+            || client.owner_intent(&pem, id, "stop").is_ok(),
+            || observe_registration(&current.executable),
+            || launchctl(&["bootout", &service_target()]).is_ok_and(|(code, _, _)| code == Some(0)),
+            || std::thread::sleep(Duration::from_millis(250)),
+        )?;
+        println!(
+            "{}",
+            serde_json::json!({"status":"intentionally_stopped",
+            "cloud":if confirmed {"confirmed"} else {"unconfirmed"}})
+        );
+        Ok(())
     }
 
     fn pair_local(endpoint: &str, name: &str, temporary: bool) -> Result<(), ()> {
@@ -459,6 +700,11 @@ mod darwin {
             .skip(1)
             .map(|value| value.into_string().map_err(|_| ()))
             .collect::<Result<_, _>>()?;
+        if let [action] = arguments.as_slice() {
+            if matches!(action.as_str(), "status" | "stop") {
+                return manage(action);
+            }
+        }
         if let [action, endpoint, name] = arguments.as_slice() {
             return match action.as_str() {
                 "--pair-local" => pair_local(endpoint, name, false),
@@ -644,6 +890,8 @@ mod pairing_admission_tests {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
         fs::set_permissions(home, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(super::identity_directory(home, false).is_err());
+        assert!(!home.join(".local").exists());
         let (permanent, lock) = pairing_store(home, false).unwrap();
         fs::write(&permanent, b"synthetic-permanent").unwrap();
         assert!(pairing_store(home, true).is_err());
