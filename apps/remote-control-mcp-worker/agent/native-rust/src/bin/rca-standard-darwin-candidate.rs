@@ -1401,6 +1401,25 @@ mod darwin {
         Ok(())
     }
 
+    fn ensure_no_other_programs(programs: &Path) -> Result<(), ()> {
+        let (code, output, _) = bounded_command(
+            "/bin/ps",
+            &["-axww", "-o", "pid=,uid=,command="],
+            2 * 1024 * 1024,
+        )?;
+        if code != Some(0)
+            || !no_other_programs(
+                &output,
+                programs,
+                unsafe { libc::geteuid() },
+                std::process::id(),
+            )
+        {
+            return Err(());
+        }
+        Ok(())
+    }
+
     fn uninstall_local() -> Result<(), ()> {
         use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
         let home = fs::canonicalize(home()?).map_err(|_| ())?;
@@ -1477,21 +1496,7 @@ mod darwin {
             }
         }
         unregister(&current)?;
-        let (code, output, _) = bounded_command(
-            "/bin/ps",
-            &["-axww", "-o", "pid=,uid=,command="],
-            2 * 1024 * 1024,
-        )?;
-        if code != Some(0)
-            || !no_other_programs(
-                &output,
-                &programs,
-                unsafe { libc::geteuid() },
-                std::process::id(),
-            )
-        {
-            return Err(());
-        }
+        ensure_no_other_programs(&programs)?;
         unchanged()?;
         if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
             return Err(());
@@ -1553,9 +1558,8 @@ mod darwin {
         if record.version != format!("{}-{}", package.version, package.target) {
             return Err(());
         }
-        // The first install may have stopped before either local entrypoint
-        // was written. Only abandon that reservation when its original
-        // identity and absence of configuration/registration are proven.
+        // Reconcile an interrupted initial installation only when the
+        // original identity and the absence of active service are proven.
         let pem = read_private(&key, 8192)?.ok_or(())?;
         let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
         signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
@@ -1569,28 +1573,63 @@ mod darwin {
             }
             Ok(())
         };
-        let unconfigured = || -> Result<bool, ()> {
+        let endpoint_path = base.join("macos/endpoint");
+        let endpoint = read_private(&endpoint_path, 2048)?;
+        let executable = root.join(darwin_package::ENTRY);
+        let expected = endpoint
+            .as_deref()
+            .map(|value| native_plist(&executable, value.trim(), &record.generation))
+            .transpose()?;
+        let can_abandon = |configuration: Option<&str>| -> Result<bool, ()> {
             unchanged()?;
-            Ok(record.can_abandon_unconfigured(
-                read_private(&plist, 65536)?.as_deref(),
+            if read_private(&endpoint_path, 2048)? != endpoint
+                || read_private(&plist, 65536)?.as_deref() != configuration
+                || darwin_package::verify(&root, native_target())? != package
+            {
+                return Err(());
+            }
+            let abandon = record.can_abandon_initial(
+                configuration,
+                expected.as_deref(),
                 read_executable(&cli)?.as_deref(),
-                &observe_registration(&root.join(darwin_package::ENTRY)),
-            ))
+                &observe_registration(&executable),
+            );
+            if abandon {
+                // Check the candidate package, not unrelated versions that
+                // may have separate temporary identities.
+                ensure_no_other_programs(&root)?;
+            }
+            Ok(abandon)
         };
-        if unconfigured()? {
+        let configuration = read_private(&plist, 65536)?;
+        if can_abandon(configuration.as_deref())? {
             owner_confirm("Abandon the interrupted initial installation? Identity and package retained; rerun the installer.")?;
-            if !unconfigured()? {
+            if !can_abandon(configuration.as_deref())? {
                 return Err(());
             }
             std::thread::sleep(Duration::from_millis(250));
-            if !unconfigured()? {
+            if !can_abandon(configuration.as_deref())? {
+                return Err(());
+            }
+            // A crash after writing the exact plist but before service
+            // registration has no active installation to roll back to.
+            // Remove only that journal-bound configuration, not a foreign
+            // or already-registered service. Retain the journal on doubt.
+            if configuration.is_some() {
+                sync_remove(&plist)?;
+            }
+            if !can_abandon(None)? {
+                return Err(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            if !can_abandon(None)? {
                 return Err(());
             }
             sync_remove(&journal)?;
             println!("Initial installation not configured; rerun the installer. Identity and receipts retained.");
             return Ok(());
         }
-        let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
+        let endpoint = endpoint.ok_or(())?;
         let endpoint = endpoint.trim();
         let next = Installed {
             executable: root.join(darwin_package::ENTRY),

@@ -343,14 +343,15 @@ pub(super) struct SwitchRecord {
 }
 
 impl SwitchRecord {
-    pub fn can_abandon_unconfigured(
+    pub fn can_abandon_initial(
         &self,
         configuration: Option<&str>,
+        expected: Option<&str>,
         launcher: Option<&str>,
         registration: &Registration,
     ) -> bool {
         self.previous.is_none()
-            && configuration.is_none()
+            && (configuration.is_none() || (!self.stopped && configuration == expected))
             && launcher.is_none()
             && *registration == Registration::Absent
     }
@@ -652,26 +653,86 @@ mod tests {
     }
 
     #[test]
+    fn initial_configured_but_unregistered_can_be_abandoned_only_with_exact_evidence() {
+        let mut record = SwitchRecord {
+            version: "v0.1.61-darwin-arm64".into(),
+            previous: None,
+            generation: ID.into(),
+            stopped: false,
+            phase: "switch_pending".into(),
+        };
+        let config = "verified native plist";
+        assert!(record.can_abandon_initial(
+            Some(config),
+            Some(config),
+            None,
+            &Registration::Absent
+        ));
+        assert!(!record.can_abandon_initial(Some(config), None, None, &Registration::Absent));
+        assert!(!record.can_abandon_initial(
+            Some("foreign"),
+            Some(config),
+            None,
+            &Registration::Absent
+        ));
+        assert!(!record.can_abandon_initial(
+            Some(config),
+            Some(config),
+            Some("launcher"),
+            &Registration::Absent
+        ));
+        assert!(!record.can_abandon_initial(
+            Some(config),
+            Some(config),
+            None,
+            &Registration::Unknown
+        ));
+        assert!(!record.can_abandon_initial(
+            Some(config),
+            Some(config),
+            None,
+            &Registration::Present(None)
+        ));
+        record.stopped = true;
+        assert!(!record.can_abandon_initial(
+            Some(config),
+            Some(config),
+            None,
+            &Registration::Absent
+        ));
+        record.stopped = false;
+        record.previous = Some("old config".into());
+        assert!(!record.can_abandon_initial(
+            Some(config),
+            Some(config),
+            None,
+            &Registration::Absent
+        ));
+    }
+
+    #[test]
     fn interrupted_initial_install_can_be_abandoned_only_before_configuration() {
         let raw = serde_json::json!({"phase":"switch_pending","version":"v0.1.61-darwin-arm64",
             "previous":null,"generation":ID,"stopped":false})
         .to_string();
         let mut record = SwitchRecord::parse(&raw, "darwin-arm64").unwrap();
-        assert!(record.can_abandon_unconfigured(None, None, &Registration::Absent));
-        assert!(!record.can_abandon_unconfigured(
+        assert!(record.can_abandon_initial(None, None, None, &Registration::Absent));
+        assert!(!record.can_abandon_initial(
             Some("foreign configuration"),
+            None,
             None,
             &Registration::Absent
         ));
-        assert!(!record.can_abandon_unconfigured(
+        assert!(!record.can_abandon_initial(
+            None,
             None,
             Some("existing launcher"),
             &Registration::Absent
         ));
-        assert!(!record.can_abandon_unconfigured(None, None, &Registration::Unknown));
-        assert!(!record.can_abandon_unconfigured(None, None, &Registration::Present(Some(42))));
+        assert!(!record.can_abandon_initial(None, None, None, &Registration::Unknown));
+        assert!(!record.can_abandon_initial(None, None, None, &Registration::Present(Some(42))));
         record.previous = Some("old configuration".to_owned());
-        assert!(!record.can_abandon_unconfigured(None, None, &Registration::Absent));
+        assert!(!record.can_abandon_initial(None, None, None, &Registration::Absent));
     }
 
     #[test]
