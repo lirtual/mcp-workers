@@ -117,15 +117,28 @@ pub(super) fn installed_generation(
 pub(super) fn stop_owned(
     persist: impl FnOnce() -> Result<(), ()>,
     cloud_stop: impl FnOnce() -> bool,
-    mut observe: impl FnMut() -> Registration,
+    observe: impl FnMut() -> Registration,
     bootout: impl FnOnce() -> bool,
-    mut pause: impl FnMut(),
+    pause: impl FnMut(),
 ) -> Result<bool, ()> {
     persist()?;
     let cloud_confirmed = cloud_stop();
+    unregister_owned(observe, bootout, pause, false)?;
+    Ok(cloud_confirmed)
+}
+
+// After a bootstrap attempt, even an absent first observation may precede
+// asynchronous registration. Require stable absence before reporting recovery.
+pub(super) fn unregister_owned(
+    mut observe: impl FnMut() -> Registration,
+    bootout: impl FnOnce() -> bool,
+    mut pause: impl FnMut(),
+    confirm_absence: bool,
+) -> Result<(), ()> {
     match observe() {
         Registration::Unknown => return Err(()),
-        Registration::Absent => return Ok(cloud_confirmed),
+        Registration::Absent if !confirm_absence => return Ok(()),
+        Registration::Absent => (),
         Registration::Present(_) if !bootout() => return Err(()),
         Registration::Present(_) => (),
     }
@@ -141,7 +154,7 @@ pub(super) fn stop_owned(
             Registration::Absent => {
                 absent += 1;
                 if absent == 2 {
-                    return Ok(cloud_confirmed);
+                    return Ok(());
                 }
             }
         }
@@ -152,11 +165,176 @@ pub(super) fn stop_owned(
     Err(())
 }
 
+// Resume is explicit, ordered, and never reported as online from bootstrap
+// acknowledgement. Any failure after authorization preserves the OFF state.
+pub(super) fn resume_owned(
+    observe: impl FnOnce() -> Registration,
+    authorize: impl FnOnce() -> Result<(), ()>,
+    clear_off: impl FnOnce() -> Result<(), ()>,
+    bootstrap: impl FnOnce() -> bool,
+    online: impl FnOnce() -> bool,
+    restore_off: impl FnOnce() -> Result<(), ()>,
+) -> Result<(), ()> {
+    if observe() != Registration::Absent {
+        return Err(());
+    }
+    authorize()?;
+    if clear_off().is_ok() && bootstrap() && online() {
+        return Ok(());
+    }
+    restore_off()?;
+    Err(())
+}
+
+pub(super) fn connection_time(
+    raw: &str,
+    generation: &str,
+    version: &str,
+    pid: u32,
+    now: u64,
+) -> Option<(bool, u64)> {
+    let record: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if record["generation"] != generation
+        || record["version"] != version
+        || record["pid"].as_u64()? != u64::from(pid)
+    {
+        return None;
+    }
+    let connected = match record["state"].as_str()? {
+        "connected" => true,
+        "disconnected" | "rejected" => false,
+        _ => return None,
+    };
+    let at = record["at"].as_u64()?;
+    (at <= now.saturating_add(10_000)).then_some((connected, at))
+}
+
+pub(super) fn iso_time(ms: u64) -> Option<String> {
+    let seconds = libc::time_t::try_from(ms / 1000).ok()?;
+    let mut value = std::mem::MaybeUninit::<libc::tm>::uninit();
+    if unsafe { libc::gmtime_r(&seconds, value.as_mut_ptr()) }.is_null() {
+        return None;
+    }
+    let value = unsafe { value.assume_init() };
+    let year = value.tm_year.checked_add(1900)?;
+    if !(0..=9999).contains(&year) {
+        return None;
+    }
+    Some(format!(
+        "{year:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        value.tm_mon + 1,
+        value.tm_mday,
+        value.tm_hour,
+        value.tm_min,
+        value.tm_sec,
+        ms % 1000
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
     const ENDPOINT: &str = "https://example.invalid/";
+
+    #[test]
+    fn resume_requires_authority_and_fresh_online_or_restores_off() {
+        use std::cell::RefCell;
+        let events = RefCell::new(Vec::new());
+        assert!(resume_owned(
+            || Registration::Absent,
+            || {
+                events.borrow_mut().push("authorize");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("clear");
+                Ok(())
+            },
+            || {
+                events.borrow_mut().push("bootstrap");
+                true
+            },
+            || {
+                events.borrow_mut().push("online");
+                false
+            },
+            || {
+                events.borrow_mut().push("restore");
+                Ok(())
+            },
+        )
+        .is_err());
+        assert_eq!(
+            *events.borrow(),
+            ["authorize", "clear", "bootstrap", "online", "restore"]
+        );
+        assert!(resume_owned(
+            || Registration::Absent,
+            || Err(()),
+            || panic!("no authorization"),
+            || panic!("no authorization"),
+            || panic!("no authorization"),
+            || panic!("OFF unchanged"),
+        )
+        .is_err());
+        assert!(resume_owned(
+            || Registration::Unknown,
+            || panic!("uncertain registration"),
+            || panic!("uncertain registration"),
+            || panic!("uncertain registration"),
+            || panic!("uncertain registration"),
+            || panic!("OFF unchanged"),
+        )
+        .is_err());
+        assert!(resume_owned(
+            || Registration::Absent,
+            || Ok(()),
+            || Ok(()),
+            || true,
+            || true,
+            || panic!("healthy replacement"),
+        )
+        .is_ok());
+        assert!(resume_owned(
+            || Registration::Absent,
+            || Ok(()),
+            || Err(()),
+            || panic!("OFF removal failed"),
+            || panic!("OFF removal failed"),
+            || Ok(()),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn connection_marker_must_match_generation_version_pid_and_clock() {
+        assert_eq!(iso_time(1001).as_deref(), Some("1970-01-01T00:00:01.001Z"));
+        assert!(iso_time(u64::MAX).is_none());
+        let raw = serde_json::json!({"generation":ID,"version":"v0.1.60","pid":123,
+            "state":"connected","at":1000})
+        .to_string();
+        assert_eq!(
+            connection_time(&raw, ID, "v0.1.60", 123, 2000),
+            Some((true, 1000))
+        );
+        assert!(connection_time(&raw, "old", "v0.1.60", 123, 2000).is_none());
+        assert!(connection_time(&raw, ID, "v0.1.59", 123, 2000).is_none());
+        assert!(connection_time(&raw, ID, "v0.1.60", 124, 2000).is_none());
+        assert!(
+            connection_time(&raw.replace("1000", "999999"), ID, "v0.1.60", 123, 2000).is_none()
+        );
+        assert_eq!(
+            connection_time(
+                &raw.replace("connected", "disconnected"),
+                ID,
+                "v0.1.60",
+                123,
+                2000
+            ),
+            Some((false, 1000))
+        );
+    }
 
     #[test]
     fn exact_native_plist_rejects_extra_arguments_and_foreign_program() {

@@ -15,6 +15,7 @@ use std::time::Duration;
 pub enum UpgradeCommand {
     Freeze,
     VerifyFrozen,
+    VerifyOnline,
     Release,
     IdleStatus,
     IdleFreeze,
@@ -45,6 +46,42 @@ fn private_directory(parent: &Path) -> io::Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Query the existing owner-local execution gate without freezing or
+/// changing any service state. A historical connection marker is not proof.
+pub fn verify_online(key: &Path) -> io::Result<bool> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let parent = key
+        .parent()
+        .ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+    private_directory(parent)?;
+    let path = parent.join("upgrade.sock");
+    let meta = fs::symlink_metadata(&path)?;
+    if !meta.file_type().is_socket()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o077 != 0
+    {
+        return Err(io::Error::from(ErrorKind::PermissionDenied));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut stream = tokio::net::UnixStream::connect(&path).await?;
+            stream.write_all(b"verify-online\n").await?;
+            let mut reply = Vec::new();
+            stream.take(33).read_to_end(&mut reply).await?;
+            match reply.as_slice() {
+                b"ready\n" => Ok(true),
+                b"busy\n" => Ok(false),
+                _ => Err(io::Error::from(ErrorKind::InvalidData)),
+            }
+        })
+        .await
+        .map_err(|_| io::Error::from(ErrorKind::TimedOut))?
+    })
 }
 
 fn clear_stale_owned(socket: &Path) -> io::Result<()> {
@@ -90,6 +127,7 @@ fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>
             break match &request[..used] {
                 b"freeze\n" => UpgradeCommand::Freeze,
                 b"verify-frozen\n" => UpgradeCommand::VerifyFrozen,
+                b"verify-online\n" => UpgradeCommand::VerifyOnline,
                 b"release\n" => UpgradeCommand::Release,
                 b"idle-status\n" => UpgradeCommand::IdleStatus,
                 b"idle-freeze\n" => UpgradeCommand::IdleFreeze,
@@ -166,5 +204,37 @@ impl Drop for UpgradeServer {
                 let _ = fs::remove_file(&self.path);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod online_tests {
+    use super::*;
+
+    #[test]
+    fn online_query_uses_existing_private_socket_and_exact_read_only_reply() {
+        let home = tempfile::tempdir().unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let key = home.path().join("fixture.pem");
+        let (sender, receiver) = sync_channel(4);
+        let server = UpgradeServer::bind(&key, sender).unwrap();
+        let worker = thread::spawn(move || {
+            for reply in ["ready\n", "busy\n", "ready\nextra"] {
+                let request = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(request.command, UpgradeCommand::VerifyOnline);
+                request.reply.send(reply.into()).unwrap();
+            }
+        });
+        assert!(verify_online(&key).unwrap());
+        assert!(!verify_online(&key).unwrap());
+        assert!(verify_online(&key).is_err());
+        worker.join().unwrap();
+        drop(server);
+        assert!(verify_online(&key).is_err());
+        let unrelated = home.path().join("unrelated");
+        fs::write(&unrelated, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&unrelated, home.path().join("upgrade.sock")).unwrap();
+        assert!(verify_online(&key).is_err());
+        assert_eq!(fs::read(unrelated).unwrap(), b"unchanged");
     }
 }

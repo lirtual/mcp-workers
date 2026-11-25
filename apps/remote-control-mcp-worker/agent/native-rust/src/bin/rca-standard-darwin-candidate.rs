@@ -249,7 +249,8 @@ fn record_connection(
 #[cfg(target_os = "macos")]
 mod darwin {
     use super::darwin_lifecycle::{
-        installed_generation, registration, stop_owned, Registration, LABEL,
+        connection_time, installed_generation, iso_time, registration, resume_owned, stop_owned,
+        unregister_owned, Registration, LABEL,
     };
     use super::unix_pairing::{
         exists_owned_path, pair_or_repair, read_private, sidecar, write_new,
@@ -473,6 +474,7 @@ mod darwin {
         endpoint: String,
         version: String,
         generation: String,
+        plist: PathBuf,
     }
 
     fn installed(home: &Path, base: &Path) -> Result<Installed, ()> {
@@ -526,21 +528,69 @@ mod darwin {
         }
         let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
         let endpoint = endpoint.trim().to_owned();
-        let plist = read_private(&agents.join(format!("{LABEL}.plist")), 65536)?.ok_or(())?;
-        let generation = installed_generation(&plist, &exe, &endpoint)?;
+        let plist = agents.join(format!("{LABEL}.plist"));
+        let raw = read_private(&plist, 65536)?.ok_or(())?;
+        let generation = installed_generation(&raw, &exe, &endpoint)?;
         Ok(Installed {
             executable: exe,
             endpoint,
             version,
             generation,
+            plist,
         })
+    }
+
+    fn now_ms() -> Result<u64, ()> {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ())?
+            .as_millis()
+            .try_into()
+            .map_err(|_| ())
+    }
+
+    // Return only marker evidence tied to this registered process, then
+    // confirm current signed WSS through the existing read-only IPC gate.
+    fn connection_evidence(current: &Installed, key: &Path, pid: u32) -> Option<(bool, u64, bool)> {
+        let file = key.parent()?.join("macos-connection.json");
+        let raw = read_private(&file, 1024).ok()??;
+        let (connected, at) = connection_time(
+            &raw,
+            &current.generation,
+            &current.version,
+            pid,
+            now_ms().ok()?,
+        )?;
+        let online = connected
+            && rca_native_agent::upgrade_control::verify_online(key).is_ok_and(|value| value)
+            && observe_registration(&current.executable) == Registration::Present(Some(pid))
+            && read_private(&file, 1024).ok().flatten().as_deref() == Some(raw.as_str());
+        Some((connected, at, online))
+    }
+
+    fn await_online(current: &Installed, key: &Path, after: u64) -> bool {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        for _ in 0..50 {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            if let Registration::Present(Some(pid)) = observe_registration(&current.executable) {
+                if connection_evidence(current, key, pid)
+                    .is_some_and(|(_, at, online)| online && at >= after)
+                {
+                    return true;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        false
     }
 
     fn manage(action: &str) -> Result<(), ()> {
         use std::io::{IsTerminal, Write};
         let home = home()?;
         let base = identity_directory(&home, false)?;
-        let _lock = if action == "stop" {
+        let _lock = if action != "status" {
             Some(lock_identity_directory(&base)?)
         } else {
             None
@@ -572,11 +622,17 @@ mod darwin {
         let stopped = owner_stopped(&key)?;
         if action == "status" {
             let observed = observe_registration(&current.executable);
+            let mut evidence = None;
+            if !stopped {
+                if let Registration::Present(Some(pid)) = observed {
+                    evidence = connection_evidence(&current, &key, pid);
+                }
+            }
             let local = match (stopped, observed) {
                 (true, Registration::Absent) => "intentionally_stopped",
                 (true, _) => "stopped_requested_unverified",
-                (false, Registration::Present(Some(_))) => "running_observed",
-                (false, Registration::Present(None)) => "present_unverified",
+                (false, Registration::Present(_)) if evidence.is_some() => "running_observed",
+                (false, Registration::Present(_)) => "present_unverified",
                 (false, Registration::Absent) => "not_running",
                 _ => "unconfirmed",
             };
@@ -584,9 +640,14 @@ mod darwin {
                 "{}",
                 serde_json::json!({"installed":true,"installed_version":current.version,
                 "version":current.version,"platform":"darwin","local_service":local,
-                "signed_wss":"unconfirmed","cloud_authorization":"unconfirmed","last_online":"unconfirmed"})
+                "signed_wss":if evidence.is_some_and(|(_, _, online)| online) {"connected_observed"} else {"unconfirmed"},
+                "cloud_authorization":"unconfirmed",
+                "last_online":evidence.and_then(|(connected, at, _)| if connected {iso_time(at)} else {None}).unwrap_or_else(|| "unconfirmed".to_owned())})
             );
             return Ok(());
+        }
+        if action == "start" && !stopped {
+            return Err(());
         }
         let pem = read_private(&key, 8192)?.ok_or(())?;
         let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
@@ -597,7 +658,12 @@ mod darwin {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             return Err(());
         }
-        print!("Intentionally stop this user LaunchAgent? Confirm [y/N]: ");
+        let prompt = if action == "start" {
+            "Resume the previously stopped LaunchAgent?"
+        } else {
+            "Intentionally stop this user LaunchAgent?"
+        };
+        print!("{prompt} Confirm [y/N]: ");
         std::io::stdout().flush().map_err(|_| ())?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer).map_err(|_| ())?;
@@ -618,6 +684,52 @@ mod darwin {
             return Err(());
         }
         let marker = base.join("macos/stopped");
+        if action == "start" {
+            let domain = format!("gui/{}", unsafe { libc::geteuid() });
+            let after = now_ms()?;
+            resume_owned(
+                || observe_registration(&current.executable),
+                || {
+                    client.owner_intent(&pem, id, "stop").map_err(|_| ())?;
+                    client.owner_intent(&pem, id, "resume").map_err(|_| ())
+                },
+                || {
+                    fs::remove_file(&marker).map_err(|_| ())?;
+                    fs::File::open(marker.parent().ok_or(())?)
+                        .and_then(|file| file.sync_all())
+                        .map_err(|_| ())
+                },
+                || {
+                    current.plist.to_str().is_some_and(|plist| {
+                        launchctl(&["bootstrap", &domain, plist])
+                            .is_ok_and(|(code, _, _)| code == Some(0))
+                    })
+                },
+                || await_online(&current, &key, after),
+                || {
+                    if !owner_stopped(&key)? {
+                        write_new(&marker, b"stopped\n")?;
+                    }
+                    unregister_owned(
+                        || observe_registration(&current.executable),
+                        || {
+                            launchctl(&["bootout", &service_target()])
+                                .is_ok_and(|(code, _, _)| code == Some(0))
+                        },
+                        || std::thread::sleep(Duration::from_millis(250)),
+                        true,
+                    )
+                },
+            )
+            .map_err(|_| {
+                eprintln!("Resume unconfirmed; inspect status before retrying.");
+            })?;
+            println!(
+                "{}",
+                serde_json::json!({"status":"connected_observed","cloud":"signed_WSS_observed"})
+            );
+            return Ok(());
+        }
         let confirmed = stop_owned(
             || {
                 if stopped {
@@ -701,7 +813,7 @@ mod darwin {
             .map(|value| value.into_string().map_err(|_| ()))
             .collect::<Result<_, _>>()?;
         if let [action] = arguments.as_slice() {
-            if matches!(action.as_str(), "status" | "stop") {
+            if matches!(action.as_str(), "status" | "stop" | "start") {
                 return manage(action);
             }
         }

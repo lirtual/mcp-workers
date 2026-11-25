@@ -316,6 +316,8 @@ impl NativeFileError {
 struct LocalControl {
     requests: Receiver<UpgradeRequest>,
     idle_attempt: Option<crate::session_enrollment::SessionPhysicalAttempt>,
+    #[cfg(any(unix, windows))]
+    connected: Arc<AtomicBool>,
 }
 
 fn execute_native_file(
@@ -389,6 +391,17 @@ fn execute_native_file(
                             "ready\n".into()
                         }
                         UpgradeCommand::VerifyFrozen => "busy\n".into(),
+                        #[cfg(any(unix, windows))]
+                        UpgradeCommand::VerifyOnline => {
+                            if healthy
+                                && control.idle_attempt.is_none()
+                                && control.connected.load(Ordering::Acquire)
+                            {
+                                "ready\n".into()
+                            } else {
+                                "busy\n".into()
+                            }
+                        }
                         UpgradeCommand::Release => {
                             upgrade_frozen = false;
                             "released\n".into()
@@ -835,14 +848,35 @@ fn run_native_managed_session_inner(
     let writes =
         NativeWriteExecutor::open_runtime(receipt_directory, options.on_diagnostic.clone())?;
     let health = writes.health();
-    let on_connected = options.on_connected.map(|callback| {
+    #[cfg(any(unix, windows))]
+    let connected = Arc::new(AtomicBool::new(false));
+    let on_connected = {
         let health = Arc::clone(&health);
-        Arc::new(move || {
+        #[cfg(any(unix, windows))]
+        let connected = Arc::clone(&connected);
+        let callback = options.on_connected;
+        Some(Arc::new(move || {
             if health.load(Ordering::Acquire) {
+                #[cfg(any(unix, windows))]
+                connected.store(true, Ordering::Release);
+                if let Some(callback) = &callback {
+                    callback();
+                }
+            }
+        }) as Arc<dyn Fn() + Send + Sync>)
+    };
+    let on_disconnected = {
+        #[cfg(any(unix, windows))]
+        let connected = Arc::clone(&connected);
+        let callback = options.on_disconnected;
+        Some(Arc::new(move || {
+            #[cfg(any(unix, windows))]
+            connected.store(false, Ordering::Release);
+            if let Some(callback) = &callback {
                 callback();
             }
-        }) as Arc<dyn Fn() + Send + Sync>
-    });
+        }) as Arc<dyn Fn() + Send + Sync>)
+    };
 
     #[cfg(any(unix, windows))]
     let (_upgrade_server, local_control) = if let Some(key) = options.upgrade_key {
@@ -854,6 +888,8 @@ fn run_native_managed_session_inner(
             Some(LocalControl {
                 requests,
                 idle_attempt: options.idle_attempt,
+                #[cfg(any(unix, windows))]
+                connected: Arc::clone(&connected),
             }),
         )
     } else {
@@ -894,7 +930,7 @@ fn run_native_managed_session_inner(
             timing: options.timing,
             managed: Arc::clone(&managed),
             on_connected,
-            on_disconnected: options.on_disconnected,
+            on_disconnected,
             on_diagnostic: options.on_diagnostic,
         },
     );

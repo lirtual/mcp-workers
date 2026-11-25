@@ -32,6 +32,7 @@ use windows_sys::Win32::System::SystemServices::SECURITY_DESCRIPTOR_REVISION;
 pub enum UpgradeCommand {
     Freeze,
     VerifyFrozen,
+    VerifyOnline,
     Release,
 }
 pub struct UpgradeRequest {
@@ -132,6 +133,7 @@ fn parse_frame(bytes: &[u8]) -> Option<UpgradeCommand> {
     match bytes {
         b"freeze\n" => Some(UpgradeCommand::Freeze),
         b"verify-frozen\n" => Some(UpgradeCommand::VerifyFrozen),
+        b"verify-online\n" => Some(UpgradeCommand::VerifyOnline),
         b"release\n" => Some(UpgradeCommand::Release),
         _ => None,
     }
@@ -292,6 +294,10 @@ mod tests {
         assert_eq!(
             parse_frame(b"verify-frozen\n"),
             Some(UpgradeCommand::VerifyFrozen)
+        );
+        assert_eq!(
+            parse_frame(b"verify-online\n"),
+            Some(UpgradeCommand::VerifyOnline)
         );
         assert_eq!(parse_frame(b"release\n"), Some(UpgradeCommand::Release));
     }
