@@ -136,10 +136,11 @@ def upgrade(bootstrap, arguments):
 
 def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
-        print("Usage: rca [status|pair|logs|stop|start|upgrade|recover|uninstall]")
+        print("Usage: rca [status|pair|logs|stop|start|update|recover|uninstall]")
         print("Permanent pairing / re-pair and pair --temporary are supported.")
         print("Without arguments: open the interactive local Agent manager.")
-        print("Upgrade from the reviewed stable Latest: rca upgrade.")
+        print("Check the reviewed stable Latest without installing: rca update --check.")
+        print("Update from the reviewed stable Latest: rca update (upgrade is an alias).")
         print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
         return 0
     if command in ("--version", "version"):
@@ -162,8 +163,15 @@ def dispatch(command, args, root, info, bootstrap):
             raise ValueError("Stop/Start takes no arguments")
         print(json.dumps(bootstrap.native_owner_lifecycle(Path.home(), command)))
         return 0
-    if command == "upgrade":
-        if args in (["--unattended"], ["--unattended-worker"]):
+    if command in ("update", "upgrade"):
+        if args == ["--check"]:
+            endpoint = installed_endpoint(bootstrap)
+            if not endpoint:
+                raise ValueError("No installer-owned permanent service available to check.")
+            result = bootstrap.native_check_latest(endpoint)
+            print(json.dumps(result, ensure_ascii=False))
+            return 1 if result["status"] == "unknown" else 0
+        if command == "upgrade" and args in (["--unattended"], ["--unattended-worker"]):
             return bootstrap.native_unattended_upgrade(root, worker=args == ["--unattended-worker"])
         return upgrade(bootstrap, args)
     if command == "recover":
@@ -174,7 +182,7 @@ def dispatch(command, args, root, info, bootstrap):
         if args:
             raise ValueError("uninstall takes no arguments")
         return bootstrap_action(bootstrap, ["--uninstall"])
-    raise ValueError("Usage: rca [status|logs|pair|upgrade|uninstall]")
+    raise ValueError("Usage: rca [status|logs|pair|update|uninstall]")
 
 
 def main():
@@ -186,7 +194,7 @@ def main():
     while True:
         print("\nRemote Control Agent " + info["version"])
         print("1. Status   2. " + "Pair / repair" + "   3. Logs")
-        print("4. Upgrade  5. Uninstall       6. Exit")
+        print("4. Update   5. Uninstall       6. Exit")
         print("7. Recover interrupted installation/upgrade")
         choice = input("Choose an option: ").strip()
         if choice in ("6", "q", "Q"):

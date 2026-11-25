@@ -436,22 +436,25 @@ def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False, det
     return "linux-" + ("x64" if cpu == "x86_64" else "arm64") + "-glibc"
 
 
-def public_forward_version(installed, target):
+def native_latest_status(installed, target):
+    """Classify a reviewed forward update without normalizing away its label."""
     stable = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     old = re.fullmatch(stable + r"(?:-rust-candidate\.[1-9][0-9]*)?", installed)
     new = re.fullmatch(stable, target)
     if not old or not new:
-        return False
+        return "unknown"
     old_number, new_number = tuple(map(int, old.groups())), tuple(map(int, new.groups()))
-    return new_number > old_number or (new_number == old_number and installed != target)
+    if installed == target:
+        return "up_to_date"
+    return "update_available" if new_number >= old_number else "older_latest"
 
 
-def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=None):
-    if detached_upgrade:
-        if not approved_native_detached_worker() or expected_root is None:
-            raise ValueError("Detached native upgrade requires an admitted systemd worker")
-    elif not (sys.stdin.isatty() and sys.stdout.isatty()):
-        raise ValueError("Upgrade requires local interactive confirmation")
+def public_forward_version(installed, target):
+    return native_latest_status(installed, target) == "update_available"
+
+
+def native_latest_context(endpoint, expected_root=None):
+    """Validate the same installed service for read-only checks and upgrades."""
     home = pathlib.Path.home()
     _, versions, _, unit, ids = local_inventory(home)
     root = owned_unit_root(unit, versions)
@@ -463,12 +466,36 @@ def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=Non
         raise ValueError("Latest native upgrade requires the installed native-only manager")
     if unit != native_render_unit(root, endpoint, home / STORE / "v2-identity.pem"):
         raise ValueError("Untrusted installed Worker origin")
+    return info
+
+
+def native_check_latest(endpoint):
+    """Observe metadata only; never stage, lock or switch an installation."""
+    info = native_latest_context(endpoint)
+    installed = info["version"]
+    try:
+        selected = resolve_latest_native(info["target"])
+    except (ValueError, OSError):
+        return {"installed_version": installed, "latest_version": None, "status": "unknown"}
+    latest = selected["tag"]
+    return {"installed_version": installed, "latest_version": latest,
+            "status": native_latest_status(installed, latest)}
+
+
+def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=None):
+    if detached_upgrade:
+        if not approved_native_detached_worker() or expected_root is None:
+            raise ValueError("Detached native upgrade requires an admitted systemd worker")
+    elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Upgrade requires local interactive confirmation")
+    info = native_latest_context(endpoint, expected_root)
     selected = resolve_latest_native(info["target"])
     tag = selected["tag"]
-    if tag == info["version"]:
+    status = native_latest_status(info["version"], tag)
+    if status == "up_to_date":
         print("Already up to date with the reviewed Release (" + tag + ").")
         return 0
-    if not public_forward_version(info["version"], tag):
+    if status != "update_available":
         raise ValueError("Silent downgrade or same-version replacement refused")
     if preflight(tag, None, endpoint, latest_archive=True,
                  detached_upgrade=detached_upgrade) != info["target"]:

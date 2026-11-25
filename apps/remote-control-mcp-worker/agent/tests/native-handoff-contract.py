@@ -1092,10 +1092,7 @@ def verify_native_owner_lifecycle():
     print("NATIVE_OWNER_LIFECYCLE_CONTRACT_PASS")
 
 
-def verify_latest_selection():
-    import copy
-    from unittest.mock import Mock
-    tag = "v0.1.58"
+def stable_release_fixture(tag):
     targets = ("linux-x64-glibc", "linux-arm64-glibc", "windows-x64",
                "darwin-arm64", "darwin-x64")
     assets = []
@@ -1106,8 +1103,89 @@ def verify_latest_selection():
                        "digest":"sha256:"+"ab"*32,
                        "browser_download_url":"https://github.com/"+bootstrap.OWNER+
                        "/releases/download/"+tag+"/"+name})
-    release = {"tag_name":tag, "immutable":True, "draft":False,
-               "prerelease":False, "assets":assets}
+    return {"tag_name":tag, "immutable":True, "draft":False,
+            "prerelease":False, "assets":assets}
+
+
+def verify_read_only_update_check():
+    import contextlib
+    import io
+    from unittest.mock import Mock
+    ctx, home, old, new, unit, launcher, key, receipts = native_pair_fixture()
+    try:
+        manager_spec = importlib.util.spec_from_file_location("rca_manager", SCRIPT.with_name("manage-v2.py"))
+        manager = importlib.util.module_from_spec(manager_spec)
+        manager_spec.loader.exec_module(manager)
+        info = json.loads((old / "bundle.json").read_text("utf8"))
+        original_unit = unit.read_bytes()
+        original_identity = key.read_bytes()
+        original_receipts = receipts.read_bytes()
+        original_launcher = launcher.readlink()
+        original_programs = sorted(p.name for p in old.parent.iterdir())
+        metadata = Mock()
+        no_download = Mock(side_effect=AssertionError("Check downloaded an archive"))
+        no_install = Mock(side_effect=AssertionError("Check attempted installation"))
+        with patch.dict(os.environ, {"HOME": str(home)}), patch.multiple(
+                bootstrap, json_api=metadata, fetch=no_download, install=no_install), patch.object(
+                sys.stdin, "isatty", return_value=False), patch.object(sys.stdout, "isatty", return_value=False):
+            for tag, expected in (("v0.1.57", "up_to_date"),
+                                  ("v0.1.58", "update_available"),
+                                  ("v0.1.56", "older_latest")):
+                metadata.reset_mock()
+                metadata.return_value = stable_release_fixture(tag)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    result = manager.dispatch("update", ["--check"], old, info, bootstrap)
+                assert result == 0
+                actual = json.loads(out.getvalue())
+                assert actual == {"installed_version": "v0.1.57", "latest_version": tag, "status": expected}, actual
+                metadata.assert_called_once_with("/releases/latest")
+            for invalid in ({**stable_release_fixture("v0.1.58"), "immutable": False}, {"assets": []}):
+                metadata.return_value = invalid
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    assert manager.dispatch("update", ["--check"], old, info, bootstrap) == 1
+                assert json.loads(out.getvalue()) == {"installed_version": "v0.1.57", "latest_version": None, "status": "unknown"}
+            metadata.side_effect = OSError("unavailable")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                assert manager.dispatch("update", ["--check"], old, info, bootstrap) == 1
+            assert json.loads(out.getvalue()) == {"installed_version": "v0.1.57", "latest_version": None, "status": "unknown"}
+        no_download.assert_not_called()
+        no_install.assert_not_called()
+        assert unit.read_bytes() == original_unit and key.read_bytes() == original_identity
+        assert receipts.read_bytes() == original_receipts and launcher.readlink() == original_launcher
+        assert sorted(p.name for p in old.parent.iterdir()) == original_programs
+        # Historical candidates must retain their actual labels. A version
+        # outside the reviewed forward-upgrade scheme is not an older Latest.
+        with patch.dict(os.environ, {"HOME": str(home)}), patch.multiple(
+                bootstrap, json_api=Mock(return_value=stable_release_fixture("v0.1.58")),
+                fetch=no_download, install=no_install):
+            for version, expected, code in (("v0.1.58-rust-candidate.6", "update_available", 0),
+                                            ("v0.1.57-custom", "unknown", 1)):
+                candidate = make_version(home, version)
+                unit.write_text(bootstrap.native_render_unit(candidate, ENDPOINT, key))
+                candidate_info = json.loads((candidate / "bundle.json").read_text("utf8"))
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    assert manager.dispatch("update", ["--check"], candidate, candidate_info, bootstrap) == code
+                assert json.loads(out.getvalue()) == {"installed_version": version,
+                    "latest_version": "v0.1.58", "status": expected}
+        no_download.assert_not_called()
+        no_install.assert_not_called()
+    finally:
+        ctx.cleanup()
+    print("NATIVE_READ_ONLY_UPDATE_CHECK_PASS")
+
+
+def verify_latest_selection():
+    import copy
+    from unittest.mock import Mock
+    tag = "v0.1.58"
+    targets = ("linux-x64-glibc", "linux-arm64-glibc", "windows-x64",
+               "darwin-arm64", "darwin-x64")
+    release = stable_release_fixture(tag)
+    assets = release["assets"]
     lookup = Mock(return_value=release)
     with patch.object(bootstrap, "json_api", lookup):
         chosen = bootstrap.resolve_latest_native(targets[0])
@@ -1304,6 +1382,7 @@ if __name__ == "__main__":
         verify_service_start()
         verify_public_native_archive()
         verify_native_owner_lifecycle()
+        verify_read_only_update_check()
         verify_latest_selection()
         verify_owner_stop_at_cutover_lock()
         verify_native_detached_upgrade()

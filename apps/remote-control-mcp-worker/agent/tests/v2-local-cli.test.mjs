@@ -57,7 +57,7 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     const python=args=>spawnSync("/usr/bin/python3",
       ["-I","-B",path.join(f.script,"manage-v2.py"),...args],
       {encoding:"utf8",env,timeout:10000});
-    for(const args of [[],["pair"],["upgrade"],["uninstall"]])
+    for(const args of [[],["pair"],["upgrade"],["update"],["update","--check"],["uninstall"]])
       assert.notEqual(python(args).status,0,"Rust Python manager must reject "+args.join(" "));
     await assert.rejects(
       lstat(path.join(f.home,".local/share/mcp-workers/remote-control/v2-identity.pem")),
