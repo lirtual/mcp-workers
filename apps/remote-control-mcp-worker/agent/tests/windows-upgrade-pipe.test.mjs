@@ -242,3 +242,34 @@ Write-Output 'automatic-result-pass'
   assert.equal(result.status,0,result.stderr);
   assert.equal(result.stdout.trim(),"automatic-result-pass");
 });
+
+test("automatic switch accepts only the original installer binding",async t=>{
+  const shell=process.platform==="win32"?"powershell.exe":"pwsh";
+  if(spawnSync(shell,["-NoProfile","-Command","exit 0"]).error){t.skip("PowerShell unavailable");return;}
+  const installer=await readFile(fileURLToPath(new URL("../install.ps1",import.meta.url)),"utf8");
+  const controller=await readFile(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  const functions=[installer.match(/^function Get-UpdateBindingDigest\([\s\S]*?^\}/m)?.[0],
+    controller.match(/^function Assert-AutomaticSwitchBinding\([\s\S]*?^\}/m)?.[0]];
+  assert(functions.every(Boolean));
+  const command=functions.join("\n")+String.raw`
+$ErrorActionPreference='Stop'
+$binding=[pscustomobject]@{version='v0.1.62';key_hash=('A'*64);id_hash=('B'*64);execute='C:\Owner Path\rca.exe';arguments='--endpoint "https://example.invalid/"';working_directory='C:\Owner Path'}
+$record=[pscustomobject]@{original=$binding.version;key_hash=$binding.key_hash;id_hash=$binding.id_hash}
+$action=[pscustomobject]@{Execute=$binding.execute;Arguments=$binding.arguments;WorkingDirectory=$binding.working_directory}
+$AutomaticBinding=Get-UpdateBindingDigest $binding
+Assert-AutomaticSwitchBinding $record $action
+foreach($field in @('original','key_hash','id_hash','Execute','Arguments','WorkingDirectory')){
+  $obj=if($field -cin @('original','key_hash','id_hash')){$record}else{$action}
+  $before=$obj.$field
+  $obj.$field='changed'
+  try{Assert-AutomaticSwitchBinding $record $action;throw 'Changed target admitted'}
+  catch{if($_.Exception.Message -cne 'Original automatic update target changed'){throw}}
+  finally{$obj.$field=$before}
+}
+Write-Output 'switch-binding-pass'
+`;
+  const result=spawnSync(shell,["-NoProfile","-NonInteractive","-Command",command],
+    {windowsHide:true,encoding:"utf8",timeout:10000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.trim(),"switch-binding-pass");
+});

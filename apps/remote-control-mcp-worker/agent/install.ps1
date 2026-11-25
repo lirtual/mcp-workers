@@ -479,7 +479,7 @@ function Complete-NativeInstall([string]$directory) {
   if ($upgradeExisting) {
     if ($Automatic) {
       Assert-AutomaticUpdateBinding $Version
-      & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade -Automatic
+      & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade -Automatic -AutomaticBinding (Get-UpdateBindingDigest $attendedBinding)
     } else {
       & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
     }

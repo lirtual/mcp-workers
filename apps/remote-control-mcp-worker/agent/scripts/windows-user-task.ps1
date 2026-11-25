@@ -6,7 +6,8 @@ param(
   [string]$Endpoint,
   [string]$Version, [ValidateSet('Upgrade')][string]$Direction,
   [string]$Generation,
-  [switch]$Automatic
+  [switch]$Automatic,
+  [ValidatePattern('^[0-9a-f]{64}$')][string]$AutomaticBinding
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -87,6 +88,7 @@ function Check-Existing {
   }
 }
 if ($Automatic -and $Action -ne 'Switch') { throw 'Automatic authority is only valid for Switch' }
+if ([bool]$Automatic -ne [bool]$AutomaticBinding) { throw 'Automatic switch requires its original target binding' }
 if ($Action -ne 'VerifyActivation' -and $Generation) { throw 'Unexpected generation argument' }
 function Confirm-NativeActivation([string]$Version,[string]$Generation) {
   $task = Get-ScheduledTask -TaskName $name -ErrorAction Stop
@@ -529,6 +531,15 @@ function Read-NativeJournal($stream) {
   }
   $record
 }
+# Match the installer digest of the reviewed version, identity and exact Task.
+function Assert-AutomaticSwitchBinding($record,$action) {
+  $bytes = [Text.Encoding]::UTF8.GetBytes((@($record.original,$record.key_hash,$record.id_hash,
+    [string]$action.Execute,[string]$action.Arguments,[string]$action.WorkingDirectory) | ConvertTo-Json -Compress))
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $digest = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant() }
+  finally { $sha.Dispose() }
+  if ($digest -cne $AutomaticBinding) { throw 'Original automatic update target changed' }
+}
 function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
   $managementCaller = Get-LocalSwitchCaller 'Upgrade' $newVersion
   Check-UpgradeStore
@@ -556,6 +567,7 @@ function Invoke-NativeUpgrade([string]$oldVersion,[string]$newVersion,$launch) {
     key_hash=(Get-FileHash -LiteralPath $identityFile -Algorithm SHA256).Hash;
     id_hash=(Get-FileHash -LiteralPath ($identityFile + '.device-id') -Algorithm SHA256).Hash }
   Assert-UpgradeIdentity $record
+  if ($Automatic) { Assert-AutomaticSwitchBinding $record $observed.Actions[0] }
   $bytes = [Text.Encoding]::UTF8.GetBytes(($record | ConvertTo-Json -Compress))
   $stream = [IO.File]::Open($nativeJournal,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
   try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
