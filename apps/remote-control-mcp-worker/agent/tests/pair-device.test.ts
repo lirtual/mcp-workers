@@ -259,5 +259,9 @@ test("#1018 browser authorization link is restricted to the canonical enrollment
     assert.equal(message.includes("https://rca.lirtual.dpdns.org/pair#"+pending.code),canonical);
     assert.ok(message.includes(pending.fingerprint));
     assert.ok(message.includes("temporary"));
+    if(!canonical){
+      assert.ok(!message.includes(pending.code));
+      assert.match(message,/official RCA installer/);
+    }
   }
 });

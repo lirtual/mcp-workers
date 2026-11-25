@@ -9,6 +9,7 @@ import {newEnrollment, saveNewPrivateKey} from "../agent/src/v2-enrollment.ts";
 import {recoverDeviceId, signedSessionProof} from "../agent/src/v2-session-client.ts";
 import {ReceiptStore, operationDigest} from "../agent/src/operations.ts";
 import worker, {V2OwnerCoordinator} from "../src/worker.ts";
+import {approvalArgs, lookupOwnerPairing, approveOwnerPairing} from "../src/pairing-owner.ts";
 import {approvePendingKey} from "../src/v2-pairing.ts";
 import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/v2-session.ts";
 
@@ -62,38 +63,48 @@ function fixture(browser=false) {
     const payload=json.result?.content?.[0]?.text||"{}";
     return {response,payload,object:(()=>{try{return JSON.parse(payload) as Record<string,unknown>;}catch{return {};}})()};
   };
+  // Protocol/lifecycle scenarios exercise the same owner adapter and real
+  // coordinator without coupling to an authentication ingress. Browser HTTP
+  // authentication and retired MCP ingress are covered separately below.
+  const ownerStub=V2_OWNER.get(V2_OWNER.idFromName("single-owner"));
+  const parsed=async(response:Response)=>({response,object:await response.json() as Record<string,unknown>});
+  const lookup=async({code}:{code:string})=>parsed(await lookupOwnerPairing(ownerStub,code));
+  const approve=async(input:object)=>{
+    const args=approvalArgs(input);
+    assert.ok(args);
+    return parsed(await approveOwnerPairing(ownerStub,args));
+  };
   const register=async(request:object)=>send(origin+"agent/pair/start",{
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(request),
   });
-  return {rows,store,send,rpc,register,origin,dispatches:()=>dispatches,dropApprovalReply:()=>{dropApprovalReply=true;}};
+  return {rows,store,send,rpc,lookup,approve,register,origin,dispatches:()=>dispatches,dropApprovalReply:()=>{dropApprovalReply=true;}};
 }
 
-test("#97 explicit MCP approval is separate from lookup and Agent claims by existing signed recovery",async()=>{
+test("#97 explicit owner approval is separate from lookup and Agent claims by existing signed recovery",async()=>{
   const f=fixture(), pending=newEnrollment("one-code-host");
   const dir=await mkdtemp(path.join(os.tmpdir(),"remote-v2-one-code-"));
   const keyPath=path.join(dir,"identity.pem");
   try {
     await saveNewPrivateKey(keyPath,pending.privateKeyPem);
     assert.equal((await f.register(pending.request)).status,202);
-    assert.equal((await f.rpc("pairing_lookup",{code:pending.code},"wrong-token")).response.status,401);
-    const looked=await f.rpc("pairing_lookup",{code:pending.code});
+    const looked=await f.lookup({code:pending.code});
     const pairingId=String(looked.object.pairing_id),fingerprint=String(looked.object.fingerprint);
     assert.match(pairingId,/^[a-f0-9-]{36}$/);
     assert.equal(looked.object.grant_type,"permanent");
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
 
-    const wrong=await f.rpc("pairing_approve",{
+    const wrong=await f.approve({
       pairing_id:pairingId,expected_fingerprint:"0".repeat(24),expected_grant_type:"permanent",
     });
     assert.equal(wrong.object.status,undefined);
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
-    const mode=await f.rpc("pairing_approve",{
+    const mode=await f.approve({
       pairing_id:pairingId,expected_fingerprint:fingerprint,expected_grant_type:"temporary",
     });
     assert.equal(mode.object.status,undefined);
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
 
-    const approved=await f.rpc("pairing_approve",{
+    const approved=await f.approve({
       pairing_id:pairingId,expected_fingerprint:fingerprint,expected_grant_type:"permanent",
     });
     assert.equal(approved.object.status,"approved");
@@ -101,8 +112,8 @@ test("#97 explicit MCP approval is separate from lookup and Agent claims by exis
     assert.match(deviceId,/^[a-f0-9-]{36}$/);
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,1);
     assert.equal(f.rows.has("pending:"+pending.request.code_verifier),false);
-    assert.equal((await f.rpc("pairing_lookup",{code:pending.code})).object.status,undefined);
-    assert.equal((await f.rpc("pairing_approve",{
+    assert.equal((await f.lookup({code:pending.code})).object.status,undefined);
+    assert.equal((await f.approve({
       pairing_id:pairingId,expected_fingerprint:fingerprint,expected_grant_type:"permanent",
     })).object.status,undefined);
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,1);
@@ -137,14 +148,14 @@ test("#76 lost original pending HTTP reply retries same Ed25519 key, invalidates
     assert.equal([...f.rows.keys()].filter(k=>k.startsWith("pending:")).length,1);
     assert.equal(f.rows.has("pending:"+initial.request.code_verifier),false);
     assert.equal(f.rows.has("pending:"+retried.request.code_verifier),true);
-    assert.equal((await f.rpc("pairing_lookup",{code:initial.code})).object.status,undefined);
-    const looked=await f.rpc("pairing_lookup",{code:retried.code});
+    assert.equal((await f.lookup({code:initial.code})).object.status,undefined);
+    const looked=await f.lookup({code:retried.code});
     const pairingId=String(looked.object.pairing_id);
     const fingerprint=String(looked.object.fingerprint);
     assert.equal(looked.object.grant_type,"permanent");
     assert.ok(pairingId.length>30 && fingerprint.length===24);
     assert.equal([...f.rows.keys()].filter(k=>k.startsWith("device:")).length,0);
-    const approved=await f.rpc("pairing_approve",{
+    const approved=await f.approve({
       pairing_id:pairingId,expected_fingerprint:fingerprint,
       expected_grant_type:"permanent",
     });
@@ -155,7 +166,7 @@ test("#76 lost original pending HTTP reply retries same Ed25519 key, invalidates
     assert.equal(await recoverDeviceId(f.origin,keyPath,f.send),approvedId);
     assert.equal((await readFile(keyPath+".device-id","utf8")).trim(),approvedId);
     assert.equal(await readFile(keyPath,"utf8"),initial.privateKeyPem);
-    assert.equal((await f.rpc("pairing_approve",{
+    assert.equal((await f.approve({
       pairing_id:pairingId,expected_fingerprint:fingerprint,
       expected_grant_type:"permanent",
     })).object.status,undefined);
@@ -166,11 +177,11 @@ test("#76 lost original pending HTTP reply retries same Ed25519 key, invalidates
 test("#97 temporary owner approval binds exact grant and fixed server expiry",async()=>{
   const f=fixture(),pending=newEnrollment("temp-approval",undefined,"temporary");
   assert.equal((await f.register(pending.request)).status,202);
-  const looked=await f.rpc("pairing_lookup",{code:pending.code});
+  const looked=await f.lookup({code:pending.code});
   assert.equal(looked.object.grant_type,"temporary");
   const args={pairing_id:String(looked.object.pairing_id),
     expected_fingerprint:String(looked.object.fingerprint),expected_grant_type:"temporary"};
-  const approved=await f.rpc("pairing_approve",args);
+  const approved=await f.approve(args);
   assert.equal(approved.object.status,"approved");
   const record=f.rows.get("device:"+approved.object.device_id) as
     {approved_at:number;expires_at:number;grant_type:string};
@@ -181,7 +192,7 @@ test("#97 temporary owner approval binds exact grant and fixed server expiry",as
 test("#97 pending legacy two-code preparation cannot be upgraded into approval",async()=>{
   const f=fixture(),material=newEnrollment("old-flow");
   assert.equal((await f.register(material.request)).status,202);
-  const lookup=await f.rpc("pairing_lookup",{code:material.code});
+  const lookup=await f.lookup({code:material.code});
   const id=String(lookup.object.pairing_id),fp=String(lookup.object.fingerprint);
   // Simulate an in-flight old two-code record preserved in DO storage
   // through rollout; never upgrade it automatically into the new flow.
@@ -197,7 +208,7 @@ test("#97 pending legacy two-code preparation cannot be upgraded into approval",
 test("#97 concurrent owner approvals serialize to one grant; replay cannot mint another ID",async()=>{
   const f=fixture(),pending=newEnrollment("race-approval");
   assert.equal((await f.register(pending.request)).status,202);
-  const found=await f.rpc("pairing_lookup",{code:pending.code});
+  const found=await f.lookup({code:pending.code});
   const args={pairing_id:String(found.object.pairing_id),
     expected_fingerprint:String(found.object.fingerprint),expected_grant_type:"permanent"};
   const results=await Promise.all(Array.from({length:5},()=>
@@ -217,7 +228,7 @@ test("#97 concurrent owner approvals serialize to one grant; replay cannot mint 
 test("#97 expired code, wrong pairing ID and malformed fingerprint cannot approve",async()=>{
   const f=fixture(),material=newEnrollment("expires");
   assert.equal((await f.register(material.request)).status,202);
-  const lookup=await f.rpc("pairing_lookup",{code:material.code});
+  const lookup=await f.lookup({code:material.code});
   const id=String(lookup.object.pairing_id),fp=String(lookup.object.fingerprint);
   assert.equal((await approvePendingKey(f.store as never,
     "00000000-0000-4000-8000-000000000000",fp,"permanent")).status,404);
@@ -226,7 +237,7 @@ test("#97 expired code, wrong pairing ID and malformed fingerprint cannot approv
   // Simulate the server-side clock passing the pending lifetime; DO controls it.
   const pending=f.rows.get("pending:"+material.request.code_verifier) as {expires_at:number};
   pending.expires_at=Date.now()-1;
-  assert.equal((await f.rpc("pairing_lookup",{code:material.code})).object.pairing_id,undefined);
+  assert.equal((await f.lookup({code:material.code})).object.pairing_id,undefined);
   assert.equal((await approvePendingKey(f.store as never,id,fp,"permanent")).status,404);
   assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
 });
@@ -241,8 +252,8 @@ test("#97 a legacy approved key without grant_type keeps signed WSS authority af
   });
   const incoming=newEnrollment("new-one-code-device");
   assert.equal((await f.register(incoming.request)).status,202);
-  const looked=await f.rpc("pairing_lookup",{code:incoming.code});
-  const result=await f.rpc("pairing_approve",{
+  const looked=await f.lookup({code:incoming.code});
+  const result=await f.approve({
     pairing_id:String(looked.object.pairing_id),expected_fingerprint:String(looked.object.fingerprint),
     expected_grant_type:"permanent",
   });
@@ -288,7 +299,7 @@ test("#97 old signed pending code without new protocol proof cannot be silently 
   // even when it never reached the old pairing_prepare challenge step.
   const newValid=await f.register(req);
   assert.equal(newValid.status,202);
-  const looked=await f.rpc("pairing_lookup",{code:old.code});
+  const looked=await f.lookup({code:old.code});
   const pending=f.rows.get("pending:"+req.code_verifier) as Record<string,unknown>;
   delete pending.pairing_protocol;
   assert.equal(pending.confirmation_hash,undefined);
@@ -316,9 +327,9 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
     assert.equal(before?.state,"unknown");
     const originalPem=await readFile(keyPath,"utf8");
     assert.equal((await f.register(material.request)).status,202);
-    const looked=await f.rpc("pairing_lookup",{code:material.code});
+    const looked=await f.lookup({code:material.code});
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,0);
-    const approved=await f.rpc("pairing_approve",{
+    const approved=await f.approve({
       pairing_id:String(looked.object.pairing_id),
       expected_fingerprint:String(looked.object.fingerprint),
       expected_grant_type:"permanent",
@@ -375,7 +386,7 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
   }
 });
 
-test("#1018 actual Worker browser approval shares signed enrollment and single-consumption core with MCP",async t=>{
+test("#1018 actual Worker browser approval preserves signed enrollment and rejects retired MCP pairing",async t=>{
   const f=fixture(true),origin=f.origin.slice(0,-1);
   const issuer="https://clerk.lirtual.dpdns.org";
   const {publicKey,privateKey}=await generateKeyPair("RS256");
@@ -443,8 +454,13 @@ test("#1018 actual Worker browser approval shares signed enrollment and single-c
   assert.equal((await post("/pair/approve",{...args,expected_fingerprint:"0".repeat(24)})).status,404);
   assert.equal((await post("/pair/approve",{...args,expected_grant_type:"permanent"})).status,409);
   assert.equal(count(),0);
-  const [browser,mcp]=await Promise.all([post("/pair/approve",args),f.rpc("pairing_approve",args)]);
-  assert.equal(Number(browser.status===200)+Number(mcp.object.status==="approved"),1);
+  const beforeRetired=f.dispatches();
+  assert.equal((await f.rpc("pairing_lookup",{code:pending.code})).object.pairing_id,undefined);
+  assert.equal((await f.rpc("pairing_approve",args)).object.status,undefined);
+  assert.equal(f.dispatches(),beforeRetired);
+  assert.equal(count(),0);
+  const results=await Promise.all([post("/pair/approve",args),post("/pair/approve",args)]);
+  assert.deepEqual(results.map(r=>r.status).sort(),[200,404]);
   assert.equal(count(),1);
   const id=[...f.rows.keys()].find(k=>k.startsWith("device:"))!.slice(7);
   const row=f.rows.get("device:"+id) as {grant_type:string;approved_at:number;expires_at:number};
@@ -465,6 +481,7 @@ test("#1018 actual Worker browser approval shares signed enrollment and single-c
   f.dropApprovalReply();
   assert.equal((await post("/pair/approve",args2)).status,503);
   assert.equal(count(),2);
+  assert.equal([...f.rows.entries()].filter(([k])=>k.startsWith("device:")).map(([,v])=>(v as {grant_type:string}).grant_type).sort().join(","),"permanent,temporary");
   assert.equal((await post("/pair/approve",args2)).status,404);
   assert.equal(count(),2);
   assert.equal(keyRequests,1);
