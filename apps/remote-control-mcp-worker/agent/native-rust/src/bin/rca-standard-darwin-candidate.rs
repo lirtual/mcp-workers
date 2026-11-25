@@ -931,10 +931,13 @@ mod darwin {
         let cli_text = native_cli(&executable)?;
         let record = serde_json::json!({"version":format!("{}-{}",package.version,package.target),
             "previous":null,"generation":generation,"stopped":stopped,"phase":"switch_pending"});
-        write_new(&journal, format!("{record}\n").as_bytes())?;
+        // Endpoint is retained with the approved identity; persist it before
+        // reserving the installation switch, so an interrupted pre-switch
+        // install can be retried without guessing the origin.
         if stored.is_none() {
             write_new(&endpoint_file, format!("{endpoint}\n").as_bytes())?;
         }
+        write_new(&journal, format!("{record}\n").as_bytes())?;
         write_new(&plist, raw.as_bytes())?;
         let current = Installed {
             executable,
@@ -1289,18 +1292,55 @@ mod darwin {
         }
         let programs = program_directory(&base)?;
         let (plist, cli) = startup_paths(&home)?;
-        let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
-        let endpoint = endpoint.trim();
         let root = programs.join(&record.version);
         let package = darwin_package::verify(&root, native_target())?;
         if record.version != format!("{}-{}", package.version, package.target) {
             return Err(());
         }
+        // The first install may have stopped before either local entrypoint
+        // was written. Only abandon that reservation when its original
+        // identity and absence of configuration/registration are proven.
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        let unchanged = || -> Result<(), ()> {
+            if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str())
+                || owner_stopped(&key)? != record.stopped
+                || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
+                || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+            {
+                return Err(());
+            }
+            Ok(())
+        };
+        let unconfigured = || -> Result<bool, ()> {
+            unchanged()?;
+            Ok(record.can_abandon_unconfigured(
+                read_private(&plist, 65536)?.as_deref(),
+                read_executable(&cli)?.as_deref(),
+                &observe_registration(&root.join(darwin_package::ENTRY)),
+            ))
+        };
+        if unconfigured()? {
+            owner_confirm("Abandon the interrupted initial installation? Identity and package retained; rerun the installer.")?;
+            if !unconfigured()? {
+                return Err(());
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            if !unconfigured()? {
+                return Err(());
+            }
+            sync_remove(&journal)?;
+            println!("Initial installation not configured; rerun the installer. Identity and receipts retained.");
+            return Ok(());
+        }
+        let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
+        let endpoint = endpoint.trim();
         let next = Installed {
             executable: root.join(darwin_package::ENTRY),
             endpoint: endpoint.to_owned(),
             version: package.version,
-            generation: record.generation,
+            generation: record.generation.clone(),
             plist: plist.clone(),
         };
         let next_raw = native_plist(&next.executable, endpoint, &next.generation)?;
@@ -1320,20 +1360,13 @@ mod darwin {
             .as_ref()
             .map(|old| native_cli(&old.executable))
             .transpose()?;
-        let pem = read_private(&key, 8192)?.ok_or(())?;
-        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
-        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
         let current_cli = read_executable(&cli)?;
         if current_cli != previous_cli && current_cli.as_deref() != Some(next_cli.as_str()) {
             return Err(());
         }
         let evidence = || -> Result<SwitchOutcome, ()> {
-            if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str())
-                || owner_stopped(&key)? != record.stopped
-                || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
-                || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
-                || read_executable(&cli)? != current_cli
-            {
+            unchanged()?;
+            if read_executable(&cli)? != current_cli {
                 return Err(());
             }
             let configuration = read_private(&plist, 65536)?;

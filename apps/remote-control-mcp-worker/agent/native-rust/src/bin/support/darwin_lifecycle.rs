@@ -306,6 +306,18 @@ pub(super) struct SwitchRecord {
 }
 
 impl SwitchRecord {
+    pub fn can_abandon_unconfigured(
+        &self,
+        configuration: Option<&str>,
+        launcher: Option<&str>,
+        registration: &Registration,
+    ) -> bool {
+        self.previous.is_none()
+            && configuration.is_none()
+            && launcher.is_none()
+            && *registration == Registration::Absent
+    }
+
     pub fn parse(raw: &str, target: &str) -> Result<Self, ()> {
         let record: Self = serde_json::from_str(raw).map_err(|_| ())?;
         let version = record
@@ -477,6 +489,29 @@ mod tests {
             501,
             42
         ));
+    }
+
+    #[test]
+    fn interrupted_initial_install_can_be_abandoned_only_before_configuration() {
+        let raw = serde_json::json!({"phase":"switch_pending","version":"v0.1.61-darwin-arm64",
+            "previous":null,"generation":ID,"stopped":false})
+        .to_string();
+        let mut record = SwitchRecord::parse(&raw, "darwin-arm64").unwrap();
+        assert!(record.can_abandon_unconfigured(None, None, &Registration::Absent));
+        assert!(!record.can_abandon_unconfigured(
+            Some("foreign configuration"),
+            None,
+            &Registration::Absent
+        ));
+        assert!(!record.can_abandon_unconfigured(
+            None,
+            Some("existing launcher"),
+            &Registration::Absent
+        ));
+        assert!(!record.can_abandon_unconfigured(None, None, &Registration::Unknown));
+        assert!(!record.can_abandon_unconfigured(None, None, &Registration::Present(Some(42))));
+        record.previous = Some("old configuration".to_owned());
+        assert!(!record.can_abandon_unconfigured(None, None, &Registration::Absent));
     }
 
     #[test]
