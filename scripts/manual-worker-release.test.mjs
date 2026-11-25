@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
@@ -1509,4 +1509,40 @@ test('Gateway manual release checks the exact Clerk-protected custom-domain reso
   assert.match(smoke, /gatewayOriginFromConfig\(config\) \+ "\/mcp\/raindrop"/);
   assert.match(smoke, /"\$SELECTED_WORKER" == "mcp-gateway-worker" && "\$FIRST_DEPLOY" == "true"/);
   assert.match(smoke, /401\|403\)/);
+});
+
+// #1046: reconstruct the old release obstruction from the audited pre-CAS
+// projection in issue comment 7166814978. Unreported input/plan content is
+// deliberately synthetic; the release gate does not depend on it.
+test('historical Ubuntu terminal execution reproduces the old Unknown release obstruction (#1046)', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const migrationDir = new URL('../apps/workflow-mcp-worker/migrations/', import.meta.url);
+    const files = readdirSync(migrationDir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+    db.exec('CREATE TABLE d1_migrations(name TEXT PRIMARY KEY)');
+    for (const file of files.filter(f=>f.slice(0,4)<='0022')) {
+      db.exec('BEGIN');
+      db.exec(readFileSync(new URL(file,migrationDir),'utf8'));
+      db.prepare('INSERT INTO d1_migrations VALUES(?)').run(file);
+      db.exec('COMMIT');
+    }
+    const id='77a9ef72-7e08-47ba-8f85-90f82f1656e8';
+    const version='5a3d7d4b-99ff-40a1-bb4f-50675b5c1f4b';
+    const attempt='81fc4de2-4936-496a-b51a-7c4f8cac75a3';
+    db.prepare("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('fixture','ubuntu','{}',0,0)").run();
+    db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES(?,'fixture','fixture','{}',0)").run(version);
+    db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,result,error_code,created_at,updated_at) VALUES(?,'fixture',?,?,'fixture','{}','started','indeterminate','null','github_session_no_ready',0,1795401799113)").run(id,version,id);
+    db.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES(?,'ubuntu_session','indeterminate','github_session_no_ready',1795401798923),(?,'notify_bark','skipped',NULL,1795401799065)").run(id,id);
+    db.prepare("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at) VALUES(?,'ubuntu_session',1,'terminated',0,0)").run(id);
+    db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at,resolved_sha) VALUES(?,?,'ubuntu_session','github.action','fixture','cancelled','fixture/session','1452488311','fixture','fixture',45101764677,1,45101764677,1,0,0,'dee9dbaf71c3c2e48bf31a8ad20bb24d21d31c27')").run(attempt,id);
+    const row=db.prepare(WORKFLOW_MIGRATION_READINESS_SQL).get();
+    assert.equal(row.nonterminal_runs,1);
+    assert.equal(row.unresolved_steps,1);
+    assert.equal(row.nonterminal_attempts,0);
+    assert.equal(row.nonterminated_sessions,0);
+    assert.equal(row.undelivered_callbacks,0);
+    assert.throws(()=>verifyWorkflowCodeReleaseReadiness([{success:true,results:[row]}]),/nonterminal_runs/);
+    assert.throws(()=>verifyWorkflowMigrationReadiness([{success:true,results:[row]}]),/nonterminal_runs/);
+    assert.equal(db.prepare('SELECT outcome FROM runs WHERE id=?').get(id).outcome,'indeterminate');
+  } finally {db.close();}
 });
