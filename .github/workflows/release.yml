@@ -475,7 +475,7 @@ jobs:
             exit 1
           }
 
-      # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS      # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS
+      # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS
       # and disabled query caching. Database has no runtime D1 dependency.
       - name: Verify Database Hyperdrive TLS, CA, origin and cache before publication
         if: inputs.worker == 'database-mcp-worker'
