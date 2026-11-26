@@ -67,6 +67,10 @@ fi
     assert.ok(githubTarget);
     const githubPrincipal = await prepareSecureInputProvider(githubTarget, new AbortController().signal);
     assert.equal(typeof githubPrincipal, "object");
+    for (const ending of ["\r", "\n", "\r\n"]) {
+      assert.deepEqual(await executeSecureInputProvider(githubTarget, githubPrincipal, marker + ending, new AbortController().signal), { status: "failed", error_code: "input_rejected" });
+    }
+    assert.ok(!(await readdir(root)).includes("gh.stdin"));
     const github = await executeSecureInputProvider(
       githubTarget, githubPrincipal, marker, new AbortController().signal,
     );

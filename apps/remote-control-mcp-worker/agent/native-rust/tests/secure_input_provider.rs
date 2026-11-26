@@ -134,12 +134,15 @@ fn provider_fixture() {
     for raw in targets {
         let target = parse_target(&raw).unwrap();
         let principal = prepare(&target, || false).expect("exact target preflight must succeed");
-        if mode == "cloudflare" {
-            for ending in [" ", "\n", "\u{feff}"] {
-                let result = execute(&target, &principal, format!("{MARKER}{ending}"), || false);
-                assert_eq!(result.status, "failed");
-                assert_eq!(result.error_code, Some("input_rejected"));
-            }
+        let lossy_suffixes: &[&str] = if mode == "cloudflare" {
+            &[" ", "\n", "\u{feff}"]
+        } else {
+            &["\r", "\n", "\r\n"]
+        };
+        for ending in lossy_suffixes {
+            let result = execute(&target, &principal, format!("{MARKER}{ending}"), || false);
+            assert_eq!(result.status, "failed");
+            assert_eq!(result.error_code, Some("input_rejected"));
         }
         let mut changed = principal.clone();
         changed["identity"] = json!("different-fixture-owner");

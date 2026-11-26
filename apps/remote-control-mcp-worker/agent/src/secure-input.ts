@@ -278,8 +278,11 @@ export async function executeSecureInputProvider(
   target: Exclude<AgentSecureInputTarget, { kind: "task_process" }>,
   expectedPrincipal: unknown, secret: string, signal: AbortSignal,
 ): Promise<SecureInputOutcome> {
-  if (!validateAgentSecureInputSecret(secret) ||
-      (target.kind === "cloudflare_worker_secret" && secret.trimEnd() !== secret)) {
+  // Reject only the suffixes that the selected native CLI would silently strip.
+  const lossyProviderInput = target.kind === "cloudflare_worker_secret"
+    ? secret.trimEnd() !== secret
+    : secret.endsWith("\r") || secret.endsWith("\n");
+  if (!validateAgentSecureInputSecret(secret) || lossyProviderInput) {
     return { status: "failed", error_code: "input_rejected" };
   }
   const current = await prepareSecureInputProvider(target, signal);

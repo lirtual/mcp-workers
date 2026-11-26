@@ -656,14 +656,17 @@ pub fn execute(
             error_code: Some("execution_interrupted"),
         };
     }
-    // Wrangler trims ECMAScript trailing whitespace even for piped input.
-    // Reject values it cannot deliver unchanged instead of reporting false success.
-    let lossy_cloudflare_input = matches!(target, SecureInputTarget::Cloudflare { .. })
-        && secret
+    // Native provider CLIs trim piped input: Wrangler trims ECMAScript trailing
+    // whitespace; gh trims trailing CR/LF. Never report altered input as delivered.
+    let lossy_provider_input = match target {
+        SecureInputTarget::Cloudflare { .. } => secret
             .chars()
             .last()
-            .is_some_and(|c| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}');
-    if !valid_secret(&secret) || lossy_cloudflare_input {
+            .is_some_and(|c| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}'),
+        SecureInputTarget::GitHub { .. } => secret.ends_with(['\r', '\n']),
+        SecureInputTarget::TaskProcess { .. } => false,
+    };
+    if !valid_secret(&secret) || lossy_provider_input {
         secret.zeroize();
         return ProviderOutcome {
             status: "failed",
