@@ -1,0 +1,165 @@
+// Two unpublished native-only packages, synthetic STOP state, real launchctl.
+// No pairing, network activation or real crash is claimed.
+import assert from "node:assert/strict";
+import {generateKeyPairSync, randomUUID} from "node:crypto";
+import {spawnSync} from "node:child_process";
+import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
+import {DatabaseSync} from "node:sqlite";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+const baseline = process.env.RCA_MACOS_NATIVE_BASELINE_ARCHIVE;
+const candidate = process.env.RCA_MACOS_NATIVE_CANDIDATE_ROOT;
+if (process.platform !== "darwin" || !baseline || !candidate)
+  throw Error("Requires two native-only packages on a disposable macOS runner.");
+const label = "org.mcp-workers.remote-control-agent";
+const endpoint = "https://127.0.0.1/";
+const entry = "apps/remote-control-agent/.build/rca-standard-darwin-candidate";
+const run = (file, args, options = {}) =>
+  spawnSync(file, args, {encoding: "utf8", timeout: 15000, ...options});
+const ok = r => {
+  assert.ifError(r.error);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  return r.stdout;
+};
+const absent = () => {
+  const r = run("/bin/launchctl", ["print", "gui/" + process.getuid() + "/" + label]);
+  assert.equal(r.status, 113);
+  assert.match(r.stderr, /Could not find service/);
+};
+// Exact existing installed-config format; fixture only, not a manager.
+function plist(exe, gen) {
+  assert.doesNotMatch(exe, /[&<>"']/);
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +
+    '<plist version="1.0"><dict>\n<key>Label</key><string>' + label + '</string>\n' +
+    '<key>ProgramArguments</key><array>' +
+    [exe, "--service", "--endpoint", endpoint, "--generation", gen].map(x=>"<string>"+x+"</string>").join("") +
+    '</array>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n</dict></plist>\n';
+}
+function launcher(exe) {
+  assert.doesNotMatch(exe, /['\n]/);
+  return '#!/bin/sh\nset -eu\ncase "' + '$' + '{1:-}" in\n' +
+    'status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n' +
+    '"") [ "$#" -eq 0 ] || exit 2 ;;\n' +
+    'logs|stop|start|restart|pair|recover|uninstall|--help|--version|version) [ "$#" -eq 1 ] || exit 2 ;;\n' +
+    'secure-input) [ "$#" -eq 2 ] || exit 2; case "$2" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case "$2" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n' +
+    "*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\n" +
+    "esac\nexec '" + exe + "' \"$@\"\n";
+}
+// Test-only terminal on a disposable, unenrolled fixture.
+const pty = [
+  "import errno, os, pty, subprocess, sys",
+  "master, slave = pty.openpty()",
+  "child = subprocess.Popen(sys.argv[2:], stdin=slave, stdout=slave, stderr=slave)",
+  "os.close(slave)",
+  "try:",
+  "    os.write(master, (sys.argv[1] + '\\n').encode())",
+  "    code = child.wait(timeout=10)",
+  "    while True:",
+  "        try: data = os.read(master, 4096)",
+  "        except OSError as e:",
+  "            if e.errno != errno.EIO: raise",
+  "            break",
+  "        if not data: break",
+  "        sys.stdout.buffer.write(data)",
+  "    sys.exit(code)",
+  "finally:",
+  "    if child.poll() is None:",
+  "        child.kill()",
+  "        child.wait(timeout=5)",
+  "    os.close(master)",
+].join("\n");
+
+test("native-only STOP upgrade and interrupted-switch recovery", async t => {
+  absent();
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "rca-native-local-")));
+  t.after(() => rm(root, {recursive: true, force: true}));
+  const home = path.join(root, "home");
+  const base = path.join(home, ".local/share/mcp-workers/remote-control");
+  const mac = path.join(base, "macos");
+  const programs = path.join(mac, "programs");
+  const agents = path.join(home, "Library/LaunchAgents");
+  const bin = path.join(home, ".local/bin");
+  const state = path.join(home, ".local/state/mcp-workers/remote-control-agent");
+  for (const dir of [programs, agents, bin, state]) await mkdir(dir, {recursive:true, mode:0o700});
+  const meta = JSON.parse(await readFile(path.join(candidate,"bundle.json"),"utf8"));
+  assert.equal(meta.artifact_profile, "rust-native-only-v1");
+  const oldVersion = "v0.1.59";
+  const oldRoot = path.join(programs, oldVersion + "-" + meta.target);
+  const nextRoot = path.join(programs, meta.version + "-" + meta.target);
+  await mkdir(oldRoot,{mode:0o700});
+  ok(run("/usr/bin/tar",["-xzf",baseline,"-C",oldRoot]));
+  const oldExe = path.join(oldRoot,entry), nextExe = path.join(nextRoot,entry);
+  const exe = path.join(candidate,entry);
+  const local = (file,args) => run(file,args,{env:{...process.env,HOME:home}});
+  const owner = (answer,file,args) => local("python3",["-c",pty,answer,file,...args]);
+  assert.equal(ok(local(oldExe,["--verify-bundle",oldVersion,meta.target])).trim(),meta.source_commit);
+  assert.equal(ok(local(exe,["--verify-bundle",meta.version,meta.target])).trim(),meta.source_commit);
+  const keyPath = path.join(base,"v2-identity.pem");
+  const key = generateKeyPairSync("ed25519").privateKey.export({format:"pem",type:"pkcs8"});
+  const device = randomUUID()+"\n";
+  const marker = path.join(mac,"stopped"), config = path.join(agents,label+".plist");
+  const cli = path.join(bin,"rca"), journal = path.join(mac,"switch.json");
+  const previous = plist(oldExe,randomUUID()), oldCli = launcher(oldExe);
+  for (const [p,v] of [[keyPath,key],[keyPath+".device-id",device],[marker,"stopped\n"],
+    [path.join(mac,"endpoint"),endpoint+"\n"],[config,previous]]) await writeFile(p,v,{mode:0o600});
+  await writeFile(cli,oldCli,{mode:0o700});
+  const receipts=path.join(state,"operation-receipts.sqlite");
+  await writeFile(receipts,"",{mode:0o600});
+  const db=new DatabaseSync(receipts);
+  try {
+    db.exec("CREATE TABLE receipts (operation_id TEXT PRIMARY KEY NOT NULL,tool_name TEXT NOT NULL,argument_digest TEXT NOT NULL,state TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,safe_result_summary TEXT,session_id TEXT,guarded INTEGER NOT NULL CHECK(guarded IN (0,1))); PRAGMA user_version=1;");
+    db.prepare("INSERT INTO receipts VALUES (?,?,?,?,?,?,?,NULL,1)").run(randomUUID(),"write_file","a".repeat(64),"unknown","2026-11-22T00:00:00Z","2026-11-22T00:00:00Z","Historical Unknown");
+  } finally {db.close();}
+  const before=await readFile(receipts);
+  const preserved=async()=>{
+    absent();
+    assert.equal(await readFile(keyPath,"utf8"),key.toString());
+    assert.equal(await readFile(keyPath+".device-id","utf8"),device);
+    assert.equal(await readFile(marker,"utf8"),"stopped\n");
+    assert.deepEqual(await readFile(receipts),before);
+  };
+  const noJournal=()=>assert.rejects(readFile(journal),{code:"ENOENT"});
+  const args=["--upgrade-local",endpoint,meta.version,meta.source_commit];
+  const refused=owner("n",exe,args);
+  assert.equal(refused.status,1,refused.stdout+refused.stderr);
+  assert.match(refused.stdout,/Confirm \[y\/N\]/);
+  assert.equal(await readFile(config,"utf8"),previous);
+  assert.equal(await readFile(cli,"utf8"),oldCli);
+  await noJournal();
+  await assert.rejects(readFile(path.join(nextRoot,"bundle.json")),{code:"ENOENT"});
+  await preserved();
+  assert.match(ok(owner("y",exe,args)),/"status":"stopped_preserved"/);
+  const installed=await readFile(config,"utf8");
+  const generation=installed.match(/<string>([0-9a-f-]{36})<\/string><\/array>/)?.[1];
+  assert.ok(generation);
+  assert.equal(installed,plist(nextExe,generation));
+  assert.notEqual(installed,previous);
+  assert.equal(await readFile(cli,"utf8"),launcher(nextExe));
+  assert.equal(ok(local(cli,["--version"])).trim(),meta.version);
+  await noJournal();
+  await preserved();
+  // Inject the existing journal boundary, not an actual crash. An unknown
+  // configuration must remain untouched; a proven stopped switch can reconcile.
+  const record=JSON.stringify({version:meta.version+"-"+meta.target,
+    previous,generation,stopped:true,phase:"switch_pending"})+"\n";
+  await writeFile(journal,record,{mode:0o600});
+  await writeFile(cli,oldCli);
+  await writeFile(config,"<foreign/>");
+  const unknown=owner("y",cli,["recover"]);
+  assert.equal(unknown.status,1,unknown.stdout+unknown.stderr);
+  assert.match(unknown.stdout,/Switch outcome unconfirmed/);
+  assert.equal(await readFile(journal,"utf8"),record);
+  assert.equal(await readFile(config,"utf8"),"<foreign/>");
+  assert.equal(await readFile(cli,"utf8"),oldCli);
+  await preserved();
+  await writeFile(config,installed);
+  assert.match(ok(owner("y",cli,["recover"])),/Switch reconciled/);
+  assert.equal(ok(local(cli,["--version"])).trim(),meta.version);
+  assert.equal(await readFile(cli,"utf8"),launcher(nextExe));
+  assert.equal(await readFile(config,"utf8"),installed);
+  await noJournal();
+  await preserved();
+});

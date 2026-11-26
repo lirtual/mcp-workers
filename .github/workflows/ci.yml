@@ -373,6 +373,18 @@ jobs:
                   os.close(slave)
           PYMENU
           test -z "$(ls -A "$cli_home")"
+          # Native-only local upgrade/recovery, disposable stopped state.
+          native_old_out="$RUNNER_TEMP/rca-darwin-native-old"
+          node "$source_root/scripts/build-agent-release.mjs" \
+            --version v0.1.59 --target "$target" \
+            --artifact-profile rust-native-only-v1 \
+            --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
+            --rust-agent-bin "$rust_agent" \
+            --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
+            --out "$native_old_out"
+          RCA_MACOS_NATIVE_BASELINE_ARCHIVE="$native_old_out/remote-control-agent-v0.1.59-$target.tar.gz" \
+            RCA_MACOS_NATIVE_CANDIDATE_ROOT="$native_unpacked" \
+            node --test "$source_root/tests/macos-native-local-lifecycle.integration.mjs"
           archive="$out/remote-control-agent-v0.1.57-rust-candidate.1-$target.tar.gz"
           unpacked="$out/unpacked"
           mkdir -m 700 "$unpacked"
