@@ -1,7 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
 import {verifyMcpNoDispatchEvidence,verifyPriorMcpNoDispatchProof,EIGHTH_MCP_RUN_ID} from './workflow-mcp-no-dispatch-proof.mjs';
 
 const runId=EIGHTH_MCP_RUN_ID;
@@ -49,21 +47,6 @@ test('only the pinned failed MCP Run with zero dispatch fence is exempted',()=>{
   const altered=sample();const v=JSON.parse(altered.d1[4].results[0].plan);
   v.steps[0].with.tool='other';altered.d1[4].results[0].plan=JSON.stringify(v);
   assert.throws(()=>verifyMcpNoDispatchEvidence(altered.d1,altered.native),/blocked/);
-});
-
-test('release only excludes the exact eighth Run after independent proof output',()=>{
-  const env={...process.env,WORKFLOW_EIGHTH_TERMINAL_RUN_ID:runId};
-  const get=(overrides={})=>execFileSync(process.execPath,
-    ['scripts/manual-worker-release.mjs','migration-sql','workflow-mcp-worker'],
-    {encoding:'utf8',env:{...env,...overrides}});
-  const granted=get(),unknown=get({WORKFLOW_EIGHTH_TERMINAL_RUN_ID:'ffffffff-ffff-ffff-ffff-ffffffffffff'});
-  assert.equal((granted.match(new RegExp(runId,'g'))||[]).length,2);
-  assert.equal((unknown.match(new RegExp(runId,'g'))||[]).length,0);
-  const workflow=readFileSync('.github/workflows/release.yml','utf8');
-  assert.equal(workflow.split('steps.terminal_eighth.outputs.eighth_terminal_run_id').length-1,4);
-  assert.equal(workflow.split("id <> '$WORKFLOW_EIGHTH_TERMINAL_RUN_ID'").length-1,2);
-  assert.ok(workflow.indexOf('Verify eighth MCP no-dispatch Run proof')<
-    workflow.indexOf('Verify Workflow release configuration'));
 });
 
 const PRIOR_RELEASE_ID=41451130475;
@@ -123,12 +106,31 @@ test('a pinned prior native proof never overrides changed D1 or a dispatch fence
   assert.throws(()=>verifyMcpNoDispatchEvidence(other.d1,native),/blocked/);
 });
 
-test('the protected release supplies GitHub read token only to pinned eighth proof',()=>{
-  const source=readFileSync('.github/workflows/release.yml','utf8');
-  const start=source.indexOf('- name: Verify eighth MCP no-dispatch Run proof (read-only)');
-  const end=source.indexOf('- name: Verify ninth terminal Saga Run proof',start);
-  assert.ok(start>0&&end>start);
-  const step=source.slice(start,end);
-  assert.match(step,/GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
-  assert.match(step,/workflow-mcp-no-dispatch-proof\.mjs/);
+test('#1046 carries exact no-dispatch terminal fact without rewriting a running Step',async()=>{
+  const {historicalMcpNoDispatchTerminalProof}=await import('./workflow-mcp-no-dispatch-proof.mjs');
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const {run,jobs}=priorSuccess();
+  jobs.jobs[0].steps[0].completed_at='2026-11-02T13:15:36Z';
+  const {d1}=sample();
+  const r=d1[0].results[0];r.instance_id=r.id;
+  const evidence={steps:d1[1].results,attempts:[],sessions:[],callbacks:[],children:[],
+    invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],
+    childCancellations:[],gates:[],approvals:[],waits:[]};
+  const proof=historicalMcpNoDispatchTerminalProof(d1,run,jobs);
+  assert.equal(proof.observed_at,Date.parse('2026-11-02T13:15:36Z'));
+  assert.deepEqual(verifyWorkflowTerminalEvidence(r,proof,evidence),proof);
+  assert.equal(r.outcome,'indeterminate');
+  assert.equal(evidence.steps[0].status,'running');
+  const {no_dispatch_step_id,...native}=proof;
+  assert.throws(()=>verifyWorkflowTerminalEvidence(r,native,evidence),/terminal evidence/);
+  assert.throws(()=>verifyWorkflowTerminalEvidence(r,{...proof,status:'complete'},evidence),/terminal evidence/);
+  assert.throws(()=>verifyWorkflowTerminalEvidence(r,{...proof,no_dispatch_step_id:'other'},evidence),/terminal evidence/);
+  for(const bad of [
+    {...evidence,mcpFences:[{run_id:r.id,step_id:'create_note'}]},
+    {...evidence,steps:[{...evidence.steps[0],status:'succeeded'}]},
+    {...evidence,steps:[...evidence.steps,{run_id:r.id,step_id:'other',status:'running'}]},
+    {...evidence,invocations:[{run_id:r.id,step_id:'create_note'}]},
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(r,proof,bad),/terminal evidence/);
+  const changed=structuredClone(d1);changed[2].results.push({run_id:r.id,step_id:'create_note'});
+  assert.throws(()=>historicalMcpNoDispatchTerminalProof(changed,run,jobs),/blocked/);
 });

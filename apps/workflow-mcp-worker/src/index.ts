@@ -5,6 +5,7 @@ import { authenticatePortalRequest } from '@mcp-workers/portal-auth';
 import { buildMcpServer } from './tools.ts';
 import { WorkflowOrchestrator } from './runner.ts';
 import {admitScheduledCron} from './scheduled.ts';
+import {collectNativeTerminalProofs} from './instance-observation.ts';
 import {expireDropClaimReceipts} from './drop-claim-receipt.ts';
 import {handleWorkflowWebhook} from './webhook.ts';
 import {handleWaitEvent} from './wait-event-ingress.ts';
@@ -23,6 +24,13 @@ export default {
   const result=await admitScheduledCron(env,controller.scheduledTime);
   if(result.capacity_skipped||result.failed)
     console.warn('workflow_cron_tick',JSON.stringify(result));
+  // Admission is authoritative and runs first. A failed evidence read or
+  // persistence must never suppress the normal minute-tick behavior.
+  try{
+    const proof=await collectNativeTerminalProofs(env,controller.scheduledTime);
+    if(proof.unavailable||proof.conflicts)
+      console.warn('workflow_terminal_proof_tick',JSON.stringify(proof));
+  }catch{console.warn('workflow_terminal_proof_collection_unavailable');}
  },
  async fetch(request:Request,env:Env):Promise<Response>{
   const url=new URL(request.url);
@@ -36,7 +44,7 @@ export default {
   if(url.pathname==='/github/action/claim'||url.pathname==='/github/action/ready'||
      url.pathname==='/github/action/result')
     return handleGithubActionClaimRequest(request,env);
-  if(url.pathname==='/health'&&request.method==='GET')return Response.json({ok:true,service:'workflow-mcp-worker',scope:'workflow'}, {headers:{'cache-control':'no-store'}});
+  if(url.pathname==='/health'&&request.method==='GET')return Response.json({ok:true,service:'workflow-mcp-worker',scope:'workflow',execution_terminal_proof_schema:23}, {headers:{'cache-control':'no-store'}});
   if(url.pathname!=='/mcp')return new Response('Not found',{status:404});
   const auth=await authenticatePortalRequest(request,{expectedToken:env.MCP_ACCESS_TOKEN,allowedOrigins:[]});
   if(!auth.ok)return error(auth.reason==='misconfigured'?503:auth.reason==='invalid_origin'?403:401,auth.reason==='misconfigured'?'auth_misconfigured':auth.reason==='invalid_origin'?'invalid_origin':'unauthorized');

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {readFileSync} from 'node:fs';
+import {readFileSync,readdirSync} from 'node:fs';
+import {registerHooks} from 'node:module';
 import {cronMatchesUtc,parseUtcCron} from '../src/cron.ts';
 import {admitScheduledCron} from '../src/scheduled.ts';
 import {WorkflowService, StateError, type Env} from '../src/store.ts';
@@ -15,7 +16,7 @@ const emission=(name:string, schedule?:string)=>({
 function setup(t:test.TestContext){
   const db=new DatabaseSync(':memory:');
   t.after(()=>db.close());
-  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql'])
+  for(const file of readdirSync(new URL('../migrations/',import.meta.url)).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort())
     db.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   let dispatches=0;
   const env={
@@ -186,4 +187,39 @@ test('Spec775 accepted top-level reservation can create native execution after p
   assert.equal(result.run_id,id);
   assert.equal(s.dispatches,1,'pause does not revoke an accepted reservation');
   assert.equal(s.db.prepare('SELECT state FROM workflows WHERE id=?').get(wf.workflow_id)?.state,'paused');
+});
+
+test('#1046 scheduled entrypoint admits normal Cron work before best-effort proof collection',async t=>{
+  const s=setup(t);
+  const hook=registerHooks({resolve(specifier,context,next){
+    if(specifier==='cloudflare:workers')return {url:'data:text/javascript,export class WorkflowEntrypoint {} export class WorkerEntrypoint {}',shortCircuit:true};
+    return next(specifier,context);
+  }});
+  let worker:typeof import('../src/index.ts').default;
+  try{worker=(await import('../src/index.ts')).default;}finally{hook.deregister();}
+  const health=await worker.fetch(new Request('https://workflow.example/health'),s.env);
+  assert.equal(health.status,200);
+  assert.deepEqual(await health.json(),{ok:true,service:'workflow-mcp-worker',scope:'workflow',execution_terminal_proof_schema:23});
+  assert.equal(health.headers.get('cache-control'),'no-store');
+
+  const wf=await s.service.create(JSON.stringify(emission('Timed','* * * * *')));
+  await s.service.publish(wf.workflow_id,1);
+  const prepare=s.env.DB.prepare.bind(s.env.DB);
+  let proofReads=0,admittedBeforeProof=false;
+  s.env.DB.prepare=(sql:string)=>{
+    if(sql.includes('execution_terminal_proof IS NULL AND updated_at>=')){
+      proofReads++;admittedBeforeProof=s.dispatches===1;
+      throw Error('D1 read unavailable during proof collection');
+    }
+    return prepare(sql);
+  };
+  const at=Math.floor(Date.now()/3600000)*3600000;
+  await worker.scheduled({scheduledTime:at} as ScheduledController,s.env);
+  assert.equal(s.dispatches,1);
+  assert.equal(proofReads,1);
+  assert.equal(admittedBeforeProof,true);
+  assert.equal(s.db.prepare('SELECT count(*) AS n FROM runs').get()?.n,1);
+  await worker.scheduled({scheduledTime:at+60000} as ScheduledController,s.env);
+  assert.equal(s.dispatches,2);
+  assert.equal(proofReads,1,'the existing minute tick does not query proof candidates every minute');
 });

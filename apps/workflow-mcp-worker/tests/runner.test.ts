@@ -64,7 +64,7 @@ function mockPublicPeer(t:test.TestContext,onCall?:()=>Promise<void>) {
 function setup(t:test.TestContext){
   const sqlite=new DatabaseSync(':memory:');
   t.after(()=>sqlite.close());
-  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
+  for(const file of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0002_native_complete_seen.sql','0023_execution_terminal_proof.sql','0003_s3_attempt_claim.sql','0004_s3_callback_receipts.sql','0005_github_workflow_check.sql','0011_awaited_child_capacity.sql','0012_event_wait_receipts.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+file,import.meta.url),'utf8'));
   function prepare(sql:string){
     let args:any[]=[];
@@ -2729,4 +2729,28 @@ test('T5: native restart with an old immutable Weixin Plan cannot execute or rew
  assert.equal(sqlite.prepare('SELECT outcome FROM runs WHERE id=?').get(run)?.outcome,'queued');
  assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM run_steps WHERE run_id=?').get(run)?.n,0);
  assert.equal(sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?').get(version)?.plan,snapshot);
+});
+
+test('#1046 status observes a terminal native instance even when business result was already settled',async t=>{
+ const {service,admit,run,env,sqlite}=setup(t);
+ const started=await admit([{id:'done',uses:'result.emit',with:{data:'done'}}]);
+ await run(started.run_id);
+ const query=()=>sqlite.prepare('SELECT outcome,result,error_code,updated_at,native_complete_seen_at,execution_terminal_proof FROM runs WHERE id=?').get(started.run_id)!;
+ const before={...query()};
+ assert.equal(before.outcome,'succeeded');
+ let lookups=0;
+ env.WORKFLOW.get=async(id:string)=>{
+  assert.equal(id,started.run_id);lookups++;
+  return {async status(){return {status:'complete'};}} as any;
+ };
+ assert.equal((await service.status(started.run_id)).status,'succeeded');
+ const {execution_terminal_proof:proof,...after}=query();
+ assert.equal(typeof proof,'string');
+ const saved=JSON.parse(String(proof));
+ assert.equal(saved.instance_id,started.run_id);assert.equal(saved.status,'complete');
+ assert.ok(Number.isSafeInteger(saved.observed_at));
+ const {execution_terminal_proof:unused,...original}=before;
+ assert.deepEqual(after,original);
+ assert.equal((await service.status(started.run_id)).status,'succeeded');
+ assert.equal(lookups,1);
 });

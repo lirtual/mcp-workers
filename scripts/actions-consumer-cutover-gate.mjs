@@ -1,42 +1,29 @@
-// Read-only publication gate: distinguish first legacy-to-ACTIONS binding
-// transition from subsequent compatible Workflow code releases.
+// Read-only verification of the current unified Actions binding and gate.
 import {pathToFileURL} from 'node:url';
 import {resolve} from 'node:path';
 const fail=(reason)=>{throw Error('Workflow Actions cutover blocked: '+reason);};
+export function verifyUnifiedActionsBindings(bindings){
+ if(!Array.isArray(bindings))fail('runtime bindings unavailable');
+ const services=bindings.filter(b=>b?.type==='service');
+ if(services.length!==1||services[0].name!=='ACTIONS'||
+    services[0].service!=='cloudflare-actions'||services[0].entrypoint!=='ActionsEntrypoint'||
+    bindings.filter(b=>b?.name==='ACTIONS').length!==1)
+   fail('reviewed unified Service Binding topology drift');
+ return true;
+}
 export function verifyActionsCutoverReadback(currentBindings,rawD1){
- if(!Array.isArray(currentBindings))fail('existing runtime bindings unavailable');
- const serviceNames=currentBindings.filter(x=>x?.type==='service').map(x=>x.name);
- const old=['WEIXIN_ACTION_PROVIDER','BARK_ACTION_PROVIDER'];
- const oldCount=old.filter(n=>serviceNames.includes(n)).length;
- const unified=serviceNames.includes('ACTIONS');
- if(oldCount===0&&!unified)fail('no known action service binding');
- if(oldCount>0&&unified)fail('ambiguous mixed binding topology');
- if(oldCount>0&&oldCount!==2)fail('partial legacy provider inventory');
- const expected=oldCount>0?[
-  ['WEIXIN_ACTION_PROVIDER','weixin-mcp-worker','WeixinActionProvider'],
-  ['BARK_ACTION_PROVIDER','bark-provider','BarkActionProvider']
- ]:[['ACTIONS','cloudflare-actions','ActionsEntrypoint']];
- for(const [name,service,entrypoint] of expected){
-  const matches=currentBindings.filter(x=>x?.name===name);
-  if(matches.length!==1||matches[0]?.type!=='service'||
-     matches[0].service!==service||matches[0].entrypoint!==entrypoint)
-    fail('reviewed service binding topology drift');
- }
+ verifyUnifiedActionsBindings(currentBindings);
  if(!Array.isArray(rawD1)||rawD1.length!==1||rawD1[0]?.success!==true||
     rawD1[0]?.results?.length!==1)fail('D1 fence read unavailable');
  const gate=rawD1[0].results[0];
  if(!['open','frozen'].includes(gate?.gate_state))fail('D1 fence row missing');
- if(oldCount>0&&gate.gate_state!=='frozen')fail('old-to-new binding needs frozen D1 fence');
- // This only verifies the database gate. An old native instance that does
- // not implement it MUST be physically drained in a separate hard gate.
- return {transition:oldCount>0?'legacy_to_unified':'already_unified',
-  gate:gate.gate_state,physical_drain_proven:false};
+ return {gate:gate.gate_state,physical_drain_proven:false};
 }
 // A read-only D1/native snapshot cannot prove that an old ingress is blocked.
 // Owner's separately authorized, externally performed ingress quiescence is
 // an explicit prerequisite, not something this script silently assumes.
-export function requireOldIngressQuiescence(value){
- if(value!=='true')fail('first cutover requires independently verified old ingress quiescence');
+export function requireIngressQuiescence(value){
+ if(value!=='true')fail('maintenance requires independently verified ingress quiescence');
  return true;
 }
 // Native instances retain their originally compiled Workflow version.
@@ -46,7 +33,7 @@ export function requireOldIngressQuiescence(value){
 export const NONTERMINAL_NATIVE_STATUSES=Object.freeze([
  'queued','running','paused','waiting','waitingForPause','rollingBack'
 ]);
-export function verifyNativeInstanceResponse(status,body){
+export function verifyNativeInstanceResponse(status,body,allowedIds=[]){
  if(!NONTERMINAL_NATIVE_STATUSES.includes(status))fail('unsupported native status');
  const info=body?.result_info;
  // An empty current page is not an empty inventory if another page exists.
@@ -58,12 +45,13 @@ export function verifyNativeInstanceResponse(status,body){
     (info?.total_count!==undefined&&(!Number.isSafeInteger(info.total_count)||info.total_count<0))||
     (info?.total_pages!==undefined&&(!Number.isSafeInteger(info.total_pages)||info.total_pages>1)))
   fail('native inventory incomplete');
- if(body.result.length!==0||info.count!==0||
-    (info.total_count!==undefined&&info.total_count!==0))
-  fail('old native Workflow instances are still '+status);
+ if((info.total_count!==undefined&&info.total_count!==body.result.length)||
+    body.result.some(item=>typeof item?.id!=='string'||!allowedIds.includes(item.id))||
+    new Set(body.result.map(item=>item.id)).size!==body.result.length)
+  fail('native Workflow instances are still '+status+' outside the reviewed Ready exception');
  return true;
 }
-export async function checkNativeWorkflowDrain(account,headers,fetcher=fetch){
+export async function checkNativeWorkflowRelease(account,headers,allowedIds,fetcher=fetch){
  for(const status of NONTERMINAL_NATIVE_STATUSES){
   const url=new URL('https://api.cloudflare.com/client/v4/accounts/'+account+
    '/workflows/workflow-mcp-orchestrator/instances');
@@ -71,9 +59,13 @@ export async function checkNativeWorkflowDrain(account,headers,fetcher=fetch){
   url.searchParams.set('per_page','100');
   const res=await fetcher(url,{redirect:'manual',headers,signal:AbortSignal.timeout(15000)});
   if(!res.ok)fail('native status inventory request failed');
-  verifyNativeInstanceResponse(status,await res.json());
+  verifyNativeInstanceResponse(status,await res.json(),allowedIds);
  }
  return true;
+}
+
+export function checkNativeWorkflowDrain(account,headers,fetcher=fetch){
+ return checkNativeWorkflowRelease(account,headers,[],fetcher);
 }
 
 async function main(){
@@ -89,14 +81,8 @@ async function main(){
  const chunks=[];for await(const part of process.stdin)chunks.push(part);
  let parsed;try{parsed=JSON.parse(Buffer.concat(chunks).toString('utf8'));}
  catch{fail('D1 fence read malformed');}
- const check=verifyActionsCutoverReadback(current.result.bindings,parsed);
- if(check.transition==='legacy_to_unified'){
-  requireOldIngressQuiescence(process.env.ACTIONS_OLD_INGRESS_QUIESCED);
-  await checkNativeWorkflowDrain(account,{authorization:'Bearer '+token,accept:'application/json'});
-  console.log('First Actions cutover: D1 fence and six native instance statuses verified; future admission still requires independent quiescence');
- }else{
-  console.log('Existing unified Actions binding: D1 fence state verified; native-instance drain was not checked');
- }
+ verifyActionsCutoverReadback(current.result.bindings,parsed);
+ console.log('Existing unified Actions binding: D1 fence state verified; native-instance drain was not checked');
 }
 if(process.argv[1]&&pathToFileURL(resolve(process.argv[1])).href===import.meta.url)
  main().catch(e=>{console.error(e.message);process.exitCode=1;});

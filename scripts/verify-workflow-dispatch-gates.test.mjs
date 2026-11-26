@@ -73,8 +73,8 @@ test('Spec #804 Browser protected Runner probe excludes any production release',
 });
 
 test('Spec #804 read-only mode cannot trigger any mutation branch',()=>{
-  for(const name of ['deploy','workflow-actions-migration-prepare',
-    'workflow-actions-gate-reopen','workflow-uu-table-retirement','legacy-secret-cleanup']){
+  for(const name of ['deploy','workflow-actions-gate-freeze',
+    'workflow-actions-gate-reopen']){
     const start=release.indexOf('  '+name+':\n');
     assert.ok(start>=0);
     const text=release.slice(start,release.indexOf('    runs-on:',start));
@@ -97,7 +97,7 @@ test('a missing or duplicated manual Worker choice fails', () => {
 test('a missing allowed Worker or an unsafe gate bypass fails', () => {
   assert.throws(() => verifyReleaseWorkers(release.replace("           inputs.worker == 'github-actions-mcp-worker' ||\n", ''), RELEASE_WORKERS), /Mismatched release allowlist/);
   assert.throws(() => verifyReleaseWorkers(release.replace("(inputs.worker == 'raindrop-mcp-worker' ||", "(true || inputs.worker == 'raindrop-mcp-worker' ||"), RELEASE_WORKERS), /Unsafe or unsupported Worker allowlist/);
-  assert.throws(() => verifyReleaseWorkers(release.replace("inputs.browser_access_readonly != true &&\n          inputs.legacy_secret_cleanup_mode", "true &&\n          inputs.legacy_secret_cleanup_mode"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
+  assert.throws(() => verifyReleaseWorkers(release.replace("inputs.browser_access_readonly != true &&\n          needs.checks.result", "true &&\n          needs.checks.result"), RELEASE_WORKERS), /Unsafe or unsupported release gate/);
 });
 
 test('retired HTTP MCP cannot enter the release allowlist', () => {
@@ -174,4 +174,12 @@ test('retired Weixin publishing is impossible through the old manual release', (
   assert.doesNotMatch(release, /weixin-mcp-worker/, 'No Weixin Worker target, D1 migration, or smoke step in old release');
   assert.match(release, /GITHUB_SHA.*git ls-remote origin refs\/heads\/main/, 'Historical reruns must compare to current main');
   assert.match(release, /Stage selected Worker Secrets for every release/);
+});
+
+test('completed UU and Secret cleanup have no executable release or acceptance entry',()=>{
+ assert.doesNotMatch(release,/workflow-uu-(?:cleanup-gate|secret-cleanup)\.mjs|legacy-secret-cleanup\.mjs|workflow-version-restore\.mjs/);
+ assert.doesNotMatch(release,/^  (?:workflow-uu-table-retirement|legacy-secret-cleanup):/m);
+ assert.doesNotMatch(release,/^      (?:uu_cleanup_[a-z_]+|uu_session_secret_cleanup|legacy_(?:secret_cleanup_mode|cleanup_[a-z_]+)):/m);
+ const acceptance=readFileSync(new URL('../.github/workflows/acceptance.yml',import.meta.url),'utf8');
+ assert.doesNotMatch(acceptance,/legacy-cleanup-readonly|cleanup-readback|cleanup_expected_version/);
 });

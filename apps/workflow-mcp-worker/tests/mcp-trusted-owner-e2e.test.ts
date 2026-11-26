@@ -444,7 +444,6 @@ ${session?'    timeout-minutes: 360\n':''}    steps:
     const bark=await cloudflareActionManifest('bark');
     const deployment='44444444-4444-4444-8444-444444444444';
     let barkSends=0;
-    env.ACTIONS_DEPLOYMENT_ID=deployment;
     env.ACTIONS={
       getContract:async(_action_id:string)=>({deployment_id:deployment,contract_digest:bark.contract_digest}),
       execute:async()=>{barkSends++;throw Error('must_not_send');},

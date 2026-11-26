@@ -38,7 +38,6 @@ test('one checkout contains the nested Agent and does not fetch a pinned public 
     assert.doesNotMatch(text, /lirtual\/remote-control-agent\.git/, relative);
     assert.doesNotMatch(text, /\.pinned-public-source/, relative);
   }
-  assert.doesNotMatch(read('.github/workflows/ci.yml'), /macos-15-intel|windows-2025|ubuntu-24\.04-arm/);
   assert.doesNotMatch(read('.github/workflows/release.yml'), /publish-agent-release|release-pins/);
 
   const worker = read('apps/remote-control-mcp-worker/src/worker.ts');

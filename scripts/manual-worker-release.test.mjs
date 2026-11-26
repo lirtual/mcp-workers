@@ -2,10 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -368,9 +368,8 @@ test("Workflow code-only release preserves Secrets and other Variables, pins Por
   assert.match(releaseScript, /requireExistingSecrets: mode === "preflight"/,
     "existing Secret names checked in read-only preflight");
   assert.match(releaseScript, /Code-only release requires an existing Workflow Worker/);
-  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only == true/);
-  assert.match(workflow, /WORKFLOW_REQUIRE_COMPLETE_SCHEMA: \$\{\{ inputs.workflow_code_only && 'true' \|\| '' \}\}/);
-  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true/);
+  assert.match(workflow, /inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true/);
+  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true/);
   const deployment = workflow.slice(workflow.indexOf('      - name: Publish exactly selected Worker'));
   assert.match(deployment, /\[\[ ! -e "\$RUNNER_TEMP\/mcp-worker-secrets.json" \]\]/);
   assert.ok(deployment.includes('mapfile -t portal_pins < <(grep'));
@@ -378,13 +377,12 @@ test("Workflow code-only release preserves Secrets and other Variables, pins Por
   assert.ok(deployment.includes('deploy_args=(--keep-vars --var "${portal_pins[0]}")'));
   assert.match(deployment, /deploy_args=\(--secrets-file "\$RUNNER_TEMP\/mcp-worker-secrets.json"\)/);
   assert.match(deployment, /if \[\[ "\$WORKFLOW_CODE_ONLY" == "true" \]\]/);
-  assert.match(workflow, /ACTIONS_OLD_INGRESS_QUIESCED.*!= "true"/);
-  for (const job of ["workflow-actions-migration-prepare","workflow-actions-gate-reopen"]) {
+  assert.match(workflow, /ACTIONS_INGRESS_QUIESCED.*!= "true"/);
+  for (const job of ["workflow-actions-gate-freeze","workflow-actions-gate-reopen"]) {
     const block = workflow.slice(workflow.indexOf("  "+job+":"));
     assert.match(block.slice(0,550), /inputs.workflow_code_only != true/,
       "code-only selection must not enter maintenance job "+job);
   }
-  assert.match(workflow, /Require complete Workflow code-only migration inventory/);
 });
 
 test("manual release retains Owner/main and selected-Worker deployment gates without an Environment", () => {
@@ -558,412 +556,15 @@ test("Workflow production release must preserve exact reviewed resource and runt
 
 });
 
-test("Workflow remote D1 checks the exact old, intermediate and full schema", () => {
-  const result = row => [{success:true,results:[row]}];
-  const baseline = {
-    migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,migration_v17:0,migration_v18:0,migration_v19:0,migration_v20:0,migration_v22:0,drop_claim_receipts_table:0,resolved_sha_column:0,rca_duration_column:0,portal_auth_table:0,mcp_fence_table:0,http_auth_table:0,cloudflare_gate_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
-    capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
-    child_terminate_fence_column:0,capacity_guard_trigger:0,
-    locator_column:0,fixed_column:0,fixed_index:0,
-    attempt_table:1,receipt_table:1,native_column:1,
-    session_table:0,cancellation_table:0,
-    active_runs:0,active_sessions:0,run_count:0,workflow_count:0,
-  };
-  const partial = {...baseline,migration_count:6,migration_v6:1};
-  const current = {...partial,migration_count:7,migration_v7:1,
-    session_table:1,cancellation_table:1};
-  const completed = {...current,migration_count:8,migration_v8:1,locator_column:1};
-  const oldComplete = {...completed,migration_count:9,migration_v9:1,fixed_column:1,fixed_index:1};
-  const upgraded = {...oldComplete,migration_count:10,migration_v10:1,runtime_table:1};
-  const previousComplete = {...upgraded,migration_count:11,migration_v11:1,
-    capacity_column:1,parent_column:1,parent_step_column:1,child_index:1,child_cancel_table:1,
-    child_terminate_fence_column:1,capacity_guard_trigger:1};
-  const latest = {...previousComplete,migration_count:12,migration_v12:1,event_receipts_table:1};
-  const cloudflareComplete = {...latest,migration_count:13,migration_v13:1,
-    invocations_table:1,cloudflare_cancel_table:1};
-  const deletedComplete = {...cloudflareComplete,migration_count:14,migration_v14:1,deleted_column:1};
-  const approvalComplete={...deletedComplete,migration_count:15,migration_v15:1,approval_gates_table:1,approvals_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(completed),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(oldComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(upgraded),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(previousComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(latest),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false),true);
-  const portalComplete={...approvalComplete,migration_count:16,migration_v16:1,portal_auth_table:1,mcp_fence_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false),true);
-  const httpComplete={...portalComplete,migration_count:17,migration_v17:1,http_auth_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(portalComplete),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(portalComplete),false,true),/schema migrations/);
-  const actionsComplete={...httpComplete,migration_count:18,migration_v18:1,cloudflare_gate_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(httpComplete),false),true);
-  const sessionComplete={...actionsComplete,migration_count:19,migration_v19:1,rca_duration_column:1};
-  assert.equal(verifyWorkflowD1Readiness(result(actionsComplete),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(actionsComplete),false,true),/schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result(sessionComplete),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(sessionComplete),false,true),/schema migrations/);
-  const mainComplete={...sessionComplete,migration_count:20,migration_v20:1,resolved_sha_column:1};
-  assert.equal(verifyWorkflowD1Readiness(result(mainComplete),false,true),true);
-  const uuRetired={...mainComplete,migration_count:21,migration_v21:1,runtime_table:0};
-  assert.equal(verifyWorkflowD1Readiness(result(uuRetired),false,true,true),true);
-  const dropComplete={...uuRetired,migration_count:22,migration_v22:1,drop_claim_receipts_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(dropComplete),false,true,true),true);
-  assert.equal(verifyWorkflowD1Readiness(result(dropComplete),false,true),true);
-  for(const broken of [
-    {migration_v22:0},{drop_claim_receipts_table:0},{migration_count:21},
-    {migration_count:23},{migration_v21:0},{runtime_table:1},
-  ]) assert.throws(()=>verifyWorkflowD1Readiness(result({...dropComplete,...broken}),false,true),
-    /migration\/schema drift|schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(mainComplete),false,true,true),
-    /UU retirement post-migration/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,runtime_table:1}),false,true,true),
-    /UU retirement/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,migration_v21:0}),false,true,true),
-    /UU retirement/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,active_sessions:1}),false,true,true),
-    /active physical Sessions/);
-  // Only v22 code-only releases may keep a healthy Ready Session;
-  // the separate code-release-check still rejects unresolved activity.
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1}),false,true),/active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1}),false,true,false,true),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(
-    result({...dropComplete,active_sessions:1}),false,true,false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...dropComplete,active_sessions:1,drop_claim_receipts_table:0}),false,true,false,true),
-    /migration\/schema drift/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1,active_runs:1}),false,true,false,true),
-    /active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1,rca_duration_column:0}),false,true,false,true),
-    /UU retirement migration\/schema drift/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1}),false,true,true,true),
-    /active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...mainComplete,active_sessions:1,migration_count:19}),false,true,false,true),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1,migration_count:19}),false,true,false,true),
-    /UU retirement migration\/schema drift/);
-
-  for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0},
-    {migration_v17:0},{http_auth_table:0},{migration_v18:0},{cloudflare_gate_table:0},
-    {migration_v19:0},{rca_duration_column:0},{migration_v20:0},
-    {resolved_sha_column:0},{migration_count:19},{migration_count:18},{migration_count:17}])
-    assert.throws(()=>verifyWorkflowD1Readiness(result({...mainComplete,...broken}),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(deletedComplete),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(latest),false,true),/schema migrations/);
-  for(const row of [
-    {...cloudflareComplete,migration_count:12},
-    {...cloudflareComplete,migration_v13:0},
-    {...cloudflareComplete,invocations_table:0},
-    {...cloudflareComplete,cloudflare_cancel_table:0},
-    {...deletedComplete,migration_count:13},
-    {...deletedComplete,migration_v14:0},
-    {...deletedComplete,deleted_column:0},
-    {...approvalComplete,migration_v15:0},
-    {...approvalComplete,approval_gates_table:0},
-    {...approvalComplete,approvals_table:0},
-  ]) assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(previousComplete),false,true),/schema migrations/);
-  for(const row of [baseline,partial,current,completed,oldComplete,upgraded]){
-    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
-      /schema migrations/);
-  }
-  for(const row of [
-    {...baseline,migration_count:4,migration_v5:0},
-    {...baseline,migration_count:6},
-    {...partial,migration_v6:0},
-    {...completed,migration_v4:0},
-    {...completed,migration_v7:0},
-    {...current,migration_count:8},
-    {...completed,migration_v8:0},
-    {...completed,locator_column:0},
-    {...completed,session_table:0},
-    {...completed,cancellation_table:0},
-    {...completed,receipt_table:0},
-    {...completed,migration_count:9},
-    {...completed,migration_v9:1},
-    {...oldComplete,migration_count:10},
-    {...upgraded,migration_v10:0},
-    {...upgraded,runtime_table:0},
-    {...upgraded,migration_v11:1},
-    {...latest,migration_count:10},
-    {...latest,migration_count:11},
-    {...latest,migration_v11:0},
-    {...latest,migration_v12:0},
-    {...latest,event_receipts_table:0},
-    {...previousComplete,migration_v12:1},
-    {...previousComplete,event_receipts_table:1},
-    {...latest,capacity_column:0},
-    {...latest,parent_column:0},
-    {...latest,parent_step_column:0},
-    {...latest,child_index:0},
-    {...latest,child_cancel_table:0},
-    {...latest,child_terminate_fence_column:0},
-    {...latest,capacity_guard_trigger:0},
-    {...upgraded,fixed_index:0},
-    {...upgraded,fixed_column:0},
-    {...completed,native_column:0},
-  ]){
-    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
-      /schema migrations/);
-  }
-  assert.equal(verifyWorkflowD1Readiness(result({...mainComplete,run_count:3,
-    workflow_count:1}),false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
-    /active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...oldComplete,active_sessions:1}),false),
-    /active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
-    /active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...portalComplete,active_sessions:1}),false),/active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...actionsComplete,active_sessions:1}),false),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(result({...mainComplete,active_sessions:1}),false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
-    /empty production/);
-  assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
-});
-test("Workflow migration preflight requires all independent physical states settled", () => {
-  const ready = {
-    migration_count: 12, expected_migrations: 12,drop_claim_receipts_table:0,
-    workflow_count: 7, run_count: 58, session_count: 49,
-    attempt_count: 31, callback_count: 4, cancellation_count: 31,
-    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0, invalid_cancelled_steps: 0,
-    nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
-    reviewed_terminal_artifact_attempts: 0,
-  };
-  const response = row => [{success: true, results: [row]}];
-  for (const count of [18,19,20,21,22]) assert.deepEqual(
-    verifyWorkflowMigrationReadiness(response({...ready,migration_count:count,expected_migrations:count,
-      drop_claim_receipts_table:count===22?1:0})),
-    {workflows:7,runs:58,sessions:49,attempts:31,callbacks:4,cancellations:31});
-  for (const wrong of [
-    {migration_count:23,expected_migrations:23},
-    {migration_count:22,expected_migrations:22},
-    {migration_count:21,expected_migrations:21,drop_claim_receipts_table:1},
-    {migration_count:19,expected_migrations:18},
-  ]) assert.throws(()=>verifyWorkflowMigrationReadiness(response({...ready,...wrong})),/exact reviewed/);
-  assert.deepEqual(verifyWorkflowMigrationReadiness(response(ready)), {
-    workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
-    cancellations: 31,
-  });
-  const exactArtifact = {...ready, nonterminal_attempts: 1,
-    reviewed_terminal_artifact_attempts: 1};
-  assert.deepEqual(verifyWorkflowMigrationReadiness(response(exactArtifact),true),
-    {workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
-      cancellations: 31});
-  assert.throws(()=>verifyWorkflowMigrationReadiness(response(exactArtifact)),
-    /reviewed_terminal_artifact_attempts/);
-  assert.throws(()=>verifyWorkflowMigrationReadiness(response(ready),true),
-    /exact historical Artifact Attempt/);
-  for(const wrong of [
-    {...exactArtifact,nonterminal_attempts:2},
-    {...exactArtifact,reviewed_terminal_artifact_attempts:2},
-    {...exactArtifact,reviewed_terminal_artifact_attempts:0},
-    {...exactArtifact,nonterminal_runs:1},
-    {...exactArtifact,unresolved_steps:1},
-    {...exactArtifact,nonterminated_sessions:1},
-  ]) assert.throws(()=>verifyWorkflowMigrationReadiness(response(wrong),true),
-    /blocked|exact historical Artifact Attempt/);
-  for (const name of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
-    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
-    "reviewed_terminal_artifact_attempts",
-  ]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,[name]:1})), new RegExp(name));
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,[name]:-1})), /count unavailable or invalid/);
-  }
-  for (const key of Object.keys(ready)) {
-    const broken = {...ready};
-    delete broken[key];
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response(broken)), /count unavailable or invalid/);
-  }
-  for (const invalid of [[],[{}],[{success:false,results:[ready]}],
-    [{success:true,results:[ready,ready]}]]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(invalid),
-      /readback unavailable/);
-  }
-  for (const wrong of [{migration_count:9},{migration_count:11},
-    {expected_migrations:11}]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,...wrong})), /exact reviewed/);
-  }
-  for (const invalid of [null,NaN,1.5,"0",true]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,undelivered_callbacks:invalid})),
-      /count unavailable or invalid/);
-  }
-  for (const requiredTable of [
-    "runs","run_steps","step_attempts","session_executions",
-    "callback_receipts","github_action_cancellations","d1_migrations",
-  ]) assert.ok(WORKFLOW_MIGRATION_READINESS_SQL.includes(requiredTable));
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/state != 'terminated'/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0012_event_wait_receipts.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0014_workflow_deletion.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0016_portal_connection_revocation.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0017_http_connection_auth.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0019_session_rca_duration.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0020_github_action_main_sha.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0022_drop_claim_receipts.sql/);
-  const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
-  assert.equal((release.match(/AS migration_v17/g)??[]).length,2);
-  assert.equal((release.match(/AS http_auth_table/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v19/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v20/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v21/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v22/g)??[]).length,2);
-  assert.equal((release.match(/AS drop_claim_receipts_table/g)??[]).length,2);
-  assert.equal((release.match(/AS resolved_sha_column/g)??[]).length,2);
-  assert.match(release,/migrations\[@\].*eq 22/);
-  assert.equal((release.match(/AS rca_duration_column/g)??[]).length,2);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/reviewed_terminal_artifact_attempts/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0 AS reviewed_terminal_artifact_attempts/);
-
-});
-
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
   const source=readFileSync(new URL("../apps/workflow-mcp-worker/tests/production-smoke.mjs",import.meta.url),"utf8");
   const fn=source.slice(source.indexOf("async function runActionTaskSmoke()"),
     source.indexOf("async function runWebhookSmoke()"));
-  assert.match(fn,/verifyWorkflowCodeReleaseReadiness\(\[\{/);
-  assert.match(fn,/sql\(WORKFLOW_MIGRATION_READINESS_SQL\)/);
+  assert.match(fn,/await workflowReleaseProof\('workflow-check',workflowReleaseIO\(\)/);
   assert.doesNotMatch(fn,/session_executions WHERE state != 'terminated'/);
   assert.match(source,/DELETE FROM step_attempts WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
   assert.match(source,/DELETE FROM mcp_dispatch_fences WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
   assert.match(source,/Refusing GitHub cleanup until physical GitHub Job is completed/);
-});
-
-test('cancelled Workflow Steps count as terminal only with matched cancelled Run receipt',()=>{
-  const start=WORKFLOW_MIGRATION_READINESS_SQL.indexOf('(SELECT count(*) FROM run_steps s JOIN runs r');
-  const end=WORKFLOW_MIGRATION_READINESS_SQL.indexOf(' AS invalid_cancelled_steps',start);
-  assert.ok(start>=0&&end>start);
-  const query='SELECT '+WORKFLOW_MIGRATION_READINESS_SQL.slice(start,end+ ' AS invalid_cancelled_steps'.length);
-  const db=new DatabaseSync(':memory:');
-  try{
-    db.exec('CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,error_code TEXT);');
-    db.exec('CREATE TABLE run_steps(run_id TEXT,status TEXT,error_code TEXT);');
-    db.prepare('INSERT INTO runs VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
-    db.prepare('INSERT INTO run_steps VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
-    const count=()=>db.prepare(query).get()?.invalid_cancelled_steps;
-    assert.equal(count(),0);
-    db.exec("UPDATE runs SET outcome='running'");assert.equal(count(),1);
-    db.exec("UPDATE runs SET outcome='cancelled',error_code=NULL");assert.equal(count(),1);
-    db.exec("UPDATE runs SET error_code='approval_cancel_requested';UPDATE run_steps SET error_code=NULL");assert.equal(count(),1);
-    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),0);
-    // Event Wait cancellation is a separate supported, durable Run/Step pair.
-    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code='event_wait_cancel_requested'");
-    assert.equal(count(),0);
-    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),1);
-    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code='unknown_cancel_requested'");
-    assert.equal(count(),1);
-    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code=NULL");
-    assert.equal(count(),1);
-    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code=NULL");
-    assert.equal(count(),1);
-    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested'");assert.equal(count(),0);
-  }finally{db.close();}
-});
-
-test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
-  const row={
-    migration_count:22,expected_migrations:22,drop_claim_receipts_table:1,resolved_sha_column:1,
-    nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
-    nonterminal_attempts:1,nonterminated_sessions:1,
-    undelivered_callbacks:0,confirmed_ready_sessions:1,reviewed_terminal_artifact_attempts:0,verified_terminal_saga_receipts:0,
-  };
-  const make=value=>[{success:true,results:[value]}];
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(row)),
-    {confirmed_ready_sessions:1});
-  assert.throws(()=>verifyWorkflowMigrationReadiness(make({
-    ...row,workflow_count:5,run_count:53,session_count:1,
-    attempt_count:10,callback_count:1,cancellation_count:0,
-  })),/nonterminal_attempts/);
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
-    ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
-  })),{confirmed_ready_sessions:0});
-  const historical={...row,nonterminal_attempts:2,reviewed_terminal_artifact_attempts:1};
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(historical),true),
-    {confirmed_ready_sessions:1});
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make(historical)),/unconfirmed/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
-    ...historical,nonterminal_attempts:3,
-  }),true),/unconfirmed/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
-    ...historical,reviewed_terminal_artifact_attempts:0,
-  }),true),/historical Artifact/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
-    ...historical,reviewed_terminal_artifact_attempts:2,
-  }),true),/historical Artifact/);
-  // Code-only publish can proceed when every remaining unresolved record
-  // is an exact Saga request whose Session and GitHub Attempt both have
-  // verified physical terminal evidence. Schema migrations stay strict.
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
-    ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
-    unresolved_steps:1,verified_terminal_saga_receipts:1,
-  })),{confirmed_ready_sessions:0});
-  for(const broken of [
-    {migration_count:21},{expected_migrations:21},{migration_count:20},
-    {drop_claim_receipts_table:0},
-    {drop_claim_receipts_table:2},{resolved_sha_column:0},{migration_count:19},{expected_migrations:19},
-    {migration_count:18},{expected_migrations:18},
-    {migration_count:12},{expected_migrations:12},
-    {migration_count:13},{expected_migrations:13},
-    {migration_count:14},{expected_migrations:14},
-    {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},{invalid_cancelled_steps:1},
-    {unresolved_steps:2,verified_terminal_saga_receipts:1},
-    {verified_terminal_saga_receipts:1},{verified_terminal_saga_receipts:-1},
-    {verified_terminal_saga_receipts:'1'},{verified_terminal_saga_receipts:undefined},
-    {undelivered_callbacks:1},{nonterminal_attempts:2},
-    {nonterminated_sessions:2},{confirmed_ready_sessions:0},
-    {confirmed_ready_sessions:-1},{confirmed_ready_sessions:"1"},
-  ]) assert.throws(()=>verifyWorkflowCodeReleaseReadiness(
-    make({...row,...broken})),/blocked|unavailable/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness([]),/readback unavailable/);
-});
-
-test('code-only gate proves terminal Saga receipts using exact physical Session and Attempt',()=>{
-  const db=new DatabaseSync(':memory:');
-  try{
-    db.exec(`CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT);
-      CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT);
-      CREATE TABLE session_executions(run_id TEXT,step_id TEXT,state TEXT);
-      CREATE TABLE step_attempts(run_id TEXT,step_id TEXT,capability_id TEXT,state TEXT);
-      INSERT INTO runs VALUES('r','failed');
-      INSERT INTO run_steps VALUES('r','__saga_ubuntu','requested');
-      INSERT INTO session_executions VALUES('r','ubuntu','terminated');
-      INSERT INTO step_attempts VALUES('r','ubuntu','github.action','cancelled');`);
-    const begin=WORKFLOW_MIGRATION_READINESS_SQL.indexOf('(SELECT count(*) FROM run_steps receipt');
-    const end=WORKFLOW_MIGRATION_READINESS_SQL.indexOf(' AS verified_terminal_saga_receipts',begin);
-    assert.ok(begin>=0&&end>begin);
-    const query='SELECT '+WORKFLOW_MIGRATION_READINESS_SQL.slice(begin,end+ ' AS verified_terminal_saga_receipts'.length);
-    const count=()=>db.prepare(query).get()?.verified_terminal_saga_receipts;
-    assert.equal(count(),1);
-    db.exec("UPDATE step_attempts SET state='claimed'");
-    assert.equal(count(),0,'claimed Job is never physical terminal');
-    db.exec("UPDATE step_attempts SET state='cancelled'; UPDATE session_executions SET state='stopping'");
-    assert.equal(count(),0,'cancel ACK cannot substitute physical Session terminal');
-    db.exec("UPDATE session_executions SET state='terminated';UPDATE runs SET outcome='running'");
-    assert.equal(count(),0,'parent must have a terminal business outcome');
-    db.exec("UPDATE runs SET outcome='failed';UPDATE run_steps SET step_id='other'");
-    assert.equal(count(),0,'non-Saga Step cannot be accepted');
-  }finally{db.close();}
 });
 
 const executorIdentity={repository:'alternate-owner/private-actions',
@@ -1073,36 +674,32 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
 });
 
 
-test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
-  const ci=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
-  const pre=ci.indexOf("      - name: Verify Workflow release configuration and remote D1 readiness");
-  const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
-  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
-  assert.ok(pre>0 && migration>pre && publish>migration);
-  assert.match(ci,/wrangler d1 migrations apply workflow-mcp-db --remote/);
-  const finalQuiescence=ci.indexOf("      - name: Verify code-only Workflow D1 gate at publication (Ready Sessions preserved)");
-  assert.ok(finalQuiescence>migration && finalQuiescence<publish);
-  const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
-  const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
-  const freeze=ci.indexOf("      - name: Verify unified Actions binding transition (read-only)");
-  assert.ok(pin>0 && recheck>pin && freeze>recheck && freeze<publish);
-  assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
-  assert.equal(ci.split('0018_cloudflare_action_migration_fence.sql').length,3);
-  assert.match(ci,/pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "\$query"/);
-
-  for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql","0009_fixed_sessions.sql","0010_session_runtime_data.sql","0011_awaited_child_capacity.sql"]){
-    assert.equal(ci.split(name).length,3);
-  }
-  assert.ok(ci.includes("WORKFLOW_GITHUB_ACTION_REPOSITORY: " + String.fromCharCode(36)) && ci.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY"));
-  assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"), "Legacy grants must not shadow canonical release inputs");
-  assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
-  assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
-  assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
-  assert.match(ci,/\(cd apps\/workflow-mcp-worker &&/);
-  assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
-  assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
-  assert.match(ci,/body\.scope !== "workflow"/);
-  assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+test("Workflow protected release retains independent identity, schema and health gates", () => {
+ const ci=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
+ const prepare=ci.indexOf("      - name: Prepare strict Workflow cutover and record recovery point");
+ const migrate=ci.indexOf("      - name: Apply only the reviewed v23 Workflow D1 migration");
+ const backfill=ci.indexOf("      - name: Conditionally backfill terminal facts");
+ const publish=ci.indexOf("      - name: Publish exactly selected Worker");
+ const deploy=ci.indexOf('pnpm exec wrangler deploy',publish);
+ const health=ci.indexOf("      - name: Check existing public health endpoint");
+ const activate=ci.indexOf("      - name: Reopen only the now-verified unified Action admission gate");
+ const check=ci.indexOf("node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker",publish);
+ assert.ok(prepare>0&&migrate>prepare&&backfill>migrate&&publish>backfill&&check>publish&&deploy>check&&health>deploy&&activate>health);
+ assert.match(ci.slice(prepare,migrate),/d1 time-travel info workflow-mcp-db --json/);
+ assert.match(ci.slice(migrate,backfill),/workflow-cutover-recheck workflow-mcp-worker[\s\S]*wrangler d1 migrations apply workflow-mcp-db --remote/);
+ assert.match(ci.slice(backfill,publish),/workflow-backfill workflow-mcp-worker/);
+ const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
+ const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
+ const freeze=ci.indexOf("      - name: Verify current unified Actions binding and gate (read-only)");
+ assert.ok(pin>0&&recheck>pin&&freeze>recheck&&freeze<publish);
+ assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
+ assert.ok(ci.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY"));
+ assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"));
+ assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
+ assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
+ assert.match(ci,/body\.scope !== "workflow"/);
+ assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+ assert.doesNotMatch(ci,/WORKFLOW_(?:[A-Z_]+_)?TERMINAL_RUN_ID|steps\.terminal|migration-check workflow-mcp-worker/);
 });
 
 test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bindings",()=> {
@@ -1353,7 +950,7 @@ test('production release external actions use immutable commit SHAs', () => {
   }
 });
 
-test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup requires negative readback', () => {
+test('Workflow ordinary readback rejects retired Secret bindings', () => {
   const required=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET',
     'WORKFLOW_GITHUB_DISPATCH_TOKEN'];
   const secrets=required.map(name=>({name}));
@@ -1368,17 +965,16 @@ test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup
   const wrap=x=>({bindings:x,observability:{enabled:true,logs:{invocation_logs:true}}});
   const inventory=[...bindings,...old.map(name=>({name,type:'secret_text'}))];
   const listed=[...secrets,...old.map(name=>({name}))];
-  assert.equal(verifyBindings('workflow-mcp-worker',wrap(inventory),listed,{mode:'readback',expectedWorkflowIdentity:executorIdentity}),true);
   assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap(inventory),listed,
-    {mode:'readback',expectedWorkflowIdentity:executorIdentity,cleanupVerified:true}),/Legacy Secret cleanup not complete/);
+    {mode:'readback',expectedWorkflowIdentity:executorIdentity}),/Unexpected runtime Secret/);
   assert.equal(verifyBindings('workflow-mcp-worker',wrap(bindings),secrets,
-    {mode:'readback',expectedWorkflowIdentity:executorIdentity,cleanupVerified:true}),true);
+    {mode:'readback',expectedWorkflowIdentity:executorIdentity}),true);
   assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap([...bindings,
     {name:'UNREVIEWED_SECRET',type:'secret_text'}]),[...secrets,{name:'UNREVIEWED_SECRET'}],
     {mode:'readback',expectedWorkflowIdentity:executorIdentity}),/Unexpected runtime Secret/);
 });
 
-test('Spec 733 Database cleanup readback is exact and does not narrow normal migration readback', () => {
+test('Database ordinary readback accepts only current Secret contracts', () => {
   const worker='database-mcp-worker';
   const config=readConfiguration(worker,readFileSync('apps/database-mcp-worker/wrangler.jsonc','utf8'));
   const catalog=JSON.stringify({
@@ -1393,11 +989,11 @@ test('Spec 733 Database cleanup readback is exact and does not narrow normal mig
     {name:'RATE_LIMITER',type:'ratelimit',namespace_id:'1001',simple:{limit:120,period:60}}];
   const wrap=items=>({bindings:items,observability:{enabled:true,logs:{invocation_logs:true}}});
   const listed=secretNames.map(name=>({name}));
-  const options={mode:'readback',cleanupVerified:true,sourceConfig:config,databaseConnections:catalog,
+  const options={mode:'readback',sourceConfig:config,databaseConnections:catalog,
     databaseVariables:{DB_HOST:'db.example.invalid'},expectedDatabaseLimits:limits};
   assert.equal(verifyBindings(worker,wrap(bindings),listed,options),true);
   assert.throws(()=>verifyBindings(worker,wrap([...bindings,{name:'DATABASE_ENCRYPTION_KEY',type:'secret_text'}]),
-    [...listed,{name:'DATABASE_ENCRYPTION_KEY'}],options),/Legacy Secret cleanup/);
+    [...listed,{name:'DATABASE_ENCRYPTION_KEY'}],options),/Unexpected runtime Secret/);
   assert.throws(()=>verifyBindings(worker,wrap([...bindings,{name:'DATABASE_CONFIG',type:'secret_text'}]),
     [...listed,{name:'DATABASE_CONFIG'}],options),/Unexpected runtime Secret/);
   assert.throws(()=>verifyBindings(worker,wrap(bindings.map(binding=>binding.name==='DB_HOST'?{...binding,text:'changed'}:binding)),listed,options),/reference Variable/);
@@ -1406,7 +1002,7 @@ test('Spec 733 Database cleanup readback is exact and does not narrow normal mig
     listed.filter(secret=>secret.name!=='DATABASE_B2B_PASSWORD'),options),/named Secret is missing/);
   const ordinary=[...listed,{name:'DATABASE_CONFIG'}];
   const ordinaryBindings=[...bindings,{name:'DATABASE_CONFIG',type:'secret_text'}];
-  assert.equal(verifyBindings(worker,wrap(ordinaryBindings),ordinary,{...options,cleanupVerified:false}),true);
+  assert.throws(()=>verifyBindings(worker,wrap(ordinaryBindings),ordinary,options),/Unexpected runtime Secret/);
 });
 
 test('Workflow intentional executor migration preserves old baseline but requires exactly the new identity at readback', () => {
@@ -1509,4 +1105,567 @@ test('Gateway manual release checks the exact Clerk-protected custom-domain reso
   assert.match(smoke, /gatewayOriginFromConfig\(config\) \+ "\/mcp\/raindrop"/);
   assert.match(smoke, /"\$SELECTED_WORKER" == "mcp-gateway-worker" && "\$FIRST_DEPLOY" == "true"/);
   assert.match(smoke, /401\|403\)/);
+});
+
+// #1046: reconstruct the old release obstruction from the audited pre-CAS
+// projection in issue comment 7166814978. Unreported input/plan content is
+// deliberately synthetic; the release gate does not depend on it.
+test('historical Ubuntu terminal execution reproduces the old Unknown release obstruction (#1046)', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    const migrationDir = new URL('../apps/workflow-mcp-worker/migrations/', import.meta.url);
+    const files = readdirSync(migrationDir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+    db.exec('CREATE TABLE d1_migrations(name TEXT PRIMARY KEY)');
+    for (const file of files.filter(f=>f.slice(0,4)<='0022')) {
+      db.exec('BEGIN');
+      db.exec(readFileSync(new URL(file,migrationDir),'utf8'));
+      db.prepare('INSERT INTO d1_migrations VALUES(?)').run(file);
+      db.exec('COMMIT');
+    }
+    const id='77a9ef72-7e08-47ba-8f85-90f82f1656e8';
+    const version='5a3d7d4b-99ff-40a1-bb4f-50675b5c1f4b';
+    const attempt='81fc4de2-4936-496a-b51a-7c4f8cac75a3';
+    db.prepare("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('fixture','ubuntu','{}',0,0)").run();
+    db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES(?,'fixture','fixture','{}',0)").run(version);
+    db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,result,error_code,created_at,updated_at) VALUES(?,'fixture',?,?,'fixture','{}','started','indeterminate','null','github_session_no_ready',0,1795401799113)").run(id,version,id);
+    db.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES(?,'ubuntu_session','indeterminate','github_session_no_ready',1795401798923),(?,'notify_bark','skipped',NULL,1795401799065)").run(id,id);
+    db.prepare("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at) VALUES(?,'ubuntu_session',1,'terminated',0,0)").run(id);
+    db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at,resolved_sha) VALUES(?,?,'ubuntu_session','github.action','fixture','cancelled','autoactions/github-actions','1452488311','autoactions/github-actions/.github/workflows/ubuntu.yml@refs/heads/main','refs/heads/main',45101764677,1,45101764677,1,0,0,'dee9dbaf71c3c2e48bf31a8ad20bb24d21d31c27')").run(attempt,id);
+    // Reconstruct only the retired gate's two blocking predicates, not its
+    // old operational compatibility code.
+    const row=db.prepare(`SELECT
+      (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs,
+      (SELECT count(*) FROM run_steps WHERE status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
+      (SELECT count(*) FROM step_attempts WHERE state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
+      (SELECT count(*) FROM session_executions WHERE state!='terminated') AS nonterminated_sessions,
+      (SELECT count(*) FROM callback_receipts WHERE notification_delivered!=1) AS undelivered_callbacks`).get();
+    assert.deepEqual(Object.values(row),[1,1,0,0,0]);
+    assert.equal(db.prepare('SELECT outcome FROM runs WHERE id=?').get(id).outcome,'indeterminate');
+  } finally {db.close();}
+});
+
+// This seam is the shared release verification boundary, not a Worker
+// status mutation. Source: #1046 comment 7166814978 and current Attempt readback.
+test('verified terminal execution is independent of Unknown business result (#1046)',async()=>{
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const id='77a9ef72-7e08-47ba-8f85-90f82f1656e8';
+  const run={id,instance_id:id,start_state:'started',outcome:'indeterminate'};
+  const native={instance_id:id,status:'complete',observed_at:1795402100881};
+  const attempt={attempt_id:'81fc4de2-4936-496a-b51a-7c4f8cac75a3',run_id:id,
+    step_id:'ubuntu_session',capability_id:'github.action',state:'cancelled',
+    repository_id:'1452488311',candidate_run_id:45101764677,candidate_run_attempt:1,
+    owner_run_id:45101764677,owner_run_attempt:1};
+  const evidence={
+    steps:[{run_id:id,step_id:'ubuntu_session',status:'indeterminate'},
+      {run_id:id,step_id:'notify_bark',status:'skipped'}],
+    attempts:[attempt],sessions:[{run_id:id,step_id:'ubuntu_session',state:'terminated'}],
+    callbacks:[],children:[],invocations:[],mcpFences:[],githubCancellations:[],
+    cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[],
+  };
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,evidence),
+    {instance_id:id,status:'complete',observed_at:1795402100881});
+  assert.equal(run.outcome,'indeterminate');
+  // A cancellation intent/ACK is retained even after a verified physical
+  // termination; it is neither a new active execution nor terminal proof.
+  const cancellation={run_id:id,step_id:attempt.step_id,attempt_id:attempt.attempt_id,
+    cancel_ack:'accepted',force_ack:null};
+  for(const ack of ['accepted','unknown']){
+    assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...evidence,
+      githubCancellations:[{...cancellation,cancel_ack:ack}]}),native);
+  }
+  const callback={run_id:id,step_id:attempt.step_id,attempt_id:attempt.attempt_id,
+    outcome:'failed',notification_delivered:1};
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...evidence,callbacks:[callback]}),native);
+  for(const bad of [
+    {...native,instance_id:'different'},{...native,status:'running'},
+    {...native,status:'rollingBack'},null,
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,bad,evidence),/native/);
+  for(const bad of [
+    {...evidence,callbacks:[{...callback,step_id:'notify_bark'}]},
+    {...evidence,callbacks:[{...callback,attempt_id:'different'}]},
+    {...evidence,githubCancellations:[{...cancellation,attempt_id:'different'}]},
+    {...evidence,githubCancellations:[{...cancellation,step_id:'notify_bark'}]},
+    {...evidence,githubCancellations:[cancellation],attempts:[{...attempt,state:'claimed'}]},
+    {...evidence,githubCancellations:[cancellation],attempts:[{...attempt,state:'rejected',
+      candidate_run_id:null,candidate_run_attempt:null,owner_run_id:null,owner_run_attempt:null}],sessions:[]},
+    {...evidence,sessions:[{...evidence.sessions[0],state:'stopping'}]},
+    {...evidence,attempts:[{...attempt,state:'claimed'}]},
+    {...evidence,attempts:[{...attempt,state:'dispatch_unknown'}]},
+    {...evidence,attempts:[{...attempt,owner_run_attempt:2}]},
+    {...evidence,callbacks:[{run_id:id,attempt_id:attempt.attempt_id,notification_delivered:0}]},
+    {...evidence,children:[{id:'child',parent_run_id:id,outcome:'succeeded'}]},
+    {...evidence,invocations:[{run_id:id,step_id:'notify_bark'}]},
+    {...evidence,mcpFences:[{run_id:id,step_id:'notify_bark'}]},
+    {...evidence,steps:[{run_id:id,step_id:'ubuntu_session',status:'running'}]},
+    {...evidence,waits:undefined},
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
+  assert.throws(()=>verifyWorkflowTerminalEvidence({...run,outcome:'running'},native,evidence),/terminal evidence/);
+});
+
+// Actual #179 historical Artifact receipt. Native history expired; the
+// protected release step and current physical GitHub run were re-read.
+test('historical claimed Artifact requires matched physical proof and delivered receipt (#1046)',async()=>{
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const {historicalArtifactTerminalProof}=await import('./workflow-terminal-run-exception.mjs');
+  const id='f99bb918-2909-46df-b196-d07faa64df27';
+  const run={id,instance_id:id,workflow_id:'685026cf-abaa-4618-a363-5944fac729d2',
+    version_id:'88158dd2-25c9-4e66-b98a-51ac34f829e0',outcome:'indeterminate',
+    start_state:'started',error_code:'github_dispatch_unknown'};
+  const step={run_id:id,step_id:'verify',status:'indeterminate',error_code:'github_dispatch_unknown'};
+  const attempt={run_id:id,step_id:'verify',attempt_id:'c7893834-10ff-41d5-b784-a33d00cc20f5',
+    state:'claimed',capability_id:'github.action',repository:'lirtual/github-actions',repository_id:'1430925009',
+    workflow_ref:'lirtual/github-actions/.github/workflows/verify-action.yml@refs/tags/v0.1.42-rc.10',
+    ref:'refs/tags/v0.1.42-rc.10',owner_run_id:41182432750,owner_run_attempt:1,
+    candidate_run_id:41182432750,candidate_run_attempt:1,resolved_sha:null};
+  const receipt={run_id:id,step_id:'verify',attempt_id:attempt.attempt_id,outcome:'succeeded',notification_delivered:1};
+  const evidence={steps:[step],attempts:[attempt],sessions:[],callbacks:[receipt],children:[],
+    invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],
+    childCancellations:[],gates:[],approvals:[],waits:[]};
+  const d1=[[run],[step],[],[attempt],[receipt],[],[]].map(results=>({success:true,results}));
+  const sha='21d6583fe2b43fbb58f93c68e44cc936fb02b0fb';
+  const prior={id:41429815494,workflow_id:394912681,head_sha:sha,event:'workflow_dispatch',
+    head_branch:'main',run_attempt:1,status:'completed',conclusion:'success'};
+  const steps=[
+    'Verify seventh terminal download Run proof (read-only)',
+    'Verify ninth terminal Saga Run proof (read-only)',
+    'Verify tenth terminal Saga Run proof (read-only)',
+    'Verify eleventh terminal generic Action proof (read-only)',
+    'Verify twelfth terminal Artifact Task proof (read-only)'
+  ].map((name,i)=>({name,status:'completed',conclusion:'success',
+    completed_at:['2026-11-02T10:35:16Z','2026-11-02T10:35:19Z','2026-11-02T10:35:21Z',
+      '2026-11-02T10:35:22Z','2026-11-02T10:35:24Z'][i]}));
+  const jobs={jobs:[{id:125225662362,name:'Manual selected Worker release',head_sha:sha,
+    status:'completed',conclusion:'success',steps}]};
+  const github={id:41182432750,repository:{id:1430925009,full_name:'lirtual/github-actions'},
+    workflow_id:394689660,path:'.github/workflows/verify-action.yml',event:'workflow_dispatch',
+    run_attempt:1,head_branch:'v0.1.42-rc.10',head_sha:'f5d44ff5a5dbd5b1b444c907e3654266a465da85',
+    status:'completed',conclusion:'success'};
+  const now=Date.parse('2026-11-25T15:55:19Z');
+  const proof=historicalArtifactTerminalProof(d1,prior,jobs,github,now);
+  assert.equal(proof.observed_at,Date.parse('2026-11-02T10:35:24Z'));
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,proof,evidence),proof);
+  assert.equal(run.outcome,'indeterminate');
+  assert.equal(attempt.state,'claimed');
+  const {github_attempts,...native}=proof;
+  const [github_attempt]=github_attempts;
+  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,evidence),/terminal evidence/);
+  for(const patch of [{attempt_id:'wrong'},{repository_id:'wrong'},{run_id:41182432751},
+    {run_attempt:2},{conclusion:'failure'},{observed_at:0}]){
+    assert.throws(()=>verifyWorkflowTerminalEvidence(run,{...proof,github_attempts:[{...github_attempt,...patch}]},evidence),/terminal evidence/);
+  }
+  for(const bad of [
+    {...evidence,callbacks:[]},
+    {...evidence,callbacks:[{...receipt,notification_delivered:0}]},
+    {...evidence,callbacks:[{...receipt,outcome:'failed'}]},
+    {...evidence,attempts:[{...attempt,owner_run_attempt:2}]},
+    {...evidence,attempts:[{...attempt,ref:'refs/heads/main'}]},
+    {...evidence,sessions:[{run_id:id,step_id:'verify',state:'terminated'}]},
+  ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,proof,bad),/terminal evidence/);
+  for(const bad of [{...github,status:'in_progress'},{...github,run_attempt:2},{...github,head_sha:'0'.repeat(40)}])
+    assert.throws(()=>historicalArtifactTerminalProof(d1,prior,jobs,bad,now),/blocked/);
+  const badJobs=structuredClone(jobs);badJobs.jobs[0].steps.at(-1).conclusion='skipped';
+  assert.throws(()=>historicalArtifactTerminalProof(d1,prior,badJobs,github,now),/blocked/);
+});
+
+// The actual production inventory prefix is v22, not a newly invented
+// minimal table. The one additive migration must preserve all audit rows.
+test('#1046 v22 to v23 adds only the nullable bounded terminal proof column',()=>{
+  const db=new DatabaseSync(':memory:');
+  try{
+    const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+    const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+    assert.equal(files.length,23);
+    assert.equal(files.at(-1),'0023_execution_terminal_proof.sql');
+    for(const name of files.slice(0,22))db.exec(readFileSync(new URL(name,dir),'utf8'));
+    db.prepare("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)").run();
+    db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d','{}',1)").run();
+    db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at) VALUES('r','wf','v','i','d','{}','started','indeterminate','execution_interrupted',1,2)").run();
+    db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES('r','s','indeterminate',2)").run();
+    const original=db.prepare('SELECT * FROM runs').all();
+    const originalSteps=db.prepare('SELECT * FROM run_steps').all();
+    const schema=()=>db.prepare("SELECT type,name FROM sqlite_master ORDER BY type,name").all();
+    const before=schema();
+    db.exec(readFileSync(new URL(files.at(-1),dir),'utf8'));
+    assert.deepEqual(schema(),before);
+    const after=db.prepare('SELECT * FROM runs').all();
+    assert.equal(after[0].execution_terminal_proof,null);
+    delete after[0].execution_terminal_proof;
+    assert.deepEqual(after,original);
+    assert.deepEqual(db.prepare('SELECT * FROM run_steps').all(),originalSteps);
+  }finally{db.close();}
+});
+
+// Current durable receipts, not their mere existence, establish closure.
+// A native terminal alone does not settle a lost external effect.
+test('#1046 current effect and wait receipts do not block after independently known completion',async()=>{
+  const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+  const run={id:'r',instance_id:'i',version_id:'v',start_state:'started',outcome:'indeterminate'};
+  const native={instance_id:'i',status:'complete',observed_at:1000};
+  const digest='a'.repeat(64);
+  const plan={cloudflare_execution_approved:true,cloudflare_action_approvals:[{executor:'cloudflare',provider:'bark',action:'bark.send_notification',contract_digest:digest}],mcp_connection_generation:2,http_connection_generation:3,steps:[
+    {id:'mcp',uses:'mcp.call',with:{scope:'write'}},
+    {id:'task',uses:'github.run',with:{action:{type:'task'}},approval:{required:true}},
+    {id:'http',uses:'http.request',with:{method:'GET'}},
+    {id:'notify',uses:'action.run',with:{executor:'cloudflare',provider:'bark',action:'bark.send_notification',contract_digest:digest}},
+    {id:'wait',uses:'flow.wait_event',with:{}},
+    {id:'last',uses:'result.emit',with:{}}
+  ]};
+  const steps=plan.steps.map(s=>({run_id:'r',step_id:s.id,status:s.id==='last'?'indeterminate':s.id==='http'?'failed':'succeeded',
+    error_code:s.id==='http'?'http_response_error':null}));
+  const invocation={run_id:'r',step_id:'notify',invocation_id:'invoke',source_attempt_id:'invoke',deployment_id:'provider-version',contract_digest:digest,binding_generation:0};
+  const e={plan:{id:'v',plan},steps,attempts:[{run_id:'r',step_id:'task',attempt_id:'task-a',capability_id:'github.action',state:'succeeded',candidate_run_id:12,candidate_run_attempt:1,owner_run_id:12,owner_run_attempt:1}],sessions:[],callbacks:[],children:[],invocations:[invocation],
+    mcpFences:[{run_id:'r',step_id:'mcp',generation:2},{run_id:'r',step_id:'http',generation:3}],
+    githubCancellations:[],cloudflareCancellations:[],childCancellations:[],
+    gates:[{run_id:'r',step_id:'task',version_id:'v',deadline_at:500}],
+    approvals:[{run_id:'r',step_id:'task',version_id:'v',decision:'approved',created_at:100,consumed_at:200}],
+    waits:[{run_id:'r',step_id:'wait',last_sent_at:100}]};
+  assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
+  const changeStep=(id,status,error_code)=>({...e,steps:steps.map(s=>s.step_id===id?{...s,status,error_code}:s)});
+  for(const bad of [
+    {...e,plan:undefined},{...e,plan:{...e.plan,id:'wrong'}},
+    {...e,invocations:[{...invocation,contract_digest:'different'}]},
+    {...e,invocations:[{...invocation,source_attempt_id:'other'}]},
+    changeStep('notify','indeterminate','cloudflare_outcome_unknown'),
+    changeStep('mcp','indeterminate','external_outcome_unknown'),
+    changeStep('http','indeterminate','http_outcome_unknown'),
+    {...e,mcpFences:[{...e.mcpFences[0],generation:1},e.mcpFences[1]]},
+    {...e,approvals:[{...e.approvals[0],version_id:'old'}]},
+    {...e,approvals:[{...e.approvals[0],consumed_at:null}]},
+    {...e,waits:[{...e.waits[0],step_id:'last'}]},
+    changeStep('wait','waiting',null),
+  ])assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
+});
+
+test('#1046 independently verified child closure and Saga cancellation do not require rewriting history',async()=>{
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const empty={steps:[],attempts:[],sessions:[],callbacks:[],children:[],invocations:[],mcpFences:[],
+   githubCancellations:[],cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[]};
+ const parent={id:'parent',instance_id:'parent',version_id:'pv',start_state:'started',outcome:'indeterminate'};
+ const native={instance_id:'parent',status:'errored',observed_at:1000};
+ const child={id:'child',instance_id:'child',version_id:'cv',workflow_id:'cw',parent_run_id:'parent',
+   parent_step_id:'child_step',start_state:'started',outcome:'indeterminate'};
+ const cp={instance_id:'child',status:'complete',observed_at:900};
+ const ce={...empty,steps:[{run_id:'child',step_id:'emit',status:'indeterminate'}]};
+ const plan={id:'pv',plan:{steps:[{id:'child_step',uses:'flow.child',with:{workflow_id:'cw',version_id:'cv'}}]}};
+ const e={...empty,plan,steps:[{run_id:'parent',step_id:'child_step',status:'indeterminate'}],
+   children:[{run:child,native:cp,evidence:ce}],
+   childCancellations:[{parent_run_id:'parent',parent_step_id:'child_step',child_run_id:'child',termination_attempted_at:800}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,e),native);
+ for(const bad of [
+   {...e,children:[]},
+   {...e,children:[{run:{...child,outcome:'running'},native:cp,evidence:ce}]},
+   {...e,children:[{run:{...child,version_id:'wrong'},native:cp,evidence:ce}]},
+   {...e,children:[{run:child,native:{...cp,status:'running'},evidence:ce}]},
+   {...e,children:[{run:child,native:cp,evidence:{...ce,callbacks:[{run_id:'child',notification_delivered:0}]}}]},
+   {...e,childCancellations:[{...e.childCancellations[0],child_run_id:'wrong'}]},
+ ])assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,bad),/terminal evidence/);
+ const cancelledChild={...child,start_state:'cancelled_before_start',outcome:'cancelled',error_code:'cancelled_before_start'};
+ const prestart={...e,children:[{run:cancelledChild,native:null,evidence:empty}],childCancellations:[]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,prestart),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,{...prestart,children:[{run:cancelledChild,native:null,evidence:ce}]}),/terminal evidence/);
+ const detached={...child,start_state:'reserved',outcome:'failed',error_code:'detached_parent_not_active'};
+ const detachedPlan={...e.plan,plan:{steps:[{...e.plan.plan.steps[0],with:{...e.plan.plan.steps[0].with,mode:'detached'}}]}};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,{...prestart,plan:detachedPlan,children:[{run:detached,native:null,evidence:empty}]}),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,{...prestart,children:[{run:detached,native:null,evidence:empty}]}),/terminal evidence/);
+ const physicalChild={...child,start_state:'cancelled',outcome:'cancelled',updated_at:900};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,{...e,children:[{run:physicalChild,native:null,evidence:ce}]}),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,{...e,childCancellations:[],children:[{run:physicalChild,native:null,evidence:ce}]}),/terminal evidence/);
+ const saga={...empty,plan:{id:'pv',plan:{saga:{on:['failure']},saga_compensation_approved:true,
+   steps:[{id:'session',uses:'github.run',with:{action:{type:'session'}},compensate:{kind:'github.session.cancel'}}]}},
+   steps:[{run_id:'parent',step_id:'session',status:'succeeded'},{run_id:'parent',step_id:'__saga_session',status:'requested'}],
+   attempts:[{run_id:'parent',step_id:'session',attempt_id:'a',capability_id:'github.action',state:'cancelled',
+     candidate_run_id:1,candidate_run_attempt:1,owner_run_id:1,owner_run_attempt:1}],
+   sessions:[{run_id:'parent',step_id:'session',state:'terminated'}],
+   githubCancellations:[{run_id:'parent',step_id:'session',attempt_id:'a'}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,saga),native);
+ for(const bad of [
+   {...saga,sessions:[{...saga.sessions[0],state:'stopping'}]},
+   {...saga,attempts:[{...saga.attempts[0],state:'claimed'}]},
+   {...saga,plan:undefined},
+   {...saga,steps:[saga.steps[0],{...saga.steps[1],step_id:'__saga_other'}]},
+ ])assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,bad),/terminal evidence/);
+});
+
+test('#1046 source-bound Bark closure requires exact persisted lineage and completed source',async()=>{
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const run={id:'r',instance_id:'r',version_id:'v',start_state:'started',outcome:'indeterminate'};
+ const native={instance_id:'r',status:'complete',observed_at:1000};
+ const digest='a'.repeat(64),version='11111111-1111-4111-8111-111111111111';
+ const action={repository:'autoactions/github-actions',repositoryId:1452488311,
+  workflowId:413147310,workflowPath:'.github/workflows/ubuntu.yml',ref:'refs/heads/main',type:'session'};
+ const attempt={run_id:'r',step_id:'source',attempt_id:'a',state:'cancelled',capability_id:'github.action',
+  repository:action.repository,repository_id:String(action.repositoryId),
+  workflow_ref:action.repository+'/'+action.workflowPath+'@'+action.ref,ref:action.ref,
+  candidate_run_id:42,candidate_run_attempt:1,owner_run_id:42,owner_run_attempt:1};
+ const source={id:'source',uses:'github.run',with:{action}};
+ const notify={id:'notify',uses:'action.run',needs:['source'],with:{executor:'cloudflare',provider:'bark',
+  action:'bark.send_notification',contract_digest:digest,input:{session_step_id:'source'}}};
+ const grant={executor:'cloudflare',provider:'bark',action:'bark.send_notification',contract_digest:digest,deployment_id:version};
+ const inv={run_id:'r',step_id:'notify',invocation_id:'n',source_attempt_id:'a',deployment_id:version,
+  input_digest:digest,contract_digest:digest,binding_generation:0,created_at:10};
+ const steps=[{run_id:'r',step_id:'source',status:'succeeded'},{run_id:'r',step_id:'notify',status:'succeeded'}];
+ const e={plan:{id:'v',plan:{steps:[source,notify],cloudflare_execution_approved:true,cloudflare_action_approvals:[grant]}},
+  steps,attempts:[attempt],sessions:[{run_id:'r',step_id:'source',state:'terminated'}],callbacks:[],
+  children:[],invocations:[inv],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],
+  childCancellations:[],gates:[],approvals:[],waits:[]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
+ for(const bad of [
+  {...e,invocations:[{...inv,source_attempt_id:'n'}]},
+  {...e,invocations:[{...inv,source_attempt_id:'other'}]},
+  {...e,attempts:[{...attempt,repository_id:'99'}]},
+  {...e,attempts:[{...attempt,owner_run_id:null,owner_run_attempt:null}]},
+  {...e,sessions:[]},
+  {...e,plan:{id:'v',plan:{...e.plan.plan,cloudflare_action_approvals:[]}}},
+  {...e,steps:[steps[0],{...steps[1],status:'indeterminate'}]},
+ ])assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
+ const download={...action,workflowPath:'.github/workflows/download.yml',type:'task'};
+ const downloadStep={id:'source',uses:'flow.foreach',with:{max_items:1,template:{id:'task',uses:'github.run',with:{action:download}}}};
+ const downloadAttempt={...attempt,step_id:'source_0_task',state:'succeeded',workflow_ref:download.repository+'/'+download.workflowPath+'@'+download.ref};
+ const downloadE={...e,plan:{id:'v',plan:{...e.plan.plan,steps:[downloadStep,{...notify,with:{...notify.with,input:{download_step_id:'source'}}}]}},
+  steps:[...steps,{run_id:'r',step_id:'source_0_task',status:'succeeded'}],sessions:[],attempts:[downloadAttempt]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,downloadE),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...downloadE,attempts:[{...downloadAttempt,step_id:'source'}]}),/terminal evidence/);
+ const business={id:'source',uses:'action.run',with:{executor:'cloudflare',provider:'dub',action:'dub.shorten_url',contract_digest:digest}};
+ const paired={...e,plan:{id:'v',plan:{...e.plan.plan,steps:[business,{...notify,with:{...notify.with,input:{notification:{body:'Completed'}}}}],
+  cloudflare_action_approvals:[grant,{...grant,provider:'dub',action:'dub.shorten_url'}]}},
+  attempts:[],sessions:[],invocations:[{...inv,step_id:'source',invocation_id:'p',source_attempt_id:'p'},{...inv,source_attempt_id:'p'}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,paired),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...paired,invocations:[{...paired.invocations[0],source_attempt_id:'n'},paired.invocations[1]]}),/terminal evidence/);
+ const cancelled={...e,cloudflareCancellations:[{run_id:'r',step_id:'notify',created_at:20}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,cancelled),native);
+ const noDispatch={...e,steps:[steps[0]],invocations:[],cloudflareCancellations:[{run_id:'r',step_id:'notify',created_at:20}]};
+ const cancelledRun={...run,outcome:'cancelled',error_code:'cloudflare_action_cancel_requested'};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(cancelledRun,native,noDispatch),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,noDispatch),/terminal evidence/);
+});
+
+test('#1046 real D1 projection binds immutable Plan and callback to their owning attempt',async()=>{
+ const {readWorkflowTerminalEvidence,verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  for(const name of files.slice(0,22))db.exec(readFileSync(new URL(name,dir),'utf8'));
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)")
+    .run(JSON.stringify({steps:[{id:'task',uses:'github.run',with:{action:{type:'task'}}}]}));
+  for(const id of ['r','unrelated'])
+   db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES(?,'wf','v',?,'d','{}','started','indeterminate',1,2)").run(id,id);
+  db.exec("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES('r','task','indeterminate',2)");
+  db.exec("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES('unrelated','task','running',2)");
+  db.exec("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES('a','r','task','github.action','d1','succeeded','owner/repo','1','owner/repo/.github/workflows/test.yml@refs/heads/main','refs/heads/main',1,1,1,1,1,2),('other','unrelated','task','github.action','d2','claimed','owner/repo','1','owner/repo/.github/workflows/test.yml@refs/heads/main','refs/heads/main',2,1,2,1,1,2)");
+  db.exec("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,notification_delivered,created_at) VALUES('c','a','succeeded','{}',1,2),('other-c','other','succeeded','{}',0,2)");
+  const query=async(sql,params)=>db.prepare(sql).all(...params);
+  const native={instance_id:'r',status:'complete',observed_at:1000};
+  const before=await readWorkflowTerminalEvidence(query,'r',{schema:22,observe:async()=>native});
+  assert.equal(before.evidence.callbacks.length,1);
+  assert.equal(before.evidence.callbacks[0].run_id,'r');
+  assert.equal(before.evidence.callbacks[0].step_id,'task');
+  assert.equal(before.evidence.plan.id,'v');
+  assert.deepEqual(verifyWorkflowTerminalEvidence(before.run,before.native,before.evidence),native);
+  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'missing',{schema:22,observe:async()=>native}),/projection/);
+  db.exec(readFileSync(new URL(files.at(-1),dir),'utf8'));
+  db.prepare("UPDATE runs SET execution_terminal_proof=? WHERE id='r'").run(JSON.stringify(native));
+  const after=await readWorkflowTerminalEvidence(query,'r',{schema:23,observe:async()=>{throw Error('unnecessary external query');}});
+  assert.deepEqual(after,before);
+  db.exec("UPDATE callback_receipts SET notification_delivered=0 WHERE attempt_id='a'");
+  const pending=await readWorkflowTerminalEvidence(query,'r',{schema:23});
+  assert.throws(()=>verifyWorkflowTerminalEvidence(pending.run,pending.native,pending.evidence),/callback unresolved/);
+  // Deliberately corrupt only the isolated fixture to challenge the join.
+  db.exec("PRAGMA foreign_keys=OFF; UPDATE workflow_versions SET workflow_id='other-owner' WHERE id='v'");
+  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'r',{schema:23}),/projection/);
+ }finally{db.close();}
+});
+
+test('#1046 release inventory selects actual unresolved evidence, not historical IDs or every settled Run',async()=>{
+ const {verifyWorkflowReleaseInventory}=await import('./manual-worker-release.mjs');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  db.exec('CREATE TABLE d1_migrations(name TEXT NOT NULL UNIQUE)');
+  for(const name of files){
+   db.exec(readFileSync(new URL(name,dir),'utf8'));
+   db.prepare('INSERT INTO d1_migrations VALUES(?)').run(name);
+  }
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)")
+   .run(JSON.stringify({steps:[{id:'session',uses:'github.run',with:{action:{type:'session'}}}]}));
+  const add=(id,outcome,proof=null)=>{
+   db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at,execution_terminal_proof) VALUES(?,'wf','v',?,'d','{}','started',?,1,2,?)")
+    .run(id,id,outcome,proof?JSON.stringify(proof):null);
+   db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'session',?,2)").run(id,outcome==='indeterminate'?'indeterminate':'succeeded');
+  };
+  for(let i=0;i<400;i++)add('settled-'+i,'succeeded');
+  const fact={instance_id:'arbitrary-new-unknown',status:'complete',observed_at:1000};
+  add(fact.instance_id,'indeterminate',fact);
+  add('ready','succeeded');
+  db.exec("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES('a','ready','session','github.action','d1','claimed','owner/repo','1','owner/repo/.github/workflows/test.yml@refs/heads/main','refs/heads/main',1,1,1,1,1,2)");
+  db.exec("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at) VALUES('ready','session',1,'ready',1,2)");
+  const seen=[];
+  const query=async(sql,params=[])=>{seen.push({sql,params});return db.prepare(sql).all(...params);};
+  const result=await verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,
+   observe:async()=>{throw Error('unexpected external observation');}});
+  assert.equal(result.schema,23);assert.equal(result.run_count,402);assert.equal(result.ready_sessions,1);
+  assert.deepEqual(Object.keys(result.proofs),[fact.instance_id]);
+  assert.deepEqual(result.proofs[fact.instance_id],fact);
+  assert.equal(seen.filter(q=>q.params.includes(fact.instance_id)).length,1);
+  assert(!seen.some(q=>q.params.some(p=>String(p).startsWith('settled-'))));
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles:files}),/terminal evidence/);
+  // Model a corrupt/imported physical identity in this isolated fixture.
+  db.exec("PRAGMA ignore_check_constraints=ON; UPDATE step_attempts SET owner_run_id=2 WHERE attempt_id='a'; PRAGMA ignore_check_constraints=OFF");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/terminal evidence/);
+  db.exec("UPDATE step_attempts SET owner_run_id=1,state='cancelled' WHERE attempt_id='a'; UPDATE session_executions SET state='terminated' WHERE run_id='ready'");
+  assert.equal((await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles:files})).ready_sessions,0);
+  db.exec("UPDATE run_steps SET status='cancelled',error_code='unexpected' WHERE run_id='arbitrary-new-unknown'");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/cancelled Step/);
+  db.exec("UPDATE run_steps SET status='indeterminate',error_code=NULL WHERE run_id='arbitrary-new-unknown'");
+  db.exec("UPDATE runs SET execution_terminal_proof=NULL WHERE id='arbitrary-new-unknown'");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/terminal evidence/);
+  assert.deepEqual((await verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,observe:async()=>fact})).proofs[fact.instance_id],fact);
+  // A settled business result cannot hide an invalid physical identity.
+  db.exec("PRAGMA ignore_check_constraints=ON; UPDATE step_attempts SET owner_run_id=2 WHERE attempt_id='a'; PRAGMA ignore_check_constraints=OFF");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,
+    observe:async r=>({instance_id:r.id,status:'complete',observed_at:1000})}),/Attempt a physical termination or identity unresolved/);
+  db.exec("UPDATE step_attempts SET owner_run_id=1 WHERE attempt_id='a'");
+  db.exec("DELETE FROM d1_migrations WHERE name='0022_drop_claim_receipts.sql'");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/inventory|prefix/);
+ }finally{db.close();}
+});
+
+test('#1046 once-only v22 to v23 proof backfill preserves outcomes and resumes after a lost write receipt',async()=>{
+ const {verifyWorkflowReleaseInventory,backfillWorkflowTerminalProofs,workflowReleaseProof}=await import('./manual-worker-release.mjs');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  db.exec('CREATE TABLE d1_migrations(name TEXT NOT NULL UNIQUE)');
+  const migrate=name=>{db.exec(readFileSync(new URL(name,dir),'utf8'));db.prepare('INSERT INTO d1_migrations VALUES(?)').run(name);};
+  for(const file of files.slice(0,22))migrate(file);
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.exec("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d','{\"steps\":[]}',1)");
+  for(const id of ['a','b']){
+   db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at) VALUES(?,'wf','v',?,'d','{}','started','indeterminate','execution_interrupted',1,2)").run(id,id);
+   db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'emit','indeterminate',2)").run(id);
+  }
+  const snapshot=db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all();
+  const stepSnapshot=db.prepare("SELECT * FROM run_steps ORDER BY run_id").all();
+  const query=async(sql,params=[])=>db.prepare(sql).all(...params);
+  const checks=[];
+  const io={query,sourceFiles:files,
+   observe:async r=>({instance_id:r.instance_id,status:'complete',observed_at:1000}),
+   maintenance:async phase=>checks.push(phase),
+   nativeDrain:async ids=>checks.push(ids),
+   };
+  // The adapter receives sources only for actual recognized history;
+  // synthetic current IDs may not perform any external history requests.
+  const historyFree={...io,historySources:{githubRun:async()=>{throw Error('history consulted');},
+    githubJobs:async()=>{throw Error('history consulted');},providerVersions:async()=>{throw Error('history consulted');}}};
+  await assert.rejects(()=>workflowReleaseProof('workflow-check',historyFree,{ACTIONS_INGRESS_QUIESCED:'false'}),/exact v23/);
+  await assert.rejects(()=>workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'false'}),/quiescence/);
+  assert.deepEqual(checks,[]);
+  const prep=await workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'true'});
+  assert.deepEqual(checks,['frozen','frozen']);checks.length=0;
+  assert.equal(prep.schema,22);
+  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('write before migration');},prep,files),/schema/);
+  migrate(files.at(-1));
+  let writes=0;
+  const interrupted=async(sql,params)=>{writes++;db.prepare(sql).run(...params);throw Error('lost write receipt');};
+  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,interrupted,prep,files),/lost write receipt/);
+  assert.equal(writes,1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM runs WHERE execution_terminal_proof IS NOT NULL").get().n,1);
+  // Reconstructed preparation in a separately authorized forward recovery
+  // reads existing facts after an uncertain migration/write receipt.
+  const recovery=await workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'true'});
+  assert.equal(recovery.schema,23);
+  assert.deepEqual(recovery.proofs,prep.proofs);
+  const resumed=await backfillWorkflowTerminalProofs(query,async(sql,params)=>{writes++;return Number(db.prepare(sql).run(...params).changes);},recovery,files);
+  assert.equal(writes,2,'confirmed existing proof must not be written again');
+  assert.equal(resumed.schema,23);
+  assert.deepEqual(db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all(),snapshot);
+  assert.deepEqual(db.prepare("SELECT * FROM run_steps ORDER BY run_id").all(),stepSnapshot);
+  checks.length=0;
+  const routine=await workflowReleaseProof('workflow-check',{...historyFree,observe:async()=>{throw Error('persisted proof was not reused');},
+   get historySources(){throw Error('normal v23 release entered history adapter');}},{ACTIONS_INGRESS_QUIESCED:'false'});
+  assert.deepEqual(routine.proofs,prep.proofs);
+  assert.deepEqual(checks,[[]],'ordinary release must independently check native active inventory');
+  db.exec("UPDATE runs SET execution_terminal_proof=NULL,updated_at=3 WHERE id='b'");
+  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('must not write changed state');},prep,files),/changed/);
+ }finally{db.close();}
+});
+
+
+test('#1046 Session release recognizes definitive rejection and never-dispatched slots, not an unresolved dispatch',async()=>{
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const run={id:'r',instance_id:'r',version_id:'v',start_state:'started',outcome:'failed'};
+ const native={instance_id:'r',status:'complete',observed_at:1000};
+ const attempt={run_id:'r',step_id:'session',attempt_id:'a',capability_id:'github.action',state:'rejected',
+  candidate_run_id:null,candidate_run_attempt:null,owner_run_id:null,owner_run_attempt:null};
+ const e={steps:[{run_id:'r',step_id:'session',status:'failed',error_code:'github_session_dispatch_rejected'}],
+  attempts:[attempt],sessions:[{run_id:'r',step_id:'session',state:'terminated'}],callbacks:[],children:[],
+  invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[]}),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,state:'dispatch_unknown'}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,candidate_run_id:42}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,sessions:[{...e.sessions[0],state:'starting'}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[],steps:[]}),/terminal evidence/);
+});
+
+test('#1046 arbitrary new Task identity can be proven by live physical read and persisted additively, not a historical exception',async()=>{
+ const {workflowReleaseProof,backfillWorkflowTerminalProofs,observeRelatedTaskFacts}=await import('./manual-worker-release.mjs');
+ const {observeGitHubTaskTerminalFact}=await import('../apps/workflow-mcp-worker/src/github-action-attempt-inspection.ts');
+ const {inspectGitHubActionRun}=await import('../apps/workflow-mcp-worker/src/github-action-run-inspection.ts');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  db.exec('CREATE TABLE d1_migrations(name TEXT NOT NULL UNIQUE)');
+  for(const name of files){db.exec(readFileSync(new URL(name,dir),'utf8'));db.prepare('INSERT INTO d1_migrations VALUES(?)').run(name);}
+  const action={repository:'autoactions/github-actions',repositoryId:1452488311,workflowId:413147310,
+   workflowPath:'.github/workflows/download.yml',commitSha:'a'.repeat(40),type:'task',contractDigest:'b'.repeat(64)};
+  const ref='refs/heads/main',sha='c'.repeat(40);
+  const plan={version:1,name:'Current task',github_execution_approved:true,github_action_approvals:[action],
+   steps:[{id:'task',uses:'github.run',needs:[],with:{capability:'github.action',action:{...action,ref,inputs:{}}}}]};
+  const id='12345678-1234-4123-8123-123456789abc',attemptId='12345678-1234-4123-8123-123456789def';
+  const native={instance_id:id,status:'complete',observed_at:1000};
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)").run(JSON.stringify(plan));
+  db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at,execution_terminal_proof) VALUES(?,'wf','v',?,'d','{}','started','indeterminate','github_action_native_check_unconfirmed',1,2,?)").run(id,id,JSON.stringify(native));
+  db.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES(?,'task','indeterminate','github_action_native_check_unconfirmed',2)").run(id);
+  db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,resolved_sha,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,?,'task','github.action','dispatch','claimed',?,?,?,?,?,42,1,42,1,1,2)")
+   .run(attemptId,id,action.repository,String(action.repositoryId),action.repository+'/'+action.workflowPath+'@'+ref,ref,sha);
+  const query=async(sql,params=[])=>db.prepare(sql).all(...params);
+  const rowBefore=db.prepare('SELECT * FROM step_attempts').all();
+  const runBefore=db.prepare('SELECT id,outcome,error_code,updated_at FROM runs').all();
+  let physicalReads=0,badHead=false;
+  const inspect=(p,a)=>observeGitHubTaskTerminalFact(p,a,'test-only',
+   (reviewed,r,n,t,f)=>inspectGitHubActionRun(reviewed,r,n,t,f,async()=>{
+    physicalReads++;
+    return Response.json({id:r,workflow_id:action.workflowId,run_attempt:n,repository:{id:action.repositoryId,full_name:action.repository},
+     path:action.workflowPath,head_branch:'main',head_sha:badHead?'d'.repeat(40):sha,
+     event:'workflow_dispatch',status:'completed',conclusion:'failure'});
+   }),2000);
+  const io={query,sourceFiles:files,observe:async()=>{throw Error('native proof already persisted');},
+   observeRelated:(r,n,e)=>observeRelatedTaskFacts(r,n,e,inspect),maintenance:async()=>{},
+   nativeDrain:async ids=>assert.deepEqual(ids,[]),
+   historySources:{githubRun:async()=>{throw Error('historical source not needed');}}};
+  badHead=true;
+  await assert.rejects(()=>workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'}),/terminal evidence/);
+  badHead=false;
+  const live=await workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'});
+  assert.equal(live.proofs[id].github_attempts[0].attempt_id,attemptId);
+  assert.equal(live.proofs[id].github_attempts[0].conclusion,'failure');
+  assert.equal(JSON.parse(db.prepare('SELECT execution_terminal_proof AS p FROM runs').get().p).github_attempts,undefined,
+   'routine release is read-only');
+  const prepared=await workflowReleaseProof('workflow-prepare',io,{ACTIONS_INGRESS_QUIESCED:'true'});
+  assert.equal(prepared.schema,23);
+  const checked=await backfillWorkflowTerminalProofs(query,async(sql,params)=>Number(db.prepare(sql).run(...params).changes),prepared,files);
+  assert.deepEqual(checked.proofs[id],live.proofs[id]);
+  const reads=physicalReads;
+  await workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'});
+  assert.equal(physicalReads,reads,'persisted physical facts require no external query');
+  assert.deepEqual(db.prepare('SELECT * FROM step_attempts').all(),rowBefore);
+  assert.deepEqual(db.prepare('SELECT id,outcome,error_code,updated_at FROM runs').all(),runBefore);
+ }finally{db.close();}
 });

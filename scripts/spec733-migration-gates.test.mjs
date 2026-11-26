@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { verifyBindings } from './manual-worker-release.mjs';
 
 const obs = { enabled: true, logs: { invocation_logs: true } };
@@ -80,13 +79,6 @@ test('unaffected Worker retains historical extra Secret readback compatibility',
     {bindings:names.map(secret),observability:obs},names.map(name=>({name})),{mode:'readback'}),true);
 });
 
-test('cleanup-readback is a separate read-only CLI mode, not a release',()=>{
-  const run=spawnSync(process.execPath,['scripts/manual-worker-release.mjs','cleanup-readback','ssh-mcp-worker'],
-    {cwd:process.cwd(),env:{PATH:process.env.PATH},encoding:'utf8',timeout:5000});
-  assert.notEqual(run.status,0);
-  assert.match(run.stderr,/cleanup readback environment missing|Required cleanup readback environment missing/);
-});
-
 test('Database source defaults and environment overrides resolve before preflight', async () => {
   const {expectedDatabaseLimits} = await import('./manual-worker-release.mjs');
   const source={vars:Object.fromEntries(Object.values(limits))};
@@ -96,7 +88,7 @@ test('Database source defaults and environment overrides resolve before prefligh
     assert.throws(()=>expectedDatabaseLimits(source,{DATABASE_MAX_ROWS:invalid}),/Invalid Database limit/);
 });
 
-test('cleanup readback requires exact legacy Secret removal without changing ordinary SSH/Workflow behavior',()=>{
+test('ordinary SSH readback rejects retired runtime Secrets',()=>{
   const req=['MCP_ACCESS_TOKEN','SSH_ENCRYPTION_KEY'];
   const base=[...req.map(secret),
     {name:'EDGE_SSH_DB',type:'d1',id:'bd5cfdc5-3db0-4af7-8e95-cbf3d65cfa94'},
@@ -104,48 +96,17 @@ test('cleanup readback requires exact legacy Secret removal without changing ord
   const settings = bindings => ({bindings,observability:obs});
   const listed = names => names.map(name=>({name}));
   const old = secret('ENCRYPTION_KEY');
-  assert.equal(verifyBindings('ssh-mcp-worker',settings([...base,old]),listed([...req,old.name]),
-    {mode:'readback'}),true);
   assert.throws(()=>verifyBindings('ssh-mcp-worker',settings([...base,old]),listed([...req,old.name]),
-    {mode:'readback',cleanupVerified:true}),/Legacy Secret cleanup not complete/);
+    {mode:'readback'}),/Unexpected runtime Secret/);
   assert.equal(verifyBindings('ssh-mcp-worker',settings(base),listed(req),
-    {mode:'readback',cleanupVerified:true}),true);
+    {mode:'readback'}),true);
   assert.throws(()=>verifyBindings('ssh-mcp-worker',settings([...base,secret('UNKNOWN_SECRET')]),
     listed([...req,'UNKNOWN_SECRET']),{mode:'readback'}),/Unexpected runtime Secret/);
 });
 
-test('cleanup read-only CLI rejects unsupported Worker even with no Cloudflare credentials',()=>{
-  const result=spawnSync(process.execPath,['scripts/manual-worker-release.mjs','cleanup-readback','ima-mcp-worker'],
-    {cwd:process.cwd(),env:{PATH:process.env.PATH},encoding:'utf8',timeout:5000});
-  assert.notEqual(result.status,0);
-  assert.match(result.stderr,/Worker is not enabled/);
-});
-
-test('protected read-only cleanup selection cannot execute a release or portal-write path', async () => {
-  const {readFileSync}=await import('node:fs');
-  const acceptance=readFileSync('.github/workflows/acceptance.yml','utf8');
-  const section=acceptance.split('  legacy-secret-cleanup-readback:\n')[1]?.split('\n  checks:\n')[0];
-  assert.ok(section,'cleanup job must have its own isolated steps');
-  for (const type of ['legacy-cleanup-readonly-ssh','legacy-cleanup-readonly-workflow']) {
-    assert.ok(acceptance.includes('          - '+type));
-    assert.ok(section.includes(type));
-  }
-  assert.match(section,/github\.actor == 'lirtual'/);
-  assert.match(section,/github\.ref == 'refs\/heads\/main'/);
-  assert.match(section,/inputs\.confirm_portal_write == false/);
-  assert.match(section,/EXPECTED_VERSION_ID: \$\{\{ inputs\.cleanup_expected_version \}\}/);
-  assert.match(section,/node scripts\/manual-worker-release\.mjs cleanup-readback/);
-  assert.match(section,/github\.sha|GITHUB_SHA/);
-  assert.doesNotMatch(section, /wrangler deploy|delete-secret|secret delete|portal-register|deploy_to_production|\bPOST\b|\bPUT\b|\bPATCH\b|\bDELETE\b/);
-  const source=readFileSync('scripts/manual-worker-release.mjs','utf8');
-  assert.match(source,/mode === "cleanup-readback"/);
-  assert.match(source,/cleanupVerified: true/);
-  assert.match(source,/observed.version_id === process.env.EXPECTED_VERSION_ID/);
-});
-
 test('Database postflight proves exact numeric bindings and missing old names',()=>{
   const values=Object.fromEntries(Object.values(limits));
-  const secrets=['MCP_ACCESS_TOKEN','DATABASE_ENCRYPTION_KEY','DATABASE_KEY_ID','DATABASE_GITHUB_ACTIONS_TOKEN'];
+  const secrets=['MCP_ACCESS_TOKEN'];
   const sourceConfig={hyperdrive:[]};
   const base=[{name:'RATE_LIMITER',type:'ratelimit',namespace_id:'1001',simple:{limit:120,period:60}},
     plain('DATABASE_CONNECTIONS','{}'),...secrets.map(secret)];

@@ -57,7 +57,7 @@ async function fixture(t:test.TestContext){
    assert.equal(input.notification.body,'Open the temporary session');
    return {status:'accepted',input_digest:input.input_digest};
   }};
- const env={DB:{prepare},ACTIONS:provider,ACTIONS_DEPLOYMENT_ID:version,
+ const env={DB:{prepare},ACTIONS:provider,
   WORKFLOW_GITHUB_DISPATCH_TOKEN:'fixture-token',
   WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:123,ciWorkflowId:999})} as unknown as Env;
  const ctx={inputs:{duration_minutes:10},steps:{chrome_session:{status:'succeeded'}}};

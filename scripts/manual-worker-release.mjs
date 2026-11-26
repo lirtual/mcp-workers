@@ -1,3 +1,6 @@
+import {resolvePersistedGitHubAction,observeGitHubTaskTerminalFact} from '../apps/workflow-mcp-worker/src/github-action-attempt-inspection.ts';
+import {selectWorkflowSchemaRelease} from './workflow-release-schema-selection.mjs';
+import {isAuxiliaryBarkPair} from '../apps/workflow-mcp-worker/src/plan.ts';
 import {connectionInventory} from '../apps/database-mcp-worker/src/catalog.ts';
 import references from '../apps/database-mcp-worker/connection-references.json' with {type:'json'};
 function databaseSecretNames(raw) {
@@ -7,13 +10,13 @@ function databaseSecretNames(raw) {
 // Narrow, credential-free-to-import Cloudflare release checks for #19.
 // Never log API bodies: Workers settings can include runtime plain-text values.
 import { appendFile, readFile, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import {checkNativeWorkflowRelease,requireIngressQuiescence} from "./actions-consumer-cutover-gate.mjs";
+import {readOnlyPrepare} from "./actions-cutover-prepare.mjs";
 import { join } from "node:path";
 import { collectWorkerVars, remoteControlClerkIdentity, BROWSER_ACCESS_VARIABLES, browserActivationOrigin, gatewayOriginFromConfig } from "./worker-release-variables.mjs";
 import { verifyWorkflowGitHubExecutor,parseVerifiedExecutorIdentity } from "./workflow-github-executor.mjs";
 import { discoverBrowserActivationIdentity, verifyBrowserIdentityContinuity } from "./browser-owner-access.mjs";
-import { TERMINAL_RUN_ID, SECOND_TERMINAL_RUN_ID, THIRD_TERMINAL_RUN_ID, FOURTH_TERMINAL_RUN_ID, FIFTH_TERMINAL_RUN_ID, SIXTH_TERMINAL_RUN_ID, SEVENTH_TERMINAL_RUN_ID, NINTH_TERMINAL_RUN_ID, TENTH_TERMINAL_RUN_ID, ELEVENTH_TERMINAL_RUN_ID, TWELFTH_TERMINAL_RUN_ID } from "./workflow-terminal-run-exception.mjs";
-import { EIGHTH_MCP_RUN_ID } from "./workflow-mcp-no-dispatch-proof.mjs";
 
 const WORKERS = new Set(["mcp-gateway-worker", "browser-mcp-worker", "raindrop-mcp-worker", "ima-mcp-worker", "database-mcp-worker", "ssh-mcp-worker", "remote-control-mcp-worker", "github-actions-mcp-worker", "workflow-mcp-worker"]);
 export const REQUIRED_SECRETS = {
@@ -27,13 +30,6 @@ export const REQUIRED_SECRETS = {
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 };
-// Wrangler retains omitted secret_text bindings after a normal release.
-// These exact old names may coexist until separately approved cleanup.
-export const MIGRATION_LEGACY_SECRETS = Object.freeze({
-  "database-mcp-worker": ["DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN", "DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["ENCRYPTION_KEY"],
-  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_SECRET", "SESSION_RUNTIME_DATA_KEY"],
-});
 // The pre-migration Database runtime defaults are part of the original-value
 // contract. A missing legacy Variable means its deployed value was this default.
 const DATABASE_LIMIT_MIGRATION = Object.freeze({
@@ -122,7 +118,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   invariant(secretNames.size === secrets.length &&
     new Set(bindings.map(b => b.name)).size === bindings.length,
     "Duplicate runtime binding or Secret name");
-  const oldSecrets = MIGRATION_LEGACY_SECRETS[worker] ?? [];
   for (const name of REQUIRED_SECRETS[worker]) {
     // On preflight a missing runtime Secret can be repaired from GitHub.
     // The unconditional Secrets staging step fails closed before deployment.
@@ -493,22 +488,18 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   if (options.mode === "readback" && ["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker)) {
-    const cleanupLegacy = worker === "database-mcp-worker"
-      ? ["DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "DATABASE_KEY_ID"] : oldSecrets;
     const workflowDropSecrets = worker === "workflow-mcp-worker"
       ? ["WORKFLOW_GITHUB_DROP_PUBLIC_KEY", "WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY"] : [];
-    const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...(options.cleanupVerified ? cleanupLegacy : oldSecrets),
+    const allowedSecrets = new Set([...REQUIRED_SECRETS[worker],
       ...workflowDropSecrets,
-      ...(worker === "database-mcp-worker" ? references.secrets : []),
-      ...(worker === "database-mcp-worker" && !options.cleanupVerified ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
+      ...(worker === "database-mcp-worker" ? references.secrets : [])]);
     invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
       bindings.filter(b => b.type === "secret_text").every(b => allowedSecrets.has(b.name)),
       "Unexpected runtime Secret name or type after publication");
     if (workflowDropSecrets.some(name => secretNames.has(name) || bindings.some(binding => binding.name === name)))
       invariant(workflowDropSecrets.every(name => secretNames.has(name) && !!find(name, "secret_text")),
         "Workflow Drop Secrets must be a complete pair");
-    if (options.cleanupVerified) invariant(!cleanupLegacy.some(name => secretNames.has(name) ||
-      !!find(name, "secret_text")), "Legacy Secret cleanup not complete");
+
   }
   return true;
 }
@@ -548,339 +539,528 @@ export function verifyWorkflowReleaseConfig(conf) {
   return true;
 }
 
-function reviewedTerminalRunSql(sql) {
-  // This extra count is emitted only after the preceding exact historical
-  // D1/native/GitHub proof supplied the audited Run ID as its step output.
-  // A fake/unset approval leaves no ID in the generated query.
-  if(process.env.WORKFLOW_TWELFTH_TERMINAL_RUN_ID===TWELFTH_TERMINAL_RUN_ID){
-    sql=sql.replace("0 AS reviewed_terminal_artifact_attempts",
-      "(SELECT count(*) FROM step_attempts WHERE "+
-      "run_id='f99bb918-2909-46df-b196-d07faa64df27' "+
-      "AND attempt_id='c7893834-10ff-41d5-b784-a33d00cc20f5' "+
-      "AND step_id='verify' AND capability_id='github.action' "+
-      "AND state='claimed' AND repository='lirtual/github-actions' "+
-      "AND owner_run_id=41182432750 AND candidate_run_id=41182432750 "+
-      "AND owner_run_attempt=1 AND candidate_run_attempt=1) "+
-      "AS reviewed_terminal_artifact_attempts");
-  }
-  const exclusions=[
-    [process.env.WORKFLOW_TERMINAL_RUN_ID,TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_SECOND_TERMINAL_RUN_ID,SECOND_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_THIRD_TERMINAL_RUN_ID,THIRD_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_FOURTH_TERMINAL_RUN_ID,FOURTH_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_FIFTH_TERMINAL_RUN_ID,FIFTH_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_SIXTH_TERMINAL_RUN_ID,SIXTH_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_SEVENTH_TERMINAL_RUN_ID,SEVENTH_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_EIGHTH_TERMINAL_RUN_ID,EIGHTH_MCP_RUN_ID],
-    [process.env.WORKFLOW_NINTH_TERMINAL_RUN_ID,NINTH_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_TENTH_TERMINAL_RUN_ID,TENTH_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_ELEVENTH_TERMINAL_RUN_ID,ELEVENTH_TERMINAL_RUN_ID],
-    [process.env.WORKFLOW_TWELFTH_TERMINAL_RUN_ID,TWELFTH_TERMINAL_RUN_ID],
-  ].filter(([supplied,exact])=>supplied===exact).map(([,exact])=>exact);
-  if(exclusions.length===0)return sql;
-  const sqlIds=exclusions.map(id=>"'"+id+"'").join(",");
-  return sql.replace(
-    "outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs",
-    "outcome NOT IN ('succeeded','failed','cancelled') AND id NOT IN ("+sqlIds+")) AS nonterminal_runs"
-  ).replace(
-    "status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps",
-    "status NOT IN ('succeeded','failed','skipped','cancelled') AND run_id NOT IN ("+sqlIds+")) AS unresolved_steps"
-  );
-}
-
-export function verifyWorkflowD1Readiness(response, bootstrap, requireCompleteSchema = false, requireUuRetired = false, codeOnly = false) {
-  invariant(Array.isArray(response) && response.length === 1 &&
-    response[0]?.success === true && response[0]?.results?.length === 1,
-    "Workflow remote D1 readback unavailable");
-  const row = response[0].results[0];
-  // #774/#87: v21 retirement and v22 Drop receipts are distinct verified states.
-  // Keep the v20 structural predicates unchanged for all historical versions.
-  // Production already has migration 0005. A failed two-file deployment may
-  // leave 0006 committed; permit a controlled resume but never publish the
-  // upgraded Worker until both new migrations and tables are confirmed.
-  const base = [1,2,3,4,5].every(n => row?.["migration_v" + n] === 1) &&
-    row?.attempt_table === 1 && row?.receipt_table === 1 &&
-    row?.native_column === 1;
-  const before = row?.migration_count === 5 &&
-    row?.migration_v6 === 0 && row?.migration_v7 === 0 &&
-    row?.session_table === 0 && row?.cancellation_table === 0;
-  const partial = row?.migration_count === 6 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 0 &&
-    row?.session_table === 0 && row?.cancellation_table === 0;
-  const current = row?.migration_count === 7 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
-    row?.migration_v8 === 0 && row?.locator_column === 0 &&
-    row?.session_table === 1 && row?.cancellation_table === 1;
-  const previous = row?.migration_count === 8 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
-    row?.migration_v8 === 1 && row?.migration_v9 === 0 &&
-    row?.locator_column === 1 && row?.fixed_column === 0 && row?.fixed_index === 0 &&
-    row?.session_table === 1 && row?.cancellation_table === 1;
-  const oldComplete = row?.migration_count === 9 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
-    row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
-    row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
-    row?.session_table === 1 && row?.cancellation_table === 1;
-  // v10 belongs to Session Runtime Data. v11 introduces awaited children.
-  // Refuse a fake v10-only child schema and any partially applied v11.
-  const runtimeComplete = row?.migration_count === 10 && row?.migration_v10 === 1 &&
-    row?.migration_v11 === 0 && row?.runtime_table === 1 &&
-    row?.capacity_column === 0 && row?.parent_column === 0 &&
-    row?.parent_step_column === 0 && row?.child_index === 0 &&
-    row?.child_cancel_table === 0 && row?.child_terminate_fence_column === 0 &&
-    row?.capacity_guard_trigger === 0 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
-    row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
-    row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
-    row?.session_table === 1 && row?.cancellation_table === 1;
-  const v11Structure = row?.migration_v10 === 1 &&
-    row?.migration_v11 === 1 &&
-    row?.capacity_column === 1 && row?.parent_column === 1 &&
-    row?.parent_step_column === 1 && row?.child_index === 1 &&
-    row?.child_cancel_table === 1 && row?.child_terminate_fence_column === 1 &&
-    row?.capacity_guard_trigger === 1 &&
-    row?.migration_v6 === 1 && row?.migration_v7 === 1 &&
-    row?.migration_v8 === 1 && row?.migration_v9 === 1 &&
-    row?.locator_column === 1 && row?.fixed_column === 1 && row?.fixed_index === 1 &&
-    row?.session_table === 1 && row?.cancellation_table === 1;
-  const fullV11Schema=v11Structure && row?.runtime_table === 1;
-  // Accept the reviewed v11 schema ONLY before a v12 migration. Deployment
-  // requires the exact v12 receipt table + migration record.
-  const completeV11 = row?.migration_count === 11 &&
-    row?.migration_v12 === 0 && row?.event_receipts_table === 0 && fullV11Schema;
-  const completeV12 = row?.migration_count === 12 &&
-    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
-    row?.migration_v13 !== 1 && fullV11Schema;
-  const completeV13 = row?.migration_count === 13 &&
-    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
-    row?.migration_v13 === 1 && row?.invocations_table === 1 &&
-    row?.cloudflare_cancel_table === 1 &&
-    row?.migration_v14 === 0 && row?.deleted_column === 0 && fullV11Schema;
-  const completeV14 = row?.migration_count === 14 &&
-    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
-    row?.migration_v13 === 1 && row?.invocations_table === 1 &&
-    row?.cloudflare_cancel_table === 1 &&
-    row?.migration_v14 === 1 && row?.deleted_column === 1 &&
-    row?.migration_v15 !== 1 && row?.approval_gates_table !== 1 &&
-    row?.approvals_table !== 1 && fullV11Schema;
-  const completeV15 = row?.migration_count === 15 &&
-    row?.migration_v12 === 1 && row?.event_receipts_table === 1 &&
-    row?.migration_v13 === 1 && row?.invocations_table === 1 &&
-    row?.cloudflare_cancel_table === 1 &&
-    row?.migration_v14 === 1 && row?.deleted_column === 1 &&
-    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
-    row?.approvals_table === 1 && row?.migration_v16 !== 1 &&
-    row?.portal_auth_table !== 1 && row?.mcp_fence_table !== 1 && fullV11Schema;
-  const completeV16 = row?.migration_count === 16 &&
-    row?.migration_v16 === 1 && row?.portal_auth_table === 1 &&
-    row?.mcp_fence_table === 1 && row?.migration_v15 === 1 &&
-    row?.approval_gates_table === 1 && row?.approvals_table === 1 &&
-    row?.deleted_column === 1 && fullV11Schema;
-  const completeV17 = row?.migration_count === 17 && row?.migration_v17 === 1 &&
-    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
-    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
-    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
-    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
-  const completeV18 = row?.migration_count === 18 && row?.migration_v18 === 1 &&
-    row?.migration_v19 === 0 && row?.rca_duration_column === 0 &&
-    row?.cloudflare_gate_table === 1 && row?.migration_v17 === 1 &&
-    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
-    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
-    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
-    row?.approvals_table === 1 && row?.deleted_column === 1 && fullV11Schema;
-  // #62: migration 0019 adds a signed, nonrenewable Session duration snapshot.
-  // Release may start on a fully reviewed v18 baseline, but code publication
-  // must follow exact v19 migration/column confirmation; no v18 fallback.
-  const reviewedV19Structure = row?.migration_v19 === 1 &&
-    row?.rca_duration_column === 1 && row?.migration_v18 === 1 &&
-    row?.cloudflare_gate_table === 1 && row?.migration_v17 === 1 &&
-    row?.http_auth_table === 1 && row?.migration_v16 === 1 &&
-    row?.portal_auth_table === 1 && row?.mcp_fence_table === 1 &&
-    row?.migration_v15 === 1 && row?.approval_gates_table === 1 &&
-    row?.approvals_table === 1 && row?.deleted_column === 1 && v11Structure;
-  const reviewedV19Shape=reviewedV19Structure && row?.runtime_table === 1;
-  // 0020 freezes the CI-verified main SHA per GitHub Attempt. Preserve a
-  // strict v19 pre-migration gate and require BOTH migration and column after.
-  const completeV19 = row?.migration_count === 19 &&
-    row?.migration_v20 === 0 && row?.resolved_sha_column === 0 &&
-    reviewedV19Shape;
-  const completeV20 = row?.migration_count === 20 &&
-    row?.migration_v20 === 1 && row?.resolved_sha_column === 1 &&
-    reviewedV19Shape;
-  const reviewedV21Structure=row?.migration_v21===1 &&
-    row?.runtime_table===0 && row?.migration_v20===1 &&
-    row?.resolved_sha_column===1 && reviewedV19Structure;
-  const completeV21=row?.migration_count===21 && row?.migration_v22===0 &&
-    row?.drop_claim_receipts_table===0 && reviewedV21Structure;
-  const completeV22=row?.migration_count===22 && row?.migration_v22===1 &&
-    row?.drop_claim_receipts_table===1 && reviewedV21Structure;
-  invariant(row?.migration_v21!==1 || completeV21 || completeV22,"UU retirement migration/schema drift");
-  invariant(row?.migration_v22!==1 || completeV22,"Drop receipt migration/schema drift");
-  if(requireUuRetired)invariant(completeV21 || completeV22,"UU retirement post-migration D1 readback missing");
-  invariant(base && (requireCompleteSchema ? (completeV20 || completeV21 || completeV22) : (before || partial || current || previous || oldComplete || runtimeComplete || completeV11 || completeV12 || completeV13 || completeV14 || completeV15 || completeV16 || completeV17 || completeV18 || completeV19 || completeV20 || completeV21 || completeV22)),
-    "Workflow production D1 schema migrations missing, partial or drifted");
-  invariant(Number.isSafeInteger(row?.active_runs) && row.active_runs === 0,
-    "Workflow cannot redeploy while Runs are active or indeterminate");
-  // D1 migrations require no physical Sessions. Only explicitly selected
-  // code-only releases on completed v22 may defer the Ready/Attempt safety
-  // classification to the independent strict code-release-check below.
-  const codeOnlyV22 = codeOnly && requireCompleteSchema && completeV22 && !requireUuRetired;
-  if((!completeV20 && !codeOnlyV22) || requireUuRetired)
-    invariant(Number.isSafeInteger(row?.active_sessions) && row.active_sessions===0,
-      "Workflow D1 migration blocked by active physical Sessions");
-  if(bootstrap) invariant(row.run_count === 0 && row.workflow_count === 0,
-    "Workflow first deployment requires empty production Run and Workflow state");
-  return true;
-}
-
-/**
- * #204: read-only database half of the migration fence.
- * It does not freeze ingress, inspect live Cloudflare Workflow instances,
- * verify external GitHub jobs or authorize a production cutover.
+/** Verify the first #1046 terminal-evidence slice independently of schema or
+ * business result. The caller supplies a complete, identity-scoped D1
+ * projection and a trusted native observation; this is not a release permit.
+ * Additional dependency-specific evidence must be checked before integration
+ * into the protected release entry point.
  */
-export const WORKFLOW_MIGRATION_READINESS_SQL = `SELECT
- (SELECT count(*) FROM d1_migrations) AS migration_count,
- (SELECT count(*) FROM d1_migrations WHERE name IN (
-   '0001_s1.sql','0002_native_complete_seen.sql','0003_s3_attempt_claim.sql',
-   '0004_s3_callback_receipts.sql','0005_github_workflow_check.sql',
-   '0006_action_attempt_capabilities.sql','0007_session_executions.sql',
-   '0008_session_locator.sql','0009_fixed_sessions.sql',
-   '0010_session_runtime_data.sql','0011_awaited_child_capacity.sql',
-   '0012_event_wait_receipts.sql','0013_cloudflare_action_invocations.sql',
-    '0014_workflow_deletion.sql','0015_runtime_approval.sql',
-    '0016_portal_connection_revocation.sql',
-    '0017_http_connection_auth.sql','0018_cloudflare_action_migration_fence.sql',
-    '0019_session_rca_duration.sql','0020_github_action_main_sha.sql',
-   '0021_retire_uu_session_data.sql','0022_drop_claim_receipts.sql')) AS expected_migrations,
- (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='drop_claim_receipts') AS drop_claim_receipts_table,
- (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
- (SELECT count(*) FROM workflows) AS workflow_count,
- (SELECT count(*) FROM runs) AS run_count,
- (SELECT count(*) FROM session_executions) AS session_count,
- (SELECT count(*) FROM step_attempts) AS attempt_count,
- (SELECT count(*) FROM callback_receipts) AS callback_count,
- (SELECT count(*) FROM github_action_cancellations) AS cancellation_count,
- (SELECT count(*) FROM runs WHERE outcome IS NULL OR
-   outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs,
- (SELECT count(*) FROM runs WHERE start_state IS NULL OR
-   start_state IN ('reserved','start_unknown')) AS unresolved_starts,
- (SELECT count(*) FROM run_steps WHERE status IS NULL OR
-   status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
- -- A durable Saga cancellation ACK is not completion. For code-only
- -- releases only, recognize the request as quiescent when the exact Session
- -- and GitHub Attempt have separately reached verified physical terminal.
- -- Schema migrations still require unresolved_steps=0.
- (SELECT count(*) FROM run_steps receipt
-   JOIN runs owner ON owner.id=receipt.run_id
-   JOIN session_executions session ON session.run_id=receipt.run_id
-     AND receipt.step_id='__saga_'||session.step_id
-   JOIN step_attempts attempt ON attempt.run_id=session.run_id
-     AND attempt.step_id=session.step_id
-     AND attempt.capability_id='github.action'
-   WHERE receipt.status='requested' AND
-     owner.outcome IN ('failed','cancelled') AND
-     session.state='terminated' AND
-     attempt.state IN ('succeeded','failed','cancelled'))
-   AS verified_terminal_saga_receipts,
- (SELECT count(*) FROM run_steps s JOIN runs r ON r.id=s.run_id
-   WHERE s.status='cancelled' AND (r.outcome IS NOT 'cancelled'
-     OR r.error_code IS NOT s.error_code
-     OR r.error_code IS NULL
-     OR r.error_code NOT IN ('approval_cancel_requested',
-       'event_wait_cancel_requested'))) AS invalid_cancelled_steps,
- (SELECT count(*) FROM step_attempts WHERE state IS NULL OR
-   state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
- 0 AS reviewed_terminal_artifact_attempts,
- (SELECT count(*) FROM session_executions WHERE state IS NULL OR
-   state != 'terminated') AS nonterminated_sessions,
- (SELECT count(*) FROM callback_receipts WHERE notification_delivered IS NULL OR
-   notification_delivered != 1) AS undelivered_callbacks,
- (SELECT count(*) FROM session_executions s
-   JOIN runs r ON r.id=s.run_id
-   JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
-   WHERE s.state='ready' AND r.outcome='succeeded'
-   AND a.state='claimed') AS confirmed_ready_sessions`;
-
-export function verifyWorkflowMigrationReadiness(response, approvedTerminalArtifact = false) {
-  invariant(Array.isArray(response) && response.length === 1 &&
-    response[0]?.success === true && response[0]?.results?.length === 1,
-    "Workflow migration D1 readback unavailable");
-  const row = response[0].results[0];
-  const nonnegative = [
-    "migration_count","expected_migrations","drop_claim_receipts_table","workflow_count","run_count",
-    "session_count","attempt_count","callback_count","cancellation_count",
-    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
-    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
-    "reviewed_terminal_artifact_attempts",
-  ];
-  for (const key of nonnegative) {
-    invariant(Number.isSafeInteger(row?.[key]) && row[key] >= 0,
-      "Workflow migration D1 count unavailable or invalid: " + key);
+export function verifyWorkflowTerminalEvidence(run,native,evidence) {
+  const require=(condition,reason)=>invariant(condition,
+    'Workflow terminal evidence blocked for '+String(run?.id??'unknown')+': '+reason);
+  require(run?.id && run.instance_id && run.start_state==='started' &&
+    ['succeeded','failed','cancelled','indeterminate'].includes(run.outcome),'Run execution unresolved');
+  require(native?.instance_id===run.instance_id &&
+    ['complete','errored','terminated'].includes(native?.status) &&
+    Number.isSafeInteger(native.observed_at) && native.observed_at>0,'native terminal observation unavailable or mismatched');
+  const keys=['steps','attempts','sessions','callbacks','children','invocations','mcpFences',
+    'githubCancellations','cloudflareCancellations','childCancellations','gates','approvals','waits'];
+  require(keys.every(key=>Array.isArray(evidence?.[key])),'incomplete D1 projection');
+  for(const key of keys.filter(k=>k!=='children'&&k!=='childCancellations'))
+    require(evidence[key].every(row=>row.run_id===run.id),key+' identity mismatch');
+  if(native.no_dispatch_step_id){
+    // The historical failed MCP invocation was independently proven never
+    // dispatched. Its stale running Step is not physical activity.
+    require(native.status==='errored'&&run.outcome==='indeterminate'&&
+      run.error_code==='execution_interrupted'&&native.historical_source&&
+      evidence.steps.length===1&&evidence.steps[0].step_id===native.no_dispatch_step_id&&
+      evidence.steps[0].status==='running'&&evidence.steps[0].error_code===null&&
+      keys.filter(key=>key!=='steps').every(key=>evidence[key].length===0),
+      'no-dispatch Step identity or related execution unresolved');
+  }else{
+    require(evidence.steps.every(step=>['succeeded','failed','skipped','cancelled','indeterminate'].includes(step.status)||
+      (step.step_id.startsWith('__saga_')&&step.status==='requested')),
+      'Step execution unresolved');
   }
-  invariant([12,13,14,15,16,17,18,19,20,21,22].includes(row.migration_count) &&
-    row.expected_migrations === row.migration_count &&
-    row.drop_claim_receipts_table === (row.migration_count === 22 ? 1 : 0),
-    "Workflow migration requires the exact reviewed D1 migrations");
-  for (const key of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
-  ]) {
-    invariant(row[key] === 0, "Workflow migration blocked by " + key);
+  for(const step of evidence.steps.filter(s=>s.status==='cancelled'))
+    require(run.outcome==='cancelled'&&run.error_code===step.error_code&&
+      ['approval_cancel_requested','event_wait_cancel_requested'].includes(step.error_code),
+      'cancelled Step '+step.step_id+' lacks its authoritative cancellation result');
+  const positive=n=>Number.isSafeInteger(n)&&n>0;
+  const facts=native.github_attempts??[];
+  require(Array.isArray(facts)&&facts.every(f=>f&&typeof f.attempt_id==='string')&&
+    new Set(facts.map(f=>f.attempt_id)).size===facts.length,'GitHub physical facts malformed');
+  const usedFacts=new Set();
+  for(const attempt of evidence.attempts){
+    require(evidence.steps.some(step=>step.step_id===attempt.step_id),'Attempt Step identity mismatch');
+    if(attempt.state==='rejected'){
+      require(attempt.candidate_run_id===null&&attempt.candidate_run_attempt===null&&
+        attempt.owner_run_id===null&&attempt.owner_run_attempt===null,'rejected Attempt has a physical identity');
+      continue;
+    }
+    const fact=facts.find(f=>f.attempt_id===attempt.attempt_id);
+    if(fact){
+      const owned=attempt.owner_run_id===attempt.candidate_run_id&&attempt.owner_run_attempt===attempt.candidate_run_attempt;
+      const unowned=attempt.owner_run_id===null&&attempt.owner_run_attempt===null;
+      const outcome=fact.conclusion==='success'?'succeeded':fact.conclusion==='cancelled'?'cancelled':'failed';
+      const currentAction=evidence.plan?.id===run.version_id?
+        resolvePersistedGitHubAction(evidence.plan.plan,attempt):null;
+      const historicalArtifact=native.historical_source&&attempt.state==='claimed'&&
+        fact.conclusion==='success'&&evidence.callbacks.some(c=>c.attempt_id===attempt.attempt_id&&
+          c.step_id===attempt.step_id&&c.outcome==='succeeded'&&c.notification_delivered===1);
+      require(attempt.capability_id==='github.action'&&
+        fact.repository_id===attempt.repository_id&&positive(fact.run_id)&&positive(fact.run_attempt)&&
+        fact.run_id===attempt.candidate_run_id&&fact.run_attempt===attempt.candidate_run_attempt&&
+        (attempt.state==='claimed'?owned:attempt.state==='confirmed'?unowned&&outcome!=='succeeded':
+          attempt.state===outcome&&(owned||outcome!=='succeeded'&&unowned))&&
+        typeof fact.workflow_ref==='string'&&fact.workflow_ref===attempt.workflow_ref&&
+        fact.workflow_ref.endsWith('@'+attempt.ref)&&/^[0-9a-f]{40}$/.test(fact.head_sha)&&
+        (attempt.resolved_sha===null||fact.head_sha===attempt.resolved_sha)&&
+        ['success','failure','cancelled','timed_out'].includes(fact.conclusion)&&positive(fact.observed_at)&&
+        !evidence.sessions.some(s=>s.step_id===attempt.step_id)&&
+        (historicalArtifact||currentAction?.type==='task'&&currentAction.commitSha===fact.head_sha),
+        'Task Attempt '+attempt.attempt_id+' physical proof or related identity unresolved');
+      usedFacts.add(fact.attempt_id);
+      continue;
+    }
+    require(['succeeded','failed','cancelled'].includes(attempt.state)&&
+      positive(attempt.candidate_run_id)&&positive(attempt.candidate_run_attempt)&&
+      ((attempt.owner_run_id===attempt.candidate_run_id&&attempt.owner_run_attempt===attempt.candidate_run_attempt)||
+        (attempt.state!=='succeeded'&&attempt.owner_run_id===null&&attempt.owner_run_attempt===null)),
+      'Attempt '+attempt.attempt_id+' physical termination or identity unresolved');
   }
-  // Reuse the independently proven exact Artifact Task exception from the
-  // code-only gate; no other claimed Attempt may cross a D1 migration.
-  invariant(row.reviewed_terminal_artifact_attempts === (approvedTerminalArtifact ? 1 : 0),
-    "Workflow migration reviewed_terminal_artifact_attempts missing exact historical Artifact Attempt");
-  const reviewed = approvedTerminalArtifact ? row.reviewed_terminal_artifact_attempts : 0;
-  invariant(row.nonterminal_attempts === reviewed,
-    "Workflow migration blocked by nonterminal_attempts");
-  for (const key of ["nonterminated_sessions","undelivered_callbacks"])
-    invariant(row[key] === 0, "Workflow migration blocked by " + key);
-  return {
-    workflows: row.workflow_count,
-    runs: row.run_count,
-    sessions: row.session_count,
-    attempts: row.attempt_count,
-    callbacks: row.callback_count,
-    cancellations: row.cancellation_count,
+  require(facts.length===usedFacts.size,'GitHub physical proof has no matching Attempt');
+  for(const session of evidence.sessions){
+    // The runtime releases rejected dispatches and reservations never dispatched
+    // as well as physically terminated Sessions. All existing Attempts were
+    // independently checked above; rejected means no physical identity.
+    const attempts=evidence.attempts.filter(a=>a.step_id===session.step_id);
+    require(session.state==='terminated'&&
+      attempts.every(a=>a.capability_id==='github.action')&&
+      (attempts.length>0||evidence.steps.some(s=>s.step_id===session.step_id)),
+      'Session '+session.step_id+' physical termination unresolved');
+  }
+  require(evidence.callbacks.every(c=>c.notification_delivered===1&&
+    evidence.attempts.some(a=>a.attempt_id===c.attempt_id&&a.step_id===c.step_id&&a.state!=='rejected')),'callback unresolved');
+  // Cancellation records are durable one-shot intents, not physical evidence.
+  // The matching terminal Attempt (and Session if present) was checked above.
+  for(const cancellation of evidence.githubCancellations)
+    require(evidence.attempts.some(a=>a.attempt_id===cancellation.attempt_id&&
+      a.step_id===cancellation.step_id&&a.capability_id==='github.action'&&
+      (['succeeded','failed','cancelled'].includes(a.state)||usedFacts.has(a.attempt_id))),
+      'GitHub cancellation '+cancellation.step_id+' physical termination unresolved');
+  if(native.retired_invocation){
+    const fact=native.retired_invocation, invocation=evidence.invocations[0];
+    require(native.historical_source&&evidence.invocations.length===1&&
+      typeof fact.invocation_id==='string'&&fact.invocation_id===invocation.invocation_id&&
+      typeof fact.deployment_id==='string'&&fact.deployment_id===invocation.deployment_id&&
+      positive(fact.retirement_release_id)&&positive(fact.observed_at)&&
+      evidence.steps.some(step=>step.step_id===invocation.step_id&&step.status==='indeterminate')&&
+      (invocation.source_attempt_id===invocation.invocation_id||
+       evidence.attempts.some(a=>a.attempt_id===invocation.source_attempt_id&&
+         ['succeeded','failed','cancelled'].includes(a.state))),
+      'retired invocation identity or execution proof unresolved');
+  }
+  const plannedStep=id=>{
+    const plan=evidence.plan?.plan;
+    require(evidence.plan?.id===run.version_id&&Array.isArray(plan?.steps),'immutable Plan unavailable or mismatched');
+    const step=plan.steps.find(s=>s.id===id);
+    require(step,'related Plan Step '+id+' missing');
+    return step;
   };
+  const receipt=id=>evidence.steps.find(s=>s.step_id===id);
+  // A completed Bark notification can reference a closed GitHub Session,
+  // completed Download Task, or the preceding Provider receipt. Bind that
+  // reference to the actual immutable Plan and persisted source identity.
+  const sourceMatches=(invocation,step)=>{
+    const plan=evidence.plan.plan;
+    const input=step.with.input;
+    const sessionId=input?.session_step_id,downloadId=input?.download_step_id;
+    if(step.with.provider==='bark'&&step.with.action==='bark.send_notification'){
+      if(sessionId!==undefined&&downloadId!==undefined)return false;
+      const sourceId=sessionId??downloadId;
+      if(sourceId!==undefined){
+        if(typeof sourceId!=='string'||!step.needs?.includes(sourceId)||receipt(sourceId)?.status!=='succeeded')return false;
+        const source=plannedStep(sourceId);
+        const download=downloadId!==undefined;
+        const actual=download?source.with?.template:source;
+        const pinned=actual?.with?.action;
+        if(download?(source.uses!=='flow.foreach'||source.with.max_items!==1||actual?.uses!=='github.run'||
+          pinned?.type!=='task'||pinned.workflowPath!=='.github/workflows/download.yml'):
+          (source.uses!=='github.run'||pinned?.type!=='session'))return false;
+        const actualId=download?sourceId+'_0_'+actual.id:sourceId;
+        const attempt=evidence.attempts.find(a=>a.attempt_id===invocation.source_attempt_id);
+        return attempt?.step_id===actualId&&attempt.capability_id==='github.action'&&
+          positive(attempt.owner_run_id)&&positive(attempt.owner_run_attempt)&&
+          attempt.owner_run_id===attempt.candidate_run_id&&attempt.owner_run_attempt===attempt.candidate_run_attempt&&
+          attempt.repository===pinned.repository&&String(attempt.repository_id)===String(pinned.repositoryId)&&
+          attempt.workflow_ref===pinned.repository+'/'+pinned.workflowPath+'@'+pinned.ref&&attempt.ref===pinned.ref&&
+          receipt(actualId)?.status==='succeeded'&&
+          (download?attempt.state==='succeeded':evidence.sessions.some(s=>s.step_id===actualId&&s.state==='terminated'));
+      }
+      if(isAuxiliaryBarkPair(plan.steps)&&plan.steps[1].id===step.id){
+        const source=plan.steps[0];
+        return receipt(source.id)?.status==='succeeded'&&evidence.invocations.some(i=>
+          i.step_id===source.id&&i.invocation_id===invocation.source_attempt_id&&
+          i.contract_digest===source.with.contract_digest);
+      }
+    }
+    return invocation.source_attempt_id===invocation.invocation_id;
+  };
+  if(!native.retired_invocation)for(const invocation of evidence.invocations){
+    const step=plannedStep(invocation.step_id),plan=evidence.plan.plan;
+    const result=receipt(invocation.step_id);
+    const rejection={bark:'bark_rejected',dub:'dub_rejected',envshare:'envshare_rejected',litterbox:'litterbox_rejected'}[step.with?.provider];
+    // Persisted success, or a failed Step written after a matched rejected
+    // response, proves that the synchronous call ended. Lost responses do not.
+    const rejected=result?.status==='failed'&&
+      [rejection,'cloudflare_provider_rejected','selected_file_provider_rejected',
+        ].filter(Boolean).includes(result.error_code);
+    require(step.uses==='action.run'&&step.with?.executor==='cloudflare'&&
+      plan.cloudflare_execution_approved===true&&plan.cloudflare_action_approvals?.some(g=>
+        g.executor==='cloudflare'&&g.provider===step.with.provider&&g.action===step.with.action&&g.contract_digest===step.with.contract_digest)&&
+      typeof invocation.invocation_id==='string'&&invocation.invocation_id.length>0&&
+      typeof invocation.deployment_id==='string'&&invocation.deployment_id.length>0&&
+      invocation.binding_generation===0&&/^[a-f0-9]{64}$/.test(invocation.contract_digest)&&
+      invocation.contract_digest===step.with.contract_digest&&
+      (result?.status==='succeeded'||rejected)&&sourceMatches(invocation,step),
+      'invocation '+invocation.step_id+' requires related terminal evidence');
+  }
+  for(const cancellation of evidence.cloudflareCancellations){
+    const step=plannedStep(cancellation.step_id);
+    require(step.uses==='action.run'&&step.with?.executor==='cloudflare'&&positive(cancellation.created_at)&&
+      (evidence.invocations.some(i=>i.step_id===step.id)||
+       (run.outcome==='cancelled'&&run.error_code==='cloudflare_action_cancel_requested'&&
+        (!receipt(step.id)||['cancelled','skipped','failed'].includes(receipt(step.id).status)))),
+      'Cloudflare cancellation '+step.id+' physical termination unresolved');
+  }
+  for(const fence of evidence.mcpFences){
+    const step=plannedStep(fence.step_id),result=receipt(fence.step_id);
+    const plan=evidence.plan.plan;
+    const generation=step.uses==='mcp.call'?(plan.mcp_connection_generation??0):
+      step.uses==='http.request'?(plan.http_connection_generation??0):null;
+    require(Number.isSafeInteger(generation)&&generation>=0&&fence.generation===generation&&
+      (result?.status==='succeeded'||(step.uses==='http.request'&&
+        ['GET','HEAD'].includes(step.with?.method)&&result?.status==='failed'&&
+        ['http_response_error','http_redirect_rejected'].includes(result.error_code))),
+      'external call '+fence.step_id+' requires related terminal evidence');
+  }
+  for(const gate of evidence.gates){
+    const step=plannedStep(gate.step_id),result=receipt(gate.step_id);
+    const approval=evidence.approvals.find(a=>a.step_id===gate.step_id);
+    require(step.uses==='github.run'&&step.approval?.required===true&&
+      gate.version_id===run.version_id&&positive(gate.deadline_at)&&
+      (approval?.decision==='approved'?positive(approval.consumed_at)&&
+        ['succeeded','failed','cancelled'].includes(result?.status):
+        result?.status==='failed'&&['approval_denied','approval_timeout'].includes(result.error_code)),
+      'runtime approval '+gate.step_id+' unresolved');
+  }
+  for(const approval of evidence.approvals)
+    require(approval.version_id===run.version_id&&
+      evidence.gates.some(g=>g.step_id===approval.step_id&&g.version_id===approval.version_id)&&
+      ['approved','denied'].includes(approval.decision),'runtime approval identity mismatch');
+  for(const wait of evidence.waits)
+    require(plannedStep(wait.step_id).uses==='flow.wait_event'&&
+      receipt(wait.step_id)?.status==='succeeded','event wait '+wait.step_id+' unresolved');
+  for(const step of evidence.steps.filter(s=>s.step_id.startsWith('__saga_'))){
+    const source=step.step_id.slice('__saga_'.length);
+    const planned=plannedStep(source),plan=evidence.plan.plan;
+    require(plan.saga_compensation_approved===true&&
+      plan.saga?.on?.includes(run.outcome==='cancelled'?'cancel':'failure')&&
+      ['failed','cancelled','indeterminate'].includes(run.outcome)&&
+      planned.uses==='github.run'&&planned.with?.action?.type==='session'&&
+      planned.compensate?.kind==='github.session.cancel'&&receipt(source)?.status==='succeeded'&&
+      evidence.sessions.some(s=>s.step_id===source&&s.state==='terminated')&&
+      evidence.attempts.some(a=>a.step_id===source&&a.capability_id==='github.action'&&
+        ['succeeded','failed','cancelled'].includes(a.state)),
+      'Saga '+source+' physical compensation unresolved');
+  }
+  // Child Plans cannot recursively create another child. Verify the exact
+  // child lineage and its own evidence, not the parent's dispatch ACK.
+  for(const child of evidence.children){
+    const row=child?.run;
+    require(row?.id&&row.id!==run.id&&row.parent_run_id===run.id&&
+      row.instance_id===row.id&&row.parent_step_id&&
+      Array.isArray(child.evidence?.children)&&child.evidence.children.length===0,
+      'child lineage unresolved');
+    const step=plannedStep(row.parent_step_id);
+    require(step.uses==='flow.child'&&step.with?.workflow_id===row.workflow_id&&
+      step.with?.version_id===row.version_id&&receipt(step.id),'child Plan identity mismatch');
+    require(evidence.children.filter(c=>c.run?.parent_step_id===step.id).length===1,'duplicate child lineage');
+    // These exact D1 states are themselves authoritative: reservation
+    // abandoned before the dispatch CAS, or a confirmed native terminate.
+    const beforeStart=row.start_state==='cancelled_before_start'&&row.outcome==='cancelled'&&
+      row.error_code==='cancelled_before_start'&&step.with?.mode!=='detached';
+    const detachedAbandoned=row.start_state==='reserved'&&row.outcome==='failed'&&
+      row.error_code==='detached_parent_not_active'&&step.with?.mode==='detached';
+    if(beforeStart||detachedAbandoned){
+      require(child.native===null&&keys.every(k=>Array.isArray(child.evidence[k])&&child.evidence[k].length===0)&&
+        !evidence.childCancellations.some(c=>c.child_run_id===row.id),
+        'child pre-dispatch closure conflicts with related evidence');
+    }else if(row.start_state==='cancelled'){
+      require(row.outcome==='cancelled'&&positive(row.updated_at)&&
+        evidence.childCancellations.some(c=>c.child_run_id===row.id&&c.parent_step_id===step.id),
+        'child confirmed termination identity unavailable');
+      // child-cancel.ts writes this state only after native status=terminated.
+      // Keep the actual closure and related receipt checks; no new API read.
+      require(!child.native||(child.native.instance_id===row.instance_id&&child.native.status==='terminated'),
+        'child native termination conflicts with D1');
+      verifyWorkflowTerminalEvidence({...row,start_state:'started'},
+        child.native??{instance_id:row.instance_id,status:'terminated',observed_at:row.updated_at},child.evidence);
+    }else verifyWorkflowTerminalEvidence(row,child.native,child.evidence);
+  }
+  for(const cancellation of evidence.childCancellations)
+    require(cancellation.parent_run_id===run.id&&evidence.children.some(c=>
+      c.run.id===cancellation.child_run_id&&c.run.parent_step_id===cancellation.parent_step_id),
+      'child cancellation physical termination unresolved');
+  return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at,
+    ...(native.historical_source?{historical_source:native.historical_source}:{}),
+    ...(facts.length?{github_attempts:facts}:{}),
+    ...(native.no_dispatch_step_id?{no_dispatch_step_id:native.no_dispatch_step_id}:{}),
+    ...(native.retired_invocation?{retired_invocation:native.retired_invocation}:{})};
 }
 
-/**
- * Pure-code release gate: keep full quiescence for schema migrations, but
- * permit only claimed Ready sessions with a succeeded parent business Run.
- * All incomplete Tasks, unresolved Runs and callbacks remain blocked.
- */
-export function verifyWorkflowCodeReleaseReadiness(response, approvedTerminalArtifact = false) {
-  invariant(Array.isArray(response) && response.length === 1 &&
-    response[0]?.success === true && response[0]?.results?.length === 1,
-    "Workflow code-only release D1 readback unavailable");
-  const row=response[0].results[0];
-  for (const key of [
-    "migration_count","expected_migrations","drop_claim_receipts_table","nonterminal_runs",
-    "unresolved_starts","unresolved_steps","invalid_cancelled_steps","nonterminal_attempts",
-    "nonterminated_sessions","undelivered_callbacks","confirmed_ready_sessions",
-    "verified_terminal_saga_receipts","reviewed_terminal_artifact_attempts",
-  ]) invariant(Number.isSafeInteger(row?.[key]) && row[key]>=0,
-    "Workflow code-only release count unavailable or invalid: "+key);
-  invariant(row.migration_count===22 && row.drop_claim_receipts_table===1 &&
-    row.expected_migrations===row.migration_count &&
-    row.resolved_sha_column===1,
-    "Workflow code-only release blocked by D1 migration drift");
-  for (const key of [
-    "nonterminal_runs","unresolved_starts","invalid_cancelled_steps","undelivered_callbacks",
-  ]) invariant(row[key]===0,"Workflow code-only release blocked by "+key);
-  invariant(row.unresolved_steps===row.verified_terminal_saga_receipts,
-    "Workflow code-only release blocked by unresolved_steps");
-  // Never equate a physically finished historical Task with business success.
-  // A preceding exact-ID proof must grant this one code-only exception.
-  invariant(row.reviewed_terminal_artifact_attempts<=1 &&
-    (!approvedTerminalArtifact || row.reviewed_terminal_artifact_attempts===1),
-    "Workflow code-only release missing exact historical Artifact Attempt");
-  const reviewed=approvedTerminalArtifact?row.reviewed_terminal_artifact_attempts:0;
-  invariant(row.nonterminal_attempts===row.confirmed_ready_sessions+reviewed &&
-    row.nonterminated_sessions===row.confirmed_ready_sessions,
-    "Workflow code-only release blocked by unconfirmed Session or Attempt");
-  return {confirmed_ready_sessions:row.confirmed_ready_sessions};
+// Read the complete related execution from one D1 statement. Only identity,
+// lifecycle facts and the immutable Plan are projected; result payloads, Run inputs, signed
+// claims and session URLs never enter this release verifier.
+const terminalProjectionTables={
+ steps:['run_steps','run_id,step_id,status,error_code'],
+ attempts:['step_attempts','run_id,step_id,attempt_id,capability_id,state,repository,repository_id,workflow_ref,ref,resolved_sha,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt'],
+ sessions:['session_executions','run_id,step_id,state'],
+ invocations:['cloudflare_action_invocations','run_id,step_id,invocation_id,source_attempt_id,input_digest,binding_generation,contract_digest,deployment_id,created_at'],
+ mcpFences:['mcp_dispatch_fences','run_id,step_id,generation'],
+ githubCancellations:['github_action_cancellations','run_id,step_id,attempt_id'],
+ cloudflareCancellations:['cloudflare_action_cancellations','run_id,step_id,created_at'],
+ gates:['runtime_approval_gates','run_id,step_id,version_id,deadline_at'],
+ approvals:['runtime_approvals','run_id,step_id,version_id,decision,created_at,consumed_at'],
+ waits:['wait_event_receipts','run_id,step_id,last_sent_at'],
+};
+const jsonRows=(sql,columns)=>'(SELECT json_group_array(json_object('+
+ columns.split(',').map(c=>"'"+c+"',"+c).join(',')+')) FROM ('+sql+'))';
+const runProjection='r.id,r.workflow_id,r.version_id,r.instance_id,r.start_state,r.outcome,r.error_code,r.parent_run_id,r.parent_step_id,r.updated_at';
+function workflowTerminalProjectionSql(schema){
+ invariant(schema===22||schema===23,'Unknown terminal evidence projection schema');
+ const fields=Object.entries(terminalProjectionTables).map(([key,[table,columns]])=>
+   jsonRows('SELECT '+columns+' FROM '+table+' WHERE run_id=r.id',columns)+' AS '+key);
+ fields.push(jsonRows('SELECT a.run_id,a.step_id,c.attempt_id,c.outcome,c.notification_delivered FROM callback_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id WHERE a.run_id=r.id','run_id,step_id,attempt_id,outcome,notification_delivered')+' AS callbacks');
+ fields.push(jsonRows('SELECT parent_run_id,parent_step_id,child_run_id,termination_attempted_at FROM child_cancellations WHERE parent_run_id=r.id','parent_run_id,parent_step_id,child_run_id,termination_attempted_at')+' AS childCancellations');
+ fields.push(jsonRows('SELECT id FROM runs WHERE parent_run_id=r.id','id')+' AS children');
+ return 'SELECT '+runProjection+',v.plan AS immutable_plan,'+
+   (schema===23?'r.execution_terminal_proof':'NULL')+' AS execution_terminal_proof,'+fields.join(',')+
+   ' FROM runs r JOIN workflow_versions v ON v.id=r.version_id AND v.workflow_id=r.workflow_id WHERE r.id=?';
+}
+/** Schema 22 is used only in the single pre-cutover read. Schema 23 uses
+ * persisted facts, falling back to an authenticated observation if absent.
+ * A malformed or conflicting saved fact is never replaced by a guess. */
+export async function readWorkflowTerminalEvidence(query,id,{schema,observe,observeRelated,depth=0}){
+ invariant(typeof id==='string'&&id.length>0&&depth<=1,'Workflow terminal evidence projection invalid lineage');
+ const rows=await query(workflowTerminalProjectionSql(schema),[id]);
+ invariant(Array.isArray(rows)&&rows.length===1&&rows[0]?.id===id,'Workflow terminal evidence projection missing or ambiguous: '+id);
+ const row=rows[0],run=Object.fromEntries(runProjection.split(',').map(c=>c.slice(2)).map(c=>[c,row[c]]));
+ const parse=(field)=>{
+   try{return JSON.parse(row[field]);}catch{throw Error('Workflow terminal evidence projection invalid '+field+' for '+id);}
+ };
+ const evidence={plan:{id:row.version_id,plan:parse('immutable_plan')}};
+ for(const key of [...Object.keys(terminalProjectionTables),'callbacks','childCancellations','children']){
+   const value=parse(key);
+   invariant(Array.isArray(value),'Workflow terminal evidence projection incomplete '+key+' for '+id);
+   evidence[key]=value;
+ }
+ invariant(depth===0||evidence.children.length===0,'Workflow terminal evidence projection nested child unsupported');
+ evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{schema,observe,observeRelated,depth:depth+1})));
+ let native=row.execution_terminal_proof===null?(observe&&run.start_state==='started'?await observe(run,evidence):null):parse('execution_terminal_proof');
+ if(native&&observeRelated)native=await observeRelated(run,native,evidence);
+ return {run,native,evidence};
+}
+
+// Discover only executions requiring proof beyond the existing settled D1
+// lifecycle. The Ready exception is an exact per-Session/Attempt relation,
+// never an aggregate count that could mask an unrelated claimed Attempt.
+function workflowReleaseInventorySql(mode){
+ const ready=mode==='compatible'?`
+  SELECT s.run_id,s.step_id,a.attempt_id FROM session_executions s
+  JOIN runs r ON r.id=s.run_id
+  JOIN run_steps st ON st.run_id=s.run_id AND st.step_id=s.step_id
+  JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+  WHERE r.start_state='started' AND r.outcome='succeeded' AND st.status='succeeded'
+    AND s.state='ready' AND a.state='claimed' AND a.capability_id='github.action'
+    AND a.candidate_run_id>0 AND a.candidate_run_attempt>0
+    AND a.owner_run_id=a.candidate_run_id AND a.owner_run_attempt=a.candidate_run_attempt
+    AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id)
+    AND NOT EXISTS(SELECT 1 FROM step_attempts x WHERE x.run_id=a.run_id
+      AND x.step_id=a.step_id AND x.attempt_id<>a.attempt_id)`:
+  'SELECT run_id,step_id,attempt_id FROM step_attempts WHERE 0';
+ const tables=Object.values(terminalProjectionTables).map(([table])=>table);
+ const orphans=tables.map(t=>"SELECT count(*) AS n FROM "+t+" x WHERE NOT EXISTS(SELECT 1 FROM runs r WHERE r.id=x.run_id)")
+  .concat([
+   "SELECT count(*) AS n FROM callback_receipts c WHERE NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.attempt_id=c.attempt_id)",
+   "SELECT count(*) AS n FROM child_cancellations c WHERE NOT EXISTS(SELECT 1 FROM runs r WHERE r.id=c.child_run_id AND r.parent_run_id=c.parent_run_id AND r.parent_step_id=c.parent_step_id)",
+   "SELECT count(*) AS n FROM runs r WHERE r.parent_run_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM runs p WHERE p.id=r.parent_run_id AND p.parent_run_id IS NULL)",
+   "SELECT count(*) AS n FROM runs r WHERE NOT EXISTS(SELECT 1 FROM workflow_versions v WHERE v.id=r.version_id AND v.workflow_id=r.workflow_id)"
+  ]).map(sql=>'('+sql+')').join(' + ');
+ return `WITH ready AS (${ready}), candidates AS (
+  SELECT DISTINCT coalesce(r.parent_run_id,r.id) AS id FROM runs r
+  WHERE r.outcome IS NULL OR r.outcome NOT IN ('succeeded','failed','cancelled')
+    OR r.start_state IS NULL OR r.start_state NOT IN ('started','cancelled_before_start','cancelled')
+    OR EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=r.id AND
+      (s.status IS NULL OR s.status NOT IN ('succeeded','failed','skipped','cancelled') OR
+       (s.status='cancelled' AND (r.outcome IS NOT 'cancelled' OR r.error_code IS NOT s.error_code
+        OR r.error_code IS NULL OR r.error_code NOT IN ('approval_cancel_requested','event_wait_cancel_requested')))))
+    OR EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=r.id AND
+      (a.state IS NULL OR a.state NOT IN ('rejected','succeeded','failed','cancelled')) AND
+      NOT EXISTS(SELECT 1 FROM ready q WHERE q.attempt_id=a.attempt_id))
+    OR EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=r.id AND
+      (NOT EXISTS(SELECT 1 FROM run_steps st WHERE st.run_id=a.run_id AND st.step_id=a.step_id)
+       OR (a.state='rejected' AND (a.candidate_run_id IS NOT NULL OR a.candidate_run_attempt IS NOT NULL
+         OR a.owner_run_id IS NOT NULL OR a.owner_run_attempt IS NOT NULL))
+       OR (a.state IN ('succeeded','failed','cancelled') AND
+         (a.candidate_run_id IS NULL OR a.candidate_run_attempt IS NULL OR a.candidate_run_id<=0 OR a.candidate_run_attempt<=0
+          OR NOT ((a.owner_run_id IS a.candidate_run_id AND a.owner_run_attempt IS a.candidate_run_attempt)
+            OR (a.state<>'succeeded' AND a.owner_run_id IS NULL AND a.owner_run_attempt IS NULL))))))
+    OR EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.run_id=r.id AND
+      NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=c.run_id AND a.step_id=c.step_id
+        AND a.attempt_id=c.attempt_id AND a.capability_id='github.action' AND a.state IN ('succeeded','failed','cancelled')))
+    OR EXISTS(SELECT 1 FROM session_executions s WHERE s.run_id=r.id AND
+      (s.state IS NULL OR s.state<>'terminated') AND
+      NOT EXISTS(SELECT 1 FROM ready q WHERE q.run_id=s.run_id AND q.step_id=s.step_id))
+    OR EXISTS(SELECT 1 FROM callback_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id
+      WHERE a.run_id=r.id AND (c.notification_delivered IS NOT 1 OR a.state='rejected'))
+    OR EXISTS(SELECT 1 FROM cloudflare_action_invocations i WHERE i.run_id=r.id AND
+      (NOT EXISTS(SELECT 1 FROM run_steps st WHERE st.run_id=i.run_id AND st.step_id=i.step_id
+        AND (st.status='succeeded' OR (st.status='failed' AND st.error_code IN
+          ('bark_rejected','dub_rejected','envshare_rejected','litterbox_rejected','weixin_rejected',
+           'cloudflare_provider_rejected','selected_file_provider_rejected')))) OR
+       (i.source_attempt_id<>i.invocation_id AND
+        NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=i.run_id AND a.attempt_id=i.source_attempt_id) AND
+        NOT EXISTS(SELECT 1 FROM cloudflare_action_invocations a WHERE a.run_id=i.run_id AND a.invocation_id=i.source_attempt_id))))
+    OR EXISTS(SELECT 1 FROM mcp_dispatch_fences f WHERE f.run_id=r.id AND
+      NOT EXISTS(SELECT 1 FROM run_steps st WHERE st.run_id=f.run_id AND st.step_id=f.step_id AND st.status='succeeded'))
+    OR EXISTS(SELECT 1 FROM runtime_approval_gates g WHERE g.run_id=r.id AND
+      (g.version_id<>r.version_id OR NOT EXISTS(SELECT 1 FROM run_steps st
+        WHERE st.run_id=g.run_id AND st.step_id=g.step_id AND st.status IN ('succeeded','failed','cancelled'))))
+    OR EXISTS(SELECT 1 FROM runtime_approvals a WHERE a.run_id=r.id AND
+      NOT EXISTS(SELECT 1 FROM runtime_approval_gates g WHERE g.run_id=a.run_id AND g.step_id=a.step_id AND g.version_id=a.version_id))
+    OR EXISTS(SELECT 1 FROM wait_event_receipts w WHERE w.run_id=r.id AND
+      NOT EXISTS(SELECT 1 FROM run_steps st WHERE st.run_id=w.run_id AND st.step_id=w.step_id AND st.status='succeeded'))
+    OR EXISTS(SELECT 1 FROM cloudflare_action_cancellations c WHERE c.run_id=r.id AND
+      NOT EXISTS(SELECT 1 FROM cloudflare_action_invocations i WHERE i.run_id=c.run_id AND i.step_id=c.step_id)
+      AND NOT (r.outcome='cancelled' AND r.error_code='cloudflare_action_cancel_requested'))
+ )
+ SELECT (SELECT count(*) FROM runs) AS run_count,
+   (SELECT count(*) FROM ready) AS ready_sessions,
+   (SELECT json_group_array(instance_id) FROM (SELECT DISTINCT r.instance_id FROM ready q JOIN runs r ON r.id=q.run_id ORDER BY r.instance_id)) AS ready_instances,
+   (${orphans}) AS orphan_count,
+   (SELECT count(*) FROM candidates) AS candidate_count,
+   (SELECT json_group_array(id) FROM (SELECT id FROM candidates ORDER BY id)) AS candidate_ids`;
+}
+
+// Only the deployed v22 baseline and the target v23 are supported. The
+// migration registry alone does not prove that its structural effects exist.
+async function verifyTerminalReleaseSchema(query,schema){
+ const tables=['workflows','workflow_versions','runs','run_steps','callback_receipts','step_attempts',
+  'session_executions','github_action_cancellations','child_cancellations','wait_event_receipts',
+  'cloudflare_action_invocations','cloudflare_action_cancellations','runtime_approval_gates',
+  'runtime_approvals','portal_connection_auth','mcp_dispatch_fences','http_connection_auth',
+  'cloudflare_action_gate','drop_claim_receipts'];
+ const columns={runs:['native_complete_seen_at','capacity_weight','parent_run_id','parent_step_id'],
+  session_executions:['session_url','fixed_key','rca_duration_minutes'],step_attempts:['resolved_sha'],
+  workflows:['deleted_at'],child_cancellations:['termination_attempted_at']};
+ const checks=[...tables.map(t=>"(SELECT count(*) FROM sqlite_master WHERE type='table' AND name='"+t+"')=1"),
+  ...Object.entries(columns).flatMap(([t,cols])=>cols.map(c=>"(SELECT count(*) FROM pragma_table_info('"+t+"') WHERE name='"+c+"')=1")),
+  "(SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data')=0",
+  "(SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys')=1",
+  "(SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_one_awaited_child_per_step')=1",
+  "(SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='runs_top_level_capacity_guard')=1",
+  "(SELECT count(*) FROM pragma_table_info('runs') WHERE name='execution_terminal_proof' AND type='TEXT' AND [notnull]=0)="+(schema===23?1:0),
+  "(SELECT count(*) FROM pragma_table_info('runs') WHERE name='execution_terminal_proof')="+(schema===23?1:0)];
+ const rows=await query('SELECT ('+checks.join(' AND ')+') AS schema_ok',[]);
+ invariant(Array.isArray(rows)&&rows.length===1&&rows[0].schema_ok===1,'Workflow exact v'+schema+' schema structure drift');
+}
+
+/** D1 half of the release gate. Strict callers additionally prove ingress
+ * stopped and native drain; compatible callers retain only exact Ready
+ * sessions. This function does not mutate evidence or authorize deployment. */
+export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,observe,observeRelated}){
+ invariant(mode==='strict'||mode==='compatible','Unsupported Workflow release operation');
+ const migrations=await query('SELECT name FROM d1_migrations ORDER BY name',[]);
+ const selection=selectWorkflowSchemaRelease([{success:true,results:migrations}],sourceFiles);
+ invariant(selection.source===23&&(selection.applied===23||mode==='strict'&&selection.applied===22),
+   'Workflow terminal evidence schema inventory unsupported');
+ const schema=selection.applied;
+ await verifyTerminalReleaseSchema(query,schema);
+ const rows=await query(workflowReleaseInventorySql(mode),[]);
+ const row=rows?.[0];
+ invariant(Array.isArray(rows)&&rows.length===1&&
+   ['run_count','ready_sessions','orphan_count','candidate_count'].every(k=>Number.isSafeInteger(row?.[k])&&row[k]>=0)&&
+   row.orphan_count===0,'Workflow terminal evidence inventory incomplete or orphaned');
+ let ids;
+ try{ids=JSON.parse(row.candidate_ids);}catch{throw Error('Workflow terminal evidence candidate inventory malformed');}
+ invariant(Array.isArray(ids)&&ids.length===row.candidate_count&&
+   ids.every(id=>typeof id==='string'&&id.length>0)&&new Set(ids).size===ids.length,
+   'Workflow terminal evidence candidate inventory incomplete');
+ let readyInstances;
+ try{readyInstances=JSON.parse(row.ready_instances);}catch{throw Error('Workflow Ready instance inventory malformed');}
+ invariant(Array.isArray(readyInstances)&&readyInstances.length<=row.ready_sessions&&
+  (row.ready_sessions===0||readyInstances.length>0)&&readyInstances.every(id=>typeof id==='string'&&id.length>0)&&
+  new Set(readyInstances).size===readyInstances.length,'Workflow Ready instance inventory incomplete');
+ const proofs=[],targets=[];
+ const collect=(projected,fact)=>{
+   if(projected.run.start_state==='started'){
+     proofs.push([projected.run.id,fact]);
+     targets.push([projected.run.id,projected.run]);
+   }
+   for(const child of projected.evidence.children)
+     if(child.run.start_state==='started')
+       collect(child,verifyWorkflowTerminalEvidence(child.run,child.native,child.evidence));
+ };
+ for(const id of ids){
+   const projected=await readWorkflowTerminalEvidence(query,id,{schema,observe,observeRelated});
+   collect(projected,verifyWorkflowTerminalEvidence(projected.run,projected.native,projected.evidence));
+ }
+ return {schema,run_count:row.run_count,ready_sessions:row.ready_sessions,ready_instances:readyInstances,
+   proofs:Object.fromEntries(proofs),targets:Object.fromEntries(targets)};
+}
+
+// Only used in the authorized one-time migration window. Revalidate every
+// candidate and its identity against the prepared evidence after v23 exists,
+// then CAS the missing facts. A lost response stops immediately; a later
+// explicitly authorized forward recovery can read and skip matching facts.
+function mergePreparedTerminalFacts(run,existing,expected){
+ invariant(existing&&expected&&existing.instance_id===run.instance_id&&expected.instance_id===run.instance_id,
+  'Workflow prepared proof identity changed');
+ const {github_attempts:oldFacts=[],...oldNative}=existing;
+ const {github_attempts:newFacts=[],...newNative}=expected;
+ invariant(JSON.stringify(oldNative)===JSON.stringify(newNative)&&Array.isArray(oldFacts)&&Array.isArray(newFacts)&&
+   oldFacts.every(f=>newFacts.some(n=>JSON.stringify(n)===JSON.stringify(f))),
+  'Workflow prepared proof conflicts with persisted evidence');
+ return expected;
+}
+
+export async function backfillWorkflowTerminalProofs(query,write,prepared,sourceFiles){
+ invariant([22,23].includes(prepared?.schema)&&prepared.ready_sessions===0&&prepared.proofs&&prepared.targets,
+  'Workflow backfill requires verified strict cutover preparation');
+ const current=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles,
+  observe:async run=>Object.hasOwn(prepared.proofs,run.id)?prepared.proofs[run.id]:null,
+  observeRelated:async(run,native)=>mergePreparedTerminalFacts(run,native,prepared.proofs[run.id])});
+ invariant(current.schema===23,'Workflow proof backfill requires migrated v23 schema');
+ invariant(current.run_count===prepared.run_count&&current.ready_sessions===0&&
+   JSON.stringify(current.proofs)===JSON.stringify(prepared.proofs)&&
+   JSON.stringify(current.targets)===JSON.stringify(prepared.targets),
+   'Workflow execution evidence changed after preparation');
+ for(const [id,fact] of Object.entries(prepared.proofs)){
+   const r=prepared.targets[id];
+   const identity=[r.id,r.instance_id,r.version_id,r.start_state,r.outcome,r.error_code,r.updated_at];
+   const predicate='id=? AND instance_id=? AND version_id=? AND start_state=? AND outcome=? AND error_code IS ? AND updated_at=?';
+   const lookup=async()=>{
+     const rows=await query('SELECT execution_terminal_proof FROM runs WHERE '+predicate,identity);
+     invariant(Array.isArray(rows)&&rows.length===1,'Workflow backfill target changed: '+id);
+     return rows[0].execution_terminal_proof;
+   };
+   const expected=JSON.stringify(fact);
+   const existing=await lookup();
+   if(existing===expected)continue;
+   if(existing!==null)mergePreparedTerminalFacts(r,JSON.parse(existing),fact);
+   const changed=await write('UPDATE runs SET execution_terminal_proof=? WHERE '+predicate+
+     ' AND execution_terminal_proof IS ?',[expected,...identity,existing]);
+   invariant(changed===1,'Workflow backfill conditional write unconfirmed: '+id);
+   invariant(await lookup()===expected,'Workflow backfill independent readback failed: '+id);
+ }
+ const checked=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles});
+ invariant(checked.schema===23&&checked.run_count===prepared.run_count&&
+   JSON.stringify(checked.proofs)===JSON.stringify(prepared.proofs)&&
+   JSON.stringify(checked.targets)===JSON.stringify(prepared.targets),
+   'Workflow proof backfill final inventory changed');
+ return checked;
 }
 
 export function parseWranglerVersion(output) {
@@ -1165,44 +1345,169 @@ export function verifyBrowserPrepublicationCandidate(previous, observed, discove
   return true;
 }
 
+// Read only the missing exact Task observations. The runtime collects the
+// same facts while native evidence is still available; ordinary release can
+// obtain a live positive fact without changing Attempt or business state.
+export async function observeRelatedTaskFacts(run,native,evidence,inspect){
+ if(native?.instance_id!==run.instance_id||!['complete','errored','terminated'].includes(native.status)||
+    !Number.isSafeInteger(native.observed_at)||native.observed_at<=0)return native;
+ const facts=native.github_attempts??[];
+ if(!Array.isArray(facts)||evidence.plan?.id!==run.version_id)return native;
+ const added=[];
+ for(const a of evidence.attempts){
+   if(!['confirmed','claimed'].includes(a.state)||facts.some(f=>f.attempt_id===a.attempt_id)||
+      evidence.sessions.some(s=>s.step_id===a.step_id))continue;
+   const fact=await inspect(evidence.plan.plan,a);
+   if(fact)added.push(fact);
+ }
+ if(!added.length)return native;
+ const combined={...native,github_attempts:[...facts,...added].sort((a,b)=>a.attempt_id.localeCompare(b.attempt_id))};
+ invariant(Buffer.byteLength(JSON.stringify(combined),'utf8')<=4096,'Workflow Task terminal evidence exceeds bounded proof');
+ return combined;
+}
+
+// I/O for the single release proof path. No payload logging or uncertain-write retry.
+export function workflowReleaseIO(env=process.env,request=fetch){
+ const account=env.CLOUDFLARE_ACCOUNT_ID,token=env.CLOUDFLARE_API_TOKEN;
+ invariant(/^[a-f0-9]{32}$/i.test(account??'')&&token,'Workflow release credentials unavailable');
+ const config=JSON.parse(readFileSync(new URL('../apps/workflow-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
+ const db=config.d1_databases?.filter(d=>d.binding==='DB');
+ invariant(db?.length===1&&db[0].database_name==='workflow-mcp-db'&&
+   /^[a-f0-9-]{36}$/.test(db[0].database_id),'Workflow D1 target unavailable');
+ const base='https://api.cloudflare.com/client/v4/accounts/'+account;
+ const headers={Authorization:'Bearer '+token,Accept:'application/json'};
+ const api=async(url,auth,body)=>{
+   const response=await request(url,{redirect:'manual',headers:{...auth,...(body?{'Content-Type':'application/json'}:{})},
+    ...(body?{method:'POST',body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(15000)});
+   invariant(response.ok,'Workflow release evidence API unavailable (HTTP '+response.status+')');
+   return response.json();
+ };
+ const d1=async(sql,params)=>{
+   const data=await api(base+'/d1/database/'+db[0].database_id+'/query',headers,{sql,params});
+   invariant(data?.success===true&&Array.isArray(data.result)&&data.result.length===1&&
+     data.result[0]?.success===true&&Array.isArray(data.result[0].results),'Workflow D1 evidence response incomplete');
+   return data.result[0];
+ };
+ const query=async(sql,params=[])=>{
+   invariant(/^ *(SELECT|WITH) /i.test(sql),'Workflow evidence read must be SELECT');
+   const result=await d1(sql,params);
+   invariant(result.meta?.changed_db!==true&&!(result.meta?.changes>0),'Workflow evidence query unexpectedly changed D1');
+   return result.results;
+ };
+ const write=async(sql,params)=>{
+   invariant(sql.startsWith('UPDATE runs SET execution_terminal_proof=? WHERE id=? AND instance_id=?'),
+    'Workflow backfill write target invalid');
+   const result=await d1(sql,params);
+   invariant(Number.isSafeInteger(result.meta?.changes),'Workflow backfill receipt unavailable');
+   return result.meta.changes;
+ };
+ const observe=async run=>{
+   invariant(/^[a-f0-9-]{36}$/i.test(run.instance_id),'Workflow instance identity malformed');
+   const url=base+'/workflows/workflow-mcp-orchestrator/instances/'+run.instance_id;
+   const response=await request(url,{redirect:'manual',headers,signal:AbortSignal.timeout(15000)});
+   if(response.status===404)return null;
+   invariant(response.ok,'Workflow native observation unavailable (HTTP '+response.status+')');
+   const data=await response.json(),native=data?.result;
+   invariant(data?.success===true&&native&&(!native.id||native.id===run.instance_id),'Workflow native observation identity mismatch');
+   return ['complete','errored','terminated'].includes(native.status)&&native.end?
+     {instance_id:run.instance_id,status:native.status,observed_at:Date.now()}:null;
+ };
+ const cache=new Map();
+ const cached=(url,auth)=>{if(!cache.has(url))cache.set(url,api(url,auth));return cache.get(url);};
+ const gh=(repo,id,suffix='')=>{
+   invariant(['lirtual/mcp-workers','lirtual/github-actions','lirtual/cloudflare-actions'].includes(repo)&&Number.isSafeInteger(id),'Historical release source invalid');
+   const credential=repo==='lirtual/mcp-workers'?env.GITHUB_TOKEN:null;
+   invariant(repo!=='lirtual/mcp-workers'||credential,'Historical migration read credential unavailable');
+   return cached('https://api.github.com/repos/'+repo+'/actions/runs/'+id+suffix,
+     {...(credential?{Authorization:'Bearer '+credential}:{}),Accept:'application/vnd.github+json'});
+ };
+ const historySources={githubRun:gh,githubJobs:(repo,id)=>gh(repo,id,'/jobs?per_page=100'),
+   providerVersions:()=>cached(base+'/workers/scripts/cloudflare-actions/versions?per_page=100',headers)};
+ return {query,write,observe,historySources,observeRelated:(run,native,evidence)=>observeRelatedTaskFacts(run,native,evidence,
+  (plan,a)=>{
+   invariant(env.WORKFLOW_GITHUB_DISPATCH_TOKEN,'Current Task physical read credential unavailable');
+   return observeGitHubTaskTerminalFact(plan,a,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
+  }),sourceFiles:readdirSync(new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url)),
+  nativeDrain:ids=>checkNativeWorkflowRelease(account,headers,ids,request),
+  maintenance:phase=>readOnlyPrepare(env,request,phase)};
+}
+export async function workflowReleaseProof(mode,io,env=process.env){
+ const strict=mode!=='workflow-check'||env.ACTIONS_INGRESS_QUIESCED==='true';
+ const preparing=mode==='workflow-prepare';
+ const freezing=mode==='workflow-freeze-check';
+ invariant(['workflow-prepare','workflow-freeze-check','workflow-check'].includes(mode),'Unknown Workflow proof operation');
+ if(strict){
+   requireIngressQuiescence(env.ACTIONS_INGRESS_QUIESCED);
+   await io.maintenance(freezing?'maintenance':'frozen');
+ }
+ const schemaRows=await io.query('SELECT name FROM d1_migrations ORDER BY name',[]);
+ const selected=selectWorkflowSchemaRelease([{success:true,results:schemaRows}],io.sourceFiles);
+ invariant(selected.source===23&&(selected.applied===23||strict&&(preparing||freezing)&&selected.applied===22),
+  'Workflow release requires exact v23 schema, or authorized v22 cutover');
+ const useHistory=preparing||(freezing&&selected.applied===22);
+ const observe=async(run,evidence)=>{
+   if(useHistory){
+     const {historicalMigrationProof}=await import('./workflow-terminal-run-exception.mjs');
+     const fact=await historicalMigrationProof(run,evidence,io.historySources);
+     if(fact)return fact;
+   }
+   return io.observe(run);
+ };
+ const result=await verifyWorkflowReleaseInventory(io.query,{mode:strict?'strict':'compatible',sourceFiles:io.sourceFiles,observe,observeRelated:io.observeRelated});
+ invariant(result.schema===selected.applied,'Workflow schema changed during proof');
+ if(strict)await io.maintenance(freezing?'maintenance':'frozen');
+ else await io.nativeDrain(result.ready_instances);
+ return result;
+}
+function requireProtectedWorkflowCutover(env){
+ invariant(env.GITHUB_EVENT_NAME==='workflow_dispatch'&&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_ACTOR==='lirtual'&&
+  /^[a-f0-9]{40}$/.test(env.GITHUB_SHA??'')&&env.SELECTED_WORKER==='workflow-mcp-worker'&&env.WORKFLOW_CODE_ONLY!=='true',
+  'Workflow cutover must run in the protected selected-Worker release');
+ requireIngressQuiescence(env.ACTIONS_INGRESS_QUIESCED);
+}
+async function workflowProofCLI(mode,env){
+ const io=workflowReleaseIO(env);
+ if(mode==='workflow-backfill'||mode==='workflow-cutover-recheck'){
+   requireProtectedWorkflowCutover(env);
+   await io.maintenance('frozen');
+   const saved=JSON.parse(await readFile(join(env.RUNNER_TEMP,'workflow-cutover-proof.json'),'utf8'));
+   invariant(saved.sourceSha===env.GITHUB_SHA&&saved.prepared&&typeof saved.bookmark==='string'&&saved.bookmark.length>0,
+    'Workflow migration recovery point or prepared proof unavailable');
+   if(mode==='workflow-cutover-recheck'){
+     const original=saved.prepared;
+     invariant(original.schema===22,'Workflow migration recheck requires v22');
+     const current=await verifyWorkflowReleaseInventory(io.query,{mode:'strict',sourceFiles:io.sourceFiles,
+       observe:async run=>Object.hasOwn(original.proofs,run.id)?original.proofs[run.id]:null});
+     invariant(JSON.stringify(current)===JSON.stringify(original),'Workflow evidence changed before schema migration');
+     await io.maintenance('frozen');
+     console.log('Exact v22 cutover evidence reverified; only migration 0023 may be applied');
+     return;
+   }
+   const checked=await backfillWorkflowTerminalProofs(io.query,io.write,saved.prepared,io.sourceFiles);
+   await io.maintenance('frozen');
+   console.log('Workflow v23 proof backfill verified: '+Object.keys(checked.proofs).length+' candidate facts');
+   return;
+ }
+ if(mode==='workflow-prepare')requireProtectedWorkflowCutover(env);
+ const prepared=await workflowReleaseProof(mode,io,env);
+ if(mode==='workflow-prepare'){
+   const bookmark=JSON.parse(await readFile(join(env.RUNNER_TEMP,'workflow-cutover-bookmark.json'),'utf8')).bookmark;
+   invariant(typeof bookmark==='string'&&/^[a-f0-9-]{20,100}$/i.test(bookmark),'Workflow Time Travel bookmark unavailable');
+   await writeFile(join(env.RUNNER_TEMP,'workflow-cutover-proof.json'),JSON.stringify({sourceSha:env.GITHUB_SHA,bookmark,prepared}),{mode:0o600});
+   invariant(env.GITHUB_OUTPUT,'Protected release output unavailable');
+   await appendFile(env.GITHUB_OUTPUT,'apply_required='+(prepared.schema===22)+'\n');
+   console.log('Workflow recovery point: '+bookmark+'; source schema '+prepared.schema);
+ }
+ console.log('Workflow execution readiness verified: schema '+prepared.schema+', '+prepared.run_count+' Runs, '+prepared.ready_sessions+' Ready Sessions, '+Object.keys(prepared.proofs).length+' terminal proofs');
+}
+
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "identity-recheck", "cleanup-readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
-  if (mode === "migration-sql") {
-    invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
-    console.log(reviewedTerminalRunSql(WORKFLOW_MIGRATION_READINESS_SQL));
-    return;
+  if(["workflow-prepare","workflow-backfill","workflow-cutover-recheck","workflow-check","workflow-freeze-check"].includes(mode)){
+    invariant(worker==="workflow-mcp-worker","Workflow proof restricted to Workflow");
+    return workflowProofCLI(mode,process.env);
   }
-  if (mode === "code-release-check") {
-    invariant(worker === "workflow-mcp-worker", "Release gate restricted to Workflow");
-    const result = verifyWorkflowCodeReleaseReadiness(
-      JSON.parse(await readFile("/dev/stdin", "utf8")),
-      process.env.WORKFLOW_TWELFTH_TERMINAL_RUN_ID===TWELFTH_TERMINAL_RUN_ID);
-    console.log("Workflow code-only release D1 gate: PASS " +
-      JSON.stringify(result) + "; no migration, no unconfirmed execution");
-    return;
-  }
-  if (mode === "migration-check") {
-    invariant(worker === "workflow-mcp-worker", "Migration check restricted to Workflow");
-    const observed = verifyWorkflowMigrationReadiness(
-      JSON.parse(await readFile("/dev/stdin", "utf8")),
-      process.env.WORKFLOW_TWELFTH_TERMINAL_RUN_ID === TWELFTH_TERMINAL_RUN_ID);
-    console.log("Workflow migration D1 quiescence: PASS " +
-      JSON.stringify(observed) + "; external GitHub/Cloudflare instance " +
-      "and write-freeze checks NOT verified");
-    return;
-  }
-  if (mode === "d1-check") {
-    invariant(worker === "workflow-mcp-worker", "D1 check restricted to Workflow");
-    const raw = await readFile("/dev/stdin", "utf8");
-    verifyWorkflowD1Readiness(JSON.parse(raw),
-      process.env.WORKFLOW_FIRST_DEPLOY === "true",
-      process.env.WORKFLOW_REQUIRE_COMPLETE_SCHEMA === "true",
-      process.env.UU_REQUIRE_CLEANUP_COMPLETE === "true",
-      process.env.WORKFLOW_CODE_ONLY === "true");
-    console.log("Workflow production D1 migrations and Run-state gate verified");
-    return;
-  }
+  invariant(["preflight", "readback", "identity-recheck", "version", "diagnostic"].includes(mode), "Unknown release validation mode");
   if (mode === "diagnostic") {
     invariant(worker, "Wrangler log path missing");
     const log = await readFile(worker, "utf8");
@@ -1232,39 +1537,6 @@ async function main() {
     invariant(sourceConfig.routes?.length === 1 && sourceConfig.routes[0].custom_domain === true &&
       sourceConfig.routes[0].pattern === "browser.lirtual.dpdns.org",
       "Browser release blocked: reviewed dedicated Custom Domain is not configured");
-  }
-  if (mode === "cleanup-readback") {
-    invariant(["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker),
-      "Legacy cleanup readback Worker is not enabled");
-    invariant(account && token && sourceSha && process.env.EXPECTED_VERSION_ID &&
-      process.env.GITHUB_REPOSITORY === "lirtual/mcp-workers" &&
-      process.env.GITHUB_REF === "refs/heads/main" && process.env.GITHUB_ACTOR === "lirtual",
-      "Required cleanup readback environment missing");
-    if (worker === "workflow-mcp-worker") invariant(
-      process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID &&
-      process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY && process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
-      "Required Workflow cleanup readback identity inputs missing");
-    if (worker === "database-mcp-worker") invariant(
-      process.env.DATABASE_CONNECTIONS && process.env.DB_HOST !== undefined,
-      "Required Database cleanup readback catalog inputs missing");
-    // Cloudflare GET inventory only. No Wrangler, write endpoint, or release-state mutation.
-    const observed = await current(account, worker, token, {
-      mode: "readback", cleanupVerified: true, sourceConfig,
-      expectedWorkflowPortalClientId: process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID,
-      expectedWorkflowIdentity: worker==="workflow-mcp-worker"
-        ? await verifyWorkflowGitHubExecutor(process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY,
-            process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN) : undefined,
-      ...(worker === "database-mcp-worker" ? {
-        databaseConnections: process.env.DATABASE_CONNECTIONS,
-        databaseVariables: { DB_HOST: process.env.DB_HOST },
-        expectedDatabaseLimits: expectedDatabaseLimits(sourceConfig, process.env),
-      } : {}),
-    });
-    invariant(observed.version_id === process.env.EXPECTED_VERSION_ID,
-      "Legacy cleanup active Worker version differs from reviewed version");
-    console.log("Legacy Secret cleanup readback PASS: " + worker +
-      "; version=" + observed.version_id + "; no old Secrets remain");
-    return;
   }
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
   if(mode==="identity-recheck")

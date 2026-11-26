@@ -37,8 +37,7 @@ test('unchanged Draft reuses only the same reviewed Provider version, and repins
  const nextId='44444444-4444-4444-8444-444444444444';
  let active=firstId;
  const provider={getContract:async()=>({deployment_id:active,contract_digest:manifest.contract_digest})};
- const env={DB:db,ACTIONS:provider,
-  get ACTIONS_DEPLOYMENT_ID(){return active;}} as unknown as Env;
+ const env={DB:db,ACTIONS:provider} as unknown as Env;
  const service=new WorkflowService(env);
  const grant=()=>[{executor:'cloudflare' as const,provider:'bark',
   action:'bark.send_notification',contract_digest:manifest.contract_digest,deployment_id:active}];
@@ -75,7 +74,7 @@ test('EnvShare Validate and Publish grant the real EnvShare contract, never a We
  const manifest=await cloudflareActionManifest('envshare');
  const version='33333333-3333-4333-8333-333333333333';
  let contractReads=0;
- const env={DB:db,ACTIONS_DEPLOYMENT_ID:version,ACTIONS:{async getContract(action:string,digest:string){
+ const env={DB:db,ACTIONS:{async getContract(action:string,digest:string){
   contractReads++;
   assert.equal(action,'envshare.share_text');
   assert.equal(digest,manifest.contract_digest);

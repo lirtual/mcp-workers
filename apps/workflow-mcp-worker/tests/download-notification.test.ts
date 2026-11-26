@@ -83,8 +83,7 @@ async function fixture(t:test.TestContext){
   },
  };
  const env={DB:{prepare},ACTIONS:provider,
-  WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:10,ciWorkflowId:999}),
-  ACTIONS_DEPLOYMENT_ID:version} as unknown as Env;
+  WORKFLOW_GITHUB_ACTION_IDENTITY:JSON.stringify({repository:'lirtual/github-actions',repositoryId:10,ciWorkflowId:999})} as unknown as Env;
  const ctx={inputs:{},steps:{[sourceId]:{status:'succeeded'}}};
  const call=()=>runBarkAction(env,plan,notify,runId,ctx);
  return {sql,plan,notify,env,ctx,call,sends:()=>sends,receipts:()=>receipts,

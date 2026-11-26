@@ -1,6 +1,4 @@
-import { readFile, appendFile } from "node:fs/promises";
-import { pathToFileURL } from "node:url";
-import { resolve } from "node:path";
+import {EIGHTH_MCP_RUN_ID,historicalMcpNoDispatchTerminalProof} from './workflow-mcp-no-dispatch-proof.mjs';
 
 // Spec #392: narrowly scoped historical evidence, never a general opt-out.
 export const TERMINAL_RUN_ID = "47739981-0534-4966-8034-1e79c1d17481";
@@ -594,127 +592,134 @@ export function verifyTwelfthTerminalEvidence(d1,native,github){
   return TWELFTH_TERMINAL_RUN_ID;
 }
 
-async function main() {
-  const kind=process.env.TERMINAL_PROOF_KIND;
-  requireValid(process.env.SELECTED_WORKER === "workflow-mcp-worker",
-    "only the Workflow release may request this exception");
-  requireValid(process.env.CLOUDFLARE_ACCOUNT_ID &&
-    /^[a-f\d]{32}$/i.test(process.env.CLOUDFLARE_ACCOUNT_ID) &&
-    process.env.CLOUDFLARE_API_TOKEN &&
-    (kind==="eleventh"||process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN),
-    "required read-only verification credentials missing");
-  requireValid(kind===undefined||kind==="second"||kind==="third"||kind==="fourth"||kind==="fifth"||kind==="sixth"||kind==="seventh"||kind==="ninth"||kind==="tenth"||kind==="eleventh"||kind==="twelfth",
-    "unknown terminal proof kind");
-  const second=kind==="second";
-  const third=kind==="third";
-  const fourth=kind==="fourth";
-  const fifth=kind==="fifth";
-  const sixth=kind==="sixth";
-  const seventh=kind==="seventh";
-  const ninth=kind==="ninth";
-  const tenth=kind==="tenth";
-  const eleventh=kind==="eleventh";
-  const twelfth=kind==="twelfth";
-  const d1 = JSON.parse(await readFile("/dev/stdin","utf8"));
-  const get = async (url, token) => {
-    const response = await fetch(url,{
-      headers:{Authorization:"Bearer "+token,Accept:"application/json"},
-      signal:AbortSignal.timeout(15000)
-    });
-    requireValid(response.ok,"independent native/GitHub state unavailable (HTTP "+response.status+")");
-    return response.json();
-  };
-  const cfResponse = await fetch("https://api.cloudflare.com/client/v4/accounts/"+
-    process.env.CLOUDFLARE_ACCOUNT_ID+"/workflows/"+WORKFLOW+"/instances/"+
-    (twelfth?TWELFTH_TERMINAL_RUN_ID:eleventh?ELEVENTH_TERMINAL_RUN_ID:ninth?NINTH_TERMINAL_RUN_ID:tenth?TENTH_TERMINAL_RUN_ID:seventh?SEVENTH_TERMINAL_RUN_ID:sixth?SIXTH_TERMINAL_RUN_ID:fifth?FIFTH_TERMINAL_RUN_ID:fourth?FOURTH_TERMINAL_RUN_ID:third?THIRD_TERMINAL_RUN_ID:second?SECOND_TERMINAL_RUN_ID:TERMINAL_RUN_ID),
-    {headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
-      Accept:"application/json"},signal:AbortSignal.timeout(15000)});
-  let native;
-  if (cfResponse.ok) {
-    const cf = await cfResponse.json();
-    requireValid(cf?.success === true && cf?.result,
-      "native Cloudflare instance readback unavailable");
-    native = cf.result;
-  } else if (cfResponse.status === 404) {
-    // Missing native inventory is not proof. Pin the exact protected release
-    // that had already verified this instance while its record was available.
-    requireValid(process.env.GITHUB_TOKEN,
-      "prior native proof GitHub read token missing");
-    const recent=seventh||ninth||tenth||eleventh||twelfth;
-    const base = "https://api.github.com/repos/lirtual/mcp-workers/actions/runs/"+
-      (recent?RECENT_PRIOR_RELEASE_ID:PRIOR_RELEASE_ID);
-    const run=await get(base,process.env.GITHUB_TOKEN);
-    const jobs=await get(base+"/jobs?per_page=100",process.env.GITHUB_TOKEN);
-    native=recent?verifyRecentPriorNativeProof(run,jobs,kind):
-      verifyPriorNativeProof(run,jobs);
-    console.log("Historical native instance expired; exact prior release proof verified");
-  } else {
-    requireValid(false,"independent native state unavailable (HTTP "+cfResponse.status+")");
-  }
-  if(eleventh){
-    // A Provider receipt would mean a send may have been attempted.
-    // Never exempt that case or replay an unknown outcome.
-    const response=await fetch("https://api.cloudflare.com/client/v4/accounts/"+
-      process.env.CLOUDFLARE_ACCOUNT_ID+"/d1/database/"+ELEVENTH_WEIXIN_DB+"/query",{
-        method:"POST",
-        headers:{Authorization:"Bearer "+process.env.CLOUDFLARE_API_TOKEN,
-          Accept:"application/json","Content-Type":"application/json"},
-        body:JSON.stringify({sql:"SELECT generation,request_id,status FROM weixin_send_receipts WHERE request_id='"+
-          ELEVENTH_INVOCATION_ID+"'"}),
-        signal:AbortSignal.timeout(15000)
-      });
-    requireValid(response.ok,"eleventh Provider D1 query unavailable");
-    const proof=await response.json();
-    requireValid(proof?.success===true&&Array.isArray(proof.result)&&
-      proof.result.length===1&&proof.result[0]?.success===true&&
-      Array.isArray(proof.result[0]?.results),
-      "eleventh Provider D1 readback incomplete");
-    // Independent native Cloudflare completion plus both D1s required.
-    verifyEleventhTerminalEvidence(d1,native,proof.result[0].results);
-    requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
-    await appendFile(process.env.GITHUB_OUTPUT,
-      "eleventh_terminal_run_id="+ELEVENTH_TERMINAL_RUN_ID+"\n");
-    console.log("Verified exact terminal generic notification Run; unknown preserved");
-    return;
-  }
-  if(twelfth){
-    const github=await get("https://api.github.com/repos/lirtual/github-actions/actions/runs/"+
-      TWELFTH_GITHUB_RUN_ID,process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
-    verifyTwelfthTerminalEvidence(d1,native,github);
-    requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
-    await appendFile(process.env.GITHUB_OUTPUT,
-      "twelfth_terminal_run_id="+TWELFTH_TERMINAL_RUN_ID+"\n");
-    console.log("Verified exact historical GitHub Artifact Task physical terminal; business unknown preserved");
-    return;
-  }
-  const github = await get(HISTORICAL_GITHUB_RUNS_API+
-    (ninth?NINTH_SESSION_GITHUB_RUN_ID:tenth?TENTH_SESSION_GITHUB_RUN_ID:seventh?SEVENTH_TASK_GITHUB_RUN_ID:sixth?SIXTH_SESSION_GITHUB_RUN_ID:fifth?FIFTH_SESSION_GITHUB_RUN_ID:fourth?FOURTH_SESSION_GITHUB_RUN_ID:third?THIRD_SESSION_GITHUB_RUN_ID:second?SECOND_SESSION_GITHUB_RUN_ID:TERMINAL_SESSION_GITHUB_RUN_ID),
-    process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
-  if(ninth||tenth)verifySagaTerminalEvidence(d1,native,github,kind);
-  else if(seventh)verifySeventhTerminalEvidence(d1,native,github);
-  else if(sixth)verifySixthTerminalEvidence(d1,native,github);
-  else if(fifth)verifyFifthTerminalEvidence(d1,native,github);
-  else if(fourth)verifyFourthTerminalEvidence(d1,native,github);
-  else if(third)verifyThirdTerminalEvidence(d1,native,github);
-  else if(second)verifySecondTerminalEvidence(d1,native,github);
-  else verifyTerminalRunEvidence(d1,native,github);
-  requireValid(process.env.GITHUB_OUTPUT,"GitHub output unavailable");
-  await appendFile(process.env.GITHUB_OUTPUT,
-    (ninth?"ninth_terminal_run_id="+NINTH_TERMINAL_RUN_ID:
-      tenth?"tenth_terminal_run_id="+TENTH_TERMINAL_RUN_ID:
-      seventh?"seventh_terminal_run_id="+SEVENTH_TERMINAL_RUN_ID:
-      sixth?"sixth_terminal_run_id="+SIXTH_TERMINAL_RUN_ID:
-      fifth?"fifth_terminal_run_id="+FIFTH_TERMINAL_RUN_ID:
-      fourth?"fourth_terminal_run_id="+FOURTH_TERMINAL_RUN_ID:
-      third?"third_terminal_run_id="+THIRD_TERMINAL_RUN_ID:
-      second?"second_terminal_run_id="+SECOND_TERMINAL_RUN_ID:
-      "terminal_run_id="+TERMINAL_RUN_ID)+"\n");
-  console.log("Verified one exact terminated historical Run; business outcome preserved");
+// #1046 one-time v22 migration: convert the reviewed, expiring native and
+// GitHub evidence into facts, never an exemption or a rewritten outcome.
+export function historicalArtifactTerminalProof(d1,priorRun,priorJobs,github,observedAt){
+  const native=verifyRecentPriorNativeProof(priorRun,priorJobs,'twelfth');
+  verifyTwelfthTerminalEvidence(d1,native,github);
+  const job=priorJobs.jobs.find(j=>j.id===RECENT_PRIOR_JOB_ID);
+  const step=job.steps.find(s=>s.name===RECENT_PROOF_STEPS.twelfth);
+  const at=Date.parse(step.completed_at);
+  const attempt=d1[3].results[0], receipt=d1[4].results[0], run=d1[0].results[0];
+  requireValid(run.instance_id===run.id&&receipt.attempt_id===attempt.attempt_id&&
+    Number.isSafeInteger(at)&&at>0&&Number.isSafeInteger(observedAt)&&observedAt>=at,
+    'historical Artifact proof identity or observation time unavailable');
+  return {instance_id:run.instance_id,status:'complete',observed_at:at,
+    historical_source:{release_run_id:priorRun.id,job_id:job.id,step:step.name},
+    github_attempts:[{attempt_id:attempt.attempt_id,repository_id:String(github.repository.id),
+      run_id:github.id,run_attempt:github.run_attempt,workflow_ref:attempt.workflow_ref,
+      head_sha:github.head_sha,conclusion:github.conclusion,observed_at:observedAt}]};
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch(e => {
-    console.error(e.message);
-    process.exitCode=1;
-  });
+// One-time conversion of historical invocation facts. The old reviewed
+// source verifies the native and logical identity; the independently
+// drained/retired Provider and complete current version inventory prove
+// that the original executor is no longer active.
+export function historicalRetiredInvocationProof(kind,d1,priorRun,priorJobs,physical,retirement,observedAt){
+  const verifiers={second:verifySecondTerminalEvidence,third:verifyThirdTerminalEvidence,
+    fourth:verifyFourthTerminalEvidence,fifth:verifyFifthTerminalEvidence,
+    sixth:verifySixthTerminalEvidence,eleventh:verifyEleventhTerminalEvidence};
+  requireValid(Object.hasOwn(verifiers,kind),'unsupported historical invocation source');
+  const recent=kind==='eleventh';
+  const native=recent?verifyRecentPriorNativeProof(priorRun,priorJobs,kind):verifyPriorNativeProof(priorRun,priorJobs);
+  const id=verifiers[kind](d1,native,physical);
+  const run=d1[0].results[0], invocation=d1[4].results[0];
+  const planRow=retirement?.plan;
+  let plan;try{plan=JSON.parse(planRow?.plan);}catch{}
+  const step=plan?.steps?.find(s=>s.id===invocation.step_id);
+  requireValid(run.instance_id===id&&planRow?.id===run.version_id&&step?.uses==='action.run'&&
+    step.with?.executor==='cloudflare'&&step.with?.provider==='weixin'&&
+    step.with?.action==='weixin.send_text'&&step.with?.contract_digest===invocation.contract_digest&&
+    (recent?invocation.source_attempt_id===invocation.invocation_id:
+      d1[3].results.some(a=>a.attempt_id===invocation.source_attempt_id&&a.step_id===step.with.input?.session_step_id)),
+    'retired invocation Plan or source identity changed');
+  const r=retirement?.run, job=retirement?.jobs?.jobs?.find(j=>j.id===126336306385);
+  const sha='4435351e107f890fe49bddd62245c3513f038ea3';
+  requireValid(r?.id===41757295850&&r.workflow_id===402376874&&r.head_sha===sha&&
+    r.head_branch==='main'&&r.event==='workflow_dispatch'&&r.run_attempt===1&&
+    r.status==='completed'&&r.conclusion==='success'&&job?.head_sha===sha&&
+    job.name==='Reviewed existing Worker upgrade or exact-version rollback'&&
+    job.status==='completed'&&job.conclusion==='success'&&[
+      'T7 verify one reviewed historical Version, frozen gate and no Native runs (no write)',
+      'T7 delete only the exact approved historical Worker Version (no retry)',
+      'T7 independently verify exactly one old Version absent, all others retained'
+    ].every(name=>job.steps?.filter(s=>s.name===name&&s.status==='completed'&&s.conclusion==='success').length===1),
+    'original protected Provider retirement proof unavailable');
+  const versions=retirement.versions, info=versions?.result_info, items=versions?.result?.items;
+  requireValid(versions?.success===true&&Array.isArray(items)&&items.length>0&&
+    info?.page===1&&info.count===items.length&&info.total_count===items.length&&
+    Number.isSafeInteger(info.per_page)&&info.per_page>=items.length&&
+    items.every(v=>typeof v.id==='string'&&v.id.length>0)&&
+    new Set(items.map(v=>v.id)).size===items.length&&
+    !items.some(v=>v.id===invocation.deployment_id),
+    'retired Provider version absent from complete inventory not proven');
+  const sourceJob=priorJobs.jobs.find(j=>j.id===(recent?RECENT_PRIOR_JOB_ID:PRIOR_RELEASE_JOB_ID));
+  const stepName=recent?RECENT_PROOF_STEPS.eleventh:PRIOR_PROOF_STEPS[['first','second','third','fourth','fifth','sixth'].indexOf(kind)];
+  const at=Date.parse(sourceJob.steps.find(s=>s.name===stepName)?.completed_at);
+  requireValid(Number.isSafeInteger(at)&&at>0&&Number.isSafeInteger(observedAt)&&observedAt>=at,
+    'historical observation time unavailable');
+  return {instance_id:id,status:'complete',observed_at:at,
+    historical_source:{release_run_id:priorRun.id,job_id:sourceJob.id,step:stepName},
+    retired_invocation:{invocation_id:invocation.invocation_id,deployment_id:invocation.deployment_id,
+      retirement_release_id:r.id,observed_at:observedAt}};
+}
+
+// Temporary migration adapter. Only callers performing the v22->v23 cutover
+// may request this historical source; the routine v23 verifier never uses it.
+export async function historicalMigrationProof(run,evidence,sources,observedAt=Date.now()){
+ const known=[
+  [TERMINAL_RUN_ID,'first',TERMINAL_SESSION_GITHUB_RUN_ID],
+  [SECOND_TERMINAL_RUN_ID,'second',SECOND_SESSION_GITHUB_RUN_ID],
+  [THIRD_TERMINAL_RUN_ID,'third',THIRD_SESSION_GITHUB_RUN_ID],
+  [FOURTH_TERMINAL_RUN_ID,'fourth',FOURTH_SESSION_GITHUB_RUN_ID],
+  [FIFTH_TERMINAL_RUN_ID,'fifth',FIFTH_SESSION_GITHUB_RUN_ID],
+  [SIXTH_TERMINAL_RUN_ID,'sixth',SIXTH_SESSION_GITHUB_RUN_ID],
+  [SEVENTH_TERMINAL_RUN_ID,'seventh',SEVENTH_TASK_GITHUB_RUN_ID],
+  [EIGHTH_MCP_RUN_ID,'eighth',null],
+  [NINTH_TERMINAL_RUN_ID,'ninth',NINTH_SESSION_GITHUB_RUN_ID],
+  [TENTH_TERMINAL_RUN_ID,'tenth',TENTH_SESSION_GITHUB_RUN_ID],
+  [ELEVENTH_TERMINAL_RUN_ID,'eleventh',null],
+  [TWELFTH_TERMINAL_RUN_ID,'twelfth',TWELFTH_GITHUB_RUN_ID],
+ ].find(([id])=>id===run.id);
+ if(!known)return null;
+ const [,kind,physicalId]=known;
+ requireValid(run.id===run.instance_id&&evidence.plan?.id===run.version_id,'historical migration Run/Plan identity changed');
+ const plan={id:evidence.plan.id,plan:JSON.stringify(evidence.plan.plan)};
+ const ordered=[...evidence.steps].sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
+ const groups=(...results)=>results.map(rows=>({success:true,results:rows}));
+ const recent=['seventh','ninth','tenth','eleventh','twelfth'].includes(kind);
+ const priorId=kind==='eighth'?41451130475:recent?RECENT_PRIOR_RELEASE_ID:PRIOR_RELEASE_ID;
+ const [prior,jobs]=await Promise.all([
+  sources.githubRun('lirtual/mcp-workers',priorId),
+  sources.githubJobs('lirtual/mcp-workers',priorId)]);
+ if(kind==='eighth')return historicalMcpNoDispatchTerminalProof(
+  groups([run],ordered,evidence.mcpFences,evidence.sessions,[plan]),prior,jobs);
+ const native=recent?verifyRecentPriorNativeProof(prior,jobs,kind):verifyPriorNativeProof(prior,jobs);
+ const physical=physicalId===null?null:await sources.githubRun('lirtual/github-actions',physicalId);
+ if(kind==='twelfth')return historicalArtifactTerminalProof(
+  groups([run],ordered,evidence.sessions,evidence.attempts,evidence.callbacks,evidence.invocations,
+   evidence.githubCancellations),prior,jobs,physical,observedAt);
+ const d1=groups([run],ordered,evidence.sessions,evidence.attempts,evidence.invocations);
+ if(['second','third','fourth','fifth','sixth','eleventh'].includes(kind)){
+  const [retired,retiredJobs,versions]=await Promise.all([
+   sources.githubRun('lirtual/cloudflare-actions',41757295850),
+   sources.githubJobs('lirtual/cloudflare-actions',41757295850),
+   sources.providerVersions()]);
+  // The eleventh original protected proof verified the exact absence of a
+  // Provider receipt; the old database is retired. Do not fabricate a new
+  // read of it. The exact successful prior step above and the independently
+  // verified retired version are the sources for this one migration fact.
+  return historicalRetiredInvocationProof(kind,d1,prior,jobs,
+   kind==='eleventh'?[]:physical,{run:retired,jobs:retiredJobs,versions,plan},observedAt);
+ }
+ if(kind==='first')verifyTerminalRunEvidence(d1.slice(0,4),native,physical);
+ else if(kind==='seventh')verifySeventhTerminalEvidence(d1,native,physical);
+ else verifySagaTerminalEvidence(d1,native,physical,kind);
+ const job=jobs.jobs.find(j=>j.id===(recent?RECENT_PRIOR_JOB_ID:PRIOR_RELEASE_JOB_ID));
+ const stepName=recent?RECENT_PROOF_STEPS[kind]:PRIOR_PROOF_STEPS[0];
+ const at=Date.parse(job.steps.find(s=>s.name===stepName)?.completed_at);
+ requireValid(Number.isSafeInteger(at)&&at>0&&Number.isSafeInteger(observedAt)&&observedAt>=at,
+  'historical observation time unavailable');
+ return {instance_id:run.instance_id,status:'complete',observed_at:at,
+  historical_source:{release_run_id:prior.id,job_id:job.id,step:stepName}};
 }
