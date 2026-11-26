@@ -989,11 +989,10 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
  invariant(Array.isArray(readyInstances)&&readyInstances.length<=row.ready_sessions&&
   (row.ready_sessions===0||readyInstances.length>0)&&readyInstances.every(id=>typeof id==='string'&&id.length>0)&&
   new Set(readyInstances).size===readyInstances.length,'Workflow Ready instance inventory incomplete');
- const proofs=[],targets=[];
+ const proofs=[];
  const collect=(projected,fact)=>{
    if(projected.run.start_state==='started'){
      proofs.push([projected.run.id,fact]);
-     targets.push([projected.run.id,projected.run]);
    }
    for(const child of projected.evidence.children)
      if(child.run.start_state==='started')
@@ -1004,7 +1003,7 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
    collect(projected,verifyWorkflowTerminalEvidence(projected.run,projected.native,projected.evidence));
  }
  return {schema,run_count:row.run_count,ready_sessions:row.ready_sessions,ready_instances:readyInstances,
-   proofs:Object.fromEntries(proofs),targets:Object.fromEntries(targets)};
+   proofs:Object.fromEntries(proofs)};
 }
 
 
@@ -1312,7 +1311,7 @@ export async function observeRelatedTaskFacts(run,native,evidence,inspect){
  return combined;
 }
 
-// I/O for the single release proof path. No payload logging or uncertain-write retry.
+// Read-only I/O for the single release proof path; never log API bodies.
 export function workflowReleaseIO(env=process.env,request=fetch){
  const account=env.CLOUDFLARE_ACCOUNT_ID,token=env.CLOUDFLARE_API_TOKEN;
  invariant(/^[a-f0-9]{32}$/i.test(account??'')&&token,'Workflow release credentials unavailable');
@@ -1341,7 +1340,7 @@ export function workflowReleaseIO(env=process.env,request=fetch){
    invariant(result.meta?.changed_db!==true&&!(result.meta?.changes>0),'Workflow evidence query unexpectedly changed D1');
    return result.results;
  };
-const observe=async run=>{
+ const observe=async run=>{
    invariant(/^[a-f0-9-]{36}$/i.test(run.instance_id),'Workflow instance identity malformed');
    const url=base+'/workflows/workflow-mcp-orchestrator/instances/'+run.instance_id;
    const response=await request(url,{redirect:'manual',headers,signal:AbortSignal.timeout(15000)});
