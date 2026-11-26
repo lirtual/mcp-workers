@@ -639,6 +639,20 @@ test('#1046 retired invocation fact is bound to a verified historical execution 
    input:{session_step_id:'openlist'}}}]})}};
  const now=Date.parse('2026-11-25T15:59:03Z');
  const proof=historicalRetiredInvocationProof('second',d1,prior,priorJobs,github,retirement,now);
+ const {historicalMigrationProof}=await import('./workflow-terminal-run-exception.mjs');
+ const calls=[];
+ const sources={
+  githubRun:async(repo,id)=>{calls.push([repo,id]);return id===prior.id?prior:id===retirement.run.id?retirement.run:github;},
+  githubJobs:async(repo,id)=>{calls.push([repo,id,'jobs']);return id===prior.id?priorJobs:retirement.jobs;},
+  providerVersions:async()=>{calls.push(['provider-versions']);return retirement.versions;}
+ };
+ const projected={...evidence,plan:{id:version,plan:JSON.parse(retirement.plan.plan)}};
+ assert.deepEqual(await historicalMigrationProof(run,projected,sources,now),proof);
+ assert.equal(calls.length,6);
+ assert.equal(await historicalMigrationProof({...run,id:'new-run'},projected,sources,now),null);
+ assert.equal(calls.length,6,'arbitrary new Runs must not consult migration-only sources');
+ await assert.rejects(()=>historicalMigrationProof(run,{...projected,plan:{...projected.plan,id:'wrong'}},sources,now),/blocked/);
+
  assert.deepEqual(verifyWorkflowTerminalEvidence(run,proof,evidence),proof);
  const {retired_invocation,...native}=proof;
  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,evidence),/terminal evidence/);

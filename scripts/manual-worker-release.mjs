@@ -1027,7 +1027,7 @@ export async function readWorkflowTerminalEvidence(query,id,{schema,observe,dept
  }
  invariant(depth===0||evidence.children.length===0,'Workflow terminal evidence projection nested child unsupported');
  evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{schema,observe,depth:depth+1})));
- const native=row.execution_terminal_proof===null?(observe&&run.start_state==='started'?await observe(run):null):parse('execution_terminal_proof');
+ const native=row.execution_terminal_proof===null?(observe&&run.start_state==='started'?await observe(run,evidence):null):parse('execution_terminal_proof');
  return {run,native,evidence};
 }
 
@@ -1086,9 +1086,33 @@ function workflowReleaseInventorySql(mode){
  )
  SELECT (SELECT count(*) FROM runs) AS run_count,
    (SELECT count(*) FROM ready) AS ready_sessions,
+   (SELECT json_group_array(instance_id) FROM (SELECT DISTINCT r.instance_id FROM ready q JOIN runs r ON r.id=q.run_id ORDER BY r.instance_id)) AS ready_instances,
    (SELECT sum(n) FROM (${orphans})) AS orphan_count,
    (SELECT count(*) FROM candidates) AS candidate_count,
    (SELECT json_group_array(id) FROM (SELECT id FROM candidates ORDER BY id)) AS candidate_ids`;
+}
+
+// Only the deployed v22 baseline and the target v23 are supported. The
+// migration registry alone does not prove that its structural effects exist.
+async function verifyTerminalReleaseSchema(query,schema){
+ const tables=['workflows','workflow_versions','runs','run_steps','callback_receipts','step_attempts',
+  'session_executions','github_action_cancellations','child_cancellations','wait_event_receipts',
+  'cloudflare_action_invocations','cloudflare_action_cancellations','runtime_approval_gates',
+  'runtime_approvals','portal_connection_auth','mcp_dispatch_fences','http_connection_auth',
+  'cloudflare_action_gate','drop_claim_receipts'];
+ const columns={runs:['native_complete_seen_at','capacity_weight','parent_run_id','parent_step_id'],
+  session_executions:['session_url','fixed_key','rca_duration_minutes'],step_attempts:['resolved_sha'],
+  workflows:['deleted_at'],child_cancellations:['termination_attempted_at']};
+ const checks=[...tables.map(t=>"(SELECT count(*) FROM sqlite_master WHERE type='table' AND name='"+t+"')=1"),
+  ...Object.entries(columns).flatMap(([t,cols])=>cols.map(c=>"(SELECT count(*) FROM pragma_table_info('"+t+"') WHERE name='"+c+"')=1")),
+  "(SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data')=0",
+  "(SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys')=1",
+  "(SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_one_awaited_child_per_step')=1",
+  "(SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='runs_top_level_capacity_guard')=1",
+  "(SELECT count(*) FROM pragma_table_info('runs') WHERE name='execution_terminal_proof' AND type='TEXT' AND [notnull]=0)="+(schema===23?1:0),
+  "(SELECT count(*) FROM pragma_table_info('runs') WHERE name='execution_terminal_proof')="+(schema===23?1:0)];
+ const rows=await query('SELECT ('+checks.join(' AND ')+') AS schema_ok',[]);
+ invariant(Array.isArray(rows)&&rows.length===1&&rows[0].schema_ok===1,'Workflow exact v'+schema+' schema structure drift');
 }
 
 /** D1 half of the release gate. Strict callers additionally prove ingress
@@ -1101,6 +1125,7 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
  invariant(selection.source===23&&(selection.applied===23||mode==='strict'&&selection.applied===22),
    'Workflow terminal evidence schema inventory unsupported');
  const schema=selection.applied;
+ await verifyTerminalReleaseSchema(query,schema);
  const rows=await query(workflowReleaseInventorySql(mode),[]);
  const row=rows?.[0];
  invariant(Array.isArray(rows)&&rows.length===1&&
@@ -1111,12 +1136,69 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
  invariant(Array.isArray(ids)&&ids.length===row.candidate_count&&
    ids.every(id=>typeof id==='string'&&id.length>0)&&new Set(ids).size===ids.length,
    'Workflow terminal evidence candidate inventory incomplete');
- const proofs=[];
+ let readyInstances;
+ try{readyInstances=JSON.parse(row.ready_instances);}catch{throw Error('Workflow Ready instance inventory malformed');}
+ invariant(Array.isArray(readyInstances)&&readyInstances.length<=row.ready_sessions&&
+  (row.ready_sessions===0||readyInstances.length>0)&&readyInstances.every(id=>typeof id==='string'&&id.length>0)&&
+  new Set(readyInstances).size===readyInstances.length,'Workflow Ready instance inventory incomplete');
+ const proofs=[],targets=[];
+ const collect=(projected,fact)=>{
+   if(projected.run.start_state==='started'){
+     proofs.push([projected.run.id,fact]);
+     targets.push([projected.run.id,projected.run]);
+   }
+   for(const child of projected.evidence.children)
+     if(child.run.start_state==='started')
+       collect(child,verifyWorkflowTerminalEvidence(child.run,child.native,child.evidence));
+ };
  for(const id of ids){
    const projected=await readWorkflowTerminalEvidence(query,id,{schema,observe});
-   proofs.push([id,verifyWorkflowTerminalEvidence(projected.run,projected.native,projected.evidence)]);
+   collect(projected,verifyWorkflowTerminalEvidence(projected.run,projected.native,projected.evidence));
  }
- return {schema,run_count:row.run_count,ready_sessions:row.ready_sessions,proofs:Object.fromEntries(proofs)};
+ return {schema,run_count:row.run_count,ready_sessions:row.ready_sessions,ready_instances:readyInstances,
+   proofs:Object.fromEntries(proofs),targets:Object.fromEntries(targets)};
+}
+
+// Only used in the authorized one-time migration window. Revalidate every
+// candidate and its identity against the prepared evidence after v23 exists,
+// then CAS the missing facts. A lost response stops immediately; a later
+// explicitly authorized forward recovery can read and skip matching facts.
+export async function backfillWorkflowTerminalProofs(query,write,prepared,sourceFiles){
+ invariant(prepared?.schema===22&&prepared.ready_sessions===0&&prepared.proofs&&prepared.targets,
+  'Workflow backfill requires verified v22 strict preparation');
+ const current=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles,
+  observe:async run=>Object.hasOwn(prepared.proofs,run.id)?prepared.proofs[run.id]:null});
+ invariant(current.schema===23,'Workflow proof backfill requires migrated v23 schema');
+ invariant(current.run_count===prepared.run_count&&current.ready_sessions===0&&
+   JSON.stringify(current.proofs)===JSON.stringify(prepared.proofs)&&
+   JSON.stringify(current.targets)===JSON.stringify(prepared.targets),
+   'Workflow execution evidence changed after preparation');
+ for(const [id,fact] of Object.entries(prepared.proofs)){
+   const r=prepared.targets[id];
+   const identity=[r.id,r.instance_id,r.version_id,r.start_state,r.outcome,r.error_code,r.updated_at];
+   const predicate='id=? AND instance_id=? AND version_id=? AND start_state=? AND outcome=? AND error_code IS ? AND updated_at=?';
+   const lookup=async()=>{
+     const rows=await query('SELECT execution_terminal_proof FROM runs WHERE '+predicate,identity);
+     invariant(Array.isArray(rows)&&rows.length===1,'Workflow backfill target changed: '+id);
+     return rows[0].execution_terminal_proof;
+   };
+   const expected=JSON.stringify(fact);
+   const existing=await lookup();
+   if(existing!==null){
+     invariant(existing===expected,'Workflow backfill proof conflict: '+id);
+     continue;
+   }
+   const changed=await write('UPDATE runs SET execution_terminal_proof=? WHERE '+predicate+
+     ' AND execution_terminal_proof IS NULL',[expected,...identity]);
+   invariant(changed===1,'Workflow backfill conditional write unconfirmed: '+id);
+   invariant(await lookup()===expected,'Workflow backfill independent readback failed: '+id);
+ }
+ const checked=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles});
+ invariant(checked.schema===23&&checked.run_count===prepared.run_count&&
+   JSON.stringify(checked.proofs)===JSON.stringify(prepared.proofs)&&
+   JSON.stringify(checked.targets)===JSON.stringify(prepared.targets),
+   'Workflow proof backfill final inventory changed');
+ return checked;
 }
 
 /**

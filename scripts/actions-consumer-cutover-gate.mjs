@@ -33,7 +33,7 @@ export function requireIngressQuiescence(value){
 export const NONTERMINAL_NATIVE_STATUSES=Object.freeze([
  'queued','running','paused','waiting','waitingForPause','rollingBack'
 ]);
-export function verifyNativeInstanceResponse(status,body){
+export function verifyNativeInstanceResponse(status,body,allowedIds=[]){
  if(!NONTERMINAL_NATIVE_STATUSES.includes(status))fail('unsupported native status');
  const info=body?.result_info;
  // An empty current page is not an empty inventory if another page exists.
@@ -45,12 +45,13 @@ export function verifyNativeInstanceResponse(status,body){
     (info?.total_count!==undefined&&(!Number.isSafeInteger(info.total_count)||info.total_count<0))||
     (info?.total_pages!==undefined&&(!Number.isSafeInteger(info.total_pages)||info.total_pages>1)))
   fail('native inventory incomplete');
- if(body.result.length!==0||info.count!==0||
-    (info.total_count!==undefined&&info.total_count!==0))
-  fail('old native Workflow instances are still '+status);
+ if((info.total_count!==undefined&&info.total_count!==body.result.length)||
+    body.result.some(item=>typeof item?.id!=='string'||!allowedIds.includes(item.id))||
+    new Set(body.result.map(item=>item.id)).size!==body.result.length)
+  fail('native Workflow instances are still '+status+' outside the reviewed Ready exception');
  return true;
 }
-export async function checkNativeWorkflowDrain(account,headers,fetcher=fetch){
+export async function checkNativeWorkflowRelease(account,headers,allowedIds,fetcher=fetch){
  for(const status of NONTERMINAL_NATIVE_STATUSES){
   const url=new URL('https://api.cloudflare.com/client/v4/accounts/'+account+
    '/workflows/workflow-mcp-orchestrator/instances');
@@ -58,9 +59,13 @@ export async function checkNativeWorkflowDrain(account,headers,fetcher=fetch){
   url.searchParams.set('per_page','100');
   const res=await fetcher(url,{redirect:'manual',headers,signal:AbortSignal.timeout(15000)});
   if(!res.ok)fail('native status inventory request failed');
-  verifyNativeInstanceResponse(status,await res.json());
+  verifyNativeInstanceResponse(status,await res.json(),allowedIds);
  }
  return true;
+}
+
+export function checkNativeWorkflowDrain(account,headers,fetcher=fetch){
+ return checkNativeWorkflowRelease(account,headers,[],fetcher);
 }
 
 async function main(){

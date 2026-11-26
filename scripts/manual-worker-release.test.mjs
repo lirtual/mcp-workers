@@ -1928,3 +1928,41 @@ test('#1046 release inventory selects actual unresolved evidence, not historical
   await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/inventory|prefix/);
  }finally{db.close();}
 });
+
+test('#1046 once-only v22 to v23 proof backfill preserves outcomes and resumes after a lost write receipt',async()=>{
+ const {verifyWorkflowReleaseInventory,backfillWorkflowTerminalProofs}=await import('./manual-worker-release.mjs');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  db.exec('CREATE TABLE d1_migrations(name TEXT NOT NULL UNIQUE)');
+  const migrate=name=>{db.exec(readFileSync(new URL(name,dir),'utf8'));db.prepare('INSERT INTO d1_migrations VALUES(?)').run(name);};
+  for(const file of files.slice(0,22))migrate(file);
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.exec("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d','{\"steps\":[]}',1)");
+  for(const id of ['a','b']){
+   db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at) VALUES(?,'wf','v',?,'d','{}','started','indeterminate','execution_interrupted',1,2)").run(id,id);
+   db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'emit','indeterminate',2)").run(id);
+  }
+  const snapshot=db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all();
+  const stepSnapshot=db.prepare("SELECT * FROM run_steps ORDER BY run_id").all();
+  const query=async(sql,params=[])=>db.prepare(sql).all(...params);
+  const prep=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles:files,observe:async r=>({instance_id:r.instance_id,status:'complete',observed_at:1000})});
+  assert.equal(prep.schema,22);
+  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('write before migration');},prep,files),/schema/);
+  migrate(files.at(-1));
+  let writes=0;
+  const interrupted=async(sql,params)=>{writes++;db.prepare(sql).run(...params);throw Error('lost write receipt');};
+  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,interrupted,prep,files),/lost write receipt/);
+  assert.equal(writes,1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM runs WHERE execution_terminal_proof IS NOT NULL").get().n,1);
+  const resumed=await backfillWorkflowTerminalProofs(query,async(sql,params)=>{writes++;return Number(db.prepare(sql).run(...params).changes);},prep,files);
+  assert.equal(writes,2,'confirmed existing proof must not be written again');
+  assert.equal(resumed.schema,23);
+  assert.deepEqual(db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all(),snapshot);
+  assert.deepEqual(db.prepare("SELECT * FROM run_steps ORDER BY run_id").all(),stepSnapshot);
+  assert.deepEqual((await verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,observe:async()=>{throw Error('history is retired');}})).proofs,prep.proofs);
+  db.exec("UPDATE runs SET execution_terminal_proof=NULL,updated_at=3 WHERE id='b'");
+  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('must not write changed state');},prep,files),/changed/);
+ }finally{db.close();}
+});

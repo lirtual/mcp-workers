@@ -1,3 +1,4 @@
+import {EIGHTH_MCP_RUN_ID,historicalMcpNoDispatchTerminalProof} from './workflow-mcp-no-dispatch-proof.mjs';
 import { readFile, appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
@@ -664,6 +665,66 @@ export function historicalRetiredInvocationProof(kind,d1,priorRun,priorJobs,phys
     historical_source:{release_run_id:priorRun.id,job_id:sourceJob.id,step:stepName},
     retired_invocation:{invocation_id:invocation.invocation_id,deployment_id:invocation.deployment_id,
       retirement_release_id:r.id,observed_at:observedAt}};
+}
+
+// Temporary migration adapter. Only callers performing the v22->v23 cutover
+// may request this historical source; the routine v23 verifier never uses it.
+export async function historicalMigrationProof(run,evidence,sources,observedAt=Date.now()){
+ const known=[
+  [TERMINAL_RUN_ID,'first',TERMINAL_SESSION_GITHUB_RUN_ID],
+  [SECOND_TERMINAL_RUN_ID,'second',SECOND_SESSION_GITHUB_RUN_ID],
+  [THIRD_TERMINAL_RUN_ID,'third',THIRD_SESSION_GITHUB_RUN_ID],
+  [FOURTH_TERMINAL_RUN_ID,'fourth',FOURTH_SESSION_GITHUB_RUN_ID],
+  [FIFTH_TERMINAL_RUN_ID,'fifth',FIFTH_SESSION_GITHUB_RUN_ID],
+  [SIXTH_TERMINAL_RUN_ID,'sixth',SIXTH_SESSION_GITHUB_RUN_ID],
+  [SEVENTH_TERMINAL_RUN_ID,'seventh',SEVENTH_TASK_GITHUB_RUN_ID],
+  [EIGHTH_MCP_RUN_ID,'eighth',null],
+  [NINTH_TERMINAL_RUN_ID,'ninth',NINTH_SESSION_GITHUB_RUN_ID],
+  [TENTH_TERMINAL_RUN_ID,'tenth',TENTH_SESSION_GITHUB_RUN_ID],
+  [ELEVENTH_TERMINAL_RUN_ID,'eleventh',null],
+  [TWELFTH_TERMINAL_RUN_ID,'twelfth',TWELFTH_GITHUB_RUN_ID],
+ ].find(([id])=>id===run.id);
+ if(!known)return null;
+ const [,kind,physicalId]=known;
+ requireValid(run.id===run.instance_id&&evidence.plan?.id===run.version_id,'historical migration Run/Plan identity changed');
+ const plan={id:evidence.plan.id,plan:JSON.stringify(evidence.plan.plan)};
+ const ordered=[...evidence.steps].sort((a,b)=>a.step_id<b.step_id?-1:a.step_id>b.step_id?1:0);
+ const groups=(...results)=>results.map(rows=>({success:true,results:rows}));
+ const recent=['seventh','ninth','tenth','eleventh','twelfth'].includes(kind);
+ const priorId=kind==='eighth'?41451130475:recent?RECENT_PRIOR_RELEASE_ID:PRIOR_RELEASE_ID;
+ const [prior,jobs]=await Promise.all([
+  sources.githubRun('lirtual/mcp-workers',priorId),
+  sources.githubJobs('lirtual/mcp-workers',priorId)]);
+ if(kind==='eighth')return historicalMcpNoDispatchTerminalProof(
+  groups([run],ordered,evidence.mcpFences,evidence.sessions,[plan]),prior,jobs);
+ const native=recent?verifyRecentPriorNativeProof(prior,jobs,kind):verifyPriorNativeProof(prior,jobs);
+ const physical=physicalId===null?null:await sources.githubRun('lirtual/github-actions',physicalId);
+ if(kind==='twelfth')return historicalArtifactTerminalProof(
+  groups([run],ordered,evidence.sessions,evidence.attempts,evidence.callbacks,evidence.invocations,
+   evidence.githubCancellations),prior,jobs,physical,observedAt);
+ const d1=groups([run],ordered,evidence.sessions,evidence.attempts,evidence.invocations);
+ if(['second','third','fourth','fifth','sixth','eleventh'].includes(kind)){
+  const [retired,retiredJobs,versions]=await Promise.all([
+   sources.githubRun('lirtual/cloudflare-actions',41757295850),
+   sources.githubJobs('lirtual/cloudflare-actions',41757295850),
+   sources.providerVersions()]);
+  // The eleventh original protected proof verified the exact absence of a
+  // Provider receipt; the old database is retired. Do not fabricate a new
+  // read of it. The exact successful prior step above and the independently
+  // verified retired version are the sources for this one migration fact.
+  return historicalRetiredInvocationProof(kind,d1,prior,jobs,
+   kind==='eleventh'?[]:physical,{run:retired,jobs:retiredJobs,versions,plan},observedAt);
+ }
+ if(kind==='first')verifyTerminalRunEvidence(d1.slice(0,4),native,physical);
+ else if(kind==='seventh')verifySeventhTerminalEvidence(d1,native,physical);
+ else verifySagaTerminalEvidence(d1,native,physical,kind);
+ const job=jobs.jobs.find(j=>j.id===(recent?RECENT_PRIOR_JOB_ID:PRIOR_RELEASE_JOB_ID));
+ const stepName=recent?RECENT_PROOF_STEPS[kind]:PRIOR_PROOF_STEPS[0];
+ const at=Date.parse(job.steps.find(s=>s.name===stepName)?.completed_at);
+ requireValid(Number.isSafeInteger(at)&&at>0&&Number.isSafeInteger(observedAt)&&observedAt>=at,
+  'historical observation time unavailable');
+ return {instance_id:run.instance_id,status:'complete',observed_at:at,
+  historical_source:{release_run_id:prior.id,job_id:job.id,step:stepName}};
 }
 
 async function main() {

@@ -39,6 +39,13 @@ test('native Workflow drain gate fails closed for live or incomplete status inve
   ])assert.throws(()=>verifyNativeInstanceResponse(status,value),/blocked/);
  }
 });
+test('compatible native inventory permits only exact Ready instance IDs',()=>{
+ const active={success:true,result:[{id:'ready-instance'}],result_info:{count:1,total_count:1}};
+ assert.equal(verifyNativeInstanceResponse('running',active,['ready-instance']),true);
+ assert.throws(()=>verifyNativeInstanceResponse('running',active,[]),/blocked/);
+ assert.throws(()=>verifyNativeInstanceResponse('running',active,['other-instance']),/blocked/);
+ assert.throws(()=>verifyNativeInstanceResponse('running',{...active,result_info:{...active.result_info,total_count:2}},['ready-instance']),/blocked/);
+});
 test('native preflight queries all nonterminal states; no deployment or mutation',async()=>{
  const requests=[];
  const fakeFetch=async url=>{
