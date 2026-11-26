@@ -1353,7 +1353,7 @@ test('production release external actions use immutable commit SHAs', () => {
   }
 });
 
-test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup requires negative readback', () => {
+test('Workflow ordinary readback rejects retired Secret bindings', () => {
   const required=['MCP_ACCESS_TOKEN','WORKFLOW_MCP_PORTAL_CLIENT_SECRET',
     'WORKFLOW_GITHUB_DISPATCH_TOKEN'];
   const secrets=required.map(name=>({name}));
@@ -1368,17 +1368,16 @@ test('Spec 733: Workflow migration may retain only reviewed old Secrets, cleanup
   const wrap=x=>({bindings:x,observability:{enabled:true,logs:{invocation_logs:true}}});
   const inventory=[...bindings,...old.map(name=>({name,type:'secret_text'}))];
   const listed=[...secrets,...old.map(name=>({name}))];
-  assert.equal(verifyBindings('workflow-mcp-worker',wrap(inventory),listed,{mode:'readback',expectedWorkflowIdentity:executorIdentity}),true);
   assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap(inventory),listed,
-    {mode:'readback',expectedWorkflowIdentity:executorIdentity,cleanupVerified:true}),/Legacy Secret cleanup not complete/);
+    {mode:'readback',expectedWorkflowIdentity:executorIdentity}),/Unexpected runtime Secret/);
   assert.equal(verifyBindings('workflow-mcp-worker',wrap(bindings),secrets,
-    {mode:'readback',expectedWorkflowIdentity:executorIdentity,cleanupVerified:true}),true);
+    {mode:'readback',expectedWorkflowIdentity:executorIdentity}),true);
   assert.throws(()=>verifyBindings('workflow-mcp-worker',wrap([...bindings,
     {name:'UNREVIEWED_SECRET',type:'secret_text'}]),[...secrets,{name:'UNREVIEWED_SECRET'}],
     {mode:'readback',expectedWorkflowIdentity:executorIdentity}),/Unexpected runtime Secret/);
 });
 
-test('Spec 733 Database cleanup readback is exact and does not narrow normal migration readback', () => {
+test('Database ordinary readback accepts only current Secret contracts', () => {
   const worker='database-mcp-worker';
   const config=readConfiguration(worker,readFileSync('apps/database-mcp-worker/wrangler.jsonc','utf8'));
   const catalog=JSON.stringify({
@@ -1393,11 +1392,11 @@ test('Spec 733 Database cleanup readback is exact and does not narrow normal mig
     {name:'RATE_LIMITER',type:'ratelimit',namespace_id:'1001',simple:{limit:120,period:60}}];
   const wrap=items=>({bindings:items,observability:{enabled:true,logs:{invocation_logs:true}}});
   const listed=secretNames.map(name=>({name}));
-  const options={mode:'readback',cleanupVerified:true,sourceConfig:config,databaseConnections:catalog,
+  const options={mode:'readback',sourceConfig:config,databaseConnections:catalog,
     databaseVariables:{DB_HOST:'db.example.invalid'},expectedDatabaseLimits:limits};
   assert.equal(verifyBindings(worker,wrap(bindings),listed,options),true);
   assert.throws(()=>verifyBindings(worker,wrap([...bindings,{name:'DATABASE_ENCRYPTION_KEY',type:'secret_text'}]),
-    [...listed,{name:'DATABASE_ENCRYPTION_KEY'}],options),/Legacy Secret cleanup/);
+    [...listed,{name:'DATABASE_ENCRYPTION_KEY'}],options),/Unexpected runtime Secret/);
   assert.throws(()=>verifyBindings(worker,wrap([...bindings,{name:'DATABASE_CONFIG',type:'secret_text'}]),
     [...listed,{name:'DATABASE_CONFIG'}],options),/Unexpected runtime Secret/);
   assert.throws(()=>verifyBindings(worker,wrap(bindings.map(binding=>binding.name==='DB_HOST'?{...binding,text:'changed'}:binding)),listed,options),/reference Variable/);
@@ -1406,7 +1405,7 @@ test('Spec 733 Database cleanup readback is exact and does not narrow normal mig
     listed.filter(secret=>secret.name!=='DATABASE_B2B_PASSWORD'),options),/named Secret is missing/);
   const ordinary=[...listed,{name:'DATABASE_CONFIG'}];
   const ordinaryBindings=[...bindings,{name:'DATABASE_CONFIG',type:'secret_text'}];
-  assert.equal(verifyBindings(worker,wrap(ordinaryBindings),ordinary,{...options,cleanupVerified:false}),true);
+  assert.throws(()=>verifyBindings(worker,wrap(ordinaryBindings),ordinary,options),/Unexpected runtime Secret/);
 });
 
 test('Workflow intentional executor migration preserves old baseline but requires exactly the new identity at readback', () => {

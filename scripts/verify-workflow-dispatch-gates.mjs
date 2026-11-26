@@ -23,7 +23,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true && inputs.legacy_secret_cleanup_mode == 'none' && inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -128,8 +128,8 @@ for (const clause of [
 ]) assert.ok(deploy.gate.includes(clause), 'Unsafe production release: ' + clause);
 assert.ok(RELEASE_WORKERS.every(worker => APPLICATIONS.includes(worker)), 'Releasable Worker missing from CI applications');
 const dispatchInputs = release.slice(release.indexOf('    inputs:'),release.indexOf('\npermissions:'));
-assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 18,
-  'Release workflow_dispatch must have exactly eighteen reviewed inputs');
+assert.ok([...dispatchInputs.matchAll(/^      [a-z][a-z0-9_]*:$/gm)].length === 10,
+  'Release workflow_dispatch must have exactly ten reviewed inputs');
 // Spec #804: this additional protected Runner entry is strictly GET-only.
 assert.match(release, /      browser_access_readonly:\n        description:[^\n]+\n        required: false\n        type: boolean\n        default: false/);
 assert.ok(deploy.gate.includes('inputs.browser_access_readonly != true'),
@@ -139,8 +139,6 @@ for (const clause of [
   "github.event_name == 'workflow_dispatch'", "github.actor == 'lirtual'",
   "github.ref == 'refs/heads/main'", "inputs.worker == 'browser-mcp-worker'",
   'inputs.browser_access_readonly == true', 'inputs.deploy_to_production == false',
-  "inputs.legacy_secret_cleanup_mode == 'none'",
-  'inputs.uu_session_secret_cleanup != true','inputs.uu_cleanup_approved != true',
   "needs.checks.result == 'success'",
   "needs.checks.outputs.release_ready == 'true'",
 ]) assert.ok(accessProbe.gate.includes(clause),'Browser GET-only gate missing: '+clause);
@@ -155,80 +153,19 @@ assert.doesNotMatch(accessProbe.content, /wrangler|secret (?:put|delete|set)|(?:
 
 // Spec #804 read-only intent excludes all mutation-capable jobs.
 for(const name of [
-  'deploy','workflow-actions-migration-prepare','workflow-actions-gate-reopen',
-  'workflow-uu-table-retirement','legacy-secret-cleanup'
+  'deploy','workflow-actions-migration-prepare','workflow-actions-gate-reopen'
 ]) assert.ok(job(release,name).gate.includes('inputs.browser_access_readonly != true'),
   'Browser read-only intent could reach mutating job: '+name);
 
-// never the ordinary deploy or the legacy Actions D1/gate mutation jobs.
-assert.ok(deploy.gate.includes('inputs.uu_session_secret_cleanup != true'),
-  'UU Secret request must be fenced from ordinary production deploy');
-for(const name of ['workflow-actions-migration-prepare','workflow-actions-gate-reopen']){
-  const other=job(release,name);
-  assert.ok(other.gate.includes('inputs.uu_session_secret_cleanup != true'),
-    'UU Secret request must be fenced from '+name);
-}
-// Spec #774: one-table D1 retirement is a distinct job; generic migration guards are not changed.
-const uu = job(release, 'workflow-uu-table-retirement');
-for (const rule of [
-  "github.actor == 'lirtual'", "github.ref == 'refs/heads/main'",
-  'inputs.uu_cleanup_approved == true', 'inputs.deploy_to_production == false',
-  'inputs.workflow_code_only != true', "inputs.legacy_secret_cleanup_mode == 'none'",
-  "needs.checks.result == 'success'", "needs.checks.outputs.release_ready == 'true'",
-]) assert.ok(uu.gate.includes(rule), 'Missing isolated table-cleanup gate: '+rule);
-for(const needle of [
-  'group: worker-release-workflow-mcp-worker', 'cancel-in-progress: false',
-  'workflow-uu-cleanup-gate.mjs before','workflow-uu-cleanup-gate.mjs after',
-  'wrangler d1 migrations apply workflow-mcp-db --remote',
-])assert.ok(uu.content.includes(needle),'UU table retirement missing: '+needle);
-assert.doesNotMatch(uu.content,/wrangler (?:deploy|versions deploy)|gh secret delete/);
-assert.ok(deploy.gate.includes('inputs.uu_cleanup_approved != true'),
-  'Generic Worker deployment could overlap with isolated UU cleanup');
+// Completed destructive migrations must not regain a special publisher.
+assert.doesNotMatch(release,/^  (?:workflow-uu-table-retirement|legacy-secret-cleanup):/m);
 assert.ok(release.includes('Prevent normal Workflow release from applying pending UU DROP') &&
   release.includes('Block legacy Actions migration preparation with staged destructive 0021'),
-  'Unapproved generic D1 migration caller could apply 0021');
-const cleanup = job(release, 'legacy-secret-cleanup');
-assert.ok(deploy.gate.includes("inputs.legacy_secret_cleanup_mode == 'none'"),
-  'Normal Worker release must exclude the legacy cleanup operation');
-for (const clause of [
-  "github.event_name == 'workflow_dispatch'",
-  "github.ref == 'refs/heads/main'",
-  "github.actor == 'lirtual'",
-  'inputs.deploy_to_production == true',
-  "needs.checks.result == 'success'",
-  "needs.checks.outputs.release_ready == 'true'",
-  "inputs.legacy_secret_cleanup_mode == 'prepare'",
-  "inputs.legacy_secret_cleanup_mode == 'publish'",
-  'inputs.workflow_code_only != true',
-  "inputs.legacy_secret_cleanup_mode == 'restore'",
-  "inputs.worker == 'workflow-mcp-worker'",
-  'inputs.uu_session_secret_cleanup == true',
-]) assert.ok(cleanup.gate.includes(clause), 'Unsafe legacy cleanup gate: ' + clause);
-for (const item of [
-  'group: worker-release-', 'cancel-in-progress: false',
-  'legacy_cleanup_expected_sha', 'legacy_cleanup_expected_active_version',
-  'legacy_cleanup_candidate_version', 'wrangler versions secret bulk',
-  'wrangler versions deploy', 'legacy-secret-cleanup.mjs preflight',
-  'legacy-secret-cleanup.mjs candidate', 'manual-worker-release.mjs cleanup-readback',
-]) assert.ok(cleanup.content.includes(item), 'Missing legacy cleanup safeguard: ' + item);
-// Spec #774 reuses the same protected two-phase job. Only a flagged
-// workflow-mcp-worker Prepare may remove the one canonical runtime UU key.
-for (const required of [
-  'uu_session_secret_cleanup:', 'UU_SESSION_SECRET_CLEANUP:',
-  "if [[ \"$UU_SESSION_SECRET_CLEANUP\" == 'true' ]]",
-  'scripts/workflow-uu-secret-cleanup.mjs preflight',
-  'scripts/workflow-uu-secret-cleanup.mjs candidate',
-  'scripts/workflow-uu-secret-cleanup.mjs readback',
-  'scripts/workflow-uu-secret-cleanup.mjs restore-preflight',
-  'scripts/workflow-uu-secret-cleanup.mjs restore-readback',
-  'WORKFLOW_SESSION_RUNTIME_DATA_KEY\":null',
-]) assert.ok(release.includes(required),'Missing scoped UU Secret retirement: '+required);
+  'Retired destructive migration must not be replayed');
 assert.ok(!release.slice(release.indexOf('      - name: Stage selected Worker Secrets for every release'),
   release.indexOf('      - name: Stage approved Worker variables'))
   .includes('secrets.SESSION_RUNTIME_DATA_KEY'),
   'ordinary Worker release may not re-upload the retired UU Secret');
-assert.doesNotMatch(cleanup.content,/pnpm exec wrangler secret delete|pnpm exec wrangler deploy .*--secrets-file|gh secret (?:set|delete)/,
-  'Legacy cleanup must not bypass the protected two-phase release path');
 const prepare = job(release, 'workflow-actions-migration-prepare');
 assert.ok(prepare.gate.includes("inputs.actions_migration_prepare == true")&&
   prepare.gate.includes("inputs.deploy_to_production == false")&&

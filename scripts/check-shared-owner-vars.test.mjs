@@ -12,11 +12,11 @@ test('release owner values equal the independent no-Environment CI source',()=>{
   assert.throws(()=>verifySharedOwnerVars('ssh-mcp-worker',env),/Unsupported/);
 });
 
-test('Repository source is captured outside the selected Worker Environment and compared before staging',async()=>{
+test('Repository source is captured and compared before staging',async()=>{
   const {readFileSync}=await import('node:fs');
   const ci=readFileSync(new URL('../.github/workflows/ci.yml',import.meta.url),'utf8');
   const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
-  const capture=ci.split('      - name: Capture Repository Owner values before entering a Worker Environment\n')[1]
+  const capture=ci.split('      - name: Capture Repository Owner values\n')[1]
     ?.split('\n      - name:')[0];
   assert.ok(capture);
   assert.match(capture,/github\.ref == 'refs\/heads\/main'/);

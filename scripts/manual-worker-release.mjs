@@ -27,13 +27,6 @@ export const REQUIRED_SECRETS = {
   "github-actions-mcp-worker": ["MCP_ACCESS_TOKEN", "ACTIONS_GITHUB_DISPATCH_TOKENS"],
   "workflow-mcp-worker": ["MCP_ACCESS_TOKEN", "WORKFLOW_MCP_PORTAL_CLIENT_SECRET", "WORKFLOW_GITHUB_DISPATCH_TOKEN"],
 };
-// Wrangler retains omitted secret_text bindings after a normal release.
-// These exact old names may coexist until separately approved cleanup.
-export const MIGRATION_LEGACY_SECRETS = Object.freeze({
-  "database-mcp-worker": ["DATABASE_ENCRYPTION_KEY", "DATABASE_KEY_ID", "DATABASE_GITHUB_ACTIONS_TOKEN", "DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID", "DATABASE_CONFIG"],
-  "ssh-mcp-worker": ["ENCRYPTION_KEY"],
-  "workflow-mcp-worker": ["MCP_PORTAL_CLIENT_SECRET", "SESSION_RUNTIME_DATA_KEY"],
-});
 // The pre-migration Database runtime defaults are part of the original-value
 // contract. A missing legacy Variable means its deployed value was this default.
 const DATABASE_LIMIT_MIGRATION = Object.freeze({
@@ -122,7 +115,6 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
   invariant(secretNames.size === secrets.length &&
     new Set(bindings.map(b => b.name)).size === bindings.length,
     "Duplicate runtime binding or Secret name");
-  const oldSecrets = MIGRATION_LEGACY_SECRETS[worker] ?? [];
   for (const name of REQUIRED_SECRETS[worker]) {
     // On preflight a missing runtime Secret can be repaired from GitHub.
     // The unconditional Secrets staging step fails closed before deployment.
@@ -493,22 +485,18 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   if (options.mode === "readback" && ["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker)) {
-    const cleanupLegacy = worker === "database-mcp-worker"
-      ? ["DATABASE_ENCRYPTION_KEY", "DATABASE_GITHUB_ACTIONS_TOKEN", "DATABASE_KEY_ID"] : oldSecrets;
     const workflowDropSecrets = worker === "workflow-mcp-worker"
       ? ["WORKFLOW_GITHUB_DROP_PUBLIC_KEY", "WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY"] : [];
-    const allowedSecrets = new Set([...REQUIRED_SECRETS[worker], ...(options.cleanupVerified ? cleanupLegacy : oldSecrets),
+    const allowedSecrets = new Set([...REQUIRED_SECRETS[worker],
       ...workflowDropSecrets,
-      ...(worker === "database-mcp-worker" ? references.secrets : []),
-      ...(worker === "database-mcp-worker" && !options.cleanupVerified ? ["DATABASE_ENCRYPTION_PREVIOUS_KEY", "DATABASE_PREVIOUS_KEY_ID"] : [])]);
+      ...(worker === "database-mcp-worker" ? references.secrets : [])]);
     invariant(secrets.every(b => allowedSecrets.has(b.name) && !!find(b.name, "secret_text")) &&
       bindings.filter(b => b.type === "secret_text").every(b => allowedSecrets.has(b.name)),
       "Unexpected runtime Secret name or type after publication");
     if (workflowDropSecrets.some(name => secretNames.has(name) || bindings.some(binding => binding.name === name)))
       invariant(workflowDropSecrets.every(name => secretNames.has(name) && !!find(name, "secret_text")),
         "Workflow Drop Secrets must be a complete pair");
-    if (options.cleanupVerified) invariant(!cleanupLegacy.some(name => secretNames.has(name) ||
-      !!find(name, "secret_text")), "Legacy Secret cleanup not complete");
+
   }
   return true;
 }
@@ -1349,7 +1337,7 @@ export function verifyBrowserPrepublicationCandidate(previous, observed, discove
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  invariant(["preflight", "readback", "identity-recheck", "cleanup-readback", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
+  invariant(["preflight", "readback", "identity-recheck", "version", "diagnostic", "d1-check", "migration-sql", "migration-check", "code-release-check"].includes(mode), "Unknown release validation mode");
   if (mode === "migration-sql") {
     invariant(worker === "workflow-mcp-worker", "Migration SQL restricted to Workflow");
     console.log(reviewedTerminalRunSql(WORKFLOW_MIGRATION_READINESS_SQL));
@@ -1414,39 +1402,6 @@ async function main() {
     invariant(sourceConfig.routes?.length === 1 && sourceConfig.routes[0].custom_domain === true &&
       sourceConfig.routes[0].pattern === "browser.lirtual.dpdns.org",
       "Browser release blocked: reviewed dedicated Custom Domain is not configured");
-  }
-  if (mode === "cleanup-readback") {
-    invariant(["database-mcp-worker", "ssh-mcp-worker", "workflow-mcp-worker"].includes(worker),
-      "Legacy cleanup readback Worker is not enabled");
-    invariant(account && token && sourceSha && process.env.EXPECTED_VERSION_ID &&
-      process.env.GITHUB_REPOSITORY === "lirtual/mcp-workers" &&
-      process.env.GITHUB_REF === "refs/heads/main" && process.env.GITHUB_ACTOR === "lirtual",
-      "Required cleanup readback environment missing");
-    if (worker === "workflow-mcp-worker") invariant(
-      process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID &&
-      process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY && process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN,
-      "Required Workflow cleanup readback identity inputs missing");
-    if (worker === "database-mcp-worker") invariant(
-      process.env.DATABASE_CONNECTIONS && process.env.DB_HOST !== undefined,
-      "Required Database cleanup readback catalog inputs missing");
-    // Cloudflare GET inventory only. No Wrangler, write endpoint, or release-state mutation.
-    const observed = await current(account, worker, token, {
-      mode: "readback", cleanupVerified: true, sourceConfig,
-      expectedWorkflowPortalClientId: process.env.WORKFLOW_MCP_PORTAL_CLIENT_ID,
-      expectedWorkflowIdentity: worker==="workflow-mcp-worker"
-        ? await verifyWorkflowGitHubExecutor(process.env.WORKFLOW_GITHUB_ACTION_REPOSITORY,
-            process.env.WORKFLOW_GITHUB_DISPATCH_TOKEN) : undefined,
-      ...(worker === "database-mcp-worker" ? {
-        databaseConnections: process.env.DATABASE_CONNECTIONS,
-        databaseVariables: { DB_HOST: process.env.DB_HOST },
-        expectedDatabaseLimits: expectedDatabaseLimits(sourceConfig, process.env),
-      } : {}),
-    });
-    invariant(observed.version_id === process.env.EXPECTED_VERSION_ID,
-      "Legacy cleanup active Worker version differs from reviewed version");
-    console.log("Legacy Secret cleanup readback PASS: " + worker +
-      "; version=" + observed.version_id + "; no old Secrets remain");
-    return;
   }
   invariant(account && token && statePath && sourceSha, "Required release environment missing");
   if(mode==="identity-recheck")
