@@ -1760,6 +1760,17 @@ test('#1046 independently verified child closure and Saga cancellation do not re
    {...e,children:[{run:child,native:cp,evidence:{...ce,callbacks:[{run_id:'child',notification_delivered:0}]}}]},
    {...e,childCancellations:[{...e.childCancellations[0],child_run_id:'wrong'}]},
  ])assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,bad),/terminal evidence/);
+ const cancelledChild={...child,start_state:'cancelled_before_start',outcome:'cancelled',error_code:'cancelled_before_start'};
+ const prestart={...e,children:[{run:cancelledChild,native:null,evidence:empty}],childCancellations:[]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,prestart),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,{...prestart,children:[{run:cancelledChild,native:null,evidence:ce}]}),/terminal evidence/);
+ const detached={...child,start_state:'reserved',outcome:'failed',error_code:'detached_parent_not_active'};
+ const detachedPlan={...e.plan,plan:{steps:[{...e.plan.plan.steps[0],with:{...e.plan.plan.steps[0].with,mode:'detached'}}]}};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,{...prestart,plan:detachedPlan,children:[{run:detached,native:null,evidence:empty}]}),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,{...prestart,children:[{run:detached,native:null,evidence:empty}]}),/terminal evidence/);
+ const physicalChild={...child,start_state:'cancelled',outcome:'cancelled',updated_at:900};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(parent,native,{...e,children:[{run:physicalChild,native:null,evidence:ce}]}),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,{...e,childCancellations:[],children:[{run:physicalChild,native:null,evidence:ce}]}),/terminal evidence/);
  const saga={...empty,plan:{id:'pv',plan:{saga:{on:['failure']},saga_compensation_approved:true,
    steps:[{id:'session',uses:'github.run',with:{action:{type:'session'}},compensate:{kind:'github.session.cancel'}}]}},
    steps:[{run_id:'parent',step_id:'session',status:'succeeded'},{run_id:'parent',step_id:'__saga_session',status:'requested'}],
@@ -1864,5 +1875,56 @@ test('#1046 real D1 projection binds immutable Plan and callback to their owning
   // Deliberately corrupt only the isolated fixture to challenge the join.
   db.exec("PRAGMA foreign_keys=OFF; UPDATE workflow_versions SET workflow_id='other-owner' WHERE id='v'");
   await assert.rejects(()=>readWorkflowTerminalEvidence(query,'r',{schema:23}),/projection/);
+ }finally{db.close();}
+});
+
+test('#1046 release inventory selects actual unresolved evidence, not historical IDs or every settled Run',async()=>{
+ const {verifyWorkflowReleaseInventory}=await import('./manual-worker-release.mjs');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  db.exec('CREATE TABLE d1_migrations(name TEXT NOT NULL UNIQUE)');
+  for(const name of files){
+   db.exec(readFileSync(new URL(name,dir),'utf8'));
+   db.prepare('INSERT INTO d1_migrations VALUES(?)').run(name);
+  }
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)")
+   .run(JSON.stringify({steps:[{id:'session',uses:'github.run',with:{action:{type:'session'}}}]}));
+  const add=(id,outcome,proof=null)=>{
+   db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at,execution_terminal_proof) VALUES(?,'wf','v',?,'d','{}','started',?,1,2,?)")
+    .run(id,id,outcome,proof?JSON.stringify(proof):null);
+   db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'session',?,2)").run(id,outcome==='indeterminate'?'indeterminate':'succeeded');
+  };
+  for(let i=0;i<400;i++)add('settled-'+i,'succeeded');
+  const fact={instance_id:'arbitrary-new-unknown',status:'complete',observed_at:1000};
+  add(fact.instance_id,'indeterminate',fact);
+  add('ready','succeeded');
+  db.exec("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES('a','ready','session','github.action','d1','claimed','owner/repo','1','owner/repo/.github/workflows/test.yml@refs/heads/main','refs/heads/main',1,1,1,1,1,2)");
+  db.exec("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at) VALUES('ready','session',1,'ready',1,2)");
+  const seen=[];
+  const query=async(sql,params=[])=>{seen.push({sql,params});return db.prepare(sql).all(...params);};
+  const result=await verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,
+   observe:async()=>{throw Error('unexpected external observation');}});
+  assert.equal(result.schema,23);assert.equal(result.run_count,402);assert.equal(result.ready_sessions,1);
+  assert.deepEqual(Object.keys(result.proofs),[fact.instance_id]);
+  assert.deepEqual(result.proofs[fact.instance_id],fact);
+  assert.equal(seen.filter(q=>q.params.includes(fact.instance_id)).length,1);
+  assert(!seen.some(q=>q.params.some(p=>String(p).startsWith('settled-'))));
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles:files}),/terminal evidence/);
+  // Model a corrupt/imported physical identity in this isolated fixture.
+  db.exec("PRAGMA ignore_check_constraints=ON; UPDATE step_attempts SET owner_run_id=2 WHERE attempt_id='a'; PRAGMA ignore_check_constraints=OFF");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/terminal evidence/);
+  db.exec("UPDATE step_attempts SET owner_run_id=1,state='cancelled' WHERE attempt_id='a'; UPDATE session_executions SET state='terminated' WHERE run_id='ready'");
+  assert.equal((await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles:files})).ready_sessions,0);
+  db.exec("UPDATE run_steps SET status='cancelled',error_code='unexpected' WHERE run_id='arbitrary-new-unknown'");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/cancelled Step/);
+  db.exec("UPDATE run_steps SET status='indeterminate',error_code=NULL WHERE run_id='arbitrary-new-unknown'");
+  db.exec("UPDATE runs SET execution_terminal_proof=NULL WHERE id='arbitrary-new-unknown'");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/terminal evidence/);
+  assert.deepEqual((await verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,observe:async()=>fact})).proofs[fact.instance_id],fact);
+  db.exec("DELETE FROM d1_migrations WHERE name='0022_drop_claim_receipts.sql'");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/inventory|prefix/);
  }finally{db.close();}
 });

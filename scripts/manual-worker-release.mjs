@@ -1,3 +1,4 @@
+import {selectWorkflowSchemaRelease} from './workflow-release-schema-selection.mjs';
 import {isAuxiliaryBarkPair} from '../apps/workflow-mcp-worker/src/plan.ts';
 import {connectionInventory} from '../apps/database-mcp-worker/src/catalog.ts';
 import references from '../apps/database-mcp-worker/connection-references.json' with {type:'json'};
@@ -755,6 +756,10 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
       (step.step_id.startsWith('__saga_')&&step.status==='requested')),
       'Step execution unresolved');
   }
+  for(const step of evidence.steps.filter(s=>s.status==='cancelled'))
+    require(run.outcome==='cancelled'&&run.error_code===step.error_code&&
+      ['approval_cancel_requested','event_wait_cancel_requested'].includes(step.error_code),
+      'cancelled Step '+step.step_id+' lacks its authoritative cancellation result');
   const positive=n=>Number.isSafeInteger(n)&&n>0;
   let claimedProofUsed=false;
   for(const attempt of evidence.attempts){
@@ -795,7 +800,7 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
     require(session.state==='terminated'&&evidence.attempts.some(a=>a.step_id===session.step_id&&a.state!=='rejected'),
       'Session '+session.step_id+' physical termination unresolved');
   require(evidence.callbacks.every(c=>c.notification_delivered===1&&
-    evidence.attempts.some(a=>a.attempt_id===c.attempt_id&&a.step_id===c.step_id)),'callback unresolved');
+    evidence.attempts.some(a=>a.attempt_id===c.attempt_id&&a.step_id===c.step_id&&a.state!=='rejected')),'callback unresolved');
   // Cancellation records are durable one-shot intents, not physical evidence.
   // The matching terminal Attempt (and Session if present) was checked above.
   for(const cancellation of evidence.githubCancellations)
@@ -941,7 +946,27 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
     require(step.uses==='flow.child'&&step.with?.workflow_id===row.workflow_id&&
       step.with?.version_id===row.version_id&&receipt(step.id),'child Plan identity mismatch');
     require(evidence.children.filter(c=>c.run?.parent_step_id===step.id).length===1,'duplicate child lineage');
-    verifyWorkflowTerminalEvidence(row,child.native,child.evidence);
+    // These exact D1 states are themselves authoritative: reservation
+    // abandoned before the dispatch CAS, or a confirmed native terminate.
+    const beforeStart=row.start_state==='cancelled_before_start'&&row.outcome==='cancelled'&&
+      row.error_code==='cancelled_before_start'&&step.with?.mode!=='detached';
+    const detachedAbandoned=row.start_state==='reserved'&&row.outcome==='failed'&&
+      row.error_code==='detached_parent_not_active'&&step.with?.mode==='detached';
+    if(beforeStart||detachedAbandoned){
+      require(child.native===null&&keys.every(k=>Array.isArray(child.evidence[k])&&child.evidence[k].length===0)&&
+        !evidence.childCancellations.some(c=>c.child_run_id===row.id),
+        'child pre-dispatch closure conflicts with related evidence');
+    }else if(row.start_state==='cancelled'){
+      require(row.outcome==='cancelled'&&positive(row.updated_at)&&
+        evidence.childCancellations.some(c=>c.child_run_id===row.id&&c.parent_step_id===step.id),
+        'child confirmed termination identity unavailable');
+      // child-cancel.ts writes this state only after native status=terminated.
+      // Keep the actual closure and related receipt checks; no new API read.
+      require(!child.native||(child.native.instance_id===row.instance_id&&child.native.status==='terminated'),
+        'child native termination conflicts with D1');
+      verifyWorkflowTerminalEvidence({...row,start_state:'started'},
+        child.native??{instance_id:row.instance_id,status:'terminated',observed_at:row.updated_at},child.evidence);
+    }else verifyWorkflowTerminalEvidence(row,child.native,child.evidence);
   }
   for(const cancellation of evidence.childCancellations)
     require(cancellation.parent_run_id===run.id&&evidence.children.some(c=>
@@ -971,7 +996,7 @@ const terminalProjectionTables={
 };
 const jsonRows=(sql,columns)=>'(SELECT json_group_array(json_object('+
  columns.split(',').map(c=>"'"+c+"',"+c).join(',')+')) FROM ('+sql+'))';
-const runProjection='r.id,r.workflow_id,r.version_id,r.instance_id,r.start_state,r.outcome,r.error_code,r.parent_run_id,r.parent_step_id';
+const runProjection='r.id,r.workflow_id,r.version_id,r.instance_id,r.start_state,r.outcome,r.error_code,r.parent_run_id,r.parent_step_id,r.updated_at';
 function workflowTerminalProjectionSql(schema){
  invariant(schema===22||schema===23,'Unknown terminal evidence projection schema');
  const fields=Object.entries(terminalProjectionTables).map(([key,[table,columns]])=>
@@ -1002,8 +1027,96 @@ export async function readWorkflowTerminalEvidence(query,id,{schema,observe,dept
  }
  invariant(depth===0||evidence.children.length===0,'Workflow terminal evidence projection nested child unsupported');
  evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{schema,observe,depth:depth+1})));
- const native=row.execution_terminal_proof===null?(observe?await observe(run):null):parse('execution_terminal_proof');
+ const native=row.execution_terminal_proof===null?(observe&&run.start_state==='started'?await observe(run):null):parse('execution_terminal_proof');
  return {run,native,evidence};
+}
+
+// Discover only executions requiring proof beyond the existing settled D1
+// lifecycle. The Ready exception is an exact per-Session/Attempt relation,
+// never an aggregate count that could mask an unrelated claimed Attempt.
+function workflowReleaseInventorySql(mode){
+ const ready=mode==='compatible'?`
+  SELECT s.run_id,s.step_id,a.attempt_id FROM session_executions s
+  JOIN runs r ON r.id=s.run_id
+  JOIN run_steps st ON st.run_id=s.run_id AND st.step_id=s.step_id
+  JOIN step_attempts a ON a.run_id=s.run_id AND a.step_id=s.step_id
+  WHERE r.start_state='started' AND r.outcome='succeeded' AND st.status='succeeded'
+    AND s.state='ready' AND a.state='claimed' AND a.capability_id='github.action'
+    AND a.candidate_run_id>0 AND a.candidate_run_attempt>0
+    AND a.owner_run_id=a.candidate_run_id AND a.owner_run_attempt=a.candidate_run_attempt
+    AND NOT EXISTS(SELECT 1 FROM github_action_cancellations c WHERE c.attempt_id=a.attempt_id)
+    AND NOT EXISTS(SELECT 1 FROM step_attempts x WHERE x.run_id=a.run_id
+      AND x.step_id=a.step_id AND x.attempt_id<>a.attempt_id)`:
+  'SELECT run_id,step_id,attempt_id FROM step_attempts WHERE 0';
+ const tables=Object.values(terminalProjectionTables).map(([table])=>table);
+ const orphans=tables.map(t=>"SELECT count(*) AS n FROM "+t+" x WHERE NOT EXISTS(SELECT 1 FROM runs r WHERE r.id=x.run_id)")
+  .concat([
+   "SELECT count(*) AS n FROM callback_receipts c WHERE NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.attempt_id=c.attempt_id)",
+   "SELECT count(*) AS n FROM child_cancellations c WHERE NOT EXISTS(SELECT 1 FROM runs r WHERE r.id=c.child_run_id AND r.parent_run_id=c.parent_run_id AND r.parent_step_id=c.parent_step_id)",
+   "SELECT count(*) AS n FROM runs r WHERE r.parent_run_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM runs p WHERE p.id=r.parent_run_id AND p.parent_run_id IS NULL)",
+   "SELECT count(*) AS n FROM runs r WHERE NOT EXISTS(SELECT 1 FROM workflow_versions v WHERE v.id=r.version_id AND v.workflow_id=r.workflow_id)"
+  ]).join(' UNION ALL ');
+ return `WITH ready AS (${ready}), candidates AS (
+  SELECT DISTINCT coalesce(r.parent_run_id,r.id) AS id FROM runs r
+  WHERE r.outcome IS NULL OR r.outcome NOT IN ('succeeded','failed','cancelled')
+    OR r.start_state IS NULL OR r.start_state NOT IN ('started','cancelled_before_start','cancelled')
+    OR EXISTS(SELECT 1 FROM run_steps s WHERE s.run_id=r.id AND
+      (s.status IS NULL OR s.status NOT IN ('succeeded','failed','skipped','cancelled') OR
+       (s.status='cancelled' AND (r.outcome IS NOT 'cancelled' OR r.error_code IS NOT s.error_code
+        OR r.error_code IS NULL OR r.error_code NOT IN ('approval_cancel_requested','event_wait_cancel_requested')))))
+    OR EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=r.id AND
+      (a.state IS NULL OR a.state NOT IN ('rejected','succeeded','failed','cancelled')) AND
+      NOT EXISTS(SELECT 1 FROM ready q WHERE q.attempt_id=a.attempt_id))
+    OR EXISTS(SELECT 1 FROM session_executions s WHERE s.run_id=r.id AND
+      (s.state IS NULL OR s.state<>'terminated') AND
+      NOT EXISTS(SELECT 1 FROM ready q WHERE q.run_id=s.run_id AND q.step_id=s.step_id))
+    OR EXISTS(SELECT 1 FROM callback_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id
+      WHERE a.run_id=r.id AND c.notification_delivered IS NOT 1)
+    OR EXISTS(SELECT 1 FROM cloudflare_action_invocations i WHERE i.run_id=r.id AND
+      (NOT EXISTS(SELECT 1 FROM run_steps st WHERE st.run_id=i.run_id AND st.step_id=i.step_id
+        AND st.status IN ('succeeded','failed')) OR
+       (i.source_attempt_id<>i.invocation_id AND
+        NOT EXISTS(SELECT 1 FROM step_attempts a WHERE a.run_id=i.run_id AND a.attempt_id=i.source_attempt_id) AND
+        NOT EXISTS(SELECT 1 FROM cloudflare_action_invocations a WHERE a.run_id=i.run_id AND a.invocation_id=i.source_attempt_id))))
+    OR EXISTS(SELECT 1 FROM mcp_dispatch_fences f WHERE f.run_id=r.id AND
+      NOT EXISTS(SELECT 1 FROM run_steps st WHERE st.run_id=f.run_id AND st.step_id=f.step_id AND st.status IN ('succeeded','failed')))
+    OR EXISTS(SELECT 1 FROM cloudflare_action_cancellations c WHERE c.run_id=r.id AND
+      NOT EXISTS(SELECT 1 FROM cloudflare_action_invocations i WHERE i.run_id=c.run_id AND i.step_id=c.step_id)
+      AND NOT (r.outcome='cancelled' AND r.error_code='cloudflare_action_cancel_requested'))
+ )
+ SELECT (SELECT count(*) FROM runs) AS run_count,
+   (SELECT count(*) FROM ready) AS ready_sessions,
+   (SELECT sum(n) FROM (${orphans})) AS orphan_count,
+   (SELECT count(*) FROM candidates) AS candidate_count,
+   (SELECT json_group_array(id) FROM (SELECT id FROM candidates ORDER BY id)) AS candidate_ids`;
+}
+
+/** D1 half of the release gate. Strict callers additionally prove ingress
+ * stopped and native drain; compatible callers retain only exact Ready
+ * sessions. This function does not mutate evidence or authorize deployment. */
+export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,observe}){
+ invariant(mode==='strict'||mode==='compatible','Unsupported Workflow release operation');
+ const migrations=await query('SELECT name FROM d1_migrations ORDER BY name',[]);
+ const selection=selectWorkflowSchemaRelease([{success:true,results:migrations}],sourceFiles);
+ invariant(selection.source===23&&(selection.applied===23||mode==='strict'&&selection.applied===22),
+   'Workflow terminal evidence schema inventory unsupported');
+ const schema=selection.applied;
+ const rows=await query(workflowReleaseInventorySql(mode),[]);
+ const row=rows?.[0];
+ invariant(Array.isArray(rows)&&rows.length===1&&
+   ['run_count','ready_sessions','orphan_count','candidate_count'].every(k=>Number.isSafeInteger(row?.[k])&&row[k]>=0)&&
+   row.orphan_count===0,'Workflow terminal evidence inventory incomplete or orphaned');
+ let ids;
+ try{ids=JSON.parse(row.candidate_ids);}catch{throw Error('Workflow terminal evidence candidate inventory malformed');}
+ invariant(Array.isArray(ids)&&ids.length===row.candidate_count&&
+   ids.every(id=>typeof id==='string'&&id.length>0)&&new Set(ids).size===ids.length,
+   'Workflow terminal evidence candidate inventory incomplete');
+ const proofs=[];
+ for(const id of ids){
+   const projected=await readWorkflowTerminalEvidence(query,id,{schema,observe});
+   proofs.push([id,verifyWorkflowTerminalEvidence(projected.run,projected.native,projected.evidence)]);
+ }
+ return {schema,run_count:row.run_count,ready_sessions:row.ready_sessions,proofs:Object.fromEntries(proofs)};
 }
 
 /**
