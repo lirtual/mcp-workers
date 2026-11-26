@@ -1379,7 +1379,8 @@ export function workflowReleaseIO(env=process.env,request=fetch){
  const api=async(url,auth,body)=>{
    const response=await request(url,{redirect:'manual',headers:{...auth,...(body?{'Content-Type':'application/json'}:{})},
     ...(body?{method:'POST',body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(15000)});
-   invariant(response.ok,'Workflow release evidence API unavailable (HTTP '+response.status+')');
+   const target=new URL(url);
+   invariant(response.ok,'Workflow release evidence API unavailable (HTTP '+response.status+' '+target.host+target.pathname+')');
    return response.json();
  };
  const d1=async(sql,params)=>{
@@ -1416,8 +1417,10 @@ export function workflowReleaseIO(env=process.env,request=fetch){
  const cached=(url,auth)=>{if(!cache.has(url))cache.set(url,api(url,auth));return cache.get(url);};
  const gh=(repo,id,suffix='')=>{
    invariant(['lirtual/mcp-workers','lirtual/github-actions','lirtual/cloudflare-actions'].includes(repo)&&Number.isSafeInteger(id),'Historical release source invalid');
-   const credential=repo==='lirtual/mcp-workers'?env.GITHUB_TOKEN:null;
+   const credential=repo==='lirtual/mcp-workers'?env.GITHUB_TOKEN:
+     repo==='lirtual/github-actions'?env.WORKFLOW_GITHUB_DISPATCH_TOKEN:null;
    invariant(repo!=='lirtual/mcp-workers'||credential,'Historical migration read credential unavailable');
+   invariant(repo!=='lirtual/github-actions'||credential,'Historical GitHub Actions read credential unavailable');
    return cached('https://api.github.com/repos/'+repo+'/actions/runs/'+id+suffix,
      {...(credential?{Authorization:'Bearer '+credential}:{}),Accept:'application/vnd.github+json'});
  };
