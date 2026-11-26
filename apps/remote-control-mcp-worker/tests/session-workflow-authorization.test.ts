@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sessionAllowedByWorkflow } from '../src/session-workflow-authorization.ts';
-import { listApprovedDevices, type V2Device } from '../src/v2-session.ts';
-import { V2OwnerCoordinator } from '../src/v2-pairing.ts';
+import { listApprovedDevices, type DeviceRecord } from '../src/session.ts';
+import { OwnerCoordinator } from '../src/pairing.ts';
 
 const now = Date.now();
-const device: V2Device = {
+const device: DeviceRecord = {
   device_id:'123e4567-e89b-42d3-a456-426614174001', name:'session-ubuntu',
   public_key:'a'.repeat(60), fingerprint:'ab'.repeat(12), approved_at:now-30_000,
   revoked:false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000, grant_type:'session', expires_at:now+60_000,
@@ -51,8 +51,8 @@ test('RPC timeout, malformed result and missing attempt fail closed',async()=>{
 });
 
 test('unavailable Workflow never hides an approved permanent personal device',async()=>{
-  const personal:V2Device={...device,device_id:'123e4567-e89b-42d3-a456-426614174003',name:'personal',grant_type:'permanent'};
-  const values=new Map<string,V2Device>([
+  const personal:DeviceRecord={...device,device_id:'123e4567-e89b-42d3-a456-426614174003',name:'personal',grant_type:'permanent'};
+  const values=new Map<string,DeviceRecord>([
     ['device:'+device.device_id,device],['device:'+personal.device_id,personal],
   ]);
   const state={ storage:{list:async()=>values,delete:async()=>true,get:async()=>undefined},
@@ -65,14 +65,14 @@ test('unavailable Workflow never hides an approved permanent personal device',as
 
 test('actual owner DO checks live Workflow before new read/mutation and device discovery',async()=>{
   const epoch='owned-session-epoch';
-  const personal:V2Device={...device,device_id:'123e4567-e89b-42d3-a456-426614174003',name:'personal',grant_type:'permanent'};
+  const personal:DeviceRecord={...device,device_id:'123e4567-e89b-42d3-a456-426614174003',name:'personal',grant_type:'permanent'};
   const rows=new Map<string,unknown>([
     ['device:'+device.device_id,device],['session:epoch:'+device.device_id,epoch],
     ['device:'+personal.device_id,personal],
   ]);
   let admitted=true, admissions=0;
   const sent:Array<Record<string,unknown>>=[];
-  let owner!:V2OwnerCoordinator;
+  let owner!:OwnerCoordinator;
   const socket={
     readyState:WebSocket.OPEN,
     deserializeAttachment:()=>({device_id:device.device_id,epoch,last_auth_check_at:Date.now()}),
@@ -94,13 +94,13 @@ test('actual owner DO checks live Workflow before new read/mutation and device d
     delete:async (key:string)=>rows.delete(key),
   };
   const state=({storage,getWebSockets:(tag:string)=>tag==='device:'+device.device_id?[socket]:[]}) as unknown as DurableObjectState;
-  owner=new V2OwnerCoordinator(state,{
+  owner=new OwnerCoordinator(state,{
     WORKFLOW_SESSION_AUTHORIZATION:{authorizeSessionAttempt:async()=>{
       admissions++;
       return admitted?decision:{allowed:false};
     }},
   });
-  const send=async(path:string,payload:unknown)=>owner.fetch(new Request('https://v2.internal/'+path,{
+  const send=async(path:string,payload:unknown)=>owner.fetch(new Request('https://device.internal/'+path,{
     method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload),
   }));
   const read={device_id:device.device_id,tool:'read_file',arguments:{path:'/tmp/rca-session-fixture'}};

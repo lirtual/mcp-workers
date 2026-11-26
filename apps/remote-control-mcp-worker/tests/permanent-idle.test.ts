@@ -3,8 +3,8 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { newEnrollment } from '../agent/src/v2-enrollment.ts';
 import { signedSessionProof } from '../agent/src/v2-session-client.ts';
-import { V2OwnerCoordinator } from '../src/worker.ts';
-import { issueSessionChallenge, authorizeSocketSession, deviceIsAuthorized, parsePermanentIdleMs, handleIdleSocketMessage } from '../src/v2-session.ts';
+import { OwnerCoordinator } from "../src/pairing.ts";
+import { issueSessionChallenge, authorizeSocketSession, deviceIsAuthorized, parsePermanentIdleMs, handleIdleSocketMessage } from '../src/session.ts';
 
 const DAY = 86_400_000;
 
@@ -28,9 +28,9 @@ test('legacy offline grant migrates once, signed online reset cancels deadline, 
     };
     const storage = { ...memory, transaction: async <T>(fn: (tx: typeof memory)=>Promise<T>) => fn(memory) };
     let sockets: WebSocket[] = [];
-    const owner = new V2OwnerCoordinator({storage,getWebSockets:()=>sockets} as unknown as DurableObjectState);
+    const owner = new OwnerCoordinator({storage,getWebSockets:()=>sockets} as unknown as DurableObjectState);
     const list = async () => {
-      const r = await owner.fetch(new Request('https://v2.internal/devices',{
+      const r = await owner.fetch(new Request('https://device.internal/devices',{
         method:'POST',headers:{'content-type':'application/json'},body:'{}',
       }));
       assert.equal(r.status,200);
@@ -65,7 +65,7 @@ test('RCA server validates idle setting and corrupt durable grants fail closed',
   for (const invalid of ['0','91','01',' 7','7.5','-1','1e2',1,null]) {
     assert.throws(() => parsePermanentIdleMs(invalid), /RCA_PERMANENT_IDLE_DAYS/);
   }
-  assert.throws(() => new V2OwnerCoordinator({} as DurableObjectState, {RCA_PERMANENT_IDLE_DAYS:'91'}), /RCA_PERMANENT_IDLE_DAYS/);
+  assert.throws(() => new OwnerCoordinator({} as DurableObjectState, {RCA_PERMANENT_IDLE_DAYS:'91'}), /RCA_PERMANENT_IDLE_DAYS/);
   const now = Date.now();
   const normal = {device_id:randomUUID(),name:'bad-checkpoint',public_key:'x',fingerprint:'f',approved_at:now,revoked:false as const,grant_type:'permanent' as const};
   for (const corrupt of [
@@ -85,11 +85,11 @@ test('configured migration window is frozen for an already-offline grant', async
     list: async <T>({prefix,limit}:{prefix:string;limit:number}) => new Map([...rows].filter(([k])=>k.startsWith(prefix)).slice(0,limit)) as Map<string,T>,
   };
   const state = {storage,getWebSockets:()=>[]} as unknown as DurableObjectState;
-  const list = (owner:V2OwnerCoordinator) => owner.fetch(new Request('https://owner.test/devices',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}));
-  const oneDay = new V2OwnerCoordinator(state,{RCA_PERMANENT_IDLE_DAYS:'1'});
+  const list = (owner:OwnerCoordinator) => owner.fetch(new Request('https://owner.test/devices',{method:'POST',headers:{'content-type':'application/json'},body:'{}'}));
+  const oneDay = new OwnerCoordinator(state,{RCA_PERMANENT_IDLE_DAYS:'1'});
   const data = await (await list(oneDay)).json() as Array<{idle_expires_at:number}>;
   assert.ok(data[0]!.idle_expires_at >= now + DAY && data[0]!.idle_expires_at <= now + DAY + 100);
-  const twoWeeks = new V2OwnerCoordinator(state,{RCA_PERMANENT_IDLE_DAYS:'14'});
+  const twoWeeks = new OwnerCoordinator(state,{RCA_PERMANENT_IDLE_DAYS:'14'});
   const same = await (await list(twoWeeks)).json() as Array<{idle_expires_at:number}>;
   assert.equal(same[0]!.idle_expires_at,data[0]!.idle_expires_at,'release variable change cannot silently extend a durable deadline');
 });

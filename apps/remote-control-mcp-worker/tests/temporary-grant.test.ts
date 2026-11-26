@@ -4,8 +4,8 @@ import { newEnrollment } from "../agent/src/v2-enrollment.ts";
 import {
   registerPending, lookupPending, approvePendingKey,
   verifyRegistration,
-} from "../src/v2-pairing.ts";
-import { deviceIsAuthorized, issueSessionChallenge, listApprovedDevices, TEMPORARY_GRANT_MS } from "../src/v2-session.ts";
+} from "../src/pairing.ts";
+import { deviceIsAuthorized, issueSessionChallenge, listApprovedDevices, TEMPORARY_GRANT_MS } from "../src/session.ts";
 
 function setup() {
   const rows = new Map<string, unknown>();

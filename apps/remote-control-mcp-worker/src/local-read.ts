@@ -210,7 +210,7 @@ function parsePath(value: unknown): string | null {
 
 /**
  * Keep the existing POSIX route unchanged, but allow a drive-absolute Windows
- * path for both read and mutation v2 calls. A drive prefix is NOT a URL
+ * path for both read and paired-device calls. A drive prefix is NOT a URL
  * scheme. Reject UNC/device paths, drive-relative paths, ADS, malformed roots,
  * and Win32 special characters before passing the path to the Agent, which
  * independently enforces platform-local filesystem rules.

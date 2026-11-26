@@ -7,7 +7,8 @@ import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts"
 import { beginDeviceEnrollment, PendingIdentityConflictError } from "../agent/src/pair-device.ts";
 import { recoverDeviceId } from "../agent/src/v2-session-client.ts";
 import { approvalArgs, lookupOwnerPairing, approveOwnerPairing } from "../src/pairing-owner.ts";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 
 interface StorageFixture {
   get<T>(key: string): Promise<T | undefined>;
@@ -28,8 +29,8 @@ function setup() {
     },
     async transaction<T>(fn: (store: StorageFixture) => Promise<T>) { return fn(storage); },
   };
-  const owner = new V2OwnerCoordinator({ storage } as unknown as DurableObjectState);
-  const V2_OWNER = {
+  const owner = new OwnerCoordinator({ storage } as unknown as DurableObjectState);
+  const DEVICE_COORDINATOR = {
     idFromName() { return "owner"; },
     get() { return { fetch: (url: RequestInfo | URL, init?: RequestInit) =>
       owner.fetch(url instanceof Request ? url : new Request(url, init)) }; },
@@ -37,8 +38,8 @@ function setup() {
   const env = {
     MCP_ACCESS_TOKEN: "portal-test-only",
     REMOTE_CONTROL_DEVICE_TOKEN: "legacy-v1-test",
-    V2_OWNER,
-  } as Env & { V2_OWNER: DurableObjectNamespace };
+    DEVICE_COORDINATOR,
+  } as Env & { DEVICE_COORDINATOR: DurableObjectNamespace };
   const site = "https://pairing.test/";
   const send: typeof fetch = async (input, init) =>
     worker.fetch(input instanceof Request ? input : new Request(input, init), env);
@@ -55,7 +56,7 @@ function setup() {
   };
   const value = (result: Awaited<ReturnType<typeof rpc>>) =>
     JSON.parse(result.data.result?.content[0]?.text ?? "{}") as Record<string, unknown>;
-  const ownerStub=V2_OWNER.get(V2_OWNER.idFromName("owner"));
+  const ownerStub=DEVICE_COORDINATOR.get(DEVICE_COORDINATOR.idFromName("owner"));
   const lookup=(code:string)=>lookupOwnerPairing(ownerStub,code);
   const approve=async(input:object)=>{
     const args=approvalArgs(input);
@@ -90,7 +91,7 @@ test("#97 old pairing_prepare and public /agent/pair/complete cannot approve a d
 
 test("#97 revoked ID can only be replaced after distinct explicit owner approval and new-key proof",async()=>{
   const {rows,site,send,rpc,value,lookup,approve:ownerApprove}=setup();
-  const dir=await mkdtemp(path.join(os.tmpdir(),"v2-single-repair-"));
+  const dir=await mkdtemp(path.join(os.tmpdir(),"single-repair-"));
   const oldKey=path.join(dir,"v2-identity.pem");
   const stage=oldKey+".re-pair-new";
   const approve=async(code:string)=>{

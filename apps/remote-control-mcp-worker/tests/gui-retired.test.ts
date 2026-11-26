@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { V2OwnerCoordinator } from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 
 test("paired DO denies legacy GUI read and effect requests before socket dispatch", async () => {
   let dispatched = 0;
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: { get: async () => { throw Error("should not read device"); } },
     getWebSockets: () => { dispatched++; return []; },
   } as unknown as DurableObjectState);
@@ -15,7 +15,7 @@ test("paired DO denies legacy GUI read and effect requests before socket dispatc
   ] as const) for (const tool of tools) {
     const body = { device_id, tool, arguments: {},
       ...(route === "/operation" ? {operation_id: "retired-628"} : {}) };
-    const response = await owner.fetch(new Request("https://v2.internal"+route, {
+    const response = await owner.fetch(new Request("https://device.internal"+route, {
       method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(body),
     }));
     assert.equal(response.status, 400, tool);

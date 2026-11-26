@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { handleAgentInstallerRequest } from "../src/install-bootstrap.ts";
 import { REVIEWED_V012_RELEASE_PIN, REVIEWED_V014_RELEASE_PIN, REVIEWED_V016_RELEASE_PIN, REVIEWED_V017_RELEASE_PIN, REVIEWED_V018_RELEASE_PIN, REVIEWED_V0110_RELEASE_PIN, REVIEWED_V0111_RELEASE_PIN, REVIEWED_AGENT_RELEASE_PIN, REVIEWED_MACOS_INSTALL_PIN, REVIEWED_PUBLIC_INSTALL_RELEASE_PIN, REVIEWED_WINDOWS_INSTALL_PIN, renderAgentInstallMacShell } from "./historical-install-pins.ts";
 
-const origin = "https://remote-control-v2-preview.aiyaya.workers.dev";
+const origin = "https://remote-control-preview.aiyaya.workers.dev";
 function requestInstall(request: Request, configuredOrigin: string | undefined = origin) {
   return handleAgentInstallerRequest(request, configuredOrigin);
 }
@@ -97,7 +97,7 @@ test("a historical pin is not emitted as install.sh", async()=>{
 
 test("fake Host, Forwarded, scheme, path, query and method are refused",async()=>{
   const bad=[
-    new Request("http://remote-control-v2-preview.aiyaya.workers.dev/install.sh"),
+    new Request("http://remote-control-preview.aiyaya.workers.dev/install.sh"),
     new Request("https://evil.example/install.sh"),
     new Request(origin+"/install.sh?endpoint=https://evil.example"),
     new Request(origin+"/INSTALL.SH"),

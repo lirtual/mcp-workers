@@ -3,7 +3,7 @@ import test from "node:test";
 import { newEnrollment } from "../agent/src/v2-enrollment.ts";
 import { signedSessionProof } from "../agent/src/v2-session-client.ts";
 import { parseDeviceInfo } from "../src/device-info.ts";
-import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof, listApprovedDevices } from "../src/v2-session.ts";
+import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof, listApprovedDevices } from "../src/session.ts";
 
 interface MockStore {
   get<T>(key: string): Promise<T | undefined>;

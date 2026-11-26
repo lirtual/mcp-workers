@@ -5,8 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
-import { registerPending, lookupPending, verifyRegistration, checkRevokedIdentity, type PendingDevice } from "../src/v2-pairing.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
+import { registerPending, lookupPending, verifyRegistration, checkRevokedIdentity, type PendingDevice } from "../src/pairing.ts";
 
 function makeStore() {
   const values = new Map<string, PendingDevice>();
@@ -22,7 +23,7 @@ function makeStore() {
   return { store, values };
 }
 
-test("v2 Agent code and Ed25519 public proof are bounded; private key stays local", async () => {
+test("Agent code and Ed25519 public proof are bounded; private key stays local", async () => {
   const { code, request, privateKeyPem } = newEnrollment("home-linux");
   assert.match(code, /^[A-Z2-7]{10}$/);
   assert.match(request.code_verifier, /^[a-f0-9]{64}$/);
@@ -31,7 +32,7 @@ test("v2 Agent code and Ed25519 public proof are bounded; private key stays loca
   assert.equal(await verifyRegistration({ ...request, proof: "invalid" }), null);
   assert.equal(await verifyRegistration({ ...request, name: "tampered" }), null);
   assert.equal(await verifyRegistration({ ...request, issued_at: request.issued_at - 65_000 }), null);
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remote-v2-pair-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remote-pair-"));
   const keyPath = path.join(dir, "device-key.pem");
   try {
     await saveNewPrivateKey(keyPath, privateKeyPem);
@@ -43,7 +44,7 @@ test("v2 Agent code and Ed25519 public proof are bounded; private key stays loca
 
 test("pending enrollment exposes only bounded owner preview data; MCP pairing retired", async () => {
   const { store, values } = makeStore();
-  const owner = new V2OwnerCoordinator({ storage: store } as unknown as DurableObjectState);
+  const owner = new OwnerCoordinator({ storage: store } as unknown as DurableObjectState);
   const binding = {
     idFromName() { return "one"; },
     get() { return { fetch: (input: RequestInfo | URL, init?: RequestInit) => owner.fetch(input instanceof Request ? input : new Request(input, init)) }; },
@@ -51,8 +52,8 @@ test("pending enrollment exposes only bounded owner preview data; MCP pairing re
   const env = {
     MCP_ACCESS_TOKEN: "portal-credential",
     REMOTE_CONTROL_DEVICE_TOKEN: "local-agent-secret",
-    V2_OWNER: binding,
-  } as Env & { V2_OWNER: DurableObjectNamespace };
+    DEVICE_COORDINATOR: binding,
+  } as Env & { DEVICE_COORDINATOR: DurableObjectNamespace };
   const enrollment = newEnrollment("test-cloud");
   const registration = await worker.fetch(new Request("https://example.test/agent/pair/start", {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(enrollment.request),
@@ -99,7 +100,7 @@ test("pending store rejects invalid proof and expired/duplicate requests", async
 
 test("P1 security gate: a valid Portal token and automated confirm tool call cannot activate a pending device", async () => {
   const { store, values } = makeStore();
-  const owner = new V2OwnerCoordinator({ storage: store } as unknown as DurableObjectState);
+  const owner = new OwnerCoordinator({ storage: store } as unknown as DurableObjectState);
   const ns = {
     idFromName() { return "isolated-owner"; },
     get() { return { fetch: (input: RequestInfo | URL, init?: RequestInit) =>
@@ -108,8 +109,8 @@ test("P1 security gate: a valid Portal token and automated confirm tool call can
   const env = {
     MCP_ACCESS_TOKEN: "portal-credential",
     REMOTE_CONTROL_DEVICE_TOKEN: "legacy-local-secret",
-    V2_OWNER: ns,
-  } as Env & { V2_OWNER: DurableObjectNamespace };
+    DEVICE_COORDINATOR: ns,
+  } as Env & { DEVICE_COORDINATOR: DurableObjectNamespace };
   const pending = newEnrollment("sandbox-agent");
   const first = await worker.fetch(new Request("https://localhost.test/agent/pair/start", {
     method: "POST",

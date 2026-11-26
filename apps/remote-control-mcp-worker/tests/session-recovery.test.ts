@@ -6,8 +6,9 @@ import test from "node:test";
 import { randomUUID } from "node:crypto";
 import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
 import { recoverDeviceId, signedSessionProof } from "../agent/src/v2-session-client.ts";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
-import { authorizeSession, issueSessionChallenge, handleIdleSocketMessage } from "../src/v2-session.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
+import { authorizeSession, issueSessionChallenge, handleIdleSocketMessage } from "../src/session.ts";
 
 interface Store {
   get<T>(key: string): Promise<T | undefined>;
@@ -25,10 +26,10 @@ function fixture() {
     async list<T>(opts: { prefix: string; limit: number }) { return new Map([...entries].filter(([key]) => key.startsWith(opts.prefix)).slice(0, opts.limit)) as Map<string, T>; },
     async transaction<T>(fn: (s: Store) => Promise<T>) { return fn(storage); },
   };
-  const owner = new V2OwnerCoordinator({ storage } as unknown as DurableObjectState);
+  const owner = new OwnerCoordinator({ storage } as unknown as DurableObjectState);
   const env = {
     MCP_ACCESS_TOKEN: "test-owner", REMOTE_CONTROL_DEVICE_TOKEN: "unused-v1",
-    V2_OWNER: {
+    DEVICE_COORDINATOR: {
       idFromName: () => "single-owner",
       get: () => ({ fetch: (url: RequestInfo | URL, init?: RequestInit) =>
         owner.fetch(url instanceof Request ? url : new Request(url, init)) }),

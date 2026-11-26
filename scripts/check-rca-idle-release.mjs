@@ -20,7 +20,7 @@ export function checkRcaIdlePolicy(policy){
 }
 
 if(process.argv[1]&&path.resolve(process.argv[1])===path.resolve(fileURLToPath(import.meta.url))){
- const module=await import(pathToFileURL(path.resolve('apps/remote-control-mcp-worker/src/v2-session.ts')).href);
+ const module=await import(pathToFileURL(path.resolve('apps/remote-control-mcp-worker/src/session.ts')).href);
  checkRcaIdlePolicy(module);
  console.log('RCA indefinite-authorization rollback fence verified against selected Worker source.');
 }

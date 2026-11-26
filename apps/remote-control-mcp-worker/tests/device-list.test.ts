@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 
 test("list_devices requires Portal bearer and reports only current, approved WSS devices", async () => {
   const onlineId = randomUUID(), staleId = randomUUID(), offlineId = randomUUID(), revokedId = randomUUID();
@@ -39,9 +40,9 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
     storage,
     getWebSockets: (tag: string) => sockets.get(tag) ?? [],
   } as unknown as DurableObjectState;
-  const owner = new V2OwnerCoordinator(state);
+  const owner = new OwnerCoordinator(state);
   let forwarded = 0;
-  const V2_OWNER = {
+  const DEVICE_COORDINATOR = {
     idFromName() { return "single-owner"; },
     get() {
       return {
@@ -55,8 +56,8 @@ test("list_devices requires Portal bearer and reports only current, approved WSS
   const env = {
     MCP_ACCESS_TOKEN: "owner-only",
     REMOTE_CONTROL_DEVICE_TOKEN: "v1-only",
-    V2_OWNER,
-  } as Env & { V2_OWNER: DurableObjectNamespace };
+    DEVICE_COORDINATOR,
+  } as Env & { DEVICE_COORDINATOR: DurableObjectNamespace };
   const rpc = (name: string, args: unknown = {}, token = "owner-only") => worker.fetch(
     new Request("https://host.test/mcp", {
       method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + token },
@@ -104,7 +105,7 @@ test("silent network partition makes an OPEN socket offline after the server aut
     readyState: WebSocket.OPEN, // Blackholed transport: no close event arrives.
     deserializeAttachment: () => ({ device_id: id, epoch: "epoch-1", last_auth_check_at: lastAuth }),
   };
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: {
       get: async (key: string) => rows.get(key),
       list: async ({ prefix }: { prefix: string }) => new Map([...rows].filter(([key]) => key.startsWith(prefix))),
@@ -117,7 +118,7 @@ test("silent network partition makes an OPEN socket offline after the server aut
     rows.set("device:" + id, { ...row,
       last_verified_online_at: typeof lastAuth === "number" && lastAuth <= Date.now()
         ? lastAuth : Date.now() - 17 * 60_000 });
-    const response = await owner.fetch(new Request("https://v2.internal/devices", {
+    const response = await owner.fetch(new Request("https://device.internal/devices", {
       method: "POST", headers: { "content-type": "application/json" }, body: "{}",
     }));
     assert.equal(response.status, 200);
@@ -137,20 +138,19 @@ test("silent network partition makes an OPEN socket offline after the server aut
   assert.equal(await status(), "online", "a fresh authenticated epoch can recover without re-pairing");
 });
 
-test("v2 Preview lists per-device Shell and files but never implicitly routes to v1", async () => {
-  let v1Requests = 0;
-  const v2Stub = {
+test("paired-device mode lists per-device Shell and files but never falls back to the legacy transport", async () => {
+  let legacyRequests = 0;
+  const coordinatorStub = {
     fetch: async () => Response.json([]),
   };
   const env = {
-    MCP_ACCESS_TOKEN: "preview-owner-token",
-    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
-    V2_OWNER: { idFromName: () => "preview-owner", get: () => v2Stub },
-    REMOTE_CONTROL_DEVICE: { fetch: () => { v1Requests++; throw new Error("v1 transport must not be used"); } },
+    MCP_ACCESS_TOKEN: "owner-token",
+    DEVICE_COORDINATOR: { idFromName: () => "paired-owner", get: () => coordinatorStub },
+    REMOTE_CONTROL_DEVICE: { fetch: () => { legacyRequests++; throw new Error("legacy transport must not be used"); } },
     REMOTE_CONTROL_DEVICE_TOKEN: "v1-not-used",
   } as unknown as Env;
-  const rpc = (method: string, params?: unknown) => worker.fetch(new Request("https://preview.test/mcp", {
-    method: "POST", headers: { "authorization": "Bearer preview-owner-token", "content-type": "application/json" },
+  const rpc = (method: string, params?: unknown) => worker.fetch(new Request("https://worker.test/mcp", {
+    method: "POST", headers: { "authorization": "Bearer owner-token", "content-type": "application/json" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 51, method, ...(params ? { params } : {}) }),
   }), env);
 
@@ -174,26 +174,25 @@ test("v2 Preview lists per-device Shell and files but never implicitly routes to
     const body = await response.json() as { result: { isError: boolean } };
     assert.equal(body.result.isError, true, name);
   }
-  assert.equal(v1Requests, 0);
+  assert.equal(legacyRequests, 0);
   const read = await rpc("tools/call", { name: "read_file", arguments: { device_id: randomUUID(), path: "/tmp/test" } });
   assert.equal(read.status, 200);
-  assert.equal(v1Requests, 0);
+  assert.equal(legacyRequests, 0);
   assert.equal((await rpc("tools/call", { name: "list_devices", arguments: {} })).status, 200);
 });
-test("preview lacks owner secret => even Agent bootstrap is blocked before any DO request", async () => {
+test("paired Worker without owner credential blocks Agent bootstrap before any DO request", async () => {
   let calls = 0;
   const env = {
-    REMOTE_CONTROL_V2_PREVIEW_ONLY: "true",
     MCP_ACCESS_TOKEN: undefined,
-    V2_OWNER: { idFromName: () => "isolated-preview", get: () => ({ fetch: () => {
-      calls++; throw new Error("preview should remain disabled");
+    DEVICE_COORDINATOR: { idFromName: () => "unconfigured-owner", get: () => ({ fetch: () => {
+      calls++; throw new Error("unconfigured Worker must not access the coordinator");
     } }) },
   } as unknown as Env;
   for (const uri of ["/mcp", "/agent/pair/start", "/agent/session/challenge",
       "/agent/session/recover", "/agent/pair/complete", "/agent/connect/" + randomUUID()]) {
-    const res = await worker.fetch(new Request("https://preview.test" + uri, { method: "POST" }), env);
+    const res = await worker.fetch(new Request("https://worker.test" + uri, { method: "POST" }), env);
     assert.equal(res.status, 503, uri);
-    assert.equal((await res.json() as { error: string }).error, "preview_unconfigured");
+    assert.equal((await res.json() as { error: string }).error, "owner_worker_unconfigured");
   }
   assert.equal(calls, 0);
 });
@@ -207,14 +206,14 @@ test("device enumeration is bounded and fails closed when the small-owner limit 
       last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
     });
   }
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: {
       list: async <T>({ prefix, limit }: { prefix: string; limit: number }) =>
         new Map([...rows].filter(([key]) => key.startsWith(prefix)).slice(0, limit)) as Map<string, T>,
     },
     getWebSockets: () => { assert.fail("Over-capacity listing must not inspect sockets"); },
   } as unknown as DurableObjectState);
-  const result = await owner.fetch(new Request("https://v2.internal/devices", {
+  const result = await owner.fetch(new Request("https://device.internal/devices", {
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   assert.equal(result.status, 503);
@@ -226,7 +225,7 @@ test("device status fails closed for corrupt Hibernation attachment", async () =
   // Fix the observation before list(): listLiveGrants snapshots time on entry.
   // A Date.now() evaluated inside list() can be 1 ms in the future and trigger expiry cleanup.
   const observedAt = Date.now() - 1_000;
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: {
       list: async () => new Map([["device:" + id, {
         device_id: id, name: "damaged", revoked: false,
@@ -238,7 +237,7 @@ test("device status fails closed for corrupt Hibernation attachment", async () =
       deserializeAttachment: () => { throw new Error("attachment unavailable"); },
     }],
   } as unknown as DurableObjectState);
-  const response = await owner.fetch(new Request("https://v2.internal/devices", {
+  const response = await owner.fetch(new Request("https://device.internal/devices", {
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   assert.equal(response.status, 200);
@@ -266,7 +265,7 @@ test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can
     ["device:" + id, [wslSocket("wsl-epoch-1")]],
     ["device:" + other, [nativeSocket]],
   ]);
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: {
       get: async <T>(key: string) => stateRows.get(key) as T | undefined,
       list: async <T>({ prefix, limit }: { prefix: string; limit: number }) =>
@@ -275,7 +274,7 @@ test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can
     getWebSockets: (tag: string) => sockets.get(tag) ?? [],
   } as unknown as DurableObjectState);
   const statuses = async () => {
-    const answer = await owner.fetch(new Request("https://v2.internal/devices", {
+    const answer = await owner.fetch(new Request("https://device.internal/devices", {
       method: "POST", headers: { "content-type": "application/json" }, body: "{}",
     }));
     assert.equal(answer.status, 200);
@@ -286,7 +285,7 @@ test("WSL2 distro shutdown is offline after WSS close; restored signed epoch can
   wslReady = WebSocket.CLOSED; // WSL distro stopped; owner observed socket closure
   assert.equal((await statuses()).get(id), "offline");
   assert.equal((await statuses()).get(other), "online", "unrelated host remains available");
-  const denied = await owner.fetch(new Request("https://v2.internal/read", {
+  const denied = await owner.fetch(new Request("https://device.internal/read", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: id, tool: "read_file", arguments: { path: "/tmp/fixture" } }),
   }));
