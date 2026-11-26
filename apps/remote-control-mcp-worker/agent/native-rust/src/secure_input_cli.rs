@@ -317,6 +317,15 @@ pub fn run_secure_input_owner_flow(
         return Err(SecureInputCliError);
     }
     let client = PairingClient::new(endpoint).map_err(|_| ())?;
+    run_owner_flow(&client, pem, device_id, request_id)
+}
+
+fn run_owner_flow(
+    client: &crate::device_pairing::PairingClient,
+    pem: &str,
+    device_id: &str,
+    request_id: &str,
+) -> Result<(), SecureInputCliError> {
     let challenge = client
         .secure_input_challenge(pem, device_id, request_id)
         .map_err(|_| ())?;
@@ -435,6 +444,207 @@ mod terminal_tests {
                 assert!(result.is_ok_and(|value| value.as_str() == MARKER));
             }
         }
+    }
+
+    #[test]
+    #[ignore = "spawned by the real PTY Owner flow test"]
+    fn owner_flow_fixture() {
+        use std::io::IsTerminal;
+        let port = std::env::var("RCA_TEST_OWNER_PORT")
+            .unwrap()
+            .parse()
+            .unwrap();
+        let pem = std::env::var("RCA_TEST_OWNER_PEM").unwrap();
+        let owner = std::env::var("RCA_TEST_OWNER_DEVICE").unwrap();
+        let request = std::env::var("RCA_TEST_OWNER_REQUEST").unwrap();
+        assert!(io::stdin().is_terminal(), "fixture stdin is not a terminal");
+        assert!(
+            io::stdout().is_terminal(),
+            "fixture stdout is not a terminal"
+        );
+        let client = crate::device_pairing::PairingClient::loopback_test_client(port);
+        run_owner_flow(&client, &pem, &owner, &request).unwrap();
+    }
+
+    #[test]
+    fn real_pty_owner_flow_displays_target_hides_secret_and_submits_once() {
+        use crate::session_recovery::tests::{recv_request, reply};
+        use serde_json::json;
+        use std::net::TcpListener;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        const OWNER: &str = "123e4567-e89b-42d3-a456-426614174001";
+        const REQUEST: &str = "123e4567-e89b-42d3-a456-426614174002";
+        const TARGET: &str = "123e4567-e89b-42d3-a456-426614174003";
+        const NONCE: &str = "AAAAAAAAAAAAAAAAAAAAAAAA";
+        const BINDING: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        const SECRET: &str = "synthetic-secure-input-pty-1039";
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let pem = crate::device_pairing::generate_private_pem().unwrap();
+        let expected_pem = pem.clone();
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60_000;
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let (route, request) = recv_request(&mut socket);
+            assert_eq!(route, "POST /agent/owner/intent/challenge HTTP/1.1");
+            assert_eq!(
+                request,
+                json!({"action":"secure_input","device_id":OWNER,"request_id":REQUEST})
+            );
+            reply(
+                &mut socket,
+                "200 OK",
+                json!({
+                    "action":"secure_input","device_id":OWNER,"request_id":REQUEST,
+                    "nonce":NONCE,"generation":3,"expires_at":expiry,"target_binding":BINDING,
+                    "purpose":"Synthetic task input",
+                    "target":{"kind":"task_process","session_id":TARGET,"name":"SECURE_INPUT_FIXTURE"},
+                    "execution":{"device_id":TARGET,"grant_type":"session","session_attempt_id":REQUEST,
+                        "session_run_id":123,"session_run_attempt":1,"session_workflow_name":"ubuntu",
+                        "expires_at":expiry},
+                    "is_production":false
+                }),
+            );
+
+            let (mut socket, _) = listener.accept().unwrap();
+            let (route, request) = recv_request(&mut socket);
+            assert_eq!(route, "POST /agent/owner/intent HTTP/1.1");
+            let proof = crate::identity::signed_secure_input_owner_intent_proof(
+                &expected_pem,
+                REQUEST,
+                OWNER,
+                NONCE,
+                3,
+                BINDING,
+                true,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                request,
+                json!({
+                    "action":"secure_input","device_id":OWNER,"request_id":REQUEST,
+                    "nonce":NONCE,"generation":3,"target_confirmed":true,
+                    "production_authorized":false,"proof":proof,"secret":SECRET
+                })
+            );
+            reply(
+                &mut socket,
+                "200 OK",
+                json!({"request_id":REQUEST,"state":"unknown"}),
+            );
+        });
+
+        let (mut master_fd, mut slave_fd) = (-1, -1);
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master_fd,
+                    &mut slave_fd,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let mut master = unsafe { File::from_raw_fd(master_fd) };
+        let slave = unsafe { File::from_raw_fd(slave_fd) };
+        let mut child = ScopedChild(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "secure_input_cli::terminal_tests::owner_flow_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("RCA_TEST_OWNER_PORT", port.to_string())
+                .env("RCA_TEST_OWNER_PEM", pem)
+                .env("RCA_TEST_OWNER_DEVICE", OWNER)
+                .env("RCA_TEST_OWNER_REQUEST", REQUEST)
+                .stdin(Stdio::from(slave.try_clone().unwrap()))
+                .stdout(Stdio::from(slave.try_clone().unwrap()))
+                .stderr(Stdio::from(slave.try_clone().unwrap()))
+                .spawn()
+                .unwrap(),
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let mut output = Vec::new();
+        let mut confirmed = false;
+        let mut secret_sent = false;
+        loop {
+            assert!(Instant::now() < deadline, "Owner CLI PTY timed out");
+            let mut poll = libc::pollfd {
+                fd: master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let ready = unsafe { libc::poll(&mut poll, 1, 50) };
+            if ready > 0 && poll.revents & libc::POLLIN != 0 {
+                let mut buffer = [0; 4096];
+                let count = match master.read(&mut buffer) {
+                    Ok(count) => count,
+                    Err(error) if error.raw_os_error() == Some(libc::EIO) => 0,
+                    Err(error) => panic!("Owner CLI PTY read: {error}"),
+                };
+                if count > 0 {
+                    output.extend_from_slice(&buffer[..count]);
+                    assert!(output.len() < 64 * 1024);
+                    let visible = String::from_utf8_lossy(&output);
+                    if !confirmed
+                        && visible
+                            .contains("Type CONFIRM TARGET to confirm the exact target above: ")
+                    {
+                        assert!(visible.contains(OWNER));
+                        assert!(visible.contains(TARGET));
+                        assert!(visible.contains("SECURE_INPUT_FIXTURE"));
+                        assert!(visible.contains("\"session_run_id\":123"));
+                        master.write_all(b"CONFIRM TARGET\n").unwrap();
+                        confirmed = true;
+                    }
+                    if confirmed && !secret_sent && visible.contains("Secret (input hidden): ") {
+                        assert_eq!(terminal_flags(&slave) & (libc::ECHO | libc::ECHONL), 0);
+                        master.write_all(SECRET.as_bytes()).unwrap();
+                        master.write_all(b"\n").unwrap();
+                        secret_sent = true;
+                    }
+                } else if let Some(status) = child.0.try_wait().unwrap() {
+                    assert!(
+                        status.success(),
+                        "Owner CLI helper failed: {status}; output={}",
+                        String::from_utf8_lossy(&output)
+                    );
+                    break;
+                }
+            }
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(
+                    status.success(),
+                    "Owner CLI helper failed: {status}; output={}",
+                    String::from_utf8_lossy(&output)
+                );
+                if ready <= 0 || poll.revents & libc::POLLIN == 0 {
+                    break;
+                }
+            }
+        }
+        assert!(confirmed && secret_sent);
+        let output = String::from_utf8_lossy(&output);
+        assert!(output.contains("Synthetic task input"));
+        assert!(output.contains("SECURE_INPUT_FIXTURE"));
+        assert!(output.contains("Submitted once."));
+        assert!(
+            !output.contains(SECRET),
+            "secret appeared in terminal output"
+        );
+        server.join().unwrap();
     }
 
     fn stdin_mode() -> libc::tcflag_t {

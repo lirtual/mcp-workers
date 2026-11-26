@@ -70,6 +70,14 @@ pub struct PairingClient {
     client: Client,
 }
 impl PairingClient {
+    #[cfg(test)]
+    pub(crate) fn loopback_test_client(port: u16) -> Self {
+        Self {
+            origin: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+            client: recovery_client().unwrap(),
+        }
+    }
+
     pub fn new(endpoint: &str) -> Result<Self, SessionRecoveryError> {
         let origin = Url::parse(endpoint).map_err(|_| SessionRecoveryError::InvalidIdentity)?;
         if origin.scheme() != "https"
@@ -777,16 +785,8 @@ mod tests {
 
     fn fixture() -> (PairingClient, TcpListener) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let origin = Url::parse(&format!(
-            "http://127.0.0.1:{}/",
-            listener.local_addr().unwrap().port()
-        ))
-        .unwrap();
         (
-            PairingClient {
-                origin,
-                client: recovery_client().unwrap(),
-            },
+            PairingClient::loopback_test_client(listener.local_addr().unwrap().port()),
             listener,
         )
     }
