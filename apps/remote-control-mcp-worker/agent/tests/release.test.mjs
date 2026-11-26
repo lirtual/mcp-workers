@@ -6,9 +6,9 @@ import path from "node:path";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
 import { parseArgs, runtimeSources, ensureNativeTarget, ensureRustCandidate,
-  requiredGlibcVersion } from "../scripts/build-v2-release.mjs";
-import { parseWindowsPreviewBuildArgs } from "../scripts/build-windows-preview.mjs";
-import { inspectTarGzip } from "../scripts/verify-v2-release.mjs";
+  requiredGlibcVersion } from "../scripts/build-agent-release.mjs";
+import { parseWindowsReleaseBuildArgs } from "../scripts/build-windows-release.mjs";
+import { inspectTarGzip } from "../scripts/verify-agent-release.mjs";
 
 const tag="v0.1.0",target="linux-x64-glibc";
 const sha=b=>createHash("sha256").update(b).digest("hex");
@@ -74,7 +74,7 @@ test("#73 release package build rejects unverified architectures and unpinned ta
   assert.ok(darwinModules.includes("upgrade-control.ts"));
   for (const retired of ["main.ts","server.ts","v2-main.ts","v2-repair.ts","session-rca-main.ts"])
     assert.ok(!darwinModules.includes(retired), retired);
-  const candidateTag="v0.1.1-rust-candidate.1";
+  const candidateTag="v0.1.1";
   const candidateArgs=parseArgs(["--version",candidateTag,"--target",target,
     "--native","/opt/supervisor","--out","/tmp/archive",
     "--native-sha256","e".repeat(64),
@@ -217,16 +217,16 @@ test("#914 native-only Rust archive excludes bundled Node and every JS runtime f
 });
 
 test("#914 native-only packaging is explicit and rejects Node inputs",()=>{
-  const args=["--version","v0.1.57-rust-candidate.1","--target",target,
+  const args=["--version","v0.1.57","--target",target,
     "--native","/opt/supervisor","--out","/tmp/release",
     "--native-sha256","b".repeat(64),
     "--rust-agent-bin","/opt/rca-native","--rust-agent-sha256","c".repeat(64),
     "--artifact-profile","rust-native-only-v1"];
   const selected=parseArgs(args);
   assert.equal(selected.artifactProfile,"rust-native-only-v1");
-  const stableArgs=args.map((x,i)=>i===1?"v0.1.57":x);
-  assert.equal(parseArgs(stableArgs).version,"v0.1.57");
-  assert.throws(()=>parseArgs(stableArgs.slice(0,-2)),/native-only profile/);
+  assert.equal(selected.version,"v0.1.57");
+  assert.throws(()=>parseArgs(args.map((x,i)=>i===1?"v0.1.57-rust-candidate.1":x)), /pinned version/);
+  assert.throws(()=>parseArgs(args.slice(0,-2)),/native-only profile/);
   const sessionArgs=["--rust-session-bin","/opt/rca-session","--rust-session-sha256","d".repeat(64)];
   assert.equal(parseArgs([...args,...sessionArgs]).rustSessionBin,"/opt/rca-session");
   assert.throws(()=>parseArgs([...args,...sessionArgs.slice(0,2)]));
@@ -247,14 +247,16 @@ test("#914 native-only packaging is explicit and rejects Node inputs",()=>{
 test("#914 Windows packaging accepts only reviewed native Rust inputs",()=>{
   const args=["--version","v0.1.58","--out","/tmp/release","--background-bin","/opt/rca-background.exe",
     "--rust-agent-bin","/opt/rca-standard.exe","--rust-agent-sha256","c".repeat(64)];
-  assert.throws(()=>parseWindowsPreviewBuildArgs(args), /native-only/);
+  assert.throws(()=>parseWindowsReleaseBuildArgs(args), /native-only/);
   const native=[...args,"--artifact-profile","rust-native-only-v1"];
-  assert.equal(parseWindowsPreviewBuildArgs(native).version,"v0.1.58");
+  assert.equal(parseWindowsReleaseBuildArgs(native).version,"v0.1.58");
   const session=[...native,"--rust-session-bin","/opt/rca-session.exe","--rust-session-sha256","d".repeat(64)];
-  assert.equal(parseWindowsPreviewBuildArgs(session).rustSessionBin,"/opt/rca-session.exe");
-  assert.throws(()=>parseWindowsPreviewBuildArgs(session.map((x,i)=>i===1?"v0.1.58-other.1":x)));
-  assert.throws(()=>parseWindowsPreviewBuildArgs([...native,"--node-bin","/opt/node.exe","--node-sha256","f".repeat(64)]));
-  assert.throws(()=>parseWindowsPreviewBuildArgs(native.map(x=>x==="c".repeat(64)?"wrong":x)));
+  assert.equal(parseWindowsReleaseBuildArgs(session).rustSessionBin,"/opt/rca-session.exe");
+  for(const rejected of ["v0.1.58-other.1","v0.1.58-rust-candidate.1"]) {
+    assert.throws(()=>parseWindowsReleaseBuildArgs(session.map((x,i)=>i===1?rejected:x)));
+  }
+  assert.throws(()=>parseWindowsReleaseBuildArgs([...native,"--node-bin","/opt/node.exe","--node-sha256","f".repeat(64)]));
+  assert.throws(()=>parseWindowsReleaseBuildArgs(native.map(x=>x==="c".repeat(64)?"wrong":x)));
 });
 
 test("#914 native-only Darwin archive has only the two native binaries and manifest",()=>{

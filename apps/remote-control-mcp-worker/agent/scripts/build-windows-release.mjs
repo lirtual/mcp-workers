@@ -7,10 +7,10 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const digestPattern = /^[a-f0-9]{64}$/;
 function rustBuildVersion(version) {
-  return /^v0\.[1-9][0-9]*\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$/.test(version);
+  return /^v0\.[1-9][0-9]*\.[0-9]+$/.test(version);
 }
 
-export function parseWindowsPreviewBuildArgs(argv) {
+export function parseWindowsReleaseBuildArgs(argv) {
   const keys = new Map([
     ["--version", "version"], ["--out", "out"], ["--background-bin", "backgroundBin"],
     ["--rust-agent-bin", "rustAgentBin"], ["--rust-agent-sha256", "rustAgentSha256"],
@@ -42,7 +42,7 @@ function digest(contents) {
   return createHash("sha256").update(contents).digest("hex");
 }
 
-export function buildWindowsPreview(args) {
+export function buildWindowsRelease(args) {
   if (process.platform !== "win32" || process.arch !== "x64")
     throw Error("Windows x64 native packaging is required.");
   validateNativeInputs(args);
@@ -164,7 +164,7 @@ export function buildWindowsPreview(args) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const result = buildWindowsPreview(parseWindowsPreviewBuildArgs(process.argv.slice(2)));
+    const result = buildWindowsRelease(parseWindowsReleaseBuildArgs(process.argv.slice(2)));
     process.stdout.write(JSON.stringify(result) + "\n");
   } catch {
     process.stderr.write("Windows bundle candidate refused: untrusted native input.\n");

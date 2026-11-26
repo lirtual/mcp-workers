@@ -51,8 +51,8 @@ export function parseArgs(argv) {
       (nativeOnly && !hasRustCandidate) ||
       (hasRustCandidate && (!absolute(params.rustAgentBin) ||
         !/^[a-f0-9]{64}$/.test(params.rustAgentSha256) ||
-        !(/^v0\.[1-9][0-9]*\.[0-9]+-rust-candidate\.[1-9][0-9]*$/.test(params.version) ||
-          (nativeOnly && /^v0\.[1-9][0-9]*\.[0-9]+$/.test(params.version))))) ||
+        !(nativeOnly ? /^v0\.[1-9][0-9]*\.[0-9]+$/.test(params.version)
+          : /^v0\.[1-9][0-9]*\.[0-9]+-rust-candidate\.[1-9][0-9]*$/.test(params.version)))) ||
       (hasSession && (!nativeOnly || params.target !== "linux-x64-glibc" ||
         !absolute(params.rustSessionBin) || !/^[a-f0-9]{64}$/.test(params.rustSessionSha256)))) {
     throw new Error("Specify a pinned version, supported target, absolute native paths and digests; Node input is Darwin-only.");

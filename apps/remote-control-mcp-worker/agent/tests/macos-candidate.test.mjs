@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { parseArgs, machOMachine, darwinGitRoot } from "../scripts/build-v2-release.mjs";
+import { parseArgs, machOMachine, darwinGitRoot } from "../scripts/build-agent-release.mjs";
 import { requireNativeMac, parseTemporaryMacArgs, privateDirectory, privateFileIfPresent } from "../src/macos-temporary.ts";
 
 const sha = "a".repeat(64);

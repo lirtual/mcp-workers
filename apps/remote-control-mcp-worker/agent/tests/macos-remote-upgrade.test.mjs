@@ -95,7 +95,7 @@ test("#657 remote launcher references exactly one detached launchd job and durab
   const root=path.resolve(import.meta.dirname,"../scripts");
   const driver=readFileSync(path.join(root,"macos-remote-upgrade.mjs"),"utf8");
   const installer=readFileSync(path.join(root,"macos-local.sh"),"utf8");
-  const publisher=readFileSync(path.join(root,"build-v2-release.mjs"),"utf8");
+  const publisher=readFileSync(path.join(root,"build-agent-release.mjs"),"utf8");
   assert.match(driver,/launchctl/);
   assert.match(driver,/\["bootstrap","gui\/"\+process\.getuid\(\),job\]/);
   assert.match(readFileSync(path.join(root,"macos-local.mjs"),"utf8"),/LaunchOnlyOnce/);

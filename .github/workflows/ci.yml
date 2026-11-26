@@ -284,7 +284,7 @@ jobs:
             "https://github.com/lirtual/mcp-workers/releases/download/v0.1.56/$(basename "$baseline_archive")" \
             -o "$baseline_archive"
           echo "$baseline_sha256  $baseline_archive" | shasum -a 256 --check
-          baseline="$RUNNER_TEMP/spec914-v0.1.56"
+          baseline="$RUNNER_TEMP/rca-darwin-baseline"
           mkdir -m 700 "$baseline"
           tar -xzf "$baseline_archive" -C "$baseline"
           source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
@@ -296,9 +296,9 @@ jobs:
             "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
           node_bin="$(realpath "$(command -v node)")"
           rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
-          out="$RUNNER_TEMP/spec914-darwin-candidate"
+          out="$RUNNER_TEMP/rca-darwin-reference"
           mkdir -m 700 -p "$out"
-          node "$source_root/scripts/build-v2-release.mjs" \
+          node "$source_root/scripts/build-agent-release.mjs" \
             --version v0.1.57-rust-candidate.1 --target "$target" \
             --node-bin "$node_bin" --node-sha256 "$(shasum -a 256 "$node_bin" | cut -d' ' -f1)" \
             --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
@@ -307,8 +307,8 @@ jobs:
             --out "$out"
           # Native-only acceptance: build from these same verified native
           # binaries and independently inspect and read the exact inventory.
-          native_out="$RUNNER_TEMP/spec914-darwin-native"
-          node "$source_root/scripts/build-v2-release.mjs" \
+          native_out="$RUNNER_TEMP/rca-darwin-native"
+          node "$source_root/scripts/build-agent-release.mjs" \
             --version v0.1.60 --target "$target" \
             --artifact-profile rust-native-only-v1 \
             --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
@@ -316,7 +316,7 @@ jobs:
             --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
             --out "$native_out"
           native_archive="$native_out/remote-control-agent-v0.1.60-$target.tar.gz"
-          node --input-type=module - "$source_root/scripts/verify-v2-release.mjs" "$native_archive" "$target" <<'JS'
+          node --input-type=module - "$source_root/scripts/verify-agent-release.mjs" "$native_archive" "$target" <<'JS'
           import {readFileSync} from 'node:fs';
           const [verifier,archive,target]=process.argv.slice(2);
           const {inspectTarGzip}=await import(verifier);

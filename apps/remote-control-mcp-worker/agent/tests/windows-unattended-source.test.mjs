@@ -65,7 +65,7 @@ test("native detached upgrade admits only reviewed existing Task switch, not onb
 });
 
 test("attended Latest update is limited to existing installation and the bare CLI verbs",()=>{
-  const builder=readFileSync(fileURLToPath(new URL("../scripts/build-windows-preview.mjs",import.meta.url)),"utf8");
+  const builder=readFileSync(fileURLToPath(new URL("../scripts/build-windows-release.mjs",import.meta.url)),"utf8");
   assert(builder.includes('if "%~1"=="update" if "%2"=="" goto :attended_update'));
   assert(builder.includes('if "%~1"=="upgrade" if "%2"=="" goto :attended_update'));
   assert(builder.includes('--cli %*'));

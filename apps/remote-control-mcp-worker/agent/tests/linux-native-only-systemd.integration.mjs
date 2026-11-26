@@ -8,9 +8,9 @@ import {chmodSync,existsSync,mkdirSync,readFileSync,readlinkSync,rmSync,symlinkS
 import path from "node:path";
 import {ReceiptStore} from "../src/operations.ts";
 
-const source=process.env.RCA914_AGENT_SOURCE;
-const oldArchive=process.env.RCA914_OLD_ARCHIVE;
-const nativeArchive=process.env.RCA914_NATIVE_ARCHIVE;
+const source=process.env.RCA_TEST_AGENT_SOURCE;
+const oldArchive=process.env.RCA_TEST_OLD_ARCHIVE;
+const nativeArchive=process.env.RCA_TEST_NATIVE_ARCHIVE;
 if(!source||!oldArchive||!nativeArchive)throw Error("Missing isolated native systemd fixture paths");
 if(process.getuid()===0||!process.env.DBUS_SESSION_BUS_ADDRESS||!process.env.XDG_RUNTIME_DIR)
   throw Error("Disposable unprivileged systemd user bus is required");
