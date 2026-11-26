@@ -46,7 +46,7 @@ test("request_secure_input forwards explicit production classification and rejec
 
 // Execute the served page script with synthetic DOM/Clerk/HTTP boundaries.
 // No browser account, live endpoint or secret is involved in this regression.
-test("secure input page obtains a current Owner token per action and never re-enables uncertain submission", async () => {
+async function secureInputPageFixture(target = { kind: "task_process" }) {
   const id = randomUUID();
   const origin = "https://rca.lirtual.dpdns.org";
   const env = {
@@ -73,6 +73,7 @@ test("secure input page obtains a current Owner token per action and never re-en
   const event = { preventDefault() {} };
   const invoke = (id: string, type: string) => handlers.get(id + ":" + type)!(event);
   let tokens = 0, submissions = 0, cancelled = false;
+  let resultState: { state: string; error_code?: string } | undefined;
   const actions: string[] = [];
   runInNewContext(source, {
     document: { getElementById: element }, location: { href: origin + "/secure-input/" + id },
@@ -87,11 +88,16 @@ test("secure input page obtains a current Owner token per action and never re-en
         cancelled = true;
         return Response.json({ request_id: id, state: "cancelled" });
       }
-      return Response.json({ state: cancelled ? "cancelled" : "pending", purpose: "Synthetic input",
-        target: { kind: "task_process" }, execution: {}, is_production: false, expires_at: Date.now() + 300_000 });
+      return Response.json({ ...(resultState ?? { state: cancelled ? "cancelled" : "pending" }), purpose: "Synthetic input",
+        target, execution: {}, is_production: false, expires_at: Date.now() + 300_000 });
     },
   });
   await new Promise(resolve => setImmediate(resolve));
+  return { element, invoke, actions, setResult: (value: typeof resultState) => { resultState = value; }, counts: () => ({ tokens, submissions }) };
+}
+
+test("secure input page obtains a current Owner token per action and never re-enables uncertain submission", async () => {
+  const { element, invoke, actions, counts } = await secureInputPageFixture();
   assert.equal(element("submit").disabled, false);
   await invoke("refresh", "click");
   element("secret").value = "synthetic-marker";
@@ -102,11 +108,36 @@ test("secure input page obtains a current Owner token per action and never re-en
   await invoke("refresh", "click");
   assert.equal(element("submit").disabled, true);
   await invoke("secure-form", "submit");
-  assert.equal(submissions, 1);
+  assert.equal(counts().submissions, 1);
   assert.equal(element("cancel").disabled, false);
   await invoke("cancel", "click");
   assert.equal(element("state").textContent, "cancelled");
   assert.equal(element("secure-form").hidden, true);
   assert.deepEqual(actions, ["details", "details", "submit", "details", "cancel"]);
-  assert.equal(tokens, actions.length);
+  assert.equal(counts().tokens, actions.length);
+});
+
+test("secure input page shows the safe status classification and clears it after recovery", async () => {
+  const { element, invoke, setResult } = await secureInputPageFixture();
+  setResult({ state: "unknown", error_code: "timed_out" });
+  await invoke("refresh", "click");
+  assert.equal(element("error-code").textContent, "timed_out");
+  assert.equal(element("submit").disabled, true);
+  assert.match(element("status").textContent, /Do not submit again/);
+  setResult({ state: "succeeded" });
+  await invoke("refresh", "click");
+  assert.equal(element("error-code").textContent, "—");
+  assert.equal(element("submit").disabled, true);
+});
+
+test("secure input page distinguishes GitHub Variable and Secret recovery", async () => {
+  for (const scope of ["repository", "environment"]) {
+    const variable = await secureInputPageFixture({ kind: "github_" + scope + "_variable" });
+    assert.match(variable.element("effect").textContent, /GitHub Variable/);
+    assert.match(variable.element("recovery").textContent, /restoring the prior Variable value/);
+    assert.doesNotMatch(variable.element("recovery").textContent, /cannot be read back/);
+    const secret = await secureInputPageFixture({ kind: "github_" + scope + "_secret" });
+    assert.match(secret.element("effect").textContent, /GitHub Secret/);
+    assert.match(secret.element("recovery").textContent, /previous Secret value cannot be read back/);
+  }
 });

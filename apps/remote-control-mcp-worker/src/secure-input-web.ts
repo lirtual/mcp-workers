@@ -60,7 +60,10 @@ function effectAndRecovery(target) {
   if (target.kind.startsWith("github_")) return {
     effect: "Set or replace the named GitHub " + (target.kind.endsWith("_variable") ? "Variable" : "Secret") +
       (target.environment ? " for the selected repository Environment." : " for the selected repository."),
-    recovery: "The previous Secret value cannot be read back; recover by setting a replacement or removing it. This does not deploy code by itself."
+    recovery: (target.kind.endsWith("_variable")
+      ? "Recover by restoring the prior Variable value or removing it."
+      : "The previous Secret value cannot be read back; recover by setting a replacement or removing it.") +
+      " This does not deploy code by itself."
   };
   if (target.kind === "cloudflare_worker_secret") return target.mode === "deploy" ? {
     effect: "Set the Worker Secret and immediately create and deploy a new Worker version.",
@@ -73,6 +76,7 @@ function effectAndRecovery(target) {
 }
 function showState(value) {
   text("state", value.state);
+  text("error-code", value.error_code);
   const pending = value.state === "pending";
   form.hidden = !pending;
   submit.disabled = !pending || busy || inputAttempted;
@@ -186,6 +190,7 @@ button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
 <p><strong>Provider principal</strong></p><pre id="principal"></pre>
 <p><strong>Expires</strong> <span id="expires"></span></p>
 <p><strong>Request state</strong> <span id="state">loading</span></p>
+<p><strong>Failure classification</strong> <span id="error-code">—</span></p>
 <form id="secure-form" hidden>
 <label for="secret">Credential value</label>
 <textarea id="secret" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
