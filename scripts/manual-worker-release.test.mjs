@@ -1696,5 +1696,5 @@ test('#1046 historical physical Task evidence uses the existing repository-scope
   WORKFLOW_GITHUB_DISPATCH_TOKEN:'task-dispatch-token'
  },async()=>new Response('{}',{status:403}));
  await assert.rejects(()=>denied.historySources.githubRun('lirtual/github-actions',4),
-  /HTTP 403 api\\.github\\.com\\/repos\\/lirtual\\/github-actions\\/actions\\/runs\\/4/);
+  error=>error.message.includes('HTTP 403 api.github.com/repos/lirtual/github-actions/actions/runs/4'));
 });
