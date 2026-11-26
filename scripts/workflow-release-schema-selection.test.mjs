@@ -37,19 +37,12 @@ test("unknown, out of order, duplicate and malformed inventories fail closed", (
   assert.throws(()=>selectWorkflowSchemaRelease(response([]),[]));
   assert.throws(()=>selectWorkflowSchemaRelease(response([]),["INVALID.sql"]));
 });
-test("protected release uses a single strict cutover and ordinary v23 verification", () => {
+test("protected release verifies existing schema without a retired migration path", () => {
  const yaml=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
- const prepare=yaml.indexOf("      - name: Prepare strict Workflow cutover");
- const apply=yaml.indexOf("      - name: Apply only the reviewed v23 Workflow D1 migration");
- const backfill=yaml.indexOf("      - name: Conditionally backfill terminal facts");
  const publish=yaml.indexOf("      - name: Publish exactly selected Worker");
- assert.ok(prepare>0&&apply>prepare&&backfill>apply&&publish>backfill);
- const strict="inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true";
- for(const block of [yaml.slice(prepare,apply),yaml.slice(apply,backfill),yaml.slice(backfill,publish)])
-  assert.ok(block.includes(strict));
- assert.ok(yaml.slice(apply,backfill).includes("steps.workflow_schema.outputs.apply_required == 'true'"));
- assert.match(yaml.slice(apply,backfill),/workflow-cutover-recheck[\s\S]*wrangler d1 migrations apply workflow-mcp-db --remote/);
+ assert.ok(publish>0);
  assert.match(yaml.slice(publish),/workflow-check workflow-mcp-worker[\s\S]*pnpm exec wrangler deploy/);
+ assert.doesNotMatch(yaml,/workflow-prepare|workflow-backfill|workflow-cutover-recheck|wrangler d1 migrations apply workflow-mcp-db/);
  assert.doesNotMatch(yaml,/WORKFLOW_(?:[A-Z_]+_)?TERMINAL_RUN_ID|TERMINAL_PROOF_KIND|steps\.terminal/);
  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
  assert.match(ci,/node --test [^\n]*scripts\/workflow-release-schema-selection\.test\.mjs/);
