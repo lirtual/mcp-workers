@@ -273,8 +273,8 @@ export async function updateSecureInputStatus(
     if (!allowed) return reject(409, "invalid_transition");
     const next: SecureInputRecord = {
       ...current, state, updated_at: now,
-      ...(state === "failed" && errorCode ? { error_code: errorCode } : {}),
-      ...(state !== "failed" ? { error_code: undefined } : {}),
+      error_code: state === "unknown" ? errorCode ?? current.error_code :
+        state === "failed" ? errorCode : undefined,
     };
     await tx.put(keyFor(requestId), next);
     return { status: 200, body: { request_id: requestId, state, ...(next.error_code ? { error_code: next.error_code } : {}) } };
@@ -312,7 +312,8 @@ export async function markSecureInputUnknownForSocket(
       const latest = await tx.get<SecureInputRecord>(key);
       if (!latest || latest.execution.device_id !== deviceId || latest.execution.epoch !== epoch ||
           latest.consumed_at === undefined || latest.dispatch_started_at === undefined || terminal(latest.state)) return;
-      await tx.put(key, { ...latest, state: "unknown", error_code: "execution_interrupted", updated_at: now });
+      await tx.put(key, { ...latest, state: "unknown",
+        error_code: latest.error_code ?? "execution_interrupted", updated_at: now });
     });
   }
 }

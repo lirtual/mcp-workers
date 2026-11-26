@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 import {
   cancelSecureInputRecord, consumeSecureInputRecord, createSecureInputRecord,
-  getSecureInputRecord, parseSecureInputRequest, pruneSecureInputRecords, secureInputTargetBinding,
+  getSecureInputRecord, markSecureInputUnknownForSocket, parseSecureInputRequest,
+  pruneSecureInputRecords, publicSecureInputRecord, secureInputTargetBinding,
   startSecureInputDispatch, updateSecureInputStatus, validateSecureInputSecret, type SecureInputRecord,
 } from "../src/secure-input.ts";
 
@@ -133,6 +134,25 @@ test("Agent status updates are bound to the exact device epoch and monotonic sta
   const stored = store.rows.get("secure-input:" + record.request_id) as SecureInputRecord;
   assert.equal(stored.state, "succeeded");
   assert.equal(stored.error_code, undefined);
+});
+
+test("unknown preserves the Agent's safe failure classification until a confirmed result", async () => {
+  const store = makeStore(), now = 1_800_000_000_000;
+  const record = await createPending(store, now);
+  await consumeSecureInputRecord(store as never, record.request_id, "owner_user_1", confirmed, now);
+  await startSecureInputDispatch(store as never, record.request_id, deviceId, "current-epoch", now);
+  await updateSecureInputStatus(store as never, record.request_id, deviceId, "current-epoch", "accepted", undefined, now + 1);
+  const result = await updateSecureInputStatus(store as never, record.request_id, deviceId, "current-epoch", "unknown", "timed_out", now + 2);
+  assert.deepEqual(result.body, { request_id: record.request_id, state: "unknown", error_code: "timed_out" });
+  const observed = await getSecureInputRecord(store as never, record.request_id, "owner_user_1", now + 3);
+  assert.equal((observed.body as SecureInputRecord).error_code, "timed_out");
+  assert.equal(Reflect.get(publicSecureInputRecord(observed.body as SecureInputRecord), "error_code"), "timed_out");
+  await markSecureInputUnknownForSocket(store as never, deviceId, "current-epoch", now + 4);
+  assert.equal((store.rows.get("secure-input:" + record.request_id) as SecureInputRecord).error_code, "timed_out");
+  assert.equal((await startSecureInputDispatch(store as never, record.request_id, deviceId, "current-epoch", now + 4)).status, 409);
+  const resolved = await updateSecureInputStatus(store as never, record.request_id, deviceId, "current-epoch", "succeeded", undefined, now + 5);
+  assert.deepEqual(resolved.body, { request_id: record.request_id, state: "succeeded" });
+  assert.equal((store.rows.get("secure-input:" + record.request_id) as SecureInputRecord).error_code, undefined);
 });
 
 test("stale accepted/running requests become unknown, never replayed", async () => {
