@@ -4,6 +4,120 @@
 use std::io::{self, IsTerminal, Write};
 use zeroize::Zeroizing;
 
+// Catch terminal interruption only while hidden input is active. The handler
+// does not touch terminal state or allocate; the reader returns through RAII.
+#[cfg(unix)]
+mod interrupt {
+    use super::SecureInputCliError;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, MutexGuard,
+    };
+
+    static LOCK: Mutex<()> = Mutex::new(());
+    static CANCELLED: AtomicBool = AtomicBool::new(false);
+    const SIGNALS: [libc::c_int; 5] = [
+        libc::SIGINT,
+        libc::SIGQUIT,
+        libc::SIGTERM,
+        libc::SIGHUP,
+        libc::SIGTSTP,
+    ];
+
+    extern "C" fn cancel(_: libc::c_int) {
+        CANCELLED.store(true, Ordering::Relaxed);
+    }
+
+    pub struct Guard {
+        previous: Vec<(libc::c_int, libc::sigaction)>,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Guard {
+        pub fn new() -> Result<Self, SecureInputCliError> {
+            let lock = LOCK.try_lock().map_err(|_| SecureInputCliError)?;
+            CANCELLED.store(false, Ordering::Relaxed);
+            let mut guard = Self {
+                previous: Vec::with_capacity(SIGNALS.len()),
+                _lock: lock,
+            };
+            let mut action = unsafe { std::mem::zeroed::<libc::sigaction>() };
+            action.sa_sigaction = cancel as *const () as usize;
+            unsafe {
+                libc::sigemptyset(&mut action.sa_mask);
+            }
+            for signal in SIGNALS {
+                let mut previous = unsafe { std::mem::zeroed::<libc::sigaction>() };
+                if unsafe { libc::sigaction(signal, &action, &mut previous) } != 0 {
+                    return Err(SecureInputCliError);
+                }
+                guard.previous.push((signal, previous));
+            }
+            Ok(guard)
+        }
+
+        pub fn cancelled(&self) -> bool {
+            CANCELLED.load(Ordering::Relaxed)
+        }
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            for (signal, previous) in self.previous.iter().rev() {
+                unsafe {
+                    libc::sigaction(*signal, previous, std::ptr::null_mut());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn read_terminal_line(cancel: &interrupt::Guard) -> Result<Zeroizing<String>, SecureInputCliError> {
+    // Canonical input supplies one line (or EOF); poll also detects cancellation
+    // delivered to another thread. Do not use read_line, which retries EINTR.
+    let mut bytes = Zeroizing::new(vec![0u8; 8_194]);
+    loop {
+        if cancel.cancelled() {
+            return Err(SecureInputCliError);
+        }
+        let mut fd = libc::pollfd {
+            fd: libc::STDIN_FILENO,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ready = unsafe { libc::poll(&mut fd, 1, 100) };
+        if ready < 0 {
+            if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(SecureInputCliError);
+        }
+        if ready == 0 {
+            continue;
+        }
+        if cancel.cancelled() || fd.revents & libc::POLLIN == 0 {
+            return Err(SecureInputCliError);
+        }
+        let count =
+            unsafe { libc::read(libc::STDIN_FILENO, bytes.as_mut_ptr().cast(), bytes.len()) };
+        if count < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        if count <= 0 || cancel.cancelled() {
+            return Err(SecureInputCliError);
+        }
+        let line = &bytes[..count as usize];
+        // A partial/oversized canonical line or EOF is not confirmation.
+        if !line.ends_with(b"\n") {
+            return Err(SecureInputCliError);
+        }
+        return std::str::from_utf8(line)
+            .map(|line| Zeroizing::new(line.to_owned()))
+            .map_err(|_| SecureInputCliError);
+    }
+}
+
 #[cfg(unix)]
 struct EchoGuard {
     original: libc::termios,
@@ -23,6 +137,8 @@ fn hide_echo() -> Result<EchoGuard, SecureInputCliError> {
         return Err(SecureInputCliError);
     }
     let mut hidden = original;
+    // This is a line-oriented interactive prompt, including in a custom tty.
+    hidden.c_lflag |= libc::ICANON | libc::ISIG;
     hidden.c_lflag &= !(libc::ECHO | libc::ECHONL);
     if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &hidden) } != 0 {
         return Err(SecureInputCliError);
@@ -31,34 +147,82 @@ fn hide_echo() -> Result<EchoGuard, SecureInputCliError> {
 }
 
 #[cfg(windows)]
-struct EchoGuard {
-    handle: windows_sys::Win32::Foundation::HANDLE,
-    original: u32,
-}
-#[cfg(windows)]
-impl Drop for EchoGuard {
-    fn drop(&mut self) {
-        unsafe {
-            windows_sys::Win32::System::Console::SetConsoleMode(self.handle, self.original);
+mod windows_echo {
+    use super::SecureInputCliError;
+    use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::HANDLE;
+    use windows_sys::Win32::System::Console::{
+        FlushConsoleInputBuffer, GetConsoleMode, GetStdHandle, SetConsoleCtrlHandler,
+        SetConsoleMode, CTRL_BREAK_EVENT, CTRL_C_EVENT, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
+    };
+
+    // A console handler executes on a separate OS thread. Serialize setup,
+    // normal restoration and interrupt restoration; never keep input here.
+    static ACTIVE: Mutex<Option<(usize, u32)>> = Mutex::new(None);
+
+    unsafe extern "system" fn restore_on_interrupt(event: u32) -> i32 {
+        if !matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT) {
+            return 0;
+        }
+        if let Ok(mut active) = ACTIVE.lock() {
+            if let Some((handle, original)) = active.take() {
+                unsafe {
+                    FlushConsoleInputBuffer(handle as HANDLE);
+                    SetConsoleMode(handle as HANDLE, original);
+                }
+                // The interrupted Owner CLI must not continue to submit.
+                std::process::exit(130);
+            }
+        }
+        0
+    }
+
+    pub struct EchoGuard;
+
+    impl EchoGuard {
+        pub fn new() -> Result<Self, SecureInputCliError> {
+            let mut active = ACTIVE.lock().map_err(|_| SecureInputCliError)?;
+            if active.is_some() {
+                return Err(SecureInputCliError);
+            }
+            let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+            let mut original = 0;
+            if handle.is_null()
+                || unsafe { GetConsoleMode(handle, &mut original) } == 0
+                || unsafe { SetConsoleCtrlHandler(Some(restore_on_interrupt), 1) } == 0
+            {
+                return Err(SecureInputCliError);
+            }
+            if unsafe { SetConsoleMode(handle, original & !ENABLE_ECHO_INPUT) } == 0 {
+                unsafe {
+                    SetConsoleCtrlHandler(Some(restore_on_interrupt), 0);
+                }
+                return Err(SecureInputCliError);
+            }
+            *active = Some((handle as usize, original));
+            Ok(Self)
+        }
+    }
+
+    impl Drop for EchoGuard {
+        fn drop(&mut self) {
+            if let Ok(mut active) = ACTIVE.lock() {
+                if let Some((handle, original)) = active.take() {
+                    unsafe {
+                        SetConsoleMode(handle as HANDLE, original);
+                    }
+                }
+                unsafe {
+                    SetConsoleCtrlHandler(Some(restore_on_interrupt), 0);
+                }
+            }
         }
     }
 }
+
 #[cfg(windows)]
-fn hide_echo() -> Result<EchoGuard, SecureInputCliError> {
-    use windows_sys::Win32::System::Console::{
-        GetConsoleMode, GetStdHandle, SetConsoleMode, ENABLE_ECHO_INPUT, STD_INPUT_HANDLE,
-    };
-    let handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-    if handle.is_null() {
-        return Err(SecureInputCliError);
-    }
-    let mut original = 0u32;
-    if unsafe { GetConsoleMode(handle, &mut original) } == 0
-        || unsafe { SetConsoleMode(handle, original & !ENABLE_ECHO_INPUT) } == 0
-    {
-        return Err(SecureInputCliError);
-    }
-    Ok(EchoGuard { handle, original })
+fn hide_echo() -> Result<windows_echo::EchoGuard, SecureInputCliError> {
+    windows_echo::EchoGuard::new()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,14 +252,33 @@ pub fn read_hidden_secret() -> Result<Zeroizing<String>, SecureInputCliError> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(SecureInputCliError);
     }
+    #[cfg(unix)]
+    let cancel = interrupt::Guard::new()?;
     let guard = hide_echo()?;
     eprint!("Secret (input hidden): ");
     io::stderr().flush().map_err(|_| ())?;
-    let mut value = Zeroizing::new(String::new());
-    let read = io::stdin().read_line(&mut value).map_err(|_| ());
+    #[cfg(unix)]
+    let read = read_terminal_line(&cancel);
+    #[cfg(windows)]
+    let read = {
+        let mut value = Zeroizing::new(String::new());
+        io::stdin()
+            .read_line(&mut value)
+            .map(|_| value)
+            .map_err(|_| SecureInputCliError)
+    };
     drop(guard);
+    #[cfg(unix)]
+    {
+        let cancelled = cancel.cancelled();
+        drop(cancel);
+        if cancelled {
+            eprintln!();
+            return Err(SecureInputCliError);
+        }
+    }
     eprintln!();
-    read?;
+    let mut value = read?;
     while value.ends_with(['\r', '\n']) {
         value.pop();
     }
@@ -221,7 +404,12 @@ mod terminal_tests {
     #[test]
     fn hidden_input_fixture() {
         if std::env::var_os("RCA_TEST_HIDDEN_INPUT_FIXTURE").is_some() {
-            assert!(read_hidden_secret().is_ok_and(|value| value.as_str() == MARKER));
+            let result = read_hidden_secret();
+            if std::env::var_os("RCA_TEST_CANCEL_HIDDEN_INPUT").is_some() {
+                assert!(result.is_err());
+            } else {
+                assert!(result.is_ok_and(|value| value.as_str() == MARKER));
+            }
         }
     }
 
@@ -244,6 +432,16 @@ mod terminal_tests {
 
     #[test]
     fn real_pty_prompt_is_hidden_and_terminal_is_restored() {
+        check_pty(false);
+    }
+
+    #[test]
+    fn real_pty_interrupt_cancels_and_restores_terminal() {
+        check_pty(true);
+    }
+
+    fn check_pty(cancel: bool) {
+        use std::os::unix::process::CommandExt;
         let (mut master_fd, mut slave_fd) = (-1, -1);
         assert_eq!(
             unsafe {
@@ -261,8 +459,23 @@ mod terminal_tests {
         let slave = unsafe { File::from_raw_fd(slave_fd) };
         let original = terminal_flags(&slave);
         assert_ne!(original & libc::ECHO, 0);
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        if cancel {
+            command.env("RCA_TEST_CANCEL_HIDDEN_INPUT", "1");
+            // A real foreground controlling terminal delivers VINTR as SIGINT.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1
+                        || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) == -1
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         let mut child = ScopedChild(
-            Command::new(std::env::current_exe().unwrap())
+            command
                 .args([
                     "--exact",
                     "secure_input_cli::terminal_tests::hidden_input_fixture",
@@ -298,12 +511,17 @@ mod terminal_tests {
                 {
                     assert_eq!(terminal_flags(&slave) & (libc::ECHO | libc::ECHONL), 0);
                     master.write_all(MARKER.as_bytes()).unwrap();
-                    master.write_all(b"\n").unwrap();
+                    master
+                        .write_all(if cancel { b"\x03" } else { b"\n" })
+                        .unwrap();
                     submitted = true;
                 }
             }
             if let Some(status) = child.0.try_wait().unwrap() {
-                assert!(status.success());
+                assert!(
+                    status.success(),
+                    "terminal helper did not return normally: {status}"
+                );
                 // Drain any final output before checking the synthetic marker.
                 if ready == 0 {
                     break;
@@ -315,5 +533,126 @@ mod terminal_tests {
         assert!(!output
             .windows(MARKER.len())
             .any(|window| window == MARKER.as_bytes()));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_terminal_tests {
+    use super::*;
+    use std::fs::{File, OpenOptions};
+    use std::os::windows::{io::AsRawHandle, process::CommandExt};
+    use std::process::{Child, Command};
+    use std::time::{Duration, Instant};
+    use windows_sys::Win32::System::Console::{
+        GenerateConsoleCtrlEvent, GetConsoleMode, GetStdHandle, SetConsoleCtrlHandler,
+        SetStdHandle, CTRL_C_EVENT, ENABLE_ECHO_INPUT, STD_ERROR_HANDLE, STD_INPUT_HANDLE,
+        STD_OUTPUT_HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+
+    unsafe extern "system" fn keep_test_observer(event: u32) -> i32 {
+        i32::from(event == CTRL_C_EVENT)
+    }
+
+    fn console_handles() -> (File, File) {
+        // CI may redirect inherited standard streams even with a new console.
+        let input = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("CONIN$")
+            .unwrap();
+        let output = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("CONOUT$")
+            .unwrap();
+        unsafe {
+            assert_ne!(SetStdHandle(STD_INPUT_HANDLE, input.as_raw_handle()), 0);
+            assert_ne!(SetStdHandle(STD_OUTPUT_HANDLE, output.as_raw_handle()), 0);
+            assert_ne!(SetStdHandle(STD_ERROR_HANDLE, output.as_raw_handle()), 0);
+        }
+        (input, output)
+    }
+
+    fn mode() -> u32 {
+        let mut value = 0;
+        assert_ne!(
+            unsafe { GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &mut value) },
+            0
+        );
+        value
+    }
+
+    // Each fixture is a bounded child. A disposable console is shared by
+    // the observer and the CLI reader, never by the CI runner.
+    struct ScopedChild(Child);
+    impl Drop for ScopedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn wait_for_exit(child: &mut Child, seconds: u64) -> std::process::ExitStatus {
+        let deadline = Instant::now() + Duration::from_secs(seconds);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "console fixture timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn real_console_interrupt_restores_mode() {
+        const ROLE: &str = "RCA_TEST_CONSOLE_INTERRUPT_ROLE";
+        const TEST: &str =
+            "secure_input_cli::windows_terminal_tests::real_console_interrupt_restores_mode";
+        match std::env::var(ROLE).as_deref() {
+            Ok("reader") => {
+                let _console = console_handles();
+                assert_ne!(unsafe { SetConsoleCtrlHandler(None, 0) }, 0);
+                let _ = read_hidden_secret();
+                panic!("reader must not continue after interrupt");
+            }
+            Ok("observer") => {
+                let _console = console_handles();
+                assert_ne!(
+                    unsafe { SetConsoleCtrlHandler(Some(keep_test_observer), 1) },
+                    0
+                );
+                let original = mode();
+                assert_ne!(original & ENABLE_ECHO_INPUT, 0);
+                let mut reader = ScopedChild(
+                    Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", TEST, "--nocapture"])
+                        .env(ROLE, "reader")
+                        .spawn()
+                        .unwrap(),
+                );
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while mode() & ENABLE_ECHO_INPUT != 0 {
+                    assert!(reader.0.try_wait().unwrap().is_none());
+                    assert!(Instant::now() < deadline, "reader did not hide echo");
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                assert_ne!(unsafe { GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0) }, 0);
+                let status = wait_for_exit(&mut reader.0, 10);
+                assert_eq!(mode(), original, "interrupted reader left console altered");
+                assert_eq!(status.code(), Some(130));
+            }
+            _ => {
+                let mut observer = ScopedChild(
+                    Command::new(std::env::current_exe().unwrap())
+                        .args(["--exact", TEST, "--nocapture"])
+                        .env(ROLE, "observer")
+                        .creation_flags(CREATE_NEW_CONSOLE)
+                        .spawn()
+                        .unwrap(),
+                );
+                assert!(wait_for_exit(&mut observer.0, 20).success());
+            }
+        }
     }
 }
