@@ -231,6 +231,39 @@ pub(super) fn iso_time(ms: u64) -> Option<String> {
     ))
 }
 
+// A matching local process marker establishes local running evidence even
+// when the separate signed WSS confirmation is unavailable or disconnected.
+pub(super) fn apply_connection_observation(
+    state: &mut serde_json::Value,
+    stopped: bool,
+    observed: Registration,
+    evidence: Option<(bool, u64, bool)>,
+) {
+    let evidence = match (&observed, stopped) {
+        (Registration::Present(Some(_)), false) => evidence,
+        _ => None,
+    };
+    let local = match (stopped, observed) {
+        (true, Registration::Absent) => "intentionally_stopped",
+        (true, _) => "stopped_requested_unverified",
+        (false, Registration::Present(_)) if evidence.is_some() => "running_observed",
+        (false, Registration::Present(_)) => "present_unverified",
+        (false, Registration::Absent) => "not_running",
+        _ => "unconfirmed",
+    };
+    state["local_service"] = serde_json::json!(local);
+    state["signed_wss"] = serde_json::json!(if evidence
+        .is_some_and(|(connected, _, online)| connected && online)
+    {
+        "connected_observed"
+    } else {
+        "unconfirmed"
+    });
+    state["last_online"] = serde_json::json!(evidence
+        .and_then(|(connected, at, _)| if connected { iso_time(at) } else { None })
+        .unwrap_or_else(|| "unconfirmed".to_owned()));
+}
+
 pub(super) fn default_diagnostics(arch: &str) -> serde_json::Value {
     serde_json::json!({"installed":null,"version":null,"installed_version":null,
         "platform":"darwin","arch":arch,"device_id":null,"identity_present":null,
@@ -994,6 +1027,78 @@ mod tests {
         assert_eq!(state["automatic_update_activity"], "needs_attention");
         assert_eq!(state["update_transaction"], "pending_or_cleanup");
         assert_eq!(state["signed_wss"], "unconfirmed");
+    }
+
+    #[test]
+    fn local_running_and_signed_connection_are_independent_observations() {
+        let mut state = default_diagnostics("arm64");
+        let at = 1_700_000_000_000;
+        for (evidence, connection, last_online) in [
+            (
+                Some((true, at, true)),
+                "connected_observed",
+                "2023-11-14T22:13:20.000Z",
+            ),
+            (
+                Some((true, at, false)),
+                "unconfirmed",
+                "2023-11-14T22:13:20.000Z",
+            ),
+            (Some((false, at, false)), "unconfirmed", "unconfirmed"),
+        ] {
+            apply_connection_observation(
+                &mut state,
+                false,
+                Registration::Present(Some(123)),
+                evidence,
+            );
+            assert_eq!(state["local_service"], "running_observed");
+            assert_eq!(state["signed_wss"], connection);
+            assert_eq!(state["last_online"], last_online);
+            assert!(!diagnostic_response("doctor", &state)["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "local_service_unconfirmed"));
+        }
+        for (stopped, registration, evidence, local) in [
+            (
+                false,
+                Registration::Present(Some(123)),
+                None,
+                "present_unverified",
+            ),
+            (
+                false,
+                Registration::Present(None),
+                Some((true, at, true)),
+                "present_unverified",
+            ),
+            (
+                false,
+                Registration::Absent,
+                Some((true, at, true)),
+                "not_running",
+            ),
+            (false, Registration::Unknown, None, "unconfirmed"),
+            (
+                true,
+                Registration::Absent,
+                Some((true, at, true)),
+                "intentionally_stopped",
+            ),
+            (
+                true,
+                Registration::Present(Some(123)),
+                Some((true, at, true)),
+                "stopped_requested_unverified",
+            ),
+        ] {
+            apply_connection_observation(&mut state, stopped, registration, evidence);
+            assert_eq!(state["local_service"], local);
+            assert_eq!(state["signed_wss"], "unconfirmed");
+            assert_eq!(state["last_online"], "unconfirmed");
+        }
     }
 
     #[test]

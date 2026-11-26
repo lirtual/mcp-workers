@@ -730,28 +730,10 @@ mod darwin {
             (Registration::Present(Some(pid)), false) => connection_evidence(&current, &key, *pid),
             _ => None,
         };
-        let local = match (stopped, observed) {
-            (true, Registration::Absent) => "intentionally_stopped",
-            (true, _) => "stopped_requested_unverified",
-            (false, Registration::Present(_)) if evidence.is_some_and(|(_, _, online)| online) => {
-                "running_observed"
-            }
-            (false, Registration::Present(_)) => "present_unverified",
-            (false, Registration::Absent) => "not_running",
-            _ => "unconfirmed",
-        };
         state["installed"] = serde_json::json!(true);
         state["version"] = serde_json::json!(current.version);
         state["installed_version"] = state["version"].clone();
-        state["local_service"] = serde_json::json!(local);
-        state["signed_wss"] = serde_json::json!(if evidence.is_some_and(|(_, _, online)| online) {
-            "connected_observed"
-        } else {
-            "unconfirmed"
-        });
-        state["last_online"] = serde_json::json!(evidence
-            .and_then(|(connected, at, _)| if connected { iso_time(at) } else { None })
-            .unwrap_or_else(|| "unconfirmed".to_owned()));
+        darwin_lifecycle::apply_connection_observation(&mut state, stopped, observed, evidence);
         Ok(state)
     }
 
