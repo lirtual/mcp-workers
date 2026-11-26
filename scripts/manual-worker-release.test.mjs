@@ -1703,7 +1703,7 @@ test('#1046 current effect and wait receipts do not block after independently kn
   const run={id:'r',instance_id:'i',version_id:'v',start_state:'started',outcome:'indeterminate'};
   const native={instance_id:'i',status:'complete',observed_at:1000};
   const digest='a'.repeat(64);
-  const plan={mcp_connection_generation:2,http_connection_generation:3,steps:[
+  const plan={cloudflare_execution_approved:true,cloudflare_action_approvals:[{executor:'cloudflare',provider:'bark',action:'bark.send_notification',contract_digest:digest}],mcp_connection_generation:2,http_connection_generation:3,steps:[
     {id:'mcp',uses:'mcp.call',with:{scope:'write'}},
     {id:'task',uses:'github.run',with:{action:{type:'task'}},approval:{required:true}},
     {id:'http',uses:'http.request',with:{method:'GET'}},
@@ -1774,4 +1774,95 @@ test('#1046 independently verified child closure and Saga cancellation do not re
    {...saga,plan:undefined},
    {...saga,steps:[saga.steps[0],{...saga.steps[1],step_id:'__saga_other'}]},
  ])assert.throws(()=>verifyWorkflowTerminalEvidence(parent,native,bad),/terminal evidence/);
+});
+
+test('#1046 source-bound Bark closure requires exact persisted lineage and completed source',async()=>{
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const run={id:'r',instance_id:'r',version_id:'v',start_state:'started',outcome:'indeterminate'};
+ const native={instance_id:'r',status:'complete',observed_at:1000};
+ const digest='a'.repeat(64),version='11111111-1111-4111-8111-111111111111';
+ const action={repository:'autoactions/github-actions',repositoryId:1452488311,
+  workflowId:413147310,workflowPath:'.github/workflows/ubuntu.yml',ref:'refs/heads/main',type:'session'};
+ const attempt={run_id:'r',step_id:'source',attempt_id:'a',state:'cancelled',capability_id:'github.action',
+  repository:action.repository,repository_id:String(action.repositoryId),
+  workflow_ref:action.repository+'/'+action.workflowPath+'@'+action.ref,ref:action.ref,
+  candidate_run_id:42,candidate_run_attempt:1,owner_run_id:42,owner_run_attempt:1};
+ const source={id:'source',uses:'github.run',with:{action}};
+ const notify={id:'notify',uses:'action.run',needs:['source'],with:{executor:'cloudflare',provider:'bark',
+  action:'bark.send_notification',contract_digest:digest,input:{session_step_id:'source'}}};
+ const grant={executor:'cloudflare',provider:'bark',action:'bark.send_notification',contract_digest:digest,deployment_id:version};
+ const inv={run_id:'r',step_id:'notify',invocation_id:'n',source_attempt_id:'a',deployment_id:version,
+  input_digest:digest,contract_digest:digest,binding_generation:0,created_at:10};
+ const steps=[{run_id:'r',step_id:'source',status:'succeeded'},{run_id:'r',step_id:'notify',status:'succeeded'}];
+ const e={plan:{id:'v',plan:{steps:[source,notify],cloudflare_execution_approved:true,cloudflare_action_approvals:[grant]}},
+  steps,attempts:[attempt],sessions:[{run_id:'r',step_id:'source',state:'terminated'}],callbacks:[],
+  children:[],invocations:[inv],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],
+  childCancellations:[],gates:[],approvals:[],waits:[]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
+ for(const bad of [
+  {...e,invocations:[{...inv,source_attempt_id:'n'}]},
+  {...e,invocations:[{...inv,source_attempt_id:'other'}]},
+  {...e,attempts:[{...attempt,repository_id:'99'}]},
+  {...e,attempts:[{...attempt,owner_run_id:null,owner_run_attempt:null}]},
+  {...e,sessions:[]},
+  {...e,plan:{id:'v',plan:{...e.plan.plan,cloudflare_action_approvals:[]}}},
+  {...e,steps:[steps[0],{...steps[1],status:'indeterminate'}]},
+ ])assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,bad),/terminal evidence/);
+ const download={...action,workflowPath:'.github/workflows/download.yml',type:'task'};
+ const downloadStep={id:'source',uses:'flow.foreach',with:{max_items:1,template:{id:'task',uses:'github.run',with:{action:download}}}};
+ const downloadAttempt={...attempt,step_id:'source_0_task',state:'succeeded',workflow_ref:download.repository+'/'+download.workflowPath+'@'+download.ref};
+ const downloadE={...e,plan:{id:'v',plan:{...e.plan.plan,steps:[downloadStep,{...notify,with:{...notify.with,input:{download_step_id:'source'}}}]}},
+  steps:[...steps,{run_id:'r',step_id:'source_0_task',status:'succeeded'}],sessions:[],attempts:[downloadAttempt]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,downloadE),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...downloadE,attempts:[{...downloadAttempt,step_id:'source'}]}),/terminal evidence/);
+ const business={id:'source',uses:'action.run',with:{executor:'cloudflare',provider:'dub',action:'dub.shorten_url',contract_digest:digest}};
+ const paired={...e,plan:{id:'v',plan:{...e.plan.plan,steps:[business,{...notify,with:{...notify.with,input:{notification:{body:'Completed'}}}}],
+  cloudflare_action_approvals:[grant,{...grant,provider:'dub',action:'dub.shorten_url'}]}},
+  attempts:[],sessions:[],invocations:[{...inv,step_id:'source',invocation_id:'p',source_attempt_id:'p'},{...inv,source_attempt_id:'p'}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,paired),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...paired,invocations:[{...paired.invocations[0],source_attempt_id:'n'},paired.invocations[1]]}),/terminal evidence/);
+ const cancelled={...e,cloudflareCancellations:[{run_id:'r',step_id:'notify',created_at:20}]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,cancelled),native);
+ const noDispatch={...e,steps:[steps[0]],invocations:[],cloudflareCancellations:[{run_id:'r',step_id:'notify',created_at:20}]};
+ const cancelledRun={...run,outcome:'cancelled',error_code:'cloudflare_action_cancel_requested'};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(cancelledRun,native,noDispatch),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,noDispatch),/terminal evidence/);
+});
+
+test('#1046 real D1 projection binds immutable Plan and callback to their owning attempt',async()=>{
+ const {readWorkflowTerminalEvidence,verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  for(const name of files.slice(0,22))db.exec(readFileSync(new URL(name,dir),'utf8'));
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)")
+    .run(JSON.stringify({steps:[{id:'task',uses:'github.run',with:{action:{type:'task'}}}]}));
+  for(const id of ['r','unrelated'])
+   db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES(?,'wf','v',?,'d','{}','started','indeterminate',1,2)").run(id,id);
+  db.exec("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES('r','task','indeterminate',2)");
+  db.exec("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES('unrelated','task','running',2)");
+  db.exec("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES('a','r','task','github.action','d1','succeeded','owner/repo','1','owner/repo/.github/workflows/test.yml@refs/heads/main','refs/heads/main',1,1,1,1,1,2),('other','unrelated','task','github.action','d2','claimed','owner/repo','1','owner/repo/.github/workflows/test.yml@refs/heads/main','refs/heads/main',2,1,2,1,1,2)");
+  db.exec("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,notification_delivered,created_at) VALUES('c','a','succeeded','{}',1,2),('other-c','other','succeeded','{}',0,2)");
+  const query=async(sql,params)=>db.prepare(sql).all(...params);
+  const native={instance_id:'r',status:'complete',observed_at:1000};
+  const before=await readWorkflowTerminalEvidence(query,'r',{schema:22,observe:async()=>native});
+  assert.equal(before.evidence.callbacks.length,1);
+  assert.equal(before.evidence.callbacks[0].run_id,'r');
+  assert.equal(before.evidence.callbacks[0].step_id,'task');
+  assert.equal(before.evidence.plan.id,'v');
+  assert.deepEqual(verifyWorkflowTerminalEvidence(before.run,before.native,before.evidence),native);
+  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'missing',{schema:22,observe:async()=>native}),/projection/);
+  db.exec(readFileSync(new URL(files.at(-1),dir),'utf8'));
+  db.prepare("UPDATE runs SET execution_terminal_proof=? WHERE id='r'").run(JSON.stringify(native));
+  const after=await readWorkflowTerminalEvidence(query,'r',{schema:23,observe:async()=>{throw Error('unnecessary external query');}});
+  assert.deepEqual(after,before);
+  db.exec("UPDATE callback_receipts SET notification_delivered=0 WHERE attempt_id='a'");
+  const pending=await readWorkflowTerminalEvidence(query,'r',{schema:23});
+  assert.throws(()=>verifyWorkflowTerminalEvidence(pending.run,pending.native,pending.evidence),/callback unresolved/);
+  // Deliberately corrupt only the isolated fixture to challenge the join.
+  db.exec("PRAGMA foreign_keys=OFF; UPDATE workflow_versions SET workflow_id='other-owner' WHERE id='v'");
+  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'r',{schema:23}),/projection/);
+ }finally{db.close();}
 });

@@ -1,3 +1,4 @@
+import {isAuxiliaryBarkPair} from '../apps/workflow-mcp-worker/src/plan.ts';
 import {connectionInventory} from '../apps/database-mcp-worker/src/catalog.ts';
 import references from '../apps/database-mcp-worker/connection-references.json' with {type:'json'};
 function databaseSecretNames(raw) {
@@ -822,19 +823,70 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
     return step;
   };
   const receipt=id=>evidence.steps.find(s=>s.step_id===id);
+  // A completed Bark notification can reference a closed GitHub Session,
+  // completed Download Task, or the preceding Provider receipt. Bind that
+  // reference to the actual immutable Plan and persisted source identity.
+  const sourceMatches=(invocation,step)=>{
+    const plan=evidence.plan.plan;
+    const input=step.with.input;
+    const sessionId=input?.session_step_id,downloadId=input?.download_step_id;
+    if(step.with.provider==='bark'&&step.with.action==='bark.send_notification'){
+      if(sessionId!==undefined&&downloadId!==undefined)return false;
+      const sourceId=sessionId??downloadId;
+      if(sourceId!==undefined){
+        if(typeof sourceId!=='string'||!step.needs?.includes(sourceId)||receipt(sourceId)?.status!=='succeeded')return false;
+        const source=plannedStep(sourceId);
+        const download=downloadId!==undefined;
+        const actual=download?source.with?.template:source;
+        const pinned=actual?.with?.action;
+        if(download?(source.uses!=='flow.foreach'||source.with.max_items!==1||actual?.uses!=='github.run'||
+          pinned?.type!=='task'||pinned.workflowPath!=='.github/workflows/download.yml'):
+          (source.uses!=='github.run'||pinned?.type!=='session'))return false;
+        const actualId=download?sourceId+'_0_'+actual.id:sourceId;
+        const attempt=evidence.attempts.find(a=>a.attempt_id===invocation.source_attempt_id);
+        return attempt?.step_id===actualId&&attempt.capability_id==='github.action'&&
+          positive(attempt.owner_run_id)&&positive(attempt.owner_run_attempt)&&
+          attempt.owner_run_id===attempt.candidate_run_id&&attempt.owner_run_attempt===attempt.candidate_run_attempt&&
+          attempt.repository===pinned.repository&&String(attempt.repository_id)===String(pinned.repositoryId)&&
+          attempt.workflow_ref===pinned.repository+'/'+pinned.workflowPath+'@'+pinned.ref&&attempt.ref===pinned.ref&&
+          receipt(actualId)?.status==='succeeded'&&
+          (download?attempt.state==='succeeded':evidence.sessions.some(s=>s.step_id===actualId&&s.state==='terminated'));
+      }
+      if(isAuxiliaryBarkPair(plan.steps)&&plan.steps[1].id===step.id){
+        const source=plan.steps[0];
+        return receipt(source.id)?.status==='succeeded'&&evidence.invocations.some(i=>
+          i.step_id===source.id&&i.invocation_id===invocation.source_attempt_id&&
+          i.contract_digest===source.with.contract_digest);
+      }
+    }
+    return invocation.source_attempt_id===invocation.invocation_id;
+  };
   if(!native.retired_invocation)for(const invocation of evidence.invocations){
-    const step=plannedStep(invocation.step_id);
+    const step=plannedStep(invocation.step_id),plan=evidence.plan.plan;
     const result=receipt(invocation.step_id);
-    // A reservation alone is not a receipt. A successful, persisted Step
-    // from the executor follows an accepted response bound to this fence.
-    // More complex source-bound invocations remain closed until verified.
+    const rejection={bark:'bark_rejected',dub:'dub_rejected',envshare:'envshare_rejected',litterbox:'litterbox_rejected'}[step.with?.provider];
+    // Persisted success, or a failed Step written after a matched rejected
+    // response, proves that the synchronous call ended. Lost responses do not.
+    const rejected=result?.status==='failed'&&
+      [rejection,'cloudflare_provider_rejected','selected_file_provider_rejected',
+        ...(plan.cloudflare_action_contracts?.[step.id]?.error_codes??[])].filter(Boolean).includes(result.error_code);
     require(step.uses==='action.run'&&step.with?.executor==='cloudflare'&&
+      plan.cloudflare_execution_approved===true&&plan.cloudflare_action_approvals?.some(g=>
+        g.executor==='cloudflare'&&g.provider===step.with.provider&&g.action===step.with.action&&g.contract_digest===step.with.contract_digest)&&
       typeof invocation.invocation_id==='string'&&invocation.invocation_id.length>0&&
-      invocation.source_attempt_id===invocation.invocation_id&&
       typeof invocation.deployment_id==='string'&&invocation.deployment_id.length>0&&
       invocation.binding_generation===0&&/^[a-f0-9]{64}$/.test(invocation.contract_digest)&&
       invocation.contract_digest===step.with.contract_digest&&
-      result?.status==='succeeded','invocation '+invocation.step_id+' requires related terminal evidence');
+      (result?.status==='succeeded'||rejected)&&sourceMatches(invocation,step),
+      'invocation '+invocation.step_id+' requires related terminal evidence');
+  }
+  for(const cancellation of evidence.cloudflareCancellations){
+    const step=plannedStep(cancellation.step_id);
+    require(step.uses==='action.run'&&step.with?.executor==='cloudflare'&&positive(cancellation.created_at)&&
+      (evidence.invocations.some(i=>i.step_id===step.id)||
+       (run.outcome==='cancelled'&&run.error_code==='cloudflare_action_cancel_requested'&&
+        (!receipt(step.id)||['cancelled','skipped','failed'].includes(receipt(step.id).status)))),
+      'Cloudflare cancellation '+step.id+' physical termination unresolved');
   }
   for(const fence of evidence.mcpFences){
     const step=plannedStep(fence.step_id),result=receipt(fence.step_id);
@@ -895,12 +947,63 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
     require(cancellation.parent_run_id===run.id&&evidence.children.some(c=>
       c.run.id===cancellation.child_run_id&&c.run.parent_step_id===cancellation.parent_step_id),
       'child cancellation physical termination unresolved');
-  require(evidence.cloudflareCancellations.length===0,'Cloudflare cancellation requires related terminal evidence');
   return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at,
     ...(native.historical_source?{historical_source:native.historical_source}:{}),
     ...(claimedProofUsed?{github_attempt:native.github_attempt}:{}),
     ...(native.no_dispatch_step_id?{no_dispatch_step_id:native.no_dispatch_step_id}:{}),
     ...(native.retired_invocation?{retired_invocation:native.retired_invocation}:{})};
+}
+
+// Read the complete related execution from one D1 statement. Only identity,
+// lifecycle facts and the immutable Plan are projected; result payloads, Run inputs, signed
+// claims and session URLs never enter this release verifier.
+const terminalProjectionTables={
+ steps:['run_steps','run_id,step_id,status,error_code'],
+ attempts:['step_attempts','run_id,step_id,attempt_id,capability_id,state,repository,repository_id,workflow_ref,ref,resolved_sha,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt'],
+ sessions:['session_executions','run_id,step_id,state'],
+ invocations:['cloudflare_action_invocations','run_id,step_id,invocation_id,source_attempt_id,input_digest,binding_generation,contract_digest,deployment_id,created_at'],
+ mcpFences:['mcp_dispatch_fences','run_id,step_id,generation'],
+ githubCancellations:['github_action_cancellations','run_id,step_id,attempt_id'],
+ cloudflareCancellations:['cloudflare_action_cancellations','run_id,step_id,created_at'],
+ gates:['runtime_approval_gates','run_id,step_id,version_id,deadline_at'],
+ approvals:['runtime_approvals','run_id,step_id,version_id,decision,created_at,consumed_at'],
+ waits:['wait_event_receipts','run_id,step_id,last_sent_at'],
+};
+const jsonRows=(sql,columns)=>'(SELECT json_group_array(json_object('+
+ columns.split(',').map(c=>"'"+c+"',"+c).join(',')+')) FROM ('+sql+'))';
+const runProjection='r.id,r.workflow_id,r.version_id,r.instance_id,r.start_state,r.outcome,r.error_code,r.parent_run_id,r.parent_step_id';
+function workflowTerminalProjectionSql(schema){
+ invariant(schema===22||schema===23,'Unknown terminal evidence projection schema');
+ const fields=Object.entries(terminalProjectionTables).map(([key,[table,columns]])=>
+   jsonRows('SELECT '+columns+' FROM '+table+' WHERE run_id=r.id',columns)+' AS '+key);
+ fields.push(jsonRows('SELECT a.run_id,a.step_id,c.attempt_id,c.outcome,c.notification_delivered FROM callback_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id WHERE a.run_id=r.id','run_id,step_id,attempt_id,outcome,notification_delivered')+' AS callbacks');
+ fields.push(jsonRows('SELECT parent_run_id,parent_step_id,child_run_id,termination_attempted_at FROM child_cancellations WHERE parent_run_id=r.id','parent_run_id,parent_step_id,child_run_id,termination_attempted_at')+' AS childCancellations');
+ fields.push(jsonRows('SELECT id FROM runs WHERE parent_run_id=r.id','id')+' AS children');
+ return 'SELECT '+runProjection+',v.plan AS immutable_plan,'+
+   (schema===23?'r.execution_terminal_proof':'NULL')+' AS execution_terminal_proof,'+fields.join(',')+
+   ' FROM runs r JOIN workflow_versions v ON v.id=r.version_id AND v.workflow_id=r.workflow_id WHERE r.id=?';
+}
+/** Schema 22 is used only in the single pre-cutover read. Schema 23 uses
+ * persisted facts, falling back to an authenticated observation if absent.
+ * A malformed or conflicting saved fact is never replaced by a guess. */
+export async function readWorkflowTerminalEvidence(query,id,{schema,observe,depth=0}){
+ invariant(typeof id==='string'&&id.length>0&&depth<=1,'Workflow terminal evidence projection invalid lineage');
+ const rows=await query(workflowTerminalProjectionSql(schema),[id]);
+ invariant(Array.isArray(rows)&&rows.length===1&&rows[0]?.id===id,'Workflow terminal evidence projection missing or ambiguous: '+id);
+ const row=rows[0],run=Object.fromEntries(runProjection.split(',').map(c=>c.slice(2)).map(c=>[c,row[c]]));
+ const parse=(field)=>{
+   try{return JSON.parse(row[field]);}catch{throw Error('Workflow terminal evidence projection invalid '+field+' for '+id);}
+ };
+ const evidence={plan:{id:row.version_id,plan:parse('immutable_plan')}};
+ for(const key of [...Object.keys(terminalProjectionTables),'callbacks','childCancellations','children']){
+   const value=parse(key);
+   invariant(Array.isArray(value),'Workflow terminal evidence projection incomplete '+key+' for '+id);
+   evidence[key]=value;
+ }
+ invariant(depth===0||evidence.children.length===0,'Workflow terminal evidence projection nested child unsupported');
+ evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{schema,observe,depth:depth+1})));
+ const native=row.execution_terminal_proof===null?(observe?await observe(run):null):parse('execution_terminal_proof');
+ return {run,native,evidence};
 }
 
 /**
