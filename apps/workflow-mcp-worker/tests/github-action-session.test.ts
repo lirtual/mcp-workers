@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {registerHooks} from 'node:module';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
@@ -1037,6 +1038,57 @@ test('native Workflow keeps monitoring physical Session after parent Ready witho
   assert.equal(sleeps,1);
   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
   assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'succeeded');
+ }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+test('native entry resumes the cached Session watcher after business terminal state without replaying effects',async()=>{
+ const hook=registerHooks({resolve(specifier,context,next){
+  if(specifier==='cloudflare:workers')return {url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }',shortCircuit:true};
+  return next(specifier,context);
+ }});
+ const {WorkflowOrchestrator}=await import('../src/runner.ts').finally(()=>hook.deregister());
+ const f=fixture(),originalFetch=globalThis.fetch;
+ try{
+  assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+  f.db.prepare("UPDATE session_executions SET state='ready',updated_at=?").run(Date.now());
+  f.db.prepare("UPDATE runs SET outcome='succeeded',result=? WHERE id=?").run(JSON.stringify({ready:true}),run(1));
+  f.claim(1,'claimed',true);
+  let observations=0,sleeps=0;
+  const cache=new Map<string,unknown>();
+  globalThis.fetch=async(input:RequestInfo|URL)=>{
+   const request=input instanceof Request?input:new Request(input);
+   assert.equal(request.method,'GET');
+   assert.ok(request.url.endsWith('/actions/runs/42'));
+   observations++;
+   return Response.json({id:42,workflow_id:456,run_attempt:1,
+    repository:{id:123,full_name:action.repository},path:action.workflowPath,
+    head_branch:'release-v1',head_sha:action.commitSha,event:'workflow_dispatch',
+    status:observations===1?'in_progress':'completed',conclusion:observations===1?null:'success'});
+  };
+  const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'} as Env;
+  const native={
+   do:async(name:string,_opts:unknown,cb:()=>Promise<unknown>)=>{
+    assert.match(name,/^session-watch-check-/,'no business step may replay');
+    if(!cache.has(name))cache.set(name,await cb());
+    return cache.get(name);
+   },
+   sleep:async(name:string)=>{
+    assert.equal(name,'session-watch-sleep-0');
+    if(!cache.has(name)){cache.set(name,null);sleeps++;throw Error('simulated native suspension');}
+   },
+  } as unknown as WorkflowStep;
+  // The previous invocation already committed its business result and first
+  // watcher checkpoint. On wake the platform starts run() again, not this loop.
+  await assert.rejects(watchPersistedSessions(env,run(1),native,3),/simulated native suspension/);
+  assert.equal(observations,1);
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
+  await new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id:run(1)}} as Parameters<InstanceType<typeof WorkflowOrchestrator>['run']>[0],native);
+  assert.equal(observations,2,'resumed entry must reconcile the physical terminal');
+  assert.equal(sleeps,1,'the existing durable sleep must not restart');
+  assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'terminated');
+  assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'succeeded');
+  assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'succeeded');
+  assert.equal(f.db.prepare('SELECT result FROM runs WHERE id=?').get(run(1))?.result,JSON.stringify({ready:true}));
+  assert.equal(f.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
  }finally{globalThis.fetch=originalFetch;f.db.close();}
 });
 test('watcher requests normal expiry cancellation once but never force or release on active job',async()=>{

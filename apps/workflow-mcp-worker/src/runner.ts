@@ -828,12 +828,26 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     const db=this.env.DB;
     const row=await db.prepare('SELECT version_id,inputs,outcome FROM runs WHERE id=?').bind(id).first<{version_id:string;inputs:string;outcome:string}>();
     if(!row)throw Error('run_missing');
-    // An expired ambiguous admission is terminally uncertain. A Workflow
-    // started much later must not run the abandoned queued Workflow plan.
-    if(row.outcome!=='queued'&&row.outcome!=='running')return;
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
     const plan=JSON.parse(version.plan) as Plan;
+    const watchSessions=async()=>{
+      if(!plan.steps.some(s=>s.uses==='github.run'&&s.with.capability==='github.action'&&
+        (s.with.action as {type?:unknown}|undefined)?.type==='session'))return;
+      try{await watchPersistedSessions(this.env,id,step);}
+      catch{
+        // The independent Session record still holds quota, and explicit
+        // workflow_status performs a verified recovery readback.
+      }
+    };
+    // A native wake can re-enter run() after the business result is durable.
+    // Never replay terminal business effects; only resume existing Session
+    // lifecycle checkpoints. Failed/uncertain Sagas retain their rollback path.
+    if(row.outcome!=='queued'&&row.outcome!=='running'){
+      if(!(plan.saga&&(row.outcome==='failed'||row.outcome==='indeterminate')))
+        await watchSessions();
+      return;
+    }
     // Native wake/restore must never run an immutable Weixin Plan. Do not
     // rewrite its previous step/terminal facts or attempt a replacement send.
     if(hasRetiredWeixinAction(plan))throw Error('weixin_action_retired');
@@ -1067,15 +1081,7 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       // sleeping and reconciling until terminal evidence or the bounded
       // watch window. No external scheduler, false completion, or slot leak
       // on a successful Ready. Expiry requests normal cancellation only.
-      if(!(plan.saga&&(failed||uncertain))&&plan.steps.some(s=>s.uses==='github.run'&&
-         s.with.capability==='github.action'&&
-         (s.with.action as {type?:unknown}|undefined)?.type==='session')){
-        try{await watchPersistedSessions(this.env,id,step);}
-        catch{
-          // The independent Session record still holds quota, and explicit
-          // workflow_status performs a verified recovery readback.
-        }
-      }
+      if(!(plan.saga&&(failed||uncertain)))await watchSessions();
     }
   }
 }
