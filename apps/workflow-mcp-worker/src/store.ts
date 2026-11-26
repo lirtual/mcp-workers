@@ -66,7 +66,7 @@ export type Env = {
   // Dedicated reverse-direction key: only the Owner MCP result can decrypt
   // a Runner-sealed Cloudflare claim. Never reuse a generic access token.
   WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY?: string;
-  // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
+  // Current unified Actions service binding.
   ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {
     listActions():Promise<Array<{action_id:string}>>;
@@ -75,25 +75,6 @@ export type Env = {
     getReceipt(action_id:string,query:unknown):Promise<{status:string}>;
     getBinding(action_id:string):Promise<{generation:number;ready:boolean}>;
   };
-  // The Worker Version ID is pinned by the separately authorized release.
-  BARK_ACTION_DEPLOYMENT_ID?: string;
-  BARK_ACTION_PROVIDER?: {
-    getContract():Promise<{deployment_id:string;contract_digest:string}>;
-    sendNotification(input:{invocation_id:string;deployment_id:string;contract_digest:string;
-      input_digest:string;notification:Record<string,unknown>}):Promise<{status:string;input_digest:string}>;
-  };
-  WEIXIN_ACTION_DEPLOYMENT_ID?: string;
-  WEIXIN_ACTION_PROVIDER?: {
-    getBinding():Promise<{generation:number;ready:boolean}>;
-    getContract():Promise<{deployment_id:string;contract_digest:string}>;
-    getDownloadContract():Promise<{deployment_id:string;contract_digest:string}>;
-    getGenericContract():Promise<{deployment_id:string;contract_digest:string}>;
-    sendGenericText(input:{invocation_id:string;binding_generation:number;text:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
-    sendDownloadComplete(input:{invocation_id:string;binding_generation:number;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
-    sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
-    getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}):Promise<{status:string}>;
-  };
-
   // Legacy personal direct-target mode requires a separate explicit opt-in.
   // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
 };
