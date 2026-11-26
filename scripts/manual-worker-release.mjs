@@ -828,23 +828,20 @@ const terminalProjectionTables={
 const jsonRows=(sql,columns)=>'(SELECT json_group_array(json_object('+
  columns.split(',').map(c=>"'"+c+"',"+c).join(',')+')) FROM ('+sql+'))';
 const runProjection='r.id,r.workflow_id,r.version_id,r.instance_id,r.start_state,r.outcome,r.error_code,r.parent_run_id,r.parent_step_id,r.updated_at';
-function workflowTerminalProjectionSql(schema){
- invariant(schema===22||schema===23,'Unknown terminal evidence projection schema');
+function workflowTerminalProjectionSql(){
  const fields=Object.entries(terminalProjectionTables).map(([key,[table,columns]])=>
    jsonRows('SELECT '+columns+' FROM '+table+' WHERE run_id=r.id',columns)+' AS '+key);
  fields.push(jsonRows('SELECT a.run_id,a.step_id,c.attempt_id,c.outcome,c.notification_delivered FROM callback_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id WHERE a.run_id=r.id','run_id,step_id,attempt_id,outcome,notification_delivered')+' AS callbacks');
  fields.push(jsonRows('SELECT parent_run_id,parent_step_id,child_run_id,termination_attempted_at FROM child_cancellations WHERE parent_run_id=r.id','parent_run_id,parent_step_id,child_run_id,termination_attempted_at')+' AS childCancellations');
  fields.push(jsonRows('SELECT id FROM runs WHERE parent_run_id=r.id','id')+' AS children');
- return 'SELECT '+runProjection+',v.plan AS immutable_plan,'+
-   (schema===23?'r.execution_terminal_proof':'NULL')+' AS execution_terminal_proof,'+fields.join(',')+
+ return 'SELECT '+runProjection+',v.plan AS immutable_plan,r.execution_terminal_proof AS execution_terminal_proof,'+fields.join(',')+
    ' FROM runs r JOIN workflow_versions v ON v.id=r.version_id AND v.workflow_id=r.workflow_id WHERE r.id=?';
 }
-/** Schema 22 is used only in the single pre-cutover read. Schema 23 uses
- * persisted facts, falling back to an authenticated observation if absent.
- * A malformed or conflicting saved fact is never replaced by a guess. */
-export async function readWorkflowTerminalEvidence(query,id,{schema,observe,observeRelated,depth=0}){
+/** v23 facts are the only supported release contract. A malformed or conflicting
+ * persisted fact is never replaced by a guess. */
+export async function readWorkflowTerminalEvidence(query,id,{observe,observeRelated,depth=0}){
  invariant(typeof id==='string'&&id.length>0&&depth<=1,'Workflow terminal evidence projection invalid lineage');
- const rows=await query(workflowTerminalProjectionSql(schema),[id]);
+ const rows=await query(workflowTerminalProjectionSql(),[id]);
  invariant(Array.isArray(rows)&&rows.length===1&&rows[0]?.id===id,'Workflow terminal evidence projection missing or ambiguous: '+id);
  const row=rows[0],run=Object.fromEntries(runProjection.split(',').map(c=>c.slice(2)).map(c=>[c,row[c]]));
  const parse=(field)=>{
@@ -857,7 +854,7 @@ export async function readWorkflowTerminalEvidence(query,id,{schema,observe,obse
    evidence[key]=value;
  }
  invariant(depth===0||evidence.children.length===0,'Workflow terminal evidence projection nested child unsupported');
- evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{schema,observe,observeRelated,depth:depth+1})));
+ evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{observe,observeRelated,depth:depth+1})));
  let native=row.execution_terminal_proof===null?(observe&&run.start_state==='started'?await observe(run,evidence):null):parse('execution_terminal_proof');
  if(native&&observeRelated)native=await observeRelated(run,native,evidence);
  return {run,native,evidence};
@@ -944,27 +941,26 @@ function workflowReleaseInventorySql(mode){
    (SELECT json_group_array(id) FROM (SELECT id FROM candidates ORDER BY id)) AS candidate_ids`;
 }
 
-// Only the deployed v22 baseline and the target v23 are supported. The
-// migration registry alone does not prove that its structural effects exist.
-async function verifyTerminalReleaseSchema(query,schema){
+// The one-time v22 migration is complete. All release paths require the exact
+// current v23 structure; future schema changes need a separately reviewed migration.
+async function verifyTerminalReleaseSchema(query){
  const tables=['workflows','workflow_versions','runs','run_steps','callback_receipts','step_attempts',
   'session_executions','github_action_cancellations','child_cancellations','wait_event_receipts',
   'cloudflare_action_invocations','cloudflare_action_cancellations','runtime_approval_gates',
   'runtime_approvals','portal_connection_auth','mcp_dispatch_fences','http_connection_auth',
   'cloudflare_action_gate','drop_claim_receipts'];
- const columns={runs:['native_complete_seen_at','capacity_weight','parent_run_id','parent_step_id'],
+ const columns={runs:['native_complete_seen_at','capacity_weight','parent_run_id','parent_step_id','execution_terminal_proof'],
   session_executions:['session_url','fixed_key','rca_duration_minutes'],step_attempts:['resolved_sha'],
   workflows:['deleted_at'],child_cancellations:['termination_attempted_at']};
  const checks=[...tables.map(t=>"(SELECT count(*) FROM sqlite_master WHERE type='table' AND name='"+t+"')=1"),
   ...Object.entries(columns).flatMap(([t,cols])=>cols.map(c=>"(SELECT count(*) FROM pragma_table_info('"+t+"') WHERE name='"+c+"')=1")),
+  "(SELECT count(*) FROM pragma_table_info('runs') WHERE name='execution_terminal_proof' AND type='TEXT' AND [notnull]=0)=1",
   "(SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data')=0",
   "(SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys')=1",
   "(SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_one_awaited_child_per_step')=1",
-  "(SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='runs_top_level_capacity_guard')=1",
-  "(SELECT count(*) FROM pragma_table_info('runs') WHERE name='execution_terminal_proof' AND type='TEXT' AND [notnull]=0)="+(schema===23?1:0),
-  "(SELECT count(*) FROM pragma_table_info('runs') WHERE name='execution_terminal_proof')="+(schema===23?1:0)];
+  "(SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='runs_top_level_capacity_guard')=1"];
  const rows=await query('SELECT ('+checks.join(' AND ')+') AS schema_ok',[]);
- invariant(Array.isArray(rows)&&rows.length===1&&rows[0].schema_ok===1,'Workflow exact v'+schema+' schema structure drift');
+ invariant(Array.isArray(rows)&&rows.length===1&&rows[0].schema_ok===1,'Workflow exact v23 schema structure drift');
 }
 
 /** D1 half of the release gate. Strict callers additionally prove ingress
@@ -974,10 +970,10 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
  invariant(mode==='strict'||mode==='compatible','Unsupported Workflow release operation');
  const migrations=await query('SELECT name FROM d1_migrations ORDER BY name',[]);
  const selection=selectWorkflowSchemaRelease([{success:true,results:migrations}],sourceFiles);
- invariant(selection.source===23&&(selection.applied===23||mode==='strict'&&selection.applied===22),
-   'Workflow terminal evidence schema inventory unsupported');
- const schema=selection.applied;
- await verifyTerminalReleaseSchema(query,schema);
+ invariant(selection.source===23&&selection.applied===23,
+   'Workflow release requires exact v23 schema and complete migration inventory');
+ const schema=23;
+ await verifyTerminalReleaseSchema(query);
  const rows=await query(workflowReleaseInventorySql(mode),[]);
  const row=rows?.[0];
  invariant(Array.isArray(rows)&&rows.length===1&&
@@ -1004,64 +1000,14 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
        collect(child,verifyWorkflowTerminalEvidence(child.run,child.native,child.evidence));
  };
  for(const id of ids){
-   const projected=await readWorkflowTerminalEvidence(query,id,{schema,observe,observeRelated});
+   const projected=await readWorkflowTerminalEvidence(query,id,{observe,observeRelated});
    collect(projected,verifyWorkflowTerminalEvidence(projected.run,projected.native,projected.evidence));
  }
  return {schema,run_count:row.run_count,ready_sessions:row.ready_sessions,ready_instances:readyInstances,
    proofs:Object.fromEntries(proofs),targets:Object.fromEntries(targets)};
 }
 
-// Only used in the authorized one-time migration window. Revalidate every
-// candidate and its identity against the prepared evidence after v23 exists,
-// then CAS the missing facts. A lost response stops immediately; a later
-// explicitly authorized forward recovery can read and skip matching facts.
-function mergePreparedTerminalFacts(run,existing,expected){
- invariant(existing&&expected&&existing.instance_id===run.instance_id&&expected.instance_id===run.instance_id,
-  'Workflow prepared proof identity changed');
- const {github_attempts:oldFacts=[],...oldNative}=existing;
- const {github_attempts:newFacts=[],...newNative}=expected;
- invariant(JSON.stringify(oldNative)===JSON.stringify(newNative)&&Array.isArray(oldFacts)&&Array.isArray(newFacts)&&
-   oldFacts.every(f=>newFacts.some(n=>JSON.stringify(n)===JSON.stringify(f))),
-  'Workflow prepared proof conflicts with persisted evidence');
- return expected;
-}
 
-export async function backfillWorkflowTerminalProofs(query,write,prepared,sourceFiles){
- invariant([22,23].includes(prepared?.schema)&&prepared.ready_sessions===0&&prepared.proofs&&prepared.targets,
-  'Workflow backfill requires verified strict cutover preparation');
- const current=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles,
-  observe:async run=>Object.hasOwn(prepared.proofs,run.id)?prepared.proofs[run.id]:null,
-  observeRelated:async(run,native)=>mergePreparedTerminalFacts(run,native,prepared.proofs[run.id])});
- invariant(current.schema===23,'Workflow proof backfill requires migrated v23 schema');
- invariant(current.run_count===prepared.run_count&&current.ready_sessions===0&&
-   JSON.stringify(current.proofs)===JSON.stringify(prepared.proofs)&&
-   JSON.stringify(current.targets)===JSON.stringify(prepared.targets),
-   'Workflow execution evidence changed after preparation');
- for(const [id,fact] of Object.entries(prepared.proofs)){
-   const r=prepared.targets[id];
-   const identity=[r.id,r.instance_id,r.version_id,r.start_state,r.outcome,r.error_code,r.updated_at];
-   const predicate='id=? AND instance_id=? AND version_id=? AND start_state=? AND outcome=? AND error_code IS ? AND updated_at=?';
-   const lookup=async()=>{
-     const rows=await query('SELECT execution_terminal_proof FROM runs WHERE '+predicate,identity);
-     invariant(Array.isArray(rows)&&rows.length===1,'Workflow backfill target changed: '+id);
-     return rows[0].execution_terminal_proof;
-   };
-   const expected=JSON.stringify(fact);
-   const existing=await lookup();
-   if(existing===expected)continue;
-   if(existing!==null)mergePreparedTerminalFacts(r,JSON.parse(existing),fact);
-   const changed=await write('UPDATE runs SET execution_terminal_proof=? WHERE '+predicate+
-     ' AND execution_terminal_proof IS ?',[expected,...identity,existing]);
-   invariant(changed===1,'Workflow backfill conditional write unconfirmed: '+id);
-   invariant(await lookup()===expected,'Workflow backfill independent readback failed: '+id);
- }
- const checked=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles});
- invariant(checked.schema===23&&checked.run_count===prepared.run_count&&
-   JSON.stringify(checked.proofs)===JSON.stringify(prepared.proofs)&&
-   JSON.stringify(checked.targets)===JSON.stringify(prepared.targets),
-   'Workflow proof backfill final inventory changed');
- return checked;
-}
 
 export function parseWranglerVersion(output) {
   const uuid = '([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})';
@@ -1395,14 +1341,7 @@ export function workflowReleaseIO(env=process.env,request=fetch){
    invariant(result.meta?.changed_db!==true&&!(result.meta?.changes>0),'Workflow evidence query unexpectedly changed D1');
    return result.results;
  };
- const write=async(sql,params)=>{
-   invariant(sql.startsWith('UPDATE runs SET execution_terminal_proof=? WHERE id=? AND instance_id=?'),
-    'Workflow backfill write target invalid');
-   const result=await d1(sql,params);
-   invariant(Number.isSafeInteger(result.meta?.changes),'Workflow backfill receipt unavailable');
-   return result.meta.changes;
- };
- const observe=async run=>{
+const observe=async run=>{
    invariant(/^[a-f0-9-]{36}$/i.test(run.instance_id),'Workflow instance identity malformed');
    const url=base+'/workflows/workflow-mcp-orchestrator/instances/'+run.instance_id;
    const response=await request(url,{redirect:'manual',headers,signal:AbortSignal.timeout(15000)});
@@ -1413,20 +1352,7 @@ export function workflowReleaseIO(env=process.env,request=fetch){
    return ['complete','errored','terminated'].includes(native.status)&&native.end?
      {instance_id:run.instance_id,status:native.status,observed_at:Date.now()}:null;
  };
- const cache=new Map();
- const cached=(url,auth)=>{if(!cache.has(url))cache.set(url,api(url,auth));return cache.get(url);};
- const gh=(repo,id,suffix='')=>{
-   invariant(['lirtual/mcp-workers','lirtual/github-actions','lirtual/cloudflare-actions'].includes(repo)&&Number.isSafeInteger(id),'Historical release source invalid');
-   const credential=repo==='lirtual/mcp-workers'?env.GITHUB_TOKEN:
-     repo==='lirtual/github-actions'?env.WORKFLOW_GITHUB_DISPATCH_TOKEN:null;
-   invariant(repo!=='lirtual/mcp-workers'||credential,'Historical migration read credential unavailable');
-   invariant(repo!=='lirtual/github-actions'||credential,'Historical GitHub Actions read credential unavailable');
-   return cached('https://api.github.com/repos/'+repo+'/actions/runs/'+id+suffix,
-     {...(credential?{Authorization:'Bearer '+credential}:{}),Accept:'application/vnd.github+json'});
- };
- const historySources={githubRun:gh,githubJobs:(repo,id)=>gh(repo,id,'/jobs?per_page=100'),
-   providerVersions:()=>cached(base+'/workers/scripts/cloudflare-actions/versions?per_page=100',headers)};
- return {query,write,observe,historySources,observeRelated:(run,native,evidence)=>observeRelatedTaskFacts(run,native,evidence,
+ return {query,observe,observeRelated:(run,native,evidence)=>observeRelatedTaskFacts(run,native,evidence,
   (plan,a)=>{
    invariant(env.WORKFLOW_GITHUB_DISPATCH_TOKEN,'Current Task physical read credential unavailable');
    return observeGitHubTaskTerminalFact(plan,a,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
@@ -1435,78 +1361,34 @@ export function workflowReleaseIO(env=process.env,request=fetch){
   maintenance:phase=>readOnlyPrepare(env,request,phase)};
 }
 export async function workflowReleaseProof(mode,io,env=process.env){
- const strict=mode!=='workflow-check'||env.ACTIONS_INGRESS_QUIESCED==='true';
- const preparing=mode==='workflow-prepare';
  const freezing=mode==='workflow-freeze-check';
- invariant(['workflow-prepare','workflow-freeze-check','workflow-check'].includes(mode),'Unknown Workflow proof operation');
+ const strict=freezing||env.ACTIONS_INGRESS_QUIESCED==='true';
+ invariant(['workflow-freeze-check','workflow-check'].includes(mode),'Unknown Workflow proof operation');
  if(strict){
    requireIngressQuiescence(env.ACTIONS_INGRESS_QUIESCED);
    await io.maintenance(freezing?'maintenance':'frozen');
  }
  const schemaRows=await io.query('SELECT name FROM d1_migrations ORDER BY name',[]);
  const selected=selectWorkflowSchemaRelease([{success:true,results:schemaRows}],io.sourceFiles);
- invariant(selected.source===23&&(selected.applied===23||strict&&(preparing||freezing)&&selected.applied===22),
-  'Workflow release requires exact v23 schema, or authorized v22 cutover');
- const useHistory=preparing||(freezing&&selected.applied===22);
- const observe=async(run,evidence)=>{
-   if(useHistory){
-     const {historicalMigrationProof}=await import('./workflow-terminal-run-exception.mjs');
-     const fact=await historicalMigrationProof(run,evidence,io.historySources);
-     if(fact)return fact;
-   }
-   return io.observe(run);
- };
- const result=await verifyWorkflowReleaseInventory(io.query,{mode:strict?'strict':'compatible',sourceFiles:io.sourceFiles,observe,observeRelated:io.observeRelated});
- invariant(result.schema===selected.applied,'Workflow schema changed during proof');
+ invariant(selected.source===23&&selected.applied===23,
+   'Workflow release requires exact v23 schema and complete migration inventory');
+ const result=await verifyWorkflowReleaseInventory(io.query,{mode:strict?'strict':'compatible',
+   sourceFiles:io.sourceFiles,observe:io.observe,observeRelated:io.observeRelated});
+ invariant(result.schema===23,'Workflow schema changed during proof');
  if(strict)await io.maintenance(freezing?'maintenance':'frozen');
  else await io.nativeDrain(result.ready_instances);
  return result;
 }
-function requireProtectedWorkflowCutover(env){
- invariant(env.GITHUB_EVENT_NAME==='workflow_dispatch'&&env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_ACTOR==='lirtual'&&
-  /^[a-f0-9]{40}$/.test(env.GITHUB_SHA??'')&&env.SELECTED_WORKER==='workflow-mcp-worker'&&env.WORKFLOW_CODE_ONLY!=='true',
-  'Workflow cutover must run in the protected selected-Worker release');
- requireIngressQuiescence(env.ACTIONS_INGRESS_QUIESCED);
-}
 async function workflowProofCLI(mode,env){
  const io=workflowReleaseIO(env);
- if(mode==='workflow-backfill'||mode==='workflow-cutover-recheck'){
-   requireProtectedWorkflowCutover(env);
-   await io.maintenance('frozen');
-   const saved=JSON.parse(await readFile(join(env.RUNNER_TEMP,'workflow-cutover-proof.json'),'utf8'));
-   invariant(saved.sourceSha===env.GITHUB_SHA&&saved.prepared&&typeof saved.bookmark==='string'&&saved.bookmark.length>0,
-    'Workflow migration recovery point or prepared proof unavailable');
-   if(mode==='workflow-cutover-recheck'){
-     const original=saved.prepared;
-     invariant(original.schema===22,'Workflow migration recheck requires v22');
-     const current=await verifyWorkflowReleaseInventory(io.query,{mode:'strict',sourceFiles:io.sourceFiles,
-       observe:async run=>Object.hasOwn(original.proofs,run.id)?original.proofs[run.id]:null});
-     invariant(JSON.stringify(current)===JSON.stringify(original),'Workflow evidence changed before schema migration');
-     await io.maintenance('frozen');
-     console.log('Exact v22 cutover evidence reverified; only migration 0023 may be applied');
-     return;
-   }
-   const checked=await backfillWorkflowTerminalProofs(io.query,io.write,saved.prepared,io.sourceFiles);
-   await io.maintenance('frozen');
-   console.log('Workflow v23 proof backfill verified: '+Object.keys(checked.proofs).length+' candidate facts');
-   return;
- }
- if(mode==='workflow-prepare')requireProtectedWorkflowCutover(env);
- const prepared=await workflowReleaseProof(mode,io,env);
- if(mode==='workflow-prepare'){
-   const bookmark=JSON.parse(await readFile(join(env.RUNNER_TEMP,'workflow-cutover-bookmark.json'),'utf8')).bookmark;
-   invariant(typeof bookmark==='string'&&/^[a-f0-9-]{20,100}$/i.test(bookmark),'Workflow Time Travel bookmark unavailable');
-   await writeFile(join(env.RUNNER_TEMP,'workflow-cutover-proof.json'),JSON.stringify({sourceSha:env.GITHUB_SHA,bookmark,prepared}),{mode:0o600});
-   invariant(env.GITHUB_OUTPUT,'Protected release output unavailable');
-   await appendFile(env.GITHUB_OUTPUT,'apply_required='+(prepared.schema===22)+'\n');
-   console.log('Workflow recovery point: '+bookmark+'; source schema '+prepared.schema);
- }
- console.log('Workflow execution readiness verified: schema '+prepared.schema+', '+prepared.run_count+' Runs, '+prepared.ready_sessions+' Ready Sessions, '+Object.keys(prepared.proofs).length+' terminal proofs');
+ const result=await workflowReleaseProof(mode,io,env);
+ console.log('Workflow execution readiness verified: schema '+result.schema+', '+result.run_count+
+   ' Runs, '+result.ready_sessions+' Ready Sessions, '+Object.keys(result.proofs).length+' terminal proofs');
 }
 
 async function main() {
   const [mode, worker] = process.argv.slice(2);
-  if(["workflow-prepare","workflow-backfill","workflow-cutover-recheck","workflow-check","workflow-freeze-check"].includes(mode)){
+  if(["workflow-check","workflow-freeze-check"].includes(mode)){
     invariant(worker==="workflow-mcp-worker","Workflow proof restricted to Workflow");
     return workflowProofCLI(mode,process.env);
   }
