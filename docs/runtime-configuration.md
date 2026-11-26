@@ -1,6 +1,6 @@
 # Cloudflare runtime configuration
 
-**Spec #849 migration state:** The code change removes GitHub job Environment bindings, but the last read-only GitHub Settings snapshot still has 10 Environments and six unmigrated Secrets. Do not merge/activate the new release workflow until separately authorized exact-byte source migration and verification pass; final removal is separately authorized. Worker runtime values and Cloudflare production are not modified by code/CI.
+**Spec #849 completed:** Release jobs no longer bind GitHub Environments. Repository-scoped Variables and Secrets are authoritative; the current read-only Environment inventory is zero. Historical migration evidence remains in [#849](https://github.com/lirtual/mcp-workers/issues/849); do not recreate former configuration scopes or replay their migration.
 
 **Spec #392 and subsequent Bark-only retirement:** The legacy Weixin MCP Worker and release entry are no longer maintained in this repository. [cloudflare-actions](https://github.com/lirtual/cloudflare-actions) owns the unified Action Provider; its current executable catalog contains no Weixin send operation. Historical data and recovery evidence are governed separately and are not deleted by GitHub configuration cleanup.
 
@@ -17,7 +17,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 
 ## Worker-scoped configuration
 
-| Worker | Additional Repository Secrets (target) | Repository Variables (target) |
+| Worker | Additional Repository Secrets | Repository Variables |
 | --- | --- | --- |
 | `database-mcp-worker` | Referenced independent `DATABASE_B2B_PASSWORD` / `DATABASE_SCRAPE_RELAY_PASSWORD` Secrets | `DATABASE_CONNECTIONS`, referenced `DB_HOST`, optional `DATABASE_*` SQL limits |
 | `browser-mcp-worker` | 无同名 `MCP_ACCESS_TOKEN` Environment Secret 覆盖；现行版本已于 2026-11-10 发布并独立回读 | 仅 `OWNER_EMAIL`（Repository）为现行人工维护的 Owner 身份来源；`ACCESS_TEAM_DOMAIN`（Repository）和 `BROWSER_ACTIVATION_AUDIENCE`（Environment）旧来源均已删除并回读确认不存在；运行时身份绑定由 Organization / 固定 Access App / Wrangler Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |

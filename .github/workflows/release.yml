@@ -22,8 +22,8 @@ on:
         required: false
         type: string
         default: ''
-      actions_migration_prepare:
-        description: 'Spec #21: prepare only the frozen Workflow D1 0018 gate, without Worker deployment'
+      actions_gate_freeze:
+        description: 'Freeze the existing Workflow Actions gate, without Worker deployment or schema migration'
         type: boolean
         required: false
         default: false
@@ -42,8 +42,8 @@ on:
         type: string
         required: false
         default: ''
-      actions_old_ingress_quiesced:
-        description: Workflow first cutover only - Owner verified legacy admissions are stopped independently (not a technical substitute)
+      actions_ingress_quiesced:
+        description: Owner verified Workflow admissions are stopped independently for maintenance (not a technical substitute)
         type: boolean
         required: false
         default: false
@@ -71,13 +71,13 @@ env:
   HUSKY: "0"
 
 jobs:
-  workflow-actions-migration-prepare:
-    name: First Actions D1 cutover preparation (no Worker deployment)
+  workflow-actions-gate-freeze:
+    name: Freeze existing Workflow Actions gate (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare == true &&
-          inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true }}
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_gate_freeze == true &&
+          inputs.actions_gate_reopen != true && inputs.actions_ingress_quiesced == true }}
     runs-on: ubuntu-latest
     concurrency:
       group: worker-release-workflow-mcp-worker
@@ -108,15 +108,21 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs preflight
-      - name: Block legacy Actions migration preparation with staged destructive 0021
+      - name: Verify strict Workflow execution drain before gate freeze (read-only)
+        shell: bash
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
-          [[ ! -f apps/workflow-mcp-worker/migrations/0021_retire_uu_session_data.sql ]] ||
-            { echo 'Spec774 UU DROP requires its isolated job' >&2; exit 1; }
+          query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
+            node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
 
-      - name: Apply existing Workflow D1 migrations and freeze only 0018 admission gate (no release)
+      - name: Freeze only the existing Actions admission gate (no release or migration)
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -124,13 +130,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "UPDATE cloudflare_action_gate SET state='frozen',changed_at=unixepoch()*1000 WHERE id=1 AND state='open'") > /dev/null
-      - name: Independently verify migration, frozen gate and continued quiescence (read-only)
+      - name: Independently verify frozen gate and continued quiescence (read-only)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs postflight
 
   workflow-actions-gate-reopen:
@@ -138,8 +143,8 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare != true &&
-          inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_gate_freeze != true &&
+          inputs.actions_gate_reopen == true && inputs.actions_ingress_quiesced == true &&
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
           inputs.database_expected_release_sha == '' }}
     runs-on: ubuntu-latest
@@ -186,7 +191,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs activate-preflight
       - name: Reopen exactly the existing frozen admission gate (no release)
         shell: bash
@@ -203,7 +208,7 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs activate-postflight
 
   checks:
@@ -211,7 +216,7 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
       (inputs.deploy_to_production == true ||
        (inputs.browser_access_readonly == true && inputs.worker == 'browser-mcp-worker' && inputs.deploy_to_production == false)) &&
-      inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true }}
+      inputs.actions_gate_freeze != true && inputs.actions_gate_reopen != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -224,7 +229,7 @@ jobs:
           github.actor == 'lirtual' && github.ref == 'refs/heads/main' &&
           inputs.worker == 'browser-mcp-worker' && inputs.browser_access_readonly == true &&
           inputs.deploy_to_production == false &&
-          inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
+          inputs.actions_gate_freeze != true && inputs.actions_gate_reopen != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
@@ -274,7 +279,7 @@ jobs:
           inputs.deploy_to_production == true &&
           inputs.browser_access_readonly != true &&
           needs.checks.result == 'success' &&
-          needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && (inputs.worker == 'raindrop-mcp-worker' ||
+          needs.checks.outputs.release_ready == 'true' && inputs.actions_gate_freeze != true && inputs.actions_gate_reopen != true && (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'mcp-gateway-worker' ||
            inputs.worker == 'browser-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
@@ -304,7 +309,7 @@ jobs:
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
           WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         shell: bash
         run: |
           set -euo pipefail
@@ -315,7 +320,7 @@ jobs:
             exit 1
           }
           if [[ "$WORKFLOW_CODE_ONLY" == "true" ]]; then
-            [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$ACTIONS_OLD_INGRESS_QUIESCED" != "true" ]] || {
+            [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$ACTIONS_INGRESS_QUIESCED" != "true" ]] || {
               echo "Code-only release accepts only existing Workflow Worker without admission-gate changes" >&2
               exit 1
             }
@@ -1089,15 +1094,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-actions-provider-pin.mjs recheck
 
-      # Read-only release gate; the old native instance admission MUST be
-      # independently quiesced before binding switch. Frozen D1 alone is insufficient.
-      - name: Verify unified Actions binding transition (read-only)
+      # Verify the current unified Provider and the existing gate; this is not a drain proof.
+      - name: Verify current unified Actions binding and gate (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
@@ -1194,19 +1198,19 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-actions-provider-pin.mjs postflight
 
-      # First transition only. Do not reopen admission until the active
+      # Frozen maintenance only. Do not reopen admission until the active
       # Consumer version, single Actions Service Binding and Provider pin
       # have already been independently read back; all plans remain paused.
       - name: Verify frozen Action gate and paused unified runtime before activation (read-only)
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_old_ingress_quiesced == true
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs activate-preflight
 
       - name: Reopen only the now-verified unified Action admission gate
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_old_ingress_quiesced == true
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1219,11 +1223,11 @@ jobs:
             pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command               "UPDATE cloudflare_action_gate SET state='open',changed_at=unixepoch()*1000 WHERE id=1 AND state='frozen'") > /dev/null
 
       - name: Verify only unified admission reopened and all Workflow plans still paused (read-only)
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_old_ingress_quiesced == true
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs activate-postflight
 
       - name: Remove temporary Actions pin proof

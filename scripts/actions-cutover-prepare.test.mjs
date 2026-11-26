@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {verifyPausedInventory,verifyLegacyActionsBindings,verifyFrozenGate,
+import {verifyPausedInventory,verifyFrozenGate,
  readOnlyPrepare,verifyUnifiedActionsBindings,verifyActivationGate} from './actions-cutover-prepare.mjs';
 const old=[
  {type:'service',name:'WEIXIN_ACTION_PROVIDER',service:'weixin-mcp-worker',entrypoint:'WeixinActionProvider'},
@@ -15,52 +15,48 @@ test('cutover preparation requires fully paused published admissions and termina
   assert.throws(()=>verifyPausedInventory([bad]),/blocked/);
  assert.throws(()=>verifyPausedInventory([]),/blocked/);
 });
-test('migration-only mode refuses changed legacy service targets or unified binding',()=>{
- assert.equal(verifyLegacyActionsBindings(old),true);
- assert.throws(()=>verifyLegacyActionsBindings([]),/blocked/);
- assert.throws(()=>verifyLegacyActionsBindings([...old,{type:'service',name:'ACTIONS'}]),/blocked/);
- assert.throws(()=>verifyLegacyActionsBindings([{...old[0],service:'changed'},old[1]]),/blocked/);
-});
 test('fence must read exact new migration and frozen state',()=>{
  assert.equal(verifyFrozenGate([{gate_state:'frozen',migration_count:1}]),true);
  for(const bad of [[{gate_state:'open',migration_count:1}],
   [{gate_state:'frozen',migration_count:0}],[],null])
   assert.throws(()=>verifyFrozenGate(bad),/blocked/);
 });
-test('read-only preflight checks legacy bindings, D1 paused inventory and six native statuses',async()=>{
+test('read-only maintenance preflight checks unified bindings, D1 paused inventory and six native statuses',async()=>{
  const calls=[];
  const fake=async(url,options)=>{
   const u=new URL(url);calls.push({path:u.pathname,method:options.method,body:options.body});
-  const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings:old}}:
-   u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[good]}]}:
+  const data=u.pathname.endsWith('/settings')?{success:true,result:{bindings:unified}}:
+   u.pathname.endsWith('/query')?{success:true,result:[{success:true,results:[{...good,gate_state:'open',migration_count:1}]}]}:
    {success:true,result:[],result_info:{count:0,total_count:0}};
   return {ok:true,json:async()=>data};
  };
- const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_INGRESS_QUIESCED:'true'};
  assert.equal(await readOnlyPrepare(env,fake),true);
  assert.equal(calls.length,8);
  assert.deepEqual(calls.map(c=>c.method),['GET','POST',...Array(6).fill(undefined)]);
  assert.match(JSON.parse(calls[1].body).sql,/SELECT .*COUNT\(\*\)/);
  assert.ok(calls.every(c=>!c.body||/^SELECT\s/i.test(JSON.parse(c.body).sql.trim())));
- await assert.rejects(()=>readOnlyPrepare({...env,ACTIONS_OLD_INGRESS_QUIESCED:'false'},fake),/quiescence/);
+ await assert.rejects(()=>readOnlyPrepare({...env,ACTIONS_INGRESS_QUIESCED:'false'},fake),/quiescence/);
  assert.equal(calls.length,8);
 });
-test('prepare mode uses current main and existing Workflow release lock without deployment',()=>{
+test('gate freeze uses current main, strict drain and existing release lock without deployment or migration',()=>{
  const s=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
- const idx=s.indexOf('  workflow-actions-migration-prepare:');
+ const idx=s.indexOf('  workflow-actions-gate-freeze:');
  const end=s.indexOf('  checks:',idx);
  assert.ok(idx>0&&end>idx);
  const job=s.slice(idx,end);
  for(const required of ["github.actor == 'lirtual'", "inputs.deploy_to_production == false",
-  "inputs.actions_migration_prepare == true", "inputs.actions_old_ingress_quiesced == true",
+  "inputs.actions_gate_freeze == true", "inputs.actions_ingress_quiesced == true",
   'group: worker-release-workflow-mcp-worker',
-  'actions-cutover-prepare.mjs preflight','wrangler d1 migrations apply workflow-mcp-db --remote',
+  'actions-cutover-prepare.mjs preflight','manual-worker-release.mjs migration-check workflow-mcp-worker',
   "state='frozen'",'actions-cutover-prepare.mjs postflight'])
   assert.ok(job.includes(required),required);
- assert.ok(job.indexOf('mjs preflight')<job.indexOf('d1 migrations apply'));
- assert.ok(job.indexOf('d1 migrations apply')<job.indexOf('mjs postflight'));
+ assert.ok(job.indexOf('mjs preflight')<job.indexOf('migration-check workflow-mcp-worker'));
+ assert.ok(job.indexOf('migration-check workflow-mcp-worker')<job.indexOf("UPDATE cloudflare_action_gate SET state='frozen'"));
+ assert.ok(job.indexOf("UPDATE cloudflare_action_gate SET state='frozen'")<job.indexOf('mjs postflight'));
+ assert.doesNotMatch(job,/wrangler d1 migrations apply/);
  assert.ok(!job.includes('wrangler deploy')&&!job.includes('deploy_to_production == true'));
- assert.ok(s.includes("needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true"));
+ assert.ok(s.includes("needs.checks.outputs.release_ready == 'true' && inputs.actions_gate_freeze != true"));
 });
 
 const unified=[{type:'service',name:'ACTIONS',service:'cloudflare-actions',entrypoint:'ActionsEntrypoint'}];
@@ -76,12 +72,13 @@ test('reopening is permitted only after exact unified bindings and full migratio
   assert.throws(()=>verifyActivationGate(bad,'open'),/blocked/);
 });
 test('protected preparation may refreeze only a paused, drained, exact unified Consumer with 0018',async()=>{
- const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_INGRESS_QUIESCED:'true'};
  for(const [bindings,row,shouldPass] of [
   [unified,{...good,gate_state:'open',migration_count:1},true],
   [unified,{...good,gate_state:'frozen',migration_count:1},true],
   [unified,{...good,gate_state:'open',migration_count:0},false],
   [unified,{...good,active_workflows:1,gate_state:'open',migration_count:1},false],
+  [old,{...good,gate_state:'open',migration_count:1},false],
   [[...old,...unified],{...good,gate_state:'open',migration_count:1},false],
   [[{...unified[0],service:'unreviewed'}],{...good,gate_state:'open',migration_count:1},false]
  ]){
@@ -99,7 +96,7 @@ test('protected preparation may refreeze only a paused, drained, exact unified C
  }
 });
 test('activation remains read-only before and after the UPDATE and refuses unpaused plans',async()=>{
- const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_OLD_INGRESS_QUIESCED:'true'};
+ const env={CLOUDFLARE_ACCOUNT_ID:'f'.repeat(32),CLOUDFLARE_API_TOKEN:'test',ACTIONS_INGRESS_QUIESCED:'true'};
  for(const [phase,state] of [['frozen','frozen'],['open','open']]){
   let calls=[];
   const fake=async(url,options)=>{
@@ -132,7 +129,7 @@ test('consumer release reopens only after exact version and Provider pin verific
  assert.ok(first>=0&&first<pre&&pre<update&&update<post);
  assert.equal(deployed.split("UPDATE cloudflare_action_gate SET state='open'").length,2);
  const activation=source.slice(first,post+65);
- assert.match(activation,/inputs.actions_old_ingress_quiesced == true/g);
+ assert.match(activation,/inputs.actions_ingress_quiesced == true/g);
  assert.match(activation,/inputs.worker == 'workflow-mcp-worker'/);
  assert.match(activation,/GITHUB_SHA.*git ls-remote origin refs\/heads\/main/);
 });
@@ -142,13 +139,13 @@ test('protected gate-only recovery is mutually exclusive with freeze and Worker 
  const start=s.indexOf('  workflow-actions-gate-reopen:');
  const end=s.indexOf('  checks:',start);
  const recovery=s.slice(start,end);
- const freeze=s.slice(s.indexOf('  workflow-actions-migration-prepare:'),start);
+ const freeze=s.slice(s.indexOf('  workflow-actions-gate-freeze:'),start);
  const checks=s.slice(end,s.indexOf('  deploy:',end));
  const deploy=s.slice(s.indexOf('  deploy:',end));
  assert.ok(start>=0&&end>start);
  for(const guard of ["github.actor == 'lirtual'","inputs.worker == 'workflow-mcp-worker'",
   'inputs.actions_gate_reopen == true','inputs.deploy_to_production == false',
-  'inputs.actions_migration_prepare != true','inputs.actions_old_ingress_quiesced == true',
+  'inputs.actions_gate_freeze != true','inputs.actions_ingress_quiesced == true',
   'group: worker-release-workflow-mcp-worker',
   'actions-cutover-prepare.mjs activate-preflight','actions-cutover-prepare.mjs activate-postflight',
 'inspectGateRecovery',

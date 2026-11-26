@@ -73,7 +73,7 @@ test('Spec #804 Browser protected Runner probe excludes any production release',
 });
 
 test('Spec #804 read-only mode cannot trigger any mutation branch',()=>{
-  for(const name of ['deploy','workflow-actions-migration-prepare',
+  for(const name of ['deploy','workflow-actions-gate-freeze',
     'workflow-actions-gate-reopen']){
     const start=release.indexOf('  '+name+':\n');
     assert.ok(start>=0);

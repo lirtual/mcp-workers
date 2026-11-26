@@ -1,10 +1,10 @@
 # 手动发布 MCP Workers：GitHub Repository 统一配置
 
-> **Spec #849 迁移准入：** 本文描述迁移完成后的发布契约，**不表示 GitHub Settings 已迁移**。2026-11-10 预检时 Repository 有 4 个 Variables 和 4 个 Secrets，另有 2 个 Environment Variables、6 个 Environment Secrets 和 10 个 Environments。先保证全部凭据原值可安全转移、独立验证后再切换工作流消费者；不要仅凭代码 PR、CI 成功或 Secret 更新时间合并切换 / 删除旧来源。GitHub Settings 修改、Environment 删除和生产发布需要分别明确授权。
+> **Spec #849 已完成：** Repository 配置源已切换，GitHub Environments 已退役（本轮只读回读为 0）。历史迁移授权、字节一致性证据与清理记录见 [#849](https://github.com/lirtual/mcp-workers/issues/849)。以下以现行 Repository 来源为准，不重新执行历史迁移。
 
 本项目每个 Worker 只有一个既有 Cloudflare 生产实例，没有 staging/production 多运行环境。GitHub Actions 的 `Release Worker` 仅在受控手动派发、`main`、Owner 和现有预检通过后选择一个 Worker；普通 `main` Push 只运行 CI，不自动部署。
 
-## 一、单一 GitHub Repository 配置源（迁移目标）
+## 一、单一 GitHub Repository 配置源
 
 在 [GitHub Actions Secrets and variables](https://github.com/lirtual/mcp-workers/settings/secrets/actions) 按现有名称和类型管理：
 
@@ -13,11 +13,11 @@
 | Repository Variable | `CLOUDFLARE_ACCOUNT_ID`、`DATABASE_CONNECTIONS`、`OWNER_EMAIL`、`WORKFLOW_GITHUB_ACTION_REPOSITORY`、`IMA_CLIENT_ID`、`WORKFLOW_MCP_PORTAL_CLIENT_ID` |
 | Repository Secret | `CLOUDFLARE_API_TOKEN`、`DATABASE_B2B_PASSWORD`、`DATABASE_SCRAPE_RELAY_PASSWORD`、`MCP_ACCESS_TOKEN`、`ACTIONS_GITHUB_DISPATCH_TOKENS`、`IMA_API_KEY`、`RAINDROP_ACCESS_TOKEN`、`SSH_ENCRYPTION_KEY`、`WORKFLOW_GITHUB_DISPATCH_TOKEN`、`WORKFLOW_MCP_PORTAL_CLIENT_SECRET` |
 
-迁移后应严格为 **6 Variables、10 Secrets、0 GitHub Environments**。上述两个 Client ID 是非秘密 `plain_text` 输入，不能错误转换为 Secret。六个新 Repository Secret 必须与旧 Environment Secret **完整原始字节一致**；尤其保留多行 PAT 和 SSH 加密历史数据的密钥。不得轮换、重命名或生成替代值。
+当前有效配置由源码白名单及各 Worker 契约确定；#849 初始迁移清单不能作为后续配置数量上限。GitHub Environments 为 0。两个 Client ID 是非秘密输入；原值迁移证据保留在 #849，不得擅自轮换或替换现有凭据。
 
 `DATABASE_CONNECTIONS` 是现行 Database 连接清单；引用的密码依旧是独立 GitHub Repository Secrets，Hyperdrive 在 Cloudflare 原生管理，不能恢复旧 D1 Setup 方案。`OWNER_EMAIL` 为 Browser 唯一人工维护的 Owner 邮箱来源，Issuer/Audience/Origin 按现有 Cloudflare/发布脚本派生。`WORKFLOW_GITHUB_ACTION_REPOSITORY` 指向受控目标仓库，旧批准列表不再是配置源。
 
-## Worker 配置映射（迁移目标）
+## Worker 配置映射
 
 | Worker | Repository Secret（另加共享 `MCP_ACCESS_TOKEN`） | Repository Variable |
 | --- | --- | --- |
@@ -31,13 +31,9 @@
 | `workflow-mcp-worker` | `WORKFLOW_MCP_PORTAL_CLIENT_SECRET`、`WORKFLOW_GITHUB_DISPATCH_TOKEN` | `WORKFLOW_MCP_PORTAL_CLIENT_ID`、`WORKFLOW_GITHUB_ACTION_REPOSITORY` |
 | `mcp-gateway-worker` | `CLERK_SECRET_KEY`、`MCP_GATEWAY_PORTAL_CLIENT_SECRET`（不使用共享 `MCP_ACCESS_TOKEN`） | `MCP_GATEWAY_PORTAL_CLIENT_ID`；Gateway 身份仍读取历史命名的 `CLERK_PILOT_*` GitHub Variables（不是 Raindrop 试点运行时绑定） |
 
-## 二、切换准入与不可逆清理
+## 二、配置维护边界
 
-1. 只读检查最新 `main`、成功 CI、触发链、权限、有效值来源、正在运行/等待审批的 Jobs、10 个 Environment 当前条目及可恢复基线。
-2. **在任何配置写入前**核实全部 6 个现存 Secret 均有平台允许的安全原值传递与独立字节验证途径；GitHub API 不能读回 Secret 原文。若不可行，停止该项，不删旧源，不用功能 smoke/时间戳冒充字节一致。
-3. 获得独立授权后，先复制 2 个 Variables 和 6 个 Secrets 到 Repository，独立核对原值、名称与类型；旧 Environment 保留作为此阶段的可用来源。仍绑定 Environment 的 Job 读取同名 Secret 时会被旧来源遮蔽，不能当作 Repository 来源已验证。
-4. 仅在全部迁移来源验证 Pass 后，才允许按受控路径切换移除所有 `job.environment` 引用的发布/验收工作流；通过静态契约与 CI，并在确实没有 Environment 绑定的真实受信任只读消费边界核验来源。不要为此触发 Worker 发布、数据写入或不必要的多服务 E2E。
-5. Environment 删除需另行授权。按真实可执行路径批量排查历史分支/工作流旧引用及在途 Jobs（GitHub 可能在引用不存在的 Environment 时重新创建空 Environment）。串行删除全部 10 个并独立回读，结果 Unknown 时先只读消歧。不要新增长期清扫服务。
+#849 一次性迁移和 Environment 清理已完成，不再保留专用迁移入口或长期清理流程。修改当前配置、密钥、Cloudflare 资源或生产部署仍须分别授权，按真实引用和回读核验结果。旧迁移历史在原 Issue 与 Git 中保留。
 
 Repository Secrets 对仓库内符合条件的工作流开放，不能再视为按 Worker 的 GitHub 权限隔离。Owner 已接受 Repository 暴露范围扩大、Agent Release 人工审批退役、`main` 无平台分支保护等风险；现有代码门禁不等价于 GitHub 平台审批。
 

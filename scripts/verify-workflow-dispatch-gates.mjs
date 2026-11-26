@@ -23,7 +23,7 @@ export function verifyReleaseWorkers(source, expectedWorkers) {
   sameMembers(choices, expectedWorkers, 'manual release choices');
 
   const gate = job(source, 'deploy').gate.replace(/\s+/g, ' ').trim();
-  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && ";
+  const prefix = dollar + "{{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true && needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' && inputs.actions_gate_freeze != true && inputs.actions_gate_reopen != true && ";
   assert.ok(gate.startsWith(prefix) && gate.endsWith(' }}'), 'Unsafe or unsupported release gate');
   const list = gate.slice(prefix.length, -3);
   assert.match(list, /^\(inputs\.worker == '[a-z0-9-]+'(?: \|\| inputs\.worker == '[a-z0-9-]+')*\)$/, 'Unsafe or unsupported Worker allowlist');
@@ -153,26 +153,26 @@ assert.doesNotMatch(accessProbe.content, /wrangler|secret (?:put|delete|set)|(?:
 
 // Spec #804 read-only intent excludes all mutation-capable jobs.
 for(const name of [
-  'deploy','workflow-actions-migration-prepare','workflow-actions-gate-reopen'
+  'deploy','workflow-actions-gate-freeze','workflow-actions-gate-reopen'
 ]) assert.ok(job(release,name).gate.includes('inputs.browser_access_readonly != true'),
   'Browser read-only intent could reach mutating job: '+name);
 
 // Completed destructive migrations must not regain a special publisher.
 assert.doesNotMatch(release,/^  (?:workflow-uu-table-retirement|legacy-secret-cleanup):/m);
-assert.ok(release.includes('Prevent normal Workflow release from applying pending UU DROP') &&
-  release.includes('Block legacy Actions migration preparation with staged destructive 0021'),
+assert.ok(release.includes('Prevent normal Workflow release from applying pending UU DROP'),
   'Retired destructive migration must not be replayed');
 assert.ok(!release.slice(release.indexOf('      - name: Stage selected Worker Secrets for every release'),
   release.indexOf('      - name: Stage approved Worker variables'))
   .includes('secrets.SESSION_RUNTIME_DATA_KEY'),
   'ordinary Worker release may not re-upload the retired UU Secret');
-const prepare = job(release, 'workflow-actions-migration-prepare');
-assert.ok(prepare.gate.includes("inputs.actions_migration_prepare == true")&&
+const prepare = job(release, 'workflow-actions-gate-freeze');
+assert.ok(prepare.gate.includes("inputs.actions_gate_freeze == true")&&
   prepare.gate.includes("inputs.deploy_to_production == false")&&
-  prepare.gate.includes("github.actor == 'lirtual'"),'Migration-only release gate missing');
-assert.ok(!prepare.content.includes('wrangler deploy'),'Migration preparation must never deploy');
-assert.ok(deploy.gate.includes('inputs.actions_migration_prepare != true'),
-  'Production release must not overlap migration-only mode');
+  prepare.gate.includes("github.actor == 'lirtual'"),'Gate-freeze release gate missing');
+assert.doesNotMatch(prepare.content,/wrangler deploy|wrangler d1 migrations apply/,'Gate freeze must never deploy or migrate');
+assert.ok(prepare.content.includes('manual-worker-release.mjs migration-check'),'Gate freeze requires strict execution drain');
+assert.ok(deploy.gate.includes('inputs.actions_gate_freeze != true'),
+  'Production release must not overlap gate-freeze mode');
 assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release Owner gate missing');
 assert.ok(deploy.content.includes('[[ "$GITHUB_SHA" == "$DATABASE_EXPECTED_RELEASE_SHA" ]]'),
   'Database release expected SHA gate missing');

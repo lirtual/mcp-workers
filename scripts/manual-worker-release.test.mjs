@@ -378,8 +378,8 @@ test("Workflow code-only release preserves Secrets and other Variables, pins Por
   assert.ok(deployment.includes('deploy_args=(--keep-vars --var "${portal_pins[0]}")'));
   assert.match(deployment, /deploy_args=\(--secrets-file "\$RUNNER_TEMP\/mcp-worker-secrets.json"\)/);
   assert.match(deployment, /if \[\[ "\$WORKFLOW_CODE_ONLY" == "true" \]\]/);
-  assert.match(workflow, /ACTIONS_OLD_INGRESS_QUIESCED.*!= "true"/);
-  for (const job of ["workflow-actions-migration-prepare","workflow-actions-gate-reopen"]) {
+  assert.match(workflow, /ACTIONS_INGRESS_QUIESCED.*!= "true"/);
+  for (const job of ["workflow-actions-gate-freeze","workflow-actions-gate-reopen"]) {
     const block = workflow.slice(workflow.indexOf("  "+job+":"));
     assert.match(block.slice(0,550), /inputs.workflow_code_only != true/,
       "code-only selection must not enter maintenance job "+job);
@@ -1084,7 +1084,7 @@ test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
   assert.ok(finalQuiescence>migration && finalQuiescence<publish);
   const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
   const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
-  const freeze=ci.indexOf("      - name: Verify unified Actions binding transition (read-only)");
+  const freeze=ci.indexOf("      - name: Verify current unified Actions binding and gate (read-only)");
   assert.ok(pin>0 && recheck>pin && freeze>recheck && freeze<publish);
   assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
   assert.equal(ci.split('0018_cloudflare_action_migration_fence.sql').length,3);
