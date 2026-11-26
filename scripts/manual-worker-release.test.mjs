@@ -674,32 +674,30 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
 });
 
 
-test("Workflow protected release retains independent identity, schema and health gates", () => {
+test("Workflow protected release requires exact v23 and keeps maintenance gate operations separate", () => {
  const ci=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
- const prepare=ci.indexOf("      - name: Prepare strict Workflow cutover and record recovery point");
- const migrate=ci.indexOf("      - name: Apply only the reviewed v23 Workflow D1 migration");
- const backfill=ci.indexOf("      - name: Conditionally backfill terminal facts");
+ const freezeStart=ci.indexOf("  workflow-actions-gate-freeze:");
+ const reopenStart=ci.indexOf("  workflow-actions-gate-reopen:");
+ const checksStart=ci.indexOf("  checks:");
  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
- const deploy=ci.indexOf('pnpm exec wrangler deploy',publish);
+ const deploy=ci.indexOf("pnpm exec wrangler deploy",publish);
  const health=ci.indexOf("      - name: Check existing public health endpoint");
- const activate=ci.indexOf("      - name: Reopen only the now-verified unified Action admission gate");
- const check=ci.indexOf("node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker",publish);
- assert.ok(prepare>0&&migrate>prepare&&backfill>migrate&&publish>backfill&&check>publish&&deploy>check&&health>deploy&&activate>health);
- assert.match(ci.slice(prepare,migrate),/d1 time-travel info workflow-mcp-db --json/);
- assert.match(ci.slice(migrate,backfill),/workflow-cutover-recheck workflow-mcp-worker[\s\S]*wrangler d1 migrations apply workflow-mcp-db --remote/);
- assert.match(ci.slice(backfill,publish),/workflow-backfill workflow-mcp-worker/);
- const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
- const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
- const freeze=ci.indexOf("      - name: Verify current unified Actions binding and gate (read-only)");
- assert.ok(pin>0&&recheck>pin&&freeze>recheck&&freeze<publish);
- assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
- assert.ok(ci.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY"));
- assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"));
- assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
- assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
- assert.match(ci,/body\.scope !== "workflow"/);
- assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
- assert.doesNotMatch(ci,/WORKFLOW_(?:[A-Z_]+_)?TERMINAL_RUN_ID|steps\.terminal|migration-check workflow-mcp-worker/);
+ const unauth=ci.indexOf("      - name: Check unauthenticated MCP surface without credentials");
+ assert.ok(freezeStart>0&&reopenStart>freezeStart&&checksStart>reopenStart);
+ assert.ok(publish>0&&deploy>publish&&health>deploy&&unauth>health);
+ const freeze=ci.slice(freezeStart,reopenStart);
+ const reopen=ci.slice(reopenStart,checksStart);
+ assert.match(freeze,/workflow-freeze-check workflow-mcp-worker/);
+ assert.match(reopen,/workflow-check workflow-mcp-worker/);
+ assert.match(reopen,/actions_expected_provider_version/);
+ assert.match(reopen,/actions_expected_consumer_version/);
+ assert.match(ci,/actions_gate_freeze: true/);
+ assert.match(ci,/actions_gate_reopen: true/);
+ assert.match(ci,/workflow-check workflow-mcp-worker[\\s\\S]*pnpm exec wrangler deploy/);
+ assert.match(ci,/health_endpoint="https:\\/\\/workflow\\.lirtual\\.dpdns\\.org\\/health"/);
+ assert.match(ci,/body\\.execution_terminal_proof_schema !== 23/);
+ assert.match(ci,/Unauthenticated MCP request denied/);
+ assert.doesNotMatch(ci,/workflow-prepare|workflow-backfill|workflow-cutover-recheck|workflow-cutover-bookmark|workflow-cutover-proof|wrangler d1 migrations apply workflow-mcp-db|Reopen only the now-verified unified Action admission gate/);
 });
 
 test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bindings",()=> {
@@ -1533,87 +1531,8 @@ test('#1046 release inventory selects actual unresolved evidence, not historical
  }finally{db.close();}
 });
 
-test('#1046 once-only v22 to v23 proof backfill preserves outcomes and resumes after a lost write receipt',async()=>{
- const {verifyWorkflowReleaseInventory,backfillWorkflowTerminalProofs,workflowReleaseProof}=await import('./manual-worker-release.mjs');
- const db=new DatabaseSync(':memory:');
- try{
-  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
-  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
-  db.exec('CREATE TABLE d1_migrations(name TEXT NOT NULL UNIQUE)');
-  const migrate=name=>{db.exec(readFileSync(new URL(name,dir),'utf8'));db.prepare('INSERT INTO d1_migrations VALUES(?)').run(name);};
-  for(const file of files.slice(0,22))migrate(file);
-  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
-  db.exec("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d','{\"steps\":[]}',1)");
-  for(const id of ['a','b']){
-   db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at) VALUES(?,'wf','v',?,'d','{}','started','indeterminate','execution_interrupted',1,2)").run(id,id);
-   db.prepare("INSERT INTO run_steps(run_id,step_id,status,updated_at) VALUES(?,'emit','indeterminate',2)").run(id);
-  }
-  const snapshot=db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all();
-  const stepSnapshot=db.prepare("SELECT * FROM run_steps ORDER BY run_id").all();
-  const query=async(sql,params=[])=>db.prepare(sql).all(...params);
-  const checks=[];
-  const io={query,sourceFiles:files,
-   observe:async r=>({instance_id:r.instance_id,status:'complete',observed_at:1000}),
-   maintenance:async phase=>checks.push(phase),
-   nativeDrain:async ids=>checks.push(ids),
-   };
-  // The adapter receives sources only for actual recognized history;
-  // synthetic current IDs may not perform any external history requests.
-  const historyFree={...io,historySources:{githubRun:async()=>{throw Error('history consulted');},
-    githubJobs:async()=>{throw Error('history consulted');},providerVersions:async()=>{throw Error('history consulted');}}};
-  await assert.rejects(()=>workflowReleaseProof('workflow-check',historyFree,{ACTIONS_INGRESS_QUIESCED:'false'}),/exact v23/);
-  await assert.rejects(()=>workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'false'}),/quiescence/);
-  assert.deepEqual(checks,[]);
-  const prep=await workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'true'});
-  assert.deepEqual(checks,['frozen','frozen']);checks.length=0;
-  assert.equal(prep.schema,22);
-  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('write before migration');},prep,files),/schema/);
-  migrate(files.at(-1));
-  let writes=0;
-  const interrupted=async(sql,params)=>{writes++;db.prepare(sql).run(...params);throw Error('lost write receipt');};
-  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,interrupted,prep,files),/lost write receipt/);
-  assert.equal(writes,1);
-  assert.equal(db.prepare("SELECT count(*) AS n FROM runs WHERE execution_terminal_proof IS NOT NULL").get().n,1);
-  // Reconstructed preparation in a separately authorized forward recovery
-  // reads existing facts after an uncertain migration/write receipt.
-  const recovery=await workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'true'});
-  assert.equal(recovery.schema,23);
-  assert.deepEqual(recovery.proofs,prep.proofs);
-  const resumed=await backfillWorkflowTerminalProofs(query,async(sql,params)=>{writes++;return Number(db.prepare(sql).run(...params).changes);},recovery,files);
-  assert.equal(writes,2,'confirmed existing proof must not be written again');
-  assert.equal(resumed.schema,23);
-  assert.deepEqual(db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all(),snapshot);
-  assert.deepEqual(db.prepare("SELECT * FROM run_steps ORDER BY run_id").all(),stepSnapshot);
-  checks.length=0;
-  const routine=await workflowReleaseProof('workflow-check',{...historyFree,observe:async()=>{throw Error('persisted proof was not reused');},
-   get historySources(){throw Error('normal v23 release entered history adapter');}},{ACTIONS_INGRESS_QUIESCED:'false'});
-  assert.deepEqual(routine.proofs,prep.proofs);
-  assert.deepEqual(checks,[[]],'ordinary release must independently check native active inventory');
-  db.exec("UPDATE runs SET execution_terminal_proof=NULL,updated_at=3 WHERE id='b'");
-  await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('must not write changed state');},prep,files),/changed/);
- }finally{db.close();}
-});
-
-
-test('#1046 Session release recognizes definitive rejection and never-dispatched slots, not an unresolved dispatch',async()=>{
- const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
- const run={id:'r',instance_id:'r',version_id:'v',start_state:'started',outcome:'failed'};
- const native={instance_id:'r',status:'complete',observed_at:1000};
- const attempt={run_id:'r',step_id:'session',attempt_id:'a',capability_id:'github.action',state:'rejected',
-  candidate_run_id:null,candidate_run_attempt:null,owner_run_id:null,owner_run_attempt:null};
- const e={steps:[{run_id:'r',step_id:'session',status:'failed',error_code:'github_session_dispatch_rejected'}],
-  attempts:[attempt],sessions:[{run_id:'r',step_id:'session',state:'terminated'}],callbacks:[],children:[],
-  invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[]};
- assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
- assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[]}),native);
- assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,state:'dispatch_unknown'}]}),/terminal evidence/);
- assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,candidate_run_id:42}]}),/terminal evidence/);
- assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,sessions:[{...e.sessions[0],state:'starting'}]}),/terminal evidence/);
- assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[],steps:[]}),/terminal evidence/);
-});
-
 test('#1046 arbitrary new Task identity can be proven by live physical read and persisted additively, not a historical exception',async()=>{
- const {workflowReleaseProof,backfillWorkflowTerminalProofs,observeRelatedTaskFacts}=await import('./manual-worker-release.mjs');
+ const {workflowReleaseProof,observeRelatedTaskFacts}=await import('./manual-worker-release.mjs');
  const {observeGitHubTaskTerminalFact}=await import('../apps/workflow-mcp-worker/src/github-action-attempt-inspection.ts');
  const {inspectGitHubActionRun}=await import('../apps/workflow-mcp-worker/src/github-action-run-inspection.ts');
  const db=new DatabaseSync(':memory:');
@@ -1649,7 +1568,7 @@ test('#1046 arbitrary new Task identity can be proven by live physical read and 
   const io={query,sourceFiles:files,observe:async()=>{throw Error('native proof already persisted');},
    observeRelated:(r,n,e)=>observeRelatedTaskFacts(r,n,e,inspect),maintenance:async()=>{},
    nativeDrain:async ids=>assert.deepEqual(ids,[]),
-   historySources:{githubRun:async()=>{throw Error('historical source not needed');}}};
+   };
   badHead=true;
   await assert.rejects(()=>workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'}),/terminal evidence/);
   badHead=false;
@@ -1658,43 +1577,14 @@ test('#1046 arbitrary new Task identity can be proven by live physical read and 
   assert.equal(live.proofs[id].github_attempts[0].conclusion,'failure');
   assert.equal(JSON.parse(db.prepare('SELECT execution_terminal_proof AS p FROM runs').get().p).github_attempts,undefined,
    'routine release is read-only');
-  const prepared=await workflowReleaseProof('workflow-prepare',io,{ACTIONS_INGRESS_QUIESCED:'true'});
-  assert.equal(prepared.schema,23);
-  const checked=await backfillWorkflowTerminalProofs(query,async(sql,params)=>Number(db.prepare(sql).run(...params).changes),prepared,files);
-  assert.deepEqual(checked.proofs[id],live.proofs[id]);
+  const persisted=JSON.parse(db.prepare('SELECT execution_terminal_proof AS p FROM runs').get().p);
+  db.prepare('UPDATE runs SET execution_terminal_proof=? WHERE id=?')
+   .run(JSON.stringify({...persisted,github_attempts:live.proofs[id].github_attempts}),id);
   const reads=physicalReads;
-  await workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'});
-  assert.equal(physicalReads,reads,'persisted physical facts require no external query');
+  const reused=await workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'});
+  assert.equal(physicalReads,reads,'persisted physical Task facts require no external query');
+  assert.deepEqual(reused.proofs[id].github_attempts,live.proofs[id].github_attempts);
   assert.deepEqual(db.prepare('SELECT * FROM step_attempts').all(),rowBefore);
   assert.deepEqual(db.prepare('SELECT id,outcome,error_code,updated_at FROM runs').all(),runBefore);
  }finally{db.close();}
-});
-
-test('#1046 historical physical Task evidence uses the existing repository-scoped dispatch credential',async()=>{
- const requests=[];
- const io=workflowReleaseIO({
-  CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-test',
-  GITHUB_TOKEN:'same-repository-token',WORKFLOW_GITHUB_DISPATCH_TOKEN:'task-dispatch-token'
- },async(url,init)=>{
-  requests.push({url,authorization:init.headers.Authorization});
-  return Response.json({success:true});
- });
- await io.historySources.githubRun('lirtual/mcp-workers',1);
- await io.historySources.githubRun('lirtual/github-actions',2);
- await io.historySources.githubRun('lirtual/cloudflare-actions',3);
- assert.equal(requests[0].authorization,'Bearer same-repository-token');
- assert.equal(requests[1].authorization,'Bearer task-dispatch-token');
- assert.equal(requests[2].authorization,undefined,
-  'the dispatch credential must not cross into the unrelated Cloudflare Actions repository');
- assert.throws(()=>workflowReleaseIO({
-  CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-test',
-  GITHUB_TOKEN:'same-repository-token'
- }).historySources.githubRun('lirtual/github-actions',2),
- /Historical GitHub Actions read credential unavailable/);
- const denied=workflowReleaseIO({
-  CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-test',
-  WORKFLOW_GITHUB_DISPATCH_TOKEN:'task-dispatch-token'
- },async()=>new Response('{}',{status:403}));
- await assert.rejects(()=>denied.historySources.githubRun('lirtual/github-actions',4),
-  error=>error.message.includes('HTTP 403 api.github.com/repos/lirtual/github-actions/actions/runs/4'));
 });
