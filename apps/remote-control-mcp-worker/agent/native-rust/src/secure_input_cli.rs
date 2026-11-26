@@ -74,8 +74,9 @@ mod interrupt {
 
 #[cfg(unix)]
 fn read_terminal_line(cancel: &interrupt::Guard) -> Result<Zeroizing<String>, SecureInputCliError> {
-    // Canonical input supplies one line (or EOF); poll also detects cancellation
-    // delivered to another thread. Do not use read_line, which retries EINTR.
+    // Canonical input supplies one line (or EOF). A signal may flush that
+    // line between poll and read, including on a different thread, so the
+    // EchoGuard keeps the descriptor nonblocking until restoration.
     let mut bytes = Zeroizing::new(vec![0u8; 8_194]);
     loop {
         if cancel.cancelled() {
@@ -101,7 +102,12 @@ fn read_terminal_line(cancel: &interrupt::Guard) -> Result<Zeroizing<String>, Se
         }
         let count =
             unsafe { libc::read(libc::STDIN_FILENO, bytes.as_mut_ptr().cast(), bytes.len()) };
-        if count < 0 && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted {
+        if count < 0
+            && matches!(
+                io::Error::last_os_error().kind(),
+                io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock
+            )
+        {
             continue;
         }
         if count <= 0 || cancel.cancelled() {
@@ -121,12 +127,14 @@ fn read_terminal_line(cancel: &interrupt::Guard) -> Result<Zeroizing<String>, Se
 #[cfg(unix)]
 struct EchoGuard {
     original: libc::termios,
+    flags: libc::c_int,
 }
 #[cfg(unix)]
 impl Drop for EchoGuard {
     fn drop(&mut self) {
         unsafe {
             libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &self.original);
+            libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, self.flags);
         }
     }
 }
@@ -136,14 +144,21 @@ fn hide_echo() -> Result<EchoGuard, SecureInputCliError> {
     if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut original) } != 0 {
         return Err(SecureInputCliError);
     }
-    let mut hidden = original;
+    let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
+    if flags < 0
+        || unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        return Err(SecureInputCliError);
+    }
+    let guard = EchoGuard { original, flags };
+    let mut hidden = guard.original;
     // This is a line-oriented interactive prompt, including in a custom tty.
     hidden.c_lflag |= libc::ICANON | libc::ISIG;
     hidden.c_lflag &= !(libc::ECHO | libc::ECHONL);
     if unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &hidden) } != 0 {
         return Err(SecureInputCliError);
     }
-    Ok(EchoGuard { original })
+    Ok(guard)
 }
 
 #[cfg(windows)]
@@ -458,6 +473,7 @@ mod terminal_tests {
         let mut master = unsafe { File::from_raw_fd(master_fd) };
         let slave = unsafe { File::from_raw_fd(slave_fd) };
         let original = terminal_flags(&slave);
+        let original_fd_flags = unsafe { libc::fcntl(slave.as_raw_fd(), libc::F_GETFL) };
         assert_ne!(original & libc::ECHO, 0);
         let mut command = Command::new(std::env::current_exe().unwrap());
         if cancel {
@@ -467,8 +483,17 @@ mod terminal_tests {
                 command.pre_exec(|| {
                     if libc::setsid() == -1
                         || libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY as _, 0) == -1
+                        || libc::tcsetpgrp(libc::STDIN_FILENO, libc::getpgrp()) == -1
                     {
                         return Err(io::Error::last_os_error());
+                    }
+                    let mut signals = std::mem::zeroed::<libc::sigset_t>();
+                    libc::sigemptyset(&mut signals);
+                    libc::sigaddset(&mut signals, libc::SIGINT);
+                    let error =
+                        libc::pthread_sigmask(libc::SIG_UNBLOCK, &signals, std::ptr::null_mut());
+                    if error != 0 {
+                        return Err(io::Error::from_raw_os_error(error));
                     }
                     Ok(())
                 });
@@ -492,7 +517,11 @@ mod terminal_tests {
         let mut output = Vec::new();
         let mut submitted = false;
         loop {
-            assert!(Instant::now() < deadline, "synthetic PTY test timed out");
+            assert!(
+                Instant::now() < deadline,
+                "synthetic PTY timed out: input_sent={submitted}, terminal_flags={:#x}",
+                terminal_flags(&slave)
+            );
             let mut poll = libc::pollfd {
                 fd: master.as_raw_fd(),
                 events: libc::POLLIN,
@@ -510,9 +539,19 @@ mod terminal_tests {
                         .any(|window| window == b"Secret (input hidden): ")
                 {
                     assert_eq!(terminal_flags(&slave) & (libc::ECHO | libc::ECHONL), 0);
+                    let mut settings = unsafe { std::mem::zeroed::<libc::termios>() };
+                    assert_eq!(
+                        unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut settings) },
+                        0
+                    );
+                    let interrupt = [settings.c_cc[libc::VINTR]];
+                    if cancel {
+                        assert_eq!(settings.c_lflag & libc::ISIG, libc::ISIG);
+                        assert_eq!(interrupt, [3], "fixture must use Ctrl+C as VINTR");
+                    }
                     master.write_all(MARKER.as_bytes()).unwrap();
                     master
-                        .write_all(if cancel { b"\x03" } else { b"\n" })
+                        .write_all(if cancel { &interrupt } else { b"\n" })
                         .unwrap();
                     submitted = true;
                 }
@@ -522,14 +561,19 @@ mod terminal_tests {
                     status.success(),
                     "terminal helper did not return normally: {status}"
                 );
-                // Drain any final output before checking the synthetic marker.
-                if ready == 0 {
+                // Drain any final readable output, but a closed controlling
+                // session may keep reporting HUP rather than timing out.
+                if ready <= 0 || poll.revents & libc::POLLIN == 0 {
                     break;
                 }
             }
         }
         assert!(submitted);
         assert_eq!(terminal_flags(&slave), original);
+        assert_eq!(
+            unsafe { libc::fcntl(slave.as_raw_fd(), libc::F_GETFL) },
+            original_fd_flags
+        );
         assert!(!output
             .windows(MARKER.len())
             .any(|window| window == MARKER.as_bytes()));
