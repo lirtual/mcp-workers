@@ -755,7 +755,7 @@ mod windows {
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
                 [_, command] if command == "--help" || command == "help" => {
-                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|update [--check|--auto [on|off]|--version <staged-tag>]|pair|recover|uninstall|--version|--help]");
+                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|update [--check|--auto [on|off]|--version <staged-tag>]|pair|recover|uninstall|secure-input REQUEST_ID|--version|--help]");
                     println!("Bare update or upgrade uses the packaged owner installer from rca.cmd. Use the official installer for initial installation.");
                     Ok(())
                 }

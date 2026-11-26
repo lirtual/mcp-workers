@@ -1,7 +1,7 @@
 import { clerkOwnerConfigured, clerkOwnerOrigin, verifyClerkOwner, type ClerkOwnerConfig } from "./clerk-owner-session.ts";
 import { validateSecureInputSecret } from "./secure-input.ts";
 
-const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+const ROUTE = /^\/secure-input\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})(?:\/(details|submit|cancel))?$/;
 const MAX_BODY = 65_536;
 const CLERK_ORIGIN = "https://clerk.lirtual.dpdns.org";
 const headers = {
@@ -49,7 +49,8 @@ const requestId = ${JSON.stringify(requestId)};
 const publishableKey = ${JSON.stringify(config.CLERK_PUBLISHABLE_KEY ?? "")};
 const form = document.getElementById("secure-form"), field = document.getElementById("secret");
 const submit = document.getElementById("submit"), status = document.getElementById("status");
-let ownerToken = null;
+const cancel = document.getElementById("cancel");
+let busy = false, inputAttempted = false;
 function text(id, value) { document.getElementById(id).textContent = value == null ? "—" : String(value); }
 function effectAndRecovery(target) {
   if (target.kind === "task_process") return {
@@ -73,17 +74,27 @@ function effectAndRecovery(target) {
 function showState(value) {
   text("state", value.state);
   const pending = value.state === "pending";
-  form.hidden = !pending; submit.disabled = !pending;
+  form.hidden = !pending;
+  submit.disabled = !pending || busy || inputAttempted;
+  cancel.disabled = !pending || busy;
+  if (value.state === "accepted" || value.state === "running") status.textContent = "Input submitted once. Waiting for the target Agent.";
   if (value.state === "unknown") status.textContent = "Outcome uncertain. Do not submit again; check the original ChatGPT request.";
   if (value.state === "succeeded") status.textContent = "The target Agent confirmed completion.";
   if (value.state === "failed") status.textContent = "The target Agent reported failure. Do not reuse this request.";
   if (value.state === "cancelled" || value.state === "expired") status.textContent = "This request can no longer accept input.";
 }
-async function details() {
-  const response = await fetch("/secure-input/" + requestId + "/details", {
+async function ownerPost(action, body) {
+  // Clerk Session JWTs are short-lived; request the current token on each action.
+  const ownerToken = window.Clerk.session ? await window.Clerk.session.getToken() : null;
+  if (!ownerToken) throw new Error("Owner sign-in unavailable.");
+  return fetch("/secure-input/" + requestId + "/" + action, {
     method: "POST", cache: "no-store",
-    headers: { authorization: "Bearer " + ownerToken, "content-type": "application/json" }, body: "{}"
+    headers: { authorization: "Bearer " + ownerToken, "content-type": "application/json" },
+    body: JSON.stringify(body)
   });
+}
+async function details() {
+  const response = await ownerPost("details", {});
   if (!response.ok) throw new Error("Request unavailable or not authorized.");
   return await response.json();
 }
@@ -104,14 +115,13 @@ document.getElementById("signin").href =
   try {
     if (!window.Clerk) throw new Error("Owner sign-in unavailable.");
     await window.Clerk.load({ publishableKey });
-    ownerToken = window.Clerk.session ? await window.Clerk.session.getToken() : null;
-    if (!ownerToken) { document.getElementById("signin-panel").hidden = false; return; }
+    if (!window.Clerk.session) { document.getElementById("signin-panel").hidden = false; return; }
     await refresh(); document.getElementById("details").hidden = false;
   } catch { status.textContent = "Owner verification failed. No input was sent."; }
 })();
 form.addEventListener("submit", async event => {
   event.preventDefault();
-  if (submit.disabled || !ownerToken) return;
+  if (submit.disabled || busy || inputAttempted) return;
   const value = field.value;
   if (!value.trim()) { status.textContent = "Enter a non-empty value."; return; }
   const targetConfirmed = document.getElementById("target-confirmed").checked;
@@ -119,20 +129,37 @@ form.addEventListener("submit", async event => {
   if (!targetConfirmed || (document.getElementById("production-authorization").hidden === false && !productionAuthorized)) {
     status.textContent = "Confirm the exact target and separately authorize the production effect."; return;
   }
-  field.value = ""; submit.disabled = true; status.textContent = "Submitting once. Do not submit again.";
+  field.value = ""; busy = true; inputAttempted = true;
+  submit.disabled = true; cancel.disabled = true;
+  status.textContent = "Submitting once. Do not submit again.";
   try {
-    const response = await fetch("/secure-input/" + requestId + "/submit", {
-      method: "POST", cache: "no-store",
-      headers: { authorization: "Bearer " + ownerToken, "content-type": "application/json" },
-      body: JSON.stringify({ secret: value, target_confirmed: targetConfirmed, production_authorized: productionAuthorized })
-    });
+    const response = await ownerPost("submit", { secret: value, target_confirmed: targetConfirmed, production_authorized: productionAuthorized });
     const result = await response.json();
     if (!response.ok) { status.textContent = "Input not accepted or request already consumed. Do not retry."; return; }
-    showState(result); status.textContent = "Input submitted once. Waiting for the target Agent."; await refresh();
+    showState(result);
   } catch { status.textContent = "Response lost; outcome may be unknown. Do not retry."; }
+  finally { busy = false; }
+});
+cancel.addEventListener("click", async () => {
+  if (cancel.disabled || busy) return;
+  field.value = ""; busy = true; inputAttempted = true;
+  submit.disabled = true; cancel.disabled = true;
+  try {
+    const response = await ownerPost("cancel", {});
+    if (!response.ok) { status.textContent = "Cancellation not confirmed. Check the original request."; return; }
+    showState(await response.json());
+  } catch { status.textContent = "Cancellation not confirmed. Check the original request."; }
+  finally { busy = false; }
 });
 document.getElementById("refresh").addEventListener("click", async () => {
+  if (busy) return;
+  busy = true;
   try { await refresh(); } catch { status.textContent = "Status is temporarily unavailable."; }
+  finally { busy = false; }
+  // Re-enable only controls permitted by the latest known state.
+  if (document.getElementById("state").textContent === "pending") {
+    submit.disabled = inputAttempted; cancel.disabled = false;
+  }
 });
   `;
   const body = `<!doctype html>
@@ -168,6 +195,7 @@ button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
 <label><input id="production-authorized" type="checkbox"> I separately authorize this production write/deployment.</label></div>
 <p class="warning">Submitted once to the bound Agent. Never paste this value into ChatGPT.</p>
 <button id="submit" type="submit">Submit once</button>
+<button id="cancel" type="button">Cancel request</button>
 </form>
 <button id="refresh" type="button">Refresh status</button>
 <p id="status" role="status" aria-live="polite"></p>
@@ -186,13 +214,13 @@ button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
 }
 
 export function isSecureInputPath(pathname: string): boolean {
-  return /^\/secure-input\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?:\/(?:details|submit))?$/.test(pathname);
+  return ROUTE.test(pathname);
 }
 
 export async function handleSecureInput(
   request: Request, config: ClerkOwnerConfig & { CLERK_OWNER_USER_ID?: string }, owner: DurableObjectStub,
 ): Promise<Response> {
-  const match = /^\/secure-input\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})(?:\/(details|submit))?$/.exec(new URL(request.url).pathname);
+  const match = ROUTE.exec(new URL(request.url).pathname);
   if (!match || !clerkOwnerConfigured(config) || !config.CLERK_OWNER_USER_ID) {
     return new Response("Not found", { status: 404, headers });
   }
@@ -204,16 +232,18 @@ export async function handleSecureInput(
     return page(requestId, config);
   }
   if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405);
-  if (request.headers.get("origin") !== clerkOwnerOrigin) return json({ error: "invalid_origin" }, 403);
+  if (new URL(request.url).origin !== clerkOwnerOrigin || request.headers.get("origin") !== clerkOwnerOrigin) return json({ error: "invalid_origin" }, 403);
   if (!await verifyClerkOwner(request, config)) return json({ error: "unauthorized" }, 401);
+  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json")
+    return json({ error: "unsupported_media_type" }, 415);
   const ownerUserId = config.CLERK_OWNER_USER_ID!;
   let body: unknown;
   try { body = await boundedJson(request); } catch { return json({ error: "bad_request" }, 400); }
   if (!isObject(body)) return json({ error: "bad_request" }, 400);
-  if (action === "details") {
+  if (action === "details" || action === "cancel") {
     if (!exact(body, [])) return json({ error: "bad_request" }, 400);
     try {
-      const response = await owner.fetch("https://device.internal/secure-input/status", {
+      const response = await owner.fetch("https://device.internal/secure-input/" + (action === "details" ? "status" : "cancel"), {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ owner_user_id: ownerUserId, request_id: requestId }),
       });

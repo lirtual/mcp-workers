@@ -13,6 +13,7 @@ import { OwnerCoordinator } from "../src/pairing.ts";
 import {approvalArgs, lookupOwnerPairing, approveOwnerPairing} from "../src/pairing-owner.ts";
 import {approvePendingKey} from "../src/pairing.ts";
 import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/session.ts";
+import {createSecureInputRecord, parseSecureInputRequest} from "../src/secure-input.ts";
 
 function fixture(browser=false) {
   let dropApprovalReply=false;
@@ -387,7 +388,7 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
   }
 });
 
-test("#1018 actual Worker browser approval preserves signed enrollment and rejects retired MCP pairing",async t=>{
+test("#1018/#1039 actual Worker browser authorization preserves enrollment and cancels secure input",async t=>{
   const f=fixture(true),origin=f.origin.slice(0,-1);
   const issuer="https://clerk.lirtual.dpdns.org";
   const {publicKey,privateKey}=await generateKeyPair("RS256");
@@ -485,6 +486,45 @@ test("#1018 actual Worker browser approval preserves signed enrollment and rejec
   assert.equal([...f.rows.entries()].filter(([k])=>k.startsWith("device:")).map(([,v])=>(v as {grant_type:string}).grant_type).sort().join(","),"permanent,temporary");
   assert.equal((await post("/pair/approve",args2)).status,404);
   assert.equal(count(),2);
+  // Reuse the real Clerk verifier and coordinator, with only synthetic
+  // identity/metadata and the same isolated transactional store.
+  const deviceId=crypto.randomUUID();
+  const request=parseSecureInputRequest({
+    purpose:"Synthetic cancellation",is_production:false,execution:{device_id:deviceId},
+    target:{kind:"task_process",session_id:crypto.randomUUID(),name:"SYNTHETIC_INPUT"},
+  });
+  assert.ok(request);
+  const input=await createSecureInputRecord(f.store as never,request,"user_fixture",{
+    device_id:deviceId,epoch:"fixture-epoch",grant_type:"permanent",
+  });
+  const route="/secure-input/"+input.request_id;
+  const inputPage=await f.send(origin+route);
+  assert.equal(inputPage.status,200);
+  assert.match(inputPage.headers.get("cache-control")??"",/no-store/);
+  assert.equal(inputPage.headers.get("referrer-policy"),"no-referrer");
+  assert.match(inputPage.headers.get("content-security-policy")??"",/frame-ancestors 'none'/);
+  assert.equal((await post(route+"/details",{})).status,200);
+  const beforeCancel=f.dispatches();
+  assert.equal((await post(route+"/cancel",{},await mint({sub:"user_other"}))).status,401);
+  assert.equal((await post(route+"/cancel",{},token,"https://other.example")).status,403);
+  assert.equal((await f.send("https://other.example"+route+"/cancel",{
+    method:"POST",headers:{origin,authorization:"Bearer "+token,"content-type":"application/json"},body:"{}",
+  })).status,403);
+  assert.equal((await post(route+"/cancel",{unexpected:true})).status,400);
+  assert.equal((await f.send(origin+route+"/cancel",{
+    method:"POST",headers:{origin,authorization:"Bearer "+token,"content-type":"text/plain"},body:"{}",
+  })).status,415);
+  assert.equal(f.dispatches(),beforeCancel);
+  assert.equal((await post(route+"/cancel",{})).status,200);
+  const cancelled=await (await post(route+"/details",{})).json() as {state:string};
+  assert.equal(cancelled.state,"cancelled");
+  assert.equal((await post(route+"/cancel",{})).status,409);
+  const marker="synthetic-cancelled-input-1039";
+  const rejected=await post(route+"/submit",{secret:marker,target_confirmed:true,production_authorized:false});
+  assert.equal(rejected.status,409);
+  assert.doesNotMatch(await rejected.text(),new RegExp(marker));
+  assert.doesNotMatch(JSON.stringify([...f.rows.values()]),new RegExp(marker));
+  assert.match(await inputPage.text(),/Cancel request/);
   assert.equal(keyRequests,1);
 
   // Exercise the real configured verifier and jose's existing JWKS cache

@@ -75,6 +75,21 @@ test("#914 Linux Rust local status uses the bounded Python manager, not bundled 
     assert.match(help.stdout,/--version\|--help/);
     assert.match(help.stdout,/browser authorization link/);
     assert.match(help.stdout,/provide the approved HTTPS origin explicitly/);
+    // Verify the shipped shell/Python entry, not just the native binary.
+    // The native fixture records only the public request ID and its own argv;
+    // Rust's real noninteractive and PTY tests own input/identity validation.
+    const requestId="123e4567-e89b-42d3-a456-426614174001";
+    const native=path.join(rustDir,"rca-standard-linux-candidate");
+    await writeFile(native,"#!/bin/sh\nprintf '%s\\n' \"$@\"\nexit 23\n",{mode:0o700});
+    const secure=run(["secure-input",requestId]);
+    assert.equal(secure.status,23,secure.stderr);
+    assert.equal(secure.stdout,"--cli\nsecure-input\n"+requestId+"\n");
+    for(const args of [["secure-input"],["secure-input",requestId,"extra"]]){
+      const rejected=run(args);
+      assert.notEqual(rejected.status,0);
+      assert.notEqual(rejected.status,23,"invalid arity must not launch Rust");
+    }
+    assert.match(help.stdout,/secure-input REQUEST_ID/);
     for(const args of [["--version","extra"],["--help","extra"]])
       assert.notEqual(run(args).status,0);
     const version=run(["--version"]);

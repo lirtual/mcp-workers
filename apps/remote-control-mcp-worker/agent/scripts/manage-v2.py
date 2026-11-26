@@ -10,7 +10,7 @@ import sys
 
 APP = Path("apps/remote-control-agent")
 UNIT = "remote-control-agent.service"
-USAGE = "Usage: rca [status|doctor|pair|logs|stop|start|restart|update|recover|uninstall|--version|--help]"
+USAGE = "Usage: rca [status|doctor|pair|logs|stop|start|restart|update|recover|uninstall|secure-input REQUEST_ID|--version|--help]"
 VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 ASSET_SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -206,6 +206,13 @@ def dispatch(command, args, root, info, bootstrap):
         return 0
     if command == "pair":
         return pair(root, bootstrap, args)
+    if command == "secure-input":
+        if len(args) != 1:
+            raise ValueError("Usage: rca secure-input REQUEST_ID")
+        # The reviewed Rust entry owns TTY, identity and request validation.
+        # Replace this process so the original terminal and signals reach Rust.
+        native = root / APP / ".build/rca-standard-linux-candidate"
+        os.execv(str(native), [str(native), "--cli", command, args[0]])
     if command in ("stop", "start", "restart"):
         if args:
             raise ValueError("Lifecycle command takes no arguments")
