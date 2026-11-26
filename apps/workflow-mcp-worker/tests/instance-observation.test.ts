@@ -119,3 +119,67 @@ test('#1046 hourly fallback is bounded, prioritizes recent candidates, and does 
  await collectNativeTerminalProofs(env,now+3600000,now+3600000);
  assert.equal(seen.length,0,'no eligible candidate means no native lookup');
 });
+
+test('#1046 current Task physical observations reuse the same bounded proof without changing durable execution',async t=>{
+ const {DatabaseSync}=await import('node:sqlite');
+ const {readFileSync,readdirSync}=await import('node:fs');
+ const {collectNativeTerminalProofs}=await import('../src/instance-observation.ts');
+ const {observeGitHubTaskTerminalFact}=await import('../src/github-action-attempt-inspection.ts');
+ const {inspectGitHubActionRun}=await import('../src/github-action-run-inspection.ts');
+ const db=new DatabaseSync(':memory:');t.after(()=>db.close());
+ const dir=new URL('../migrations/',import.meta.url);
+ for(const name of readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort())
+  db.exec(readFileSync(new URL(name,dir),'utf8'));
+ const now=Date.UTC(2026,10,26,0);
+ const action={repository:'autoactions/github-actions',repositoryId:1452488311,workflowId:413147310,
+  workflowPath:'.github/workflows/download.yml',commitSha:'a'.repeat(40),type:'task' as const,contractDigest:'b'.repeat(64)};
+ const resolved='c'.repeat(40),ref='refs/heads/main';
+ const plan={version:1,name:'Current task',github_execution_approved:true,github_action_approvals:[action],
+  steps:['one','two','three'].map(id=>({id,uses:'github.run',needs:[],with:{capability:'github.action',action:{...action,ref,inputs:{}}}}))};
+ db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+ db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)").run(JSON.stringify(plan));
+ const native={instance_id:'r',status:'complete',observed_at:now-100};
+ db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at,execution_terminal_proof) VALUES('r','wf','v','r','d','{}','started','indeterminate','github_action_native_check_unconfirmed',?,?,?)")
+  .run(now-1000,now-500,JSON.stringify(native));
+ const ids=['11111111-1111-4111-8111-111111111111','22222222-2222-4222-8222-222222222222','33333333-3333-4333-8333-333333333333'];
+ for(const [i,step] of ['one','two','three'].entries()){
+  db.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES('r',?,'indeterminate','github_action_native_check_unconfirmed',?)").run(step,now-500);
+  db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,resolved_sha,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,'r',?,'github.action',?,'claimed',?,?,?,?,?, ?,1,?,1,?,?)")
+   .run(ids[i],step,'dispatch-'+i,action.repository,String(action.repositoryId),action.repository+'/'+action.workflowPath+'@'+ref,ref,resolved,42+i,42+i,now-1000,now-500);
+ }
+ const before=db.prepare("SELECT id,outcome,error_code,updated_at FROM runs").all();
+ const stepsBefore=db.prepare("SELECT * FROM run_steps ORDER BY step_id").all();
+ const attemptsBefore=db.prepare("SELECT * FROM step_attempts ORDER BY attempt_id").all();
+ const seen:number[]=[];
+ const d1={prepare(sql:string){let args:any[]=[];return {bind(...v:any[]){args=v;return this;},
+  async run(){return {meta:{changes:Number(db.prepare(sql).run(...args).changes)}};},
+  async first(){return db.prepare(sql).get(...args)??null;},async all(){return {results:db.prepare(sql).all(...args)};}}}};
+ const env={DB:d1,WORKFLOW_GITHUB_DISPATCH_TOKEN:'test-only',WORKFLOW:{async get(){throw Error('native evidence is already persisted');}}} as unknown as Parameters<typeof collectNativeTerminalProofs>[0];
+ const inspect:typeof observeGitHubTaskTerminalFact=(p,a,tok)=>observeGitHubTaskTerminalFact(p,a,tok,
+  (reviewed,run,attempt,token,expectedRef)=>inspectGitHubActionRun(reviewed,run,attempt,token,expectedRef,async request=>{
+   seen.push(run);
+   assert.equal(new URL(request.url).pathname,'/repos/'+action.repository+'/actions/runs/'+run);
+   return Response.json({id:run,workflow_id:action.workflowId,run_attempt:attempt,
+    repository:{id:action.repositoryId,full_name:action.repository},path:action.workflowPath,
+    head_branch:'main',head_sha:run===44?'d'.repeat(40):resolved,event:'workflow_dispatch',
+    status:'completed',conclusion:run===43?'failure':'success'});
+  }),now);
+ const first=await collectNativeTerminalProofs(env,now,now,inspect);
+ assert.equal(first.checked,3);assert.equal(first.recorded,2);assert.equal(first.unavailable,1);
+ assert.deepEqual(seen,[42,43,44]);
+ const saved=JSON.parse(String(db.prepare("SELECT execution_terminal_proof FROM runs WHERE id='r'").get()?.execution_terminal_proof));
+ assert.deepEqual({...saved,github_attempts:undefined},{...native,github_attempts:undefined});
+ assert.deepEqual(saved.github_attempts.map((f:any)=>[f.attempt_id,f.run_id,f.conclusion]),[[ids[0],42,'success'],[ids[1],43,'failure']]);
+ assert.deepEqual(db.prepare("SELECT id,outcome,error_code,updated_at FROM runs").all(),before);
+ assert.deepEqual(db.prepare("SELECT * FROM run_steps ORDER BY step_id").all(),stepsBefore);
+ assert.deepEqual(db.prepare("SELECT * FROM step_attempts ORDER BY attempt_id").all(),attemptsBefore);
+ seen.length=0;
+ // A backlog of fresh unavailable native observations cannot consume
+ // the whole shared budget before the unresolved Task is reached.
+ for(let i=0;i<12;i++)
+  db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,created_at,updated_at) VALUES(?,'wf','v',?,'d','{}','started','indeterminate',?,?)")
+   .run('pending-'+i,'pending-'+i,now,now);
+ const second=await collectNativeTerminalProofs(env,now+3600000,now+3600000,inspect);
+ assert.equal(second.checked,12);
+ assert.deepEqual(seen,[44],'verified facts are not reread; unresolved Task is not starved');
+});

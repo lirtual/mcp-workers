@@ -1,3 +1,4 @@
+import {resolvePersistedGitHubAction,observeGitHubTaskTerminalFact} from '../apps/workflow-mcp-worker/src/github-action-attempt-inspection.ts';
 import {selectWorkflowSchemaRelease} from './workflow-release-schema-selection.mjs';
 import {isAuxiliaryBarkPair} from '../apps/workflow-mcp-worker/src/plan.ts';
 import {connectionInventory} from '../apps/database-mcp-worker/src/catalog.ts';
@@ -576,7 +577,10 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
       ['approval_cancel_requested','event_wait_cancel_requested'].includes(step.error_code),
       'cancelled Step '+step.step_id+' lacks its authoritative cancellation result');
   const positive=n=>Number.isSafeInteger(n)&&n>0;
-  let claimedProofUsed=false;
+  const facts=native.github_attempts??[];
+  require(Array.isArray(facts)&&facts.every(f=>f&&typeof f.attempt_id==='string')&&
+    new Set(facts.map(f=>f.attempt_id)).size===facts.length,'GitHub physical facts malformed');
+  const usedFacts=new Set();
   for(const attempt of evidence.attempts){
     require(evidence.steps.some(step=>step.step_id===attempt.step_id),'Attempt Step identity mismatch');
     if(attempt.state==='rejected'){
@@ -584,24 +588,29 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
         attempt.owner_run_id===null&&attempt.owner_run_attempt===null,'rejected Attempt has a physical identity');
       continue;
     }
-    if(attempt.state==='claimed'&&native.github_attempt){
-      const fact=native.github_attempt;
-      // This is a physical Task proof, not a signed result alone. It is
-      // bound to the unchanged registered Attempt and delivered receipt.
-      require(!claimedProofUsed&&attempt.capability_id==='github.action'&&
-        fact.attempt_id===attempt.attempt_id&&fact.repository_id===attempt.repository_id&&
-        positive(fact.run_id)&&positive(fact.run_attempt)&&
-        fact.run_id===attempt.candidate_run_id&&fact.run_id===attempt.owner_run_id&&
-        fact.run_attempt===attempt.candidate_run_attempt&&fact.run_attempt===attempt.owner_run_attempt&&
+    const fact=facts.find(f=>f.attempt_id===attempt.attempt_id);
+    if(fact){
+      const owned=attempt.owner_run_id===attempt.candidate_run_id&&attempt.owner_run_attempt===attempt.candidate_run_attempt;
+      const unowned=attempt.owner_run_id===null&&attempt.owner_run_attempt===null;
+      const outcome=fact.conclusion==='success'?'succeeded':fact.conclusion==='cancelled'?'cancelled':'failed';
+      const currentAction=evidence.plan?.id===run.version_id?
+        resolvePersistedGitHubAction(evidence.plan.plan,attempt):null;
+      const historicalArtifact=native.historical_source&&attempt.state==='claimed'&&
+        fact.conclusion==='success'&&evidence.callbacks.some(c=>c.attempt_id===attempt.attempt_id&&
+          c.step_id===attempt.step_id&&c.outcome==='succeeded'&&c.notification_delivered===1);
+      require(attempt.capability_id==='github.action'&&
+        fact.repository_id===attempt.repository_id&&positive(fact.run_id)&&positive(fact.run_attempt)&&
+        fact.run_id===attempt.candidate_run_id&&fact.run_attempt===attempt.candidate_run_attempt&&
+        (attempt.state==='claimed'?owned:attempt.state==='confirmed'?unowned&&outcome!=='succeeded':
+          attempt.state===outcome&&(owned||outcome!=='succeeded'&&unowned))&&
         typeof fact.workflow_ref==='string'&&fact.workflow_ref===attempt.workflow_ref&&
         fact.workflow_ref.endsWith('@'+attempt.ref)&&/^[0-9a-f]{40}$/.test(fact.head_sha)&&
         (attempt.resolved_sha===null||fact.head_sha===attempt.resolved_sha)&&
-        fact.conclusion==='success'&&positive(fact.observed_at)&&
+        ['success','failure','cancelled','timed_out'].includes(fact.conclusion)&&positive(fact.observed_at)&&
         !evidence.sessions.some(s=>s.step_id===attempt.step_id)&&
-        evidence.callbacks.some(c=>c.attempt_id===attempt.attempt_id&&c.step_id===attempt.step_id&&
-          c.outcome==='succeeded'&&c.notification_delivered===1),
-        'claimed Attempt '+attempt.attempt_id+' physical proof or delivered receipt unresolved');
-      claimedProofUsed=true;
+        (historicalArtifact||currentAction?.type==='task'&&currentAction.commitSha===fact.head_sha),
+        'Task Attempt '+attempt.attempt_id+' physical proof or related identity unresolved');
+      usedFacts.add(fact.attempt_id);
       continue;
     }
     require(['succeeded','failed','cancelled'].includes(attempt.state)&&
@@ -610,7 +619,7 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
         (attempt.state!=='succeeded'&&attempt.owner_run_id===null&&attempt.owner_run_attempt===null)),
       'Attempt '+attempt.attempt_id+' physical termination or identity unresolved');
   }
-  require(!native.github_attempt||claimedProofUsed,'GitHub physical proof has no matching claimed Attempt');
+  require(facts.length===usedFacts.size,'GitHub physical proof has no matching Attempt');
   for(const session of evidence.sessions){
     // The runtime releases rejected dispatches and reservations never dispatched
     // as well as physically terminated Sessions. All existing Attempts were
@@ -628,7 +637,7 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
   for(const cancellation of evidence.githubCancellations)
     require(evidence.attempts.some(a=>a.attempt_id===cancellation.attempt_id&&
       a.step_id===cancellation.step_id&&a.capability_id==='github.action'&&
-      ['succeeded','failed','cancelled'].includes(a.state)),
+      (['succeeded','failed','cancelled'].includes(a.state)||usedFacts.has(a.attempt_id))),
       'GitHub cancellation '+cancellation.step_id+' physical termination unresolved');
   if(native.retired_invocation){
     const fact=native.retired_invocation, invocation=evidence.invocations[0];
@@ -796,7 +805,7 @@ export function verifyWorkflowTerminalEvidence(run,native,evidence) {
       'child cancellation physical termination unresolved');
   return {instance_id:run.instance_id,status:native.status,observed_at:native.observed_at,
     ...(native.historical_source?{historical_source:native.historical_source}:{}),
-    ...(claimedProofUsed?{github_attempt:native.github_attempt}:{}),
+    ...(facts.length?{github_attempts:facts}:{}),
     ...(native.no_dispatch_step_id?{no_dispatch_step_id:native.no_dispatch_step_id}:{}),
     ...(native.retired_invocation?{retired_invocation:native.retired_invocation}:{})};
 }
@@ -833,7 +842,7 @@ function workflowTerminalProjectionSql(schema){
 /** Schema 22 is used only in the single pre-cutover read. Schema 23 uses
  * persisted facts, falling back to an authenticated observation if absent.
  * A malformed or conflicting saved fact is never replaced by a guess. */
-export async function readWorkflowTerminalEvidence(query,id,{schema,observe,depth=0}){
+export async function readWorkflowTerminalEvidence(query,id,{schema,observe,observeRelated,depth=0}){
  invariant(typeof id==='string'&&id.length>0&&depth<=1,'Workflow terminal evidence projection invalid lineage');
  const rows=await query(workflowTerminalProjectionSql(schema),[id]);
  invariant(Array.isArray(rows)&&rows.length===1&&rows[0]?.id===id,'Workflow terminal evidence projection missing or ambiguous: '+id);
@@ -848,8 +857,9 @@ export async function readWorkflowTerminalEvidence(query,id,{schema,observe,dept
    evidence[key]=value;
  }
  invariant(depth===0||evidence.children.length===0,'Workflow terminal evidence projection nested child unsupported');
- evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{schema,observe,depth:depth+1})));
- const native=row.execution_terminal_proof===null?(observe&&run.start_state==='started'?await observe(run,evidence):null):parse('execution_terminal_proof');
+ evidence.children=await Promise.all(evidence.children.map(c=>readWorkflowTerminalEvidence(query,c.id,{schema,observe,observeRelated,depth:depth+1})));
+ let native=row.execution_terminal_proof===null?(observe&&run.start_state==='started'?await observe(run,evidence):null):parse('execution_terminal_proof');
+ if(native&&observeRelated)native=await observeRelated(run,native,evidence);
  return {run,native,evidence};
 }
 
@@ -960,7 +970,7 @@ async function verifyTerminalReleaseSchema(query,schema){
 /** D1 half of the release gate. Strict callers additionally prove ingress
  * stopped and native drain; compatible callers retain only exact Ready
  * sessions. This function does not mutate evidence or authorize deployment. */
-export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,observe}){
+export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,observe,observeRelated}){
  invariant(mode==='strict'||mode==='compatible','Unsupported Workflow release operation');
  const migrations=await query('SELECT name FROM d1_migrations ORDER BY name',[]);
  const selection=selectWorkflowSchemaRelease([{success:true,results:migrations}],sourceFiles);
@@ -994,7 +1004,7 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
        collect(child,verifyWorkflowTerminalEvidence(child.run,child.native,child.evidence));
  };
  for(const id of ids){
-   const projected=await readWorkflowTerminalEvidence(query,id,{schema,observe});
+   const projected=await readWorkflowTerminalEvidence(query,id,{schema,observe,observeRelated});
    collect(projected,verifyWorkflowTerminalEvidence(projected.run,projected.native,projected.evidence));
  }
  return {schema,run_count:row.run_count,ready_sessions:row.ready_sessions,ready_instances:readyInstances,
@@ -1005,11 +1015,23 @@ export async function verifyWorkflowReleaseInventory(query,{mode,sourceFiles,obs
 // candidate and its identity against the prepared evidence after v23 exists,
 // then CAS the missing facts. A lost response stops immediately; a later
 // explicitly authorized forward recovery can read and skip matching facts.
+function mergePreparedTerminalFacts(run,existing,expected){
+ invariant(existing&&expected&&existing.instance_id===run.instance_id&&expected.instance_id===run.instance_id,
+  'Workflow prepared proof identity changed');
+ const {github_attempts:oldFacts=[],...oldNative}=existing;
+ const {github_attempts:newFacts=[],...newNative}=expected;
+ invariant(JSON.stringify(oldNative)===JSON.stringify(newNative)&&Array.isArray(oldFacts)&&Array.isArray(newFacts)&&
+   oldFacts.every(f=>newFacts.some(n=>JSON.stringify(n)===JSON.stringify(f))),
+  'Workflow prepared proof conflicts with persisted evidence');
+ return expected;
+}
+
 export async function backfillWorkflowTerminalProofs(query,write,prepared,sourceFiles){
  invariant([22,23].includes(prepared?.schema)&&prepared.ready_sessions===0&&prepared.proofs&&prepared.targets,
   'Workflow backfill requires verified strict cutover preparation');
  const current=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles,
-  observe:async run=>Object.hasOwn(prepared.proofs,run.id)?prepared.proofs[run.id]:null});
+  observe:async run=>Object.hasOwn(prepared.proofs,run.id)?prepared.proofs[run.id]:null,
+  observeRelated:async(run,native)=>mergePreparedTerminalFacts(run,native,prepared.proofs[run.id])});
  invariant(current.schema===23,'Workflow proof backfill requires migrated v23 schema');
  invariant(current.run_count===prepared.run_count&&current.ready_sessions===0&&
    JSON.stringify(current.proofs)===JSON.stringify(prepared.proofs)&&
@@ -1026,12 +1048,10 @@ export async function backfillWorkflowTerminalProofs(query,write,prepared,source
    };
    const expected=JSON.stringify(fact);
    const existing=await lookup();
-   if(existing!==null){
-     invariant(existing===expected,'Workflow backfill proof conflict: '+id);
-     continue;
-   }
+   if(existing===expected)continue;
+   if(existing!==null)mergePreparedTerminalFacts(r,JSON.parse(existing),fact);
    const changed=await write('UPDATE runs SET execution_terminal_proof=? WHERE '+predicate+
-     ' AND execution_terminal_proof IS NULL',[expected,...identity]);
+     ' AND execution_terminal_proof IS ?',[expected,...identity,existing]);
    invariant(changed===1,'Workflow backfill conditional write unconfirmed: '+id);
    invariant(await lookup()===expected,'Workflow backfill independent readback failed: '+id);
  }
@@ -1325,6 +1345,27 @@ export function verifyBrowserPrepublicationCandidate(previous, observed, discove
   return true;
 }
 
+// Read only the missing exact Task observations. The runtime collects the
+// same facts while native evidence is still available; ordinary release can
+// obtain a live positive fact without changing Attempt or business state.
+export async function observeRelatedTaskFacts(run,native,evidence,inspect){
+ if(native?.instance_id!==run.instance_id||!['complete','errored','terminated'].includes(native.status)||
+    !Number.isSafeInteger(native.observed_at)||native.observed_at<=0)return native;
+ const facts=native.github_attempts??[];
+ if(!Array.isArray(facts)||evidence.plan?.id!==run.version_id)return native;
+ const added=[];
+ for(const a of evidence.attempts){
+   if(!['confirmed','claimed'].includes(a.state)||facts.some(f=>f.attempt_id===a.attempt_id)||
+      evidence.sessions.some(s=>s.step_id===a.step_id))continue;
+   const fact=await inspect(evidence.plan.plan,a);
+   if(fact)added.push(fact);
+ }
+ if(!added.length)return native;
+ const combined={...native,github_attempts:[...facts,...added].sort((a,b)=>a.attempt_id.localeCompare(b.attempt_id))};
+ invariant(Buffer.byteLength(JSON.stringify(combined),'utf8')<=4096,'Workflow Task terminal evidence exceeds bounded proof');
+ return combined;
+}
+
 // I/O for the single release proof path. No payload logging or uncertain-write retry.
 export function workflowReleaseIO(env=process.env,request=fetch){
  const account=env.CLOUDFLARE_ACCOUNT_ID,token=env.CLOUDFLARE_API_TOKEN;
@@ -1382,7 +1423,11 @@ export function workflowReleaseIO(env=process.env,request=fetch){
  };
  const historySources={githubRun:gh,githubJobs:(repo,id)=>gh(repo,id,'/jobs?per_page=100'),
    providerVersions:()=>cached(base+'/workers/scripts/cloudflare-actions/versions?per_page=100',headers)};
- return {query,write,observe,historySources,sourceFiles:readdirSync(new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url)),
+ return {query,write,observe,historySources,observeRelated:(run,native,evidence)=>observeRelatedTaskFacts(run,native,evidence,
+  (plan,a)=>{
+   invariant(env.WORKFLOW_GITHUB_DISPATCH_TOKEN,'Current Task physical read credential unavailable');
+   return observeGitHubTaskTerminalFact(plan,a,env.WORKFLOW_GITHUB_DISPATCH_TOKEN);
+  }),sourceFiles:readdirSync(new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url)),
   nativeDrain:ids=>checkNativeWorkflowRelease(account,headers,ids,request),
   maintenance:phase=>readOnlyPrepare(env,request,phase)};
 }
@@ -1408,7 +1453,7 @@ export async function workflowReleaseProof(mode,io,env=process.env){
    }
    return io.observe(run);
  };
- const result=await verifyWorkflowReleaseInventory(io.query,{mode:strict?'strict':'compatible',sourceFiles:io.sourceFiles,observe});
+ const result=await verifyWorkflowReleaseInventory(io.query,{mode:strict?'strict':'compatible',sourceFiles:io.sourceFiles,observe,observeRelated:io.observeRelated});
  invariant(result.schema===selected.applied,'Workflow schema changed during proof');
  if(strict)await io.maintenance(freezing?'maintenance':'frozen');
  else await io.nativeDrain(result.ready_instances);

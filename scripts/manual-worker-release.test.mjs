@@ -1246,11 +1246,12 @@ test('historical claimed Artifact requires matched physical proof and delivered 
   assert.deepEqual(verifyWorkflowTerminalEvidence(run,proof,evidence),proof);
   assert.equal(run.outcome,'indeterminate');
   assert.equal(attempt.state,'claimed');
-  const {github_attempt,...native}=proof;
+  const {github_attempts,...native}=proof;
+  const [github_attempt]=github_attempts;
   assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,evidence),/terminal evidence/);
   for(const patch of [{attempt_id:'wrong'},{repository_id:'wrong'},{run_id:41182432751},
     {run_attempt:2},{conclusion:'failure'},{observed_at:0}]){
-    assert.throws(()=>verifyWorkflowTerminalEvidence(run,{...proof,github_attempt:{...github_attempt,...patch}},evidence),/terminal evidence/);
+    assert.throws(()=>verifyWorkflowTerminalEvidence(run,{...proof,github_attempts:[{...github_attempt,...patch}]},evidence),/terminal evidence/);
   }
   for(const bad of [
     {...evidence,callbacks:[]},
@@ -1609,4 +1610,62 @@ test('#1046 Session release recognizes definitive rejection and never-dispatched
  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,candidate_run_id:42}]}),/terminal evidence/);
  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,sessions:[{...e.sessions[0],state:'starting'}]}),/terminal evidence/);
  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[],steps:[]}),/terminal evidence/);
+});
+
+test('#1046 arbitrary new Task identity can be proven by live physical read and persisted additively, not a historical exception',async()=>{
+ const {workflowReleaseProof,backfillWorkflowTerminalProofs,observeRelatedTaskFacts}=await import('./manual-worker-release.mjs');
+ const {observeGitHubTaskTerminalFact}=await import('../apps/workflow-mcp-worker/src/github-action-attempt-inspection.ts');
+ const {inspectGitHubActionRun}=await import('../apps/workflow-mcp-worker/src/github-action-run-inspection.ts');
+ const db=new DatabaseSync(':memory:');
+ try{
+  const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
+  const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
+  db.exec('CREATE TABLE d1_migrations(name TEXT NOT NULL UNIQUE)');
+  for(const name of files){db.exec(readFileSync(new URL(name,dir),'utf8'));db.prepare('INSERT INTO d1_migrations VALUES(?)').run(name);}
+  const action={repository:'autoactions/github-actions',repositoryId:1452488311,workflowId:413147310,
+   workflowPath:'.github/workflows/download.yml',commitSha:'a'.repeat(40),type:'task',contractDigest:'b'.repeat(64)};
+  const ref='refs/heads/main',sha='c'.repeat(40);
+  const plan={version:1,name:'Current task',github_execution_approved:true,github_action_approvals:[action],
+   steps:[{id:'task',uses:'github.run',needs:[],with:{capability:'github.action',action:{...action,ref,inputs:{}}}}]};
+  const id='12345678-1234-4123-8123-123456789abc',attemptId='12345678-1234-4123-8123-123456789def';
+  const native={instance_id:id,status:'complete',observed_at:1000};
+  db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
+  db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)").run(JSON.stringify(plan));
+  db.prepare("INSERT INTO runs(id,workflow_id,version_id,instance_id,request_digest,inputs,start_state,outcome,error_code,created_at,updated_at,execution_terminal_proof) VALUES(?,'wf','v',?,'d','{}','started','indeterminate','github_action_native_check_unconfirmed',1,2,?)").run(id,id,JSON.stringify(native));
+  db.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES(?,'task','indeterminate','github_action_native_check_unconfirmed',2)").run(id);
+  db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,resolved_sha,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at) VALUES(?,?,'task','github.action','dispatch','claimed',?,?,?,?,?,42,1,42,1,1,2)")
+   .run(attemptId,id,action.repository,String(action.repositoryId),action.repository+'/'+action.workflowPath+'@'+ref,ref,sha);
+  const query=async(sql,params=[])=>db.prepare(sql).all(...params);
+  const rowBefore=db.prepare('SELECT * FROM step_attempts').all();
+  const runBefore=db.prepare('SELECT id,outcome,error_code,updated_at FROM runs').all();
+  let physicalReads=0,badHead=false;
+  const inspect=(p,a)=>observeGitHubTaskTerminalFact(p,a,'test-only',
+   (reviewed,r,n,t,f)=>inspectGitHubActionRun(reviewed,r,n,t,f,async()=>{
+    physicalReads++;
+    return Response.json({id:r,workflow_id:action.workflowId,run_attempt:n,repository:{id:action.repositoryId,full_name:action.repository},
+     path:action.workflowPath,head_branch:'main',head_sha:badHead?'d'.repeat(40):sha,
+     event:'workflow_dispatch',status:'completed',conclusion:'failure'});
+   }),2000);
+  const io={query,sourceFiles:files,observe:async()=>{throw Error('native proof already persisted');},
+   observeRelated:(r,n,e)=>observeRelatedTaskFacts(r,n,e,inspect),maintenance:async()=>{},
+   nativeDrain:async ids=>assert.deepEqual(ids,[]),
+   historySources:{githubRun:async()=>{throw Error('historical source not needed');}}};
+  badHead=true;
+  await assert.rejects(()=>workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'}),/terminal evidence/);
+  badHead=false;
+  const live=await workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'});
+  assert.equal(live.proofs[id].github_attempts[0].attempt_id,attemptId);
+  assert.equal(live.proofs[id].github_attempts[0].conclusion,'failure');
+  assert.equal(JSON.parse(db.prepare('SELECT execution_terminal_proof AS p FROM runs').get().p).github_attempts,undefined,
+   'routine release is read-only');
+  const prepared=await workflowReleaseProof('workflow-prepare',io,{ACTIONS_INGRESS_QUIESCED:'true'});
+  assert.equal(prepared.schema,23);
+  const checked=await backfillWorkflowTerminalProofs(query,async(sql,params)=>Number(db.prepare(sql).run(...params).changes),prepared,files);
+  assert.deepEqual(checked.proofs[id],live.proofs[id]);
+  const reads=physicalReads;
+  await workflowReleaseProof('workflow-check',io,{ACTIONS_INGRESS_QUIESCED:'false'});
+  assert.equal(physicalReads,reads,'persisted physical facts require no external query');
+  assert.deepEqual(db.prepare('SELECT * FROM step_attempts').all(),rowBefore);
+  assert.deepEqual(db.prepare('SELECT id,outcome,error_code,updated_at FROM runs').all(),runBefore);
+ }finally{db.close();}
 });

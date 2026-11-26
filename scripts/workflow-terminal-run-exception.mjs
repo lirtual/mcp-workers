@@ -606,9 +606,9 @@ export function historicalArtifactTerminalProof(d1,priorRun,priorJobs,github,obs
     'historical Artifact proof identity or observation time unavailable');
   return {instance_id:run.instance_id,status:'complete',observed_at:at,
     historical_source:{release_run_id:priorRun.id,job_id:job.id,step:step.name},
-    github_attempt:{attempt_id:attempt.attempt_id,repository_id:String(github.repository.id),
+    github_attempts:[{attempt_id:attempt.attempt_id,repository_id:String(github.repository.id),
       run_id:github.id,run_attempt:github.run_attempt,workflow_ref:attempt.workflow_ref,
-      head_sha:github.head_sha,conclusion:github.conclusion,observed_at:observedAt}};
+      head_sha:github.head_sha,conclusion:github.conclusion,observed_at:observedAt}]};
 }
 
 // One-time conversion of historical invocation facts. The old reviewed

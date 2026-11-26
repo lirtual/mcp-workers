@@ -114,6 +114,7 @@ jobs:
       - name: Verify strict Workflow execution drain before gate freeze (read-only)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -193,6 +194,7 @@ jobs:
       - name: Verify strict v23 execution readiness before gate-only recovery (read-only)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker
@@ -483,6 +485,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -578,6 +581,7 @@ jobs:
           ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN || '' }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
@@ -772,6 +776,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker
 
