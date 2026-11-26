@@ -362,14 +362,13 @@ test("SSH release requires EdgeSSH D1, own DO and scoped key", () => {
 
 test("Workflow code-only release preserves Secrets and other Variables, pins Portal and rejects drift", () => {
   const workflow = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
-  assert.match(workflow, /workflow_code_only:\n\s*description:.*no D1 migrations or secret upload/);
+  assert.match(workflow, /workflow_code_only:\n\s*description:.*no secret upload/);
   assert.match(workflow, /WORKFLOW_CODE_ONLY: \$\{\{ inputs.workflow_code_only \}\}/);
   const releaseScript = readFileSync(new URL("./manual-worker-release.mjs", import.meta.url), "utf8");
   assert.match(releaseScript, /requireExistingSecrets: mode === "preflight"/,
     "existing Secret names checked in read-only preflight");
   assert.match(releaseScript, /Code-only release requires an existing Workflow Worker/);
-  assert.match(workflow, /inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true/);
-  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true/);
+  assert.doesNotMatch(workflow, /wrangler d1 migrations apply workflow-mcp-db/);
   const deployment = workflow.slice(workflow.indexOf('      - name: Publish exactly selected Worker'));
   assert.match(deployment, /\[\[ ! -e "\$RUNNER_TEMP\/mcp-worker-secrets.json" \]\]/);
   assert.ok(deployment.includes('mapfile -t portal_pins < <(grep'));
@@ -697,7 +696,7 @@ test("Workflow protected release requires exact v23 and keeps maintenance gate o
  assert.ok(ci.includes('health_endpoint="https://workflow.lirtual.dpdns.org/health"'));
  assert.ok(ci.includes("body.execution_terminal_proof_schema !== 23"));
  assert.ok(ci.includes("Unauthenticated MCP request denied"));
- assert.doesNotMatch(ci,/workflow-prepare|workflow-backfill|workflow-cutover-recheck|workflow-cutover-bookmark|workflow-cutover-proof|wrangler d1 migrations apply workflow-mcp-db|Reopen only the now-verified unified Action admission gate/);
+ assert.doesNotMatch(ci,/workflow-prepare|workflow-backfill|workflow-cutover-recheck|workflow-cutover-bookmark|workflow-cutover-proof|wrangler d1 migrations apply workflow-mcp-db/);
 });
 
 test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bindings",()=> {
@@ -1204,7 +1203,6 @@ test('verified terminal execution is independent of Unknown business result (#10
 // protected release step and current physical GitHub run were re-read.
 test('historical claimed Artifact requires matched physical proof and delivered receipt (#1046)',async()=>{
   const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
-  const {historicalArtifactTerminalProof}=await import('./workflow-terminal-run-exception.mjs');
   const id='f99bb918-2909-46df-b196-d07faa64df27';
   const run={id,instance_id:id,workflow_id:'685026cf-abaa-4618-a363-5944fac729d2',
     version_id:'88158dd2-25c9-4e66-b98a-51ac34f829e0',outcome:'indeterminate',
@@ -1219,27 +1217,14 @@ test('historical claimed Artifact requires matched physical proof and delivered 
   const evidence={steps:[step],attempts:[attempt],sessions:[],callbacks:[receipt],children:[],
     invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],
     childCancellations:[],gates:[],approvals:[],waits:[]};
-  const d1=[[run],[step],[],[attempt],[receipt],[],[]].map(results=>({success:true,results}));
-  const sha='21d6583fe2b43fbb58f93c68e44cc936fb02b0fb';
-  const prior={id:41429815494,workflow_id:394912681,head_sha:sha,event:'workflow_dispatch',
-    head_branch:'main',run_attempt:1,status:'completed',conclusion:'success'};
-  const steps=[
-    'Verify seventh terminal download Run proof (read-only)',
-    'Verify ninth terminal Saga Run proof (read-only)',
-    'Verify tenth terminal Saga Run proof (read-only)',
-    'Verify eleventh terminal generic Action proof (read-only)',
-    'Verify twelfth terminal Artifact Task proof (read-only)'
-  ].map((name,i)=>({name,status:'completed',conclusion:'success',
-    completed_at:['2026-11-02T10:35:16Z','2026-11-02T10:35:19Z','2026-11-02T10:35:21Z',
-      '2026-11-02T10:35:22Z','2026-11-02T10:35:24Z'][i]}));
-  const jobs={jobs:[{id:125225662362,name:'Manual selected Worker release',head_sha:sha,
-    status:'completed',conclusion:'success',steps}]};
-  const github={id:41182432750,repository:{id:1430925009,full_name:'lirtual/github-actions'},
-    workflow_id:394689660,path:'.github/workflows/verify-action.yml',event:'workflow_dispatch',
-    run_attempt:1,head_branch:'v0.1.42-rc.10',head_sha:'f5d44ff5a5dbd5b1b444c907e3654266a465da85',
-    status:'completed',conclusion:'success'};
-  const now=Date.parse('2026-11-25T15:55:19Z');
-  const proof=historicalArtifactTerminalProof(d1,prior,jobs,github,now);
+  // Exact persisted production fact, independently read from v23 D1 after cutover.
+  const proof={instance_id:id,status:'complete',observed_at:1793615724000,
+    historical_source:{release_run_id:41429815494,job_id:125225662362,
+      step:'Verify twelfth terminal Artifact Task proof (read-only)'},
+    github_attempts:[{attempt_id:attempt.attempt_id,repository_id:'1430925009',
+      run_id:41182432750,run_attempt:1,workflow_ref:attempt.workflow_ref,
+      head_sha:'f5d44ff5a5dbd5b1b444c907e3654266a465da85',conclusion:'success',
+      observed_at:1795658336374}]};
   assert.equal(proof.observed_at,Date.parse('2026-11-02T10:35:24Z'));
   assert.deepEqual(verifyWorkflowTerminalEvidence(run,proof,evidence),proof);
   assert.equal(run.outcome,'indeterminate');
@@ -1259,10 +1244,6 @@ test('historical claimed Artifact requires matched physical proof and delivered 
     {...evidence,attempts:[{...attempt,ref:'refs/heads/main'}]},
     {...evidence,sessions:[{run_id:id,step_id:'verify',state:'terminated'}]},
   ]) assert.throws(()=>verifyWorkflowTerminalEvidence(run,proof,bad),/terminal evidence/);
-  for(const bad of [{...github,status:'in_progress'},{...github,run_attempt:2},{...github,head_sha:'0'.repeat(40)}])
-    assert.throws(()=>historicalArtifactTerminalProof(d1,prior,jobs,bad,now),/blocked/);
-  const badJobs=structuredClone(jobs);badJobs.jobs[0].steps.at(-1).conclusion='skipped';
-  assert.throws(()=>historicalArtifactTerminalProof(d1,prior,badJobs,github,now),/blocked/);
 });
 
 // The actual production inventory prefix is v22, not a newly invented
@@ -1443,7 +1424,7 @@ test('#1046 real D1 projection binds immutable Plan and callback to their owning
  try{
   const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
   const files=readdirSync(dir).filter(f=>/^\d{4}_.+\.sql$/.test(f)).sort();
-  for(const name of files.slice(0,22))db.exec(readFileSync(new URL(name,dir),'utf8'));
+  for(const name of files)db.exec(readFileSync(new URL(name,dir),'utf8'));
   db.exec("INSERT INTO workflows(id,name,draft,created_at,updated_at) VALUES('wf','test','{}',1,1)");
   db.prepare("INSERT INTO workflow_versions(id,workflow_id,digest,plan,created_at) VALUES('v','wf','d',?,1)")
     .run(JSON.stringify({steps:[{id:'task',uses:'github.run',with:{action:{type:'task'}}}]}));
@@ -1455,23 +1436,22 @@ test('#1046 real D1 projection binds immutable Plan and callback to their owning
   db.exec("INSERT INTO callback_receipts(callback_id,attempt_id,outcome,result_json,notification_delivered,created_at) VALUES('c','a','succeeded','{}',1,2),('other-c','other','succeeded','{}',0,2)");
   const query=async(sql,params)=>db.prepare(sql).all(...params);
   const native={instance_id:'r',status:'complete',observed_at:1000};
-  const before=await readWorkflowTerminalEvidence(query,'r',{schema:22,observe:async()=>native});
+  const before=await readWorkflowTerminalEvidence(query,'r',{observe:async()=>native});
   assert.equal(before.evidence.callbacks.length,1);
   assert.equal(before.evidence.callbacks[0].run_id,'r');
   assert.equal(before.evidence.callbacks[0].step_id,'task');
   assert.equal(before.evidence.plan.id,'v');
   assert.deepEqual(verifyWorkflowTerminalEvidence(before.run,before.native,before.evidence),native);
-  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'missing',{schema:22,observe:async()=>native}),/projection/);
-  db.exec(readFileSync(new URL(files.at(-1),dir),'utf8'));
+  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'missing',{observe:async()=>native}),/projection/);
   db.prepare("UPDATE runs SET execution_terminal_proof=? WHERE id='r'").run(JSON.stringify(native));
-  const after=await readWorkflowTerminalEvidence(query,'r',{schema:23,observe:async()=>{throw Error('unnecessary external query');}});
+  const after=await readWorkflowTerminalEvidence(query,'r',{observe:async()=>{throw Error('unnecessary external query');}});
   assert.deepEqual(after,before);
   db.exec("UPDATE callback_receipts SET notification_delivered=0 WHERE attempt_id='a'");
-  const pending=await readWorkflowTerminalEvidence(query,'r',{schema:23});
+  const pending=await readWorkflowTerminalEvidence(query,'r',{});
   assert.throws(()=>verifyWorkflowTerminalEvidence(pending.run,pending.native,pending.evidence),/callback unresolved/);
   // Deliberately corrupt only the isolated fixture to challenge the join.
   db.exec("PRAGMA foreign_keys=OFF; UPDATE workflow_versions SET workflow_id='other-owner' WHERE id='v'");
-  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'r',{schema:23}),/projection/);
+  await assert.rejects(()=>readWorkflowTerminalEvidence(query,'r',{}),/projection/);
  }finally{db.close();}
 });
 
@@ -1526,6 +1506,10 @@ test('#1046 release inventory selects actual unresolved evidence, not historical
   await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,
     observe:async r=>({instance_id:r.id,status:'complete',observed_at:1000})}),/Attempt a physical termination or identity unresolved/);
   db.exec("UPDATE step_attempts SET owner_run_id=1 WHERE attempt_id='a'");
+  db.exec("DELETE FROM d1_migrations WHERE name='0023_execution_terminal_proof.sql'");
+  for(const mode of ['strict','compatible'])
+   await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode,sourceFiles:files}),/exact v23/);
+  db.prepare('INSERT INTO d1_migrations VALUES(?)').run(files.at(-1));
   db.exec("DELETE FROM d1_migrations WHERE name='0022_drop_claim_receipts.sql'");
   await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/inventory|prefix/);
  }finally{db.close();}
