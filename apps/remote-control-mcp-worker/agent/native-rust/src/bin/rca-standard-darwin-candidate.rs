@@ -260,9 +260,9 @@ fn record_connection(
 #[cfg(target_os = "macos")]
 mod darwin {
     use super::darwin_lifecycle::{
-        apply_policy_observation, connection_time, default_diagnostics, diagnostic_response,
-        installed_generation, iso_time, native_cli, native_plist, new_generation,
-        no_other_programs, registration, resume_owned, stop_owned, switch_outcome,
+        apply_connection_observation, apply_policy_observation, connection_time,
+        default_diagnostics, diagnostic_response, installed_generation, native_cli, native_plist,
+        new_generation, no_other_programs, registration, resume_owned, stop_owned, switch_outcome,
         unregister_owned, Registration, RestartRecord, SwitchOutcome, SwitchRecord,
         UninstallRecord, UninstallRecovery, LABEL,
     };
@@ -733,7 +733,7 @@ mod darwin {
         state["installed"] = serde_json::json!(true);
         state["version"] = serde_json::json!(current.version);
         state["installed_version"] = state["version"].clone();
-        darwin_lifecycle::apply_connection_observation(&mut state, stopped, observed, evidence);
+        apply_connection_observation(&mut state, stopped, observed, evidence);
         Ok(state)
     }
 
