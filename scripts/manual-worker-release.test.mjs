@@ -1572,3 +1572,20 @@ test('#1046 arbitrary new Task identity can be proven by live physical read and 
   assert.deepEqual(db.prepare('SELECT id,outcome,error_code,updated_at FROM runs').all(),runBefore);
  }finally{db.close();}
 });
+
+test('#1046 Session release recognizes definitive rejection and never-dispatched slots, not an unresolved dispatch',async()=>{
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const run={id:'r',instance_id:'r',version_id:'v',start_state:'started',outcome:'failed'};
+ const native={instance_id:'r',status:'complete',observed_at:1000};
+ const attempt={run_id:'r',step_id:'session',attempt_id:'a',capability_id:'github.action',state:'rejected',
+  candidate_run_id:null,candidate_run_attempt:null,owner_run_id:null,owner_run_attempt:null};
+ const e={steps:[{run_id:'r',step_id:'session',status:'failed',error_code:'github_session_dispatch_rejected'}],
+  attempts:[attempt],sessions:[{run_id:'r',step_id:'session',state:'terminated'}],callbacks:[],children:[],
+  invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[]}),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,state:'dispatch_unknown'}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,candidate_run_id:42}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,sessions:[{...e.sessions[0],state:'starting'}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[],steps:[]}),/terminal evidence/);
+});
