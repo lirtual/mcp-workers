@@ -50,26 +50,32 @@ function launcher(exe) {
 }
 // Test-only terminal on a disposable, unenrolled fixture.
 const pty = [
-  "import errno, os, pty, subprocess, sys",
+  "import errno, os, pty, select, subprocess, sys, time",
   "master, slave = pty.openpty()",
   "child = subprocess.Popen(sys.argv[2:], stdin=slave, stdout=slave, stderr=slave)",
-  "os.close(slave)",
+  "out = b''; sent = False; deadline = time.monotonic() + 10",
   "try:",
-  "    os.write(master, (sys.argv[1] + '\\n').encode())",
-  "    code = child.wait(timeout=10)",
-  "    while True:",
-  "        try: data = os.read(master, 4096)",
-  "        except OSError as e:",
-  "            if e.errno != errno.EIO: raise",
-  "            break",
-  "        if not data: break",
-  "        sys.stdout.buffer.write(data)",
+  "    while time.monotonic() < deadline:",
+  "        if select.select([master], [], [], 0.1)[0]:",
+  "            try: chunk = os.read(master, 4096)",
+  "            except OSError as e:",
+  "                if e.errno != errno.EIO: raise",
+  "                break",
+  "            if not chunk: break",
+  "            out += chunk",
+  "        if not sent and b'Confirm [y/N]:' in out and child.poll() is None:",
+  "            os.write(master, (sys.argv[1] + '\\n').encode()); sent = True",
+  "        if child.poll() is not None:",
+  "            if not select.select([master], [], [], 0)[0]: break",
+  "    code = child.wait(timeout=max(0.1, deadline - time.monotonic()))",
   "    sys.exit(code)",
   "finally:",
   "    if child.poll() is None:",
   "        child.kill()",
   "        child.wait(timeout=5)",
+  "    sys.stdout.buffer.write(out)",
   "    os.close(master)",
+  "    os.close(slave)",
 ].join("\n");
 
 test("native-only STOP upgrade and interrupted-switch recovery", async t => {
@@ -125,13 +131,15 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
   const args=["--upgrade-local",endpoint,meta.version,meta.source_commit];
   const refused=owner("n",exe,args);
   assert.equal(refused.status,1,refused.stdout+refused.stderr);
-  assert.match(refused.stdout,/Confirm \[y\/N\]/);
+  assert.match(refused.stdout,/Confirm \[y\/N\]/,refused.stdout+refused.stderr);
   assert.equal(await readFile(config,"utf8"),previous);
   assert.equal(await readFile(cli,"utf8"),oldCli);
   await noJournal();
   await assert.rejects(readFile(path.join(nextRoot,"bundle.json")),{code:"ENOENT"});
   await preserved();
-  assert.match(ok(owner("y",exe,args)),/"status":"stopped_preserved"/);
+  const upgraded=ok(owner("y",exe,args));
+  assert.match(upgraded,/Confirm \[y\/N\]/);
+  assert.match(upgraded,/"status":"stopped_preserved"/);
   const installed=await readFile(config,"utf8");
   const generation=installed.match(/<string>([0-9a-f-]{36})<\/string><\/array>/)?.[1];
   assert.ok(generation);
@@ -150,13 +158,16 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
   await writeFile(config,"<foreign/>");
   const unknown=owner("y",cli,["recover"]);
   assert.equal(unknown.status,1,unknown.stdout+unknown.stderr);
-  assert.match(unknown.stdout,/Switch outcome unconfirmed/);
+  assert.match(unknown.stdout,/Switch outcome unconfirmed/,unknown.stdout+unknown.stderr);
+  assert.doesNotMatch(unknown.stdout,/Confirm \[y\/N\]/);
   assert.equal(await readFile(journal,"utf8"),record);
   assert.equal(await readFile(config,"utf8"),"<foreign/>");
   assert.equal(await readFile(cli,"utf8"),oldCli);
   await preserved();
   await writeFile(config,installed);
-  assert.match(ok(owner("y",cli,["recover"])),/Switch reconciled/);
+  const recovered=ok(owner("y",cli,["recover"]));
+  assert.match(recovered,/Confirm \[y\/N\]/);
+  assert.match(recovered,/Switch reconciled/);
   assert.equal(ok(local(cli,["--version"])).trim(),meta.version);
   assert.equal(await readFile(cli,"utf8"),launcher(nextExe));
   assert.equal(await readFile(config,"utf8"),installed);
