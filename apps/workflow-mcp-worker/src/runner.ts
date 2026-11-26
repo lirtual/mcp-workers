@@ -831,21 +831,26 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
     const version=await db.prepare('SELECT plan FROM workflow_versions WHERE id=?').bind(row.version_id).first<{plan:string}>();
     if(!version)throw Error('version_missing');
     const plan=JSON.parse(version.plan) as Plan;
-    const watchSessions=async()=>{
-      if(!plan.steps.some(s=>s.uses==='github.run'&&s.with.capability==='github.action'&&
-        (s.with.action as {type?:unknown}|undefined)?.type==='session'))return;
-      try{await watchPersistedSessions(this.env,id,step);}
-      catch{
-        // The independent Session record still holds quota, and explicit
-        // workflow_status performs a verified recovery readback.
+    const hasSession=plan.steps.some(s=>s.uses==='github.run'&&s.with.capability==='github.action'&&
+      (s.with.action as {type?:unknown}|undefined)?.type==='session');
+    const failureCompensationRequired=(outcome:string)=>
+      plan.saga?.on.includes('failure')&&(outcome==='failed'||outcome==='indeterminate');
+    const finishLifecycle=async(outcome:string)=>{
+      // Native rollback must retain the durable failure decision on replay.
+      if(failureCompensationRequired(outcome))throw Error('saga_compensation_trigger');
+      if(!hasSession||outcome==='queued'||outcome==='running')return;
+      // A monitoring failure must be visible in native execution without
+      // rewriting the already committed business result or releasing quota.
+      if(await watchPersistedSessions(this.env,id,step)==='unverified'){
+        const active=await db.prepare("SELECT 1 AS present FROM session_executions WHERE run_id=? AND state!='terminated' LIMIT 1")
+          .bind(id).first<{present:number}>();
+        if(active)throw Error('session_watch_unconfirmed');
       }
     };
-    // A native wake can re-enter run() after the business result is durable.
-    // Never replay terminal business effects; only resume existing Session
-    // lifecycle checkpoints. Failed/uncertain Sagas retain their rollback path.
+    // Native wake never replays terminal business effects. Both entry paths
+    // use the same durable outcome and the actual declared Saga policy.
     if(row.outcome!=='queued'&&row.outcome!=='running'){
-      if(!(plan.saga&&(row.outcome==='failed'||row.outcome==='indeterminate')))
-        await watchSessions();
+      await finishLifecycle(row.outcome);
       return;
     }
     // Native wake/restore must never run an immutable Weixin Plan. Do not
@@ -1039,8 +1044,17 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
                     // A failed handler must not skip independent later handlers.
                     // D1 holds the actual outcome; physical GitHub cancellation
                     // is verified separately. Never pretend 202 means stopped.
-                    try{await compensateSession(this.env,plan,id,s);}
-                    catch{/* Missing receipt is visibly unconfirmed. */}
+                    try{
+                      const owner=await db.prepare('SELECT outcome FROM runs WHERE id=?')
+                        .bind(id).first<{outcome:string}>();
+                      // Native rollback can also be triggered by a watcher
+                      // error after success, or by a native execution failure
+                      // before D1 settlement. Respect the declared trigger.
+                      if(owner&&(failureCompensationRequired(owner.outcome)||
+                         (owner.outcome==='running'&&plan.saga?.on.includes('failure'))||
+                         (owner.outcome==='cancelled'&&plan.saga?.on.includes('cancel'))))
+                        await compensateSession(this.env,plan,id,s);
+                    }catch{/* Missing receipt is visibly unconfirmed. */}
                   },rollbackConfig:{retries:{limit:0,delay:'1 second'},timeout:'45 seconds'}});
               }catch{
                 result={status:'indeterminate',error_code:'saga_registration_unconfirmed'};
@@ -1064,10 +1078,6 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       const output=limitResult(hasEmitted?emitted:ctx.steps[businessResultStep]?.output??null);
       await db.prepare("UPDATE runs SET outcome=?,result=?,error_code=?,updated_at=? WHERE id=? AND outcome='running'")
         .bind(uncertain?'indeterminate':failed?'failed':'succeeded',JSON.stringify(output),uncertain?uncertainCode:null,now(),id).run();
-      // Business failure is normally a structured Outcome, not a thrown
-      // exception. Native Cloudflare rollback requires a failing instance.
-      if(plan.saga?.on.includes('failure')&&(failed||uncertain))
-        throw Error('saga_compensation_trigger');
     }catch{
       let recovered=false;
       try{recovered=await settleVerifiedAuxiliaryBusiness(db,plan,id);}catch{}
@@ -1081,7 +1091,12 @@ export class WorkflowOrchestrator extends WorkflowEntrypoint<Env,{run_id:string}
       // sleeping and reconciling until terminal evidence or the bounded
       // watch window. No external scheduler, false completion, or slot leak
       // on a successful Ready. Expiry requests normal cancellation only.
-      if(!(plan.saga&&(failed||uncertain)))await watchSessions();
+      if(hasSession||plan.saga?.on.includes('failure')){
+        const owner=await db.prepare('SELECT outcome FROM runs WHERE id=?')
+          .bind(id).first<{outcome:string}>();
+        if(!owner)throw Error('run_missing');
+        await finishLifecycle(owner.outcome);
+      }
     }
   }
 }

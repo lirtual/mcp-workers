@@ -17,6 +17,12 @@ import {reconcilePersistedGitHubActionAttempt} from '../src/github-action-attemp
 import {inspectPersistedGitHubActionAttempt} from '../src/github-action-attempt-inspection.ts';
 import type {Env} from '../src/store.ts';
 
+ const hook=registerHooks({resolve(specifier,context,next){
+  if(specifier==='cloudflare:workers')return {url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }',shortCircuit:true};
+  return next(specifier,context);
+ }});
+ const {WorkflowOrchestrator}=await import('../src/runner.ts').finally(()=>hook.deregister());
+
 const run=(n:number)=>'11111111-1111-4111-8111-'+n.toString(16).padStart(12,'0');
 const action={repository:'lirtual/github-actions',repositoryId:123,workflowId:456,
  workflowPath:'.github/workflows/ubuntu.yml',commitSha:'a'.repeat(40),
@@ -1041,11 +1047,6 @@ test('native Workflow keeps monitoring physical Session after parent Ready witho
  }finally{globalThis.fetch=originalFetch;f.db.close();}
 });
 test('native entry resumes the cached Session watcher after business terminal state without replaying effects',async()=>{
- const hook=registerHooks({resolve(specifier,context,next){
-  if(specifier==='cloudflare:workers')return {url:'data:text/javascript,export class WorkflowEntrypoint { constructor(ctx,env){this.env=env;} }',shortCircuit:true};
-  return next(specifier,context);
- }});
- const {WorkflowOrchestrator}=await import('../src/runner.ts').finally(()=>hook.deregister());
  const f=fixture(),originalFetch=globalThis.fetch;
  try{
   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
@@ -1090,6 +1091,101 @@ test('native entry resumes the cached Session watcher after business terminal st
   assert.equal(f.db.prepare('SELECT result FROM runs WHERE id=?').get(run(1))?.result,JSON.stringify({ready:true}));
   assert.equal(f.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
  }finally{globalThis.fetch=originalFetch;f.db.close();}
+});
+test('native Session lifecycle distinguishes business compensation from monitoring failure',async t=>{
+ for(const example of [
+  {name:'successful Saga monitor fault',policy:['failure','cancel'],businessFailure:false,watchFault:true,watch:true,rollback:false},
+  {name:'cancel-only Saga business failure',policy:['cancel'],businessFailure:true,watchFault:false,watch:true,rollback:false},
+  {name:'cancel-only Saga failed business and monitor',policy:['cancel'],businessFailure:true,watchFault:true,watch:true,rollback:false},
+  {name:'failure Saga business failure',policy:['failure'],businessFailure:true,watchFault:false,watch:false,rollback:true},
+  {name:'non-Saga monitor fault',policy:[],businessFailure:false,watchFault:true,watch:true,rollback:false},
+  {name:'declared cancellation permits rollback',policy:['cancel'],businessFailure:false,cancelled:true,watchFault:true,watch:true,rollback:true},
+  {name:'undeclared cancellation does not permit rollback',policy:['failure'],businessFailure:false,cancelled:true,watchFault:true,watch:true,rollback:false},
+ ])await t.test(example.name,async()=>{
+  const f=fixture(),originalFetch=globalThis.fetch;
+  const cancelled='cancelled' in example&&example.cancelled;
+  try{
+   const current={...plan,name:'Lifecycle regression',steps:[{...plan.steps[0],needs:[],with:{...plan.steps[0].with,
+    action:{...plan.steps[0].with.action,inputs:{duration_minutes:5,session_mode:'temporary'}}},
+    ...(example.policy.length?{compensate:{kind:'github.session.cancel'}}:{})},
+    {id:'finish',uses:'result.emit',needs:['launch'],with:{data:'business result'}}],
+    ...(example.policy.length?{saga:{on:example.policy},saga_compensation_approved:true}:{})};
+   f.db.prepare('UPDATE workflow_versions SET plan=? WHERE id=?').run(JSON.stringify(current),'v');
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+   f.db.prepare("UPDATE session_executions SET state='ready',updated_at=?").run(Date.now());
+   f.claim(1,'claimed',true);
+   let observations=0,posts=0,watches=0,businessSteps=0;
+   const rollbacks:Array<()=>Promise<void>>=[];
+   globalThis.fetch=async(input:RequestInfo|URL)=>{
+    const request=input instanceof Request?input:new Request(input);
+    if(request.method==='POST'){posts++;return new Response(null,{status:202});}
+    assert.ok(request.url.endsWith('/actions/runs/42'));
+    observations++;
+    return Response.json({id:42,workflow_id:456,run_attempt:1,
+     repository:{id:123,full_name:action.repository},path:action.workflowPath,
+     head_branch:'release-v1',head_sha:action.commitSha,event:'workflow_dispatch',
+     status:example.rollback?'in_progress':'completed',conclusion:example.rollback?null:'success'});
+   };
+   const env={DB:f.adapter,WORKFLOW_GITHUB_DISPATCH_TOKEN:'token',WORKFLOW_GITHUB_ACTION_IDENTITY:executorIdentity,
+    WORKFLOW_GITHUB_ACTION_OIDC_AUDIENCE:'test'} as Env;
+   const native={do:async(name:string,_opts:unknown,cb:()=>Promise<unknown>,options?:{rollback:()=>Promise<void>})=>{
+    if(name.startsWith('session-watch-check-')){watches++;if(example.watchFault)throw Error('native monitor failed');return cb();}
+    businessSteps++;
+    if(name==='github-session-dispatch-launch')return {status:'confirmed',attemptId:run(11)};
+    if(options?.rollback)rollbacks.push(options.rollback);
+    if(name==='workflow-finish'){
+     if(cancelled)f.db.prepare("UPDATE runs SET outcome='cancelled' WHERE id=?").run(run(1));
+     if(example.businessFailure)return {status:'failed',error_code:'test_business_failure'};
+    }
+    return cb();
+   },sleep:async()=>{throw Error('unexpected sleep');}} as unknown as WorkflowStep;
+   const execute=()=>new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id:run(1)}} as Parameters<InstanceType<typeof WorkflowOrchestrator>['run']>[0],native);
+   const expectedError=example.watchFault?/native monitor failed/:example.rollback?/saga_compensation_trigger/:null;
+   if(expectedError)await assert.rejects(execute(),expectedError);else await execute();
+   assert.equal(watches,example.watch?1:0);
+   assert.equal(rollbacks.length,example.policy.length?1:0,'native compensation registration is exercised');
+   const saved=f.db.prepare('SELECT outcome,result FROM runs WHERE id=?').get(run(1));
+   assert.equal(saved?.outcome,cancelled?'cancelled':example.businessFailure?'failed':'succeeded');
+   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,example.watch&&!example.watchFault?'terminated':'ready');
+   const before=businessSteps;
+   if(expectedError)await assert.rejects(execute(),expectedError);else await execute();
+   assert.equal(watches,example.watch?2:0);
+   assert.equal(businessSteps,before,'terminal reentry never runs a business step');
+   assert.deepEqual(f.db.prepare('SELECT outcome,result FROM runs WHERE id=?').get(run(1)),saved);
+   if(example.watchFault||example.rollback)for(const rollback of rollbacks)await rollback();
+   assert.equal(posts,example.rollback?1:0,'only declared business failure or cancellation authorizes rollback');
+   assert.equal(f.db.prepare('SELECT count(*) AS n FROM step_attempts').get()?.n,1);
+   assert.equal(observations>0,example.rollback||!example.watchFault);
+  }finally{globalThis.fetch=originalFetch;f.db.close();}
+ });
+});
+test('native monitor never reports success on an unverified active Session',async t=>{
+ for(const fault of ['sleep','exhausted','missing token'] as const)await t.test(fault,async()=>{
+  const f=fixture();
+  try{
+   assert.equal(await reservePublishedSessionSlot(f.adapter,run(1),'launch'),'reserved');
+   f.db.prepare("UPDATE session_executions SET state='ready' WHERE run_id=?").run(run(1));
+   f.db.prepare("UPDATE runs SET outcome='succeeded',result='true' WHERE id=?").run(run(1));
+   f.claim(1,'claimed',true);
+   let checks=0,sleeps=0;
+   const native={do:async(name:string)=>{assert.match(name,/^session-watch-check-/);checks++;return 1;},
+    sleep:async()=>{sleeps++;if(fault==='sleep')throw Error('native sleep failure');}} as unknown as WorkflowStep;
+   const env={DB:f.adapter,...(fault==='missing token'?{}:{WORKFLOW_GITHUB_DISPATCH_TOKEN:'token'})} as Env;
+   const execute=()=>new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id:run(1)}} as Parameters<InstanceType<typeof WorkflowOrchestrator>['run']>[0],native);
+   await assert.rejects(execute(),fault==='sleep'?/native sleep failure/:/session_watch_unconfirmed/);
+   assert.equal(checks,fault==='sleep'?1:fault==='exhausted'?144:0);
+   assert.equal(sleeps,fault==='sleep'?1:fault==='exhausted'?143:0);
+   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,'ready');
+   assert.equal(f.db.prepare('SELECT state FROM step_attempts').get()?.state,'claimed');
+   assert.equal(f.db.prepare('SELECT outcome FROM runs WHERE id=?').get(run(1))?.outcome,'succeeded');
+   assert.equal(f.db.prepare('SELECT result FROM runs WHERE id=?').get(run(1))?.result,'true');
+   if(fault==='missing token'){
+    f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(2));
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({payload:{run_id:run(2)}} as Parameters<InstanceType<typeof WorkflowOrchestrator>['run']>[0],native);
+    assert.equal(checks,0,'a skipped Session with no reservation needs no monitor token');
+   }
+  }finally{f.db.close();}
+ });
 });
 test('watcher requests normal expiry cancellation once but never force or release on active job',async()=>{
  const f=fixture(),originalFetch=globalThis.fetch;
