@@ -48,7 +48,7 @@ on:
         required: false
         default: false
       workflow_code_only:
-        description: 'Workflow Worker only: deploy code and approved Portal endpoint pin; preserve other Variables/Secrets, no D1 migrations or secret upload'
+        description: 'Workflow Worker only: deploy code and approved Portal endpoint pin; preserve other Variables/Secrets, no secret upload'
         required: false
         type: boolean
         default: false
@@ -117,7 +117,6 @@ jobs:
           WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
-          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/manual-worker-release.mjs workflow-freeze-check workflow-mcp-worker
 
       - name: Freeze only the existing Actions admission gate (no release or migration)
@@ -476,51 +475,7 @@ jobs:
             exit 1
           }
 
-      # A strict maintenance release alone may perform the one-time v22 -> v23 cutover.
-      # Compatible releases require v23 and do not invoke historical adapters or write D1.
-      - name: Prepare strict Workflow cutover and record recovery point (read-only)
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true
-        id: workflow_schema
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          umask 077
-          node scripts/actions-cutover-prepare.mjs activate-preflight
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 time-travel info workflow-mcp-db --json) > "$RUNNER_TEMP/workflow-cutover-bookmark.json"
-          node scripts/manual-worker-release.mjs workflow-prepare workflow-mcp-worker
-
-      - name: Apply only the reviewed v23 Workflow D1 migration
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true && steps.workflow_schema.outputs.apply_required == 'true'
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          node scripts/manual-worker-release.mjs workflow-cutover-recheck workflow-mcp-worker
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
-
-      - name: Conditionally backfill terminal facts and independently verify v23
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          node scripts/manual-worker-release.mjs workflow-backfill workflow-mcp-worker
-
-      # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS
+      # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS      # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS
       # and disabled query caching. Database has no runtime D1 dependency.
       - name: Verify Database Hyperdrive TLS, CA, origin and cache before publication
         if: inputs.worker == 'database-mcp-worker'
@@ -667,9 +622,9 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-actions-provider-pin.mjs postflight
 
-      - name: Remove temporary Workflow release proof files
+      - name: Remove temporary Workflow release files
         if: always() && inputs.worker == 'workflow-mcp-worker'
-        run: rm -f "$RUNNER_TEMP/actions-provider-version.txt" "$RUNNER_TEMP/workflow-cutover-bookmark.json" "$RUNNER_TEMP/workflow-cutover-proof.json"
+        run: rm -f "$RUNNER_TEMP/actions-provider-version.txt"
 
       - name: Verify Database Hyperdrive TLS, CA, origin and cache after publication
         if: inputs.worker == 'database-mcp-worker'
@@ -768,40 +723,7 @@ jobs:
             exit 1
           done
 
-      # Frozen maintenance only. Do not reopen admission until the active
-      # Consumer version, single Actions Service Binding and Provider pin
-      # have already been independently read back; all plans remain paused.
-      - name: Verify frozen Action gate and paused unified runtime before activation (read-only)
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
-        run: node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker
-
-      - name: Reopen only the now-verified unified Action admission gate
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command               "UPDATE cloudflare_action_gate SET state='open',changed_at=unixepoch()*1000 WHERE id=1 AND state='frozen'") > /dev/null
-
-      - name: Verify only unified admission reopened and all Workflow plans still paused (read-only)
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
-        run: node scripts/actions-cutover-prepare.mjs activate-postflight
-
-      - name: Register production Browser MCP with existing One-MCP Portal
+      - name: Register production Browser MCP with existing One-MCP Portal      - name: Register production Browser MCP with existing One-MCP Portal
         if: inputs.worker == 'browser-mcp-worker'
         shell: bash
         env:
