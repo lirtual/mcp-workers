@@ -419,13 +419,37 @@ mod terminal_tests {
     #[test]
     fn hidden_input_fixture() {
         if std::env::var_os("RCA_TEST_HIDDEN_INPUT_FIXTURE").is_some() {
+            // A Darwin controlling PTY can be revoked when its session leader
+            // exits. Verify restoration while this process still owns it.
+            let flags_before = stdin_flags();
+            let mode_before = stdin_mode();
             let result = read_hidden_secret();
+            assert_eq!(stdin_mode(), mode_before);
+            assert_eq!(
+                stdin_flags() & libc::O_NONBLOCK,
+                flags_before & libc::O_NONBLOCK
+            );
             if std::env::var_os("RCA_TEST_CANCEL_HIDDEN_INPUT").is_some() {
                 assert!(result.is_err());
             } else {
                 assert!(result.is_ok_and(|value| value.as_str() == MARKER));
             }
         }
+    }
+
+    fn stdin_mode() -> libc::tcflag_t {
+        let mut settings = unsafe { std::mem::zeroed::<libc::termios>() };
+        assert_eq!(
+            unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut settings) },
+            0
+        );
+        settings.c_lflag
+    }
+
+    fn stdin_flags() -> libc::c_int {
+        let flags = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFL) };
+        assert!(flags >= 0);
+        flags
     }
 
     struct ScopedChild(Child);
@@ -519,8 +543,7 @@ mod terminal_tests {
         loop {
             assert!(
                 Instant::now() < deadline,
-                "synthetic PTY timed out: input_sent={submitted}, terminal_flags={:#x}",
-                terminal_flags(&slave)
+                "synthetic PTY timed out: input_sent={submitted}"
             );
             let mut poll = libc::pollfd {
                 fd: master.as_raw_fd(),
@@ -530,7 +553,21 @@ mod terminal_tests {
             let ready = unsafe { libc::poll(&mut poll, 1, 50) };
             if ready > 0 && poll.revents & libc::POLLIN != 0 {
                 let mut buffer = [0; 4096];
-                let count = master.read(&mut buffer).unwrap();
+                let count = match master.read(&mut buffer) {
+                    Ok(count) => count,
+                    // Once the controlling session exits, a PTY master may
+                    // return EOF or EIO even while poll reports readable.
+                    Err(error) if error.raw_os_error() == Some(libc::EIO) => 0,
+                    Err(error) => panic!("synthetic PTY read: {error}"),
+                };
+                if count == 0 {
+                    if let Some(status) = child.0.try_wait().unwrap() {
+                        assert!(status.success(), "terminal helper failed: {status}");
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
                 output.extend_from_slice(&buffer[..count]);
                 assert!(output.len() < 64 * 1024);
                 if !submitted
@@ -569,11 +606,16 @@ mod terminal_tests {
             }
         }
         assert!(submitted);
-        assert_eq!(terminal_flags(&slave), original);
-        assert_eq!(
-            unsafe { libc::fcntl(slave.as_raw_fd(), libc::F_GETFL) },
-            original_fd_flags
-        );
+        // Non-controlling PTYs remain available for an independent parent
+        // readback; the cancelling child already verified restoration before
+        // its controlling session could be revoked.
+        if !cancel {
+            assert_eq!(terminal_flags(&slave), original);
+            assert_eq!(
+                unsafe { libc::fcntl(slave.as_raw_fd(), libc::F_GETFL) } & libc::O_NONBLOCK,
+                original_fd_flags & libc::O_NONBLOCK
+            );
+        }
         assert!(!output
             .windows(MARKER.len())
             .any(|window| window == MARKER.as_bytes()));

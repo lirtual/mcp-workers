@@ -129,6 +129,12 @@ test("secure task input requires the same live Workflow physical Attempt at crea
   const requestId = await create();
   assert.equal((await submit(requestId)).status, 200);
   assert.equal(dispatchCount(), 1);
+  const dispatched = JSON.parse(sent.at(-1)!);
+  assert.equal(dispatched.provider_principal, null, "task submit must include the explicit null principal required by the Agent");
+  await owner.webSocketMessage(socket, JSON.stringify({ kind: "secure_input_ack", request_id: requestId, status: "accepted" }));
+  await owner.webSocketMessage(socket, JSON.stringify({ kind: "secure_input_progress", request_id: requestId, status: "running" }));
+  await owner.webSocketMessage(socket, JSON.stringify({ kind: "secure_input_result", request_id: requestId, status: "succeeded" }));
+  assert.equal((await (await post("status", {request_id: requestId})).json() as {state: string}).state, "succeeded");
   assert.equal((await submit(requestId)).status, 409);
   assert.equal(dispatchCount(), 1, "consumed request cannot send twice");
 });

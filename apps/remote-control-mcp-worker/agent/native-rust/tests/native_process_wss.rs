@@ -856,6 +856,10 @@ fn signed_managed_secure_input_suppresses_output_and_bypasses_receipts() {
             assert_eq!(frame["request_id"], REQUEST);
             if kind == "secure_input_result" {
                 assert_eq!(frame["status"], "succeeded");
+                assert!(
+                    frame.get("error_code").is_none(),
+                    "success has no error code on the wire"
+                );
             }
         }
         let deadline = Instant::now() + Duration::from_secs(4);

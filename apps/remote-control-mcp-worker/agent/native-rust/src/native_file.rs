@@ -452,7 +452,11 @@ fn execute_native_file(
                                     (outcome.status, outcome.error_code)
                                 }
                             };
-                            json!({"kind":"secure_input_result","request_id":request_id,"status":status,"error_code":error_code})
+                            let mut result = json!({"kind":"secure_input_result","request_id":request_id,"status":status});
+                            if let Some(code) = error_code {
+                                result["error_code"] = json!(code);
+                            }
+                            result
                         }
                     };
                     if secure.lease().is_active()

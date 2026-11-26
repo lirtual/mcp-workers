@@ -266,10 +266,7 @@ impl PairingClient {
             .ok_or(SessionRecoveryError::Rejected)?;
         let target = &result["target"];
         let execution = &result["execution"];
-        let valid_binding = binding.len() == 43
-            && binding
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-');
+
         let principal_valid = result
             .get("provider_principal")
             .map(|value| {
@@ -282,8 +279,8 @@ impl PairingClient {
                 .as_str()
                 .is_some_and(|v| !v.is_empty() && v.len() <= 128)
             && execution["session_run_id"]
-                .as_str()
-                .is_some_and(|v| !v.is_empty() && v.len() <= 128)
+                .as_u64()
+                .is_some_and(|v| v > 0 && v <= 9_007_199_254_740_991)
             && execution["session_run_attempt"]
                 .as_u64()
                 .is_some_and(|v| v > 0 && v < 9_007_199_254_740_991)
@@ -304,7 +301,7 @@ impl PairingClient {
                 .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
             || generation >= 9_007_199_254_740_991
             || expiry <= now
-            || !valid_binding
+            || !crate::identity::valid_secure_input_binding(binding)
             || purpose.trim().is_empty()
             || purpose.len() > 256
             || crate::secure_input::parse_target(target).is_none()
@@ -881,10 +878,52 @@ mod tests {
     }
 
     #[test]
+    fn secure_input_cli_accepts_numeric_workflow_run_id_only() {
+        const REQUEST: &str = "123e4567-e89b-42d3-a456-426614174002";
+        const TARGET: &str = "123e4567-e89b-42d3-a456-426614174003";
+        let pem = generate_private_pem().unwrap();
+        let expiry = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60_000;
+        for (run_id, valid) in [
+            (json!(123), true),
+            (json!("123"), false),
+            (json!(0), false),
+            (json!(9_007_199_254_740_992u64), false),
+        ] {
+            let (client, listener) = fixture();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                let (_, _) = recv_request(&mut socket);
+                reply(
+                    &mut socket,
+                    "200 OK",
+                    json!({
+                        "action":"secure_input","device_id":ID,"request_id":REQUEST,
+                        "nonce":NONCE,"generation":3,"expires_at":expiry,
+                        "target_binding":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                        "purpose":"Synthetic task input",
+                        "target":{"kind":"task_process","session_id":TARGET,"name":"FIXTURE"},
+                        "execution":{"device_id":TARGET,"grant_type":"session",
+                            "session_attempt_id":REQUEST,"session_run_id":run_id,
+                            "session_run_attempt":1,"session_workflow_name":"ubuntu","expires_at":expiry},
+                        "is_production":false
+                    }),
+                );
+            });
+            let result = client.secure_input_challenge(&pem, ID, REQUEST);
+            server.join().unwrap();
+            assert_eq!(result.is_ok(), valid);
+        }
+    }
+
+    #[test]
     fn secure_input_owner_flow_binds_exact_challenge_and_submits_secret_once() {
         const REQUEST: &str = "123e4567-e89b-42d3-a456-426614174002";
         const TARGET: &str = "123e4567-e89b-42d3-a456-426614174003";
-        const BINDING: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
+        const BINDING: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
         const SECRET: &str = "synthetic-secure-input-value";
         let (client, listener) = fixture();
         let pem = generate_private_pem().unwrap();

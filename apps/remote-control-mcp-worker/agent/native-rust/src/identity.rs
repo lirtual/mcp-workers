@@ -88,6 +88,13 @@ pub fn signed_session_proof(
 }
 
 // Keep every independently signed challenge field explicit at this protocol boundary.
+pub(crate) fn valid_secure_input_binding(binding: &str) -> bool {
+    binding.len() == 64
+        && binding
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn signed_secure_input_owner_intent_proof(
     pem: &str,
@@ -99,15 +106,11 @@ pub fn signed_secure_input_owner_intent_proof(
     target_confirmed: bool,
     production_authorized: bool,
 ) -> Result<String, IdentityError> {
-    let valid_binding = target_binding.len() == 43
-        && target_binding
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-');
     if !valid_device_id(request_id)
         || !valid_device_id(device_id)
         || !valid_nonce(nonce)
         || generation >= 9_007_199_254_740_991
-        || !valid_binding
+        || !valid_secure_input_binding(target_binding)
     {
         return Err(IdentityError::InvalidChallenge);
     }
@@ -154,7 +157,17 @@ mod secure_input_owner_intent_tests {
         let request = "12345678-1234-1234-1234-123456789abc";
         let device = "abcdefab-cdef-abcd-efab-cdefabcdefab";
         let nonce = "abcdefghijklmnopqrstuvwx";
-        let binding = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq";
+        let binding = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for invalid in [
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
+            &"A".repeat(64),
+            &"g".repeat(64),
+        ] {
+            assert!(signed_secure_input_owner_intent_proof(
+                &pem, request, device, nonce, 7, invalid, true, true,
+            )
+            .is_err());
+        }
         let proof = signed_secure_input_owner_intent_proof(
             &pem, request, device, nonce, 7, binding, true, true,
         )

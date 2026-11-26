@@ -209,7 +209,7 @@ export class SecureInputCoordinator {
     }
     const frame = JSON.stringify({
       kind: "secure_input", request_id: record.request_id, target: record.target,
-      provider_principal: record.provider_principal, secret: value,
+      provider_principal: record.provider_principal ?? null, secret: value,
     });
     value = "";
     if (new TextEncoder().encode(frame).byteLength > MAX_FRAME) {
