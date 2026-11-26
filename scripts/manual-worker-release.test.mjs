@@ -1686,9 +1686,15 @@ test('#1046 historical physical Task evidence uses the existing repository-scope
  assert.equal(requests[1].authorization,'Bearer task-dispatch-token');
  assert.equal(requests[2].authorization,undefined,
   'the dispatch credential must not cross into the unrelated Cloudflare Actions repository');
- await assert.rejects(()=>workflowReleaseIO({
+ assert.throws(()=>workflowReleaseIO({
   CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-test',
   GITHUB_TOKEN:'same-repository-token'
- },async()=>Response.json({success:true})).historySources.githubRun('lirtual/github-actions',2),
+ }).historySources.githubRun('lirtual/github-actions',2),
  /Historical GitHub Actions read credential unavailable/);
+ const denied=workflowReleaseIO({
+  CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-test',
+  WORKFLOW_GITHUB_DISPATCH_TOKEN:'task-dispatch-token'
+ },async()=>new Response('{}',{status:403}));
+ await assert.rejects(()=>denied.historySources.githubRun('lirtual/github-actions',4),
+  /HTTP 403 api\\.github\\.com\\/repos\\/lirtual\\/github-actions\\/actions\\/runs\\/4/);
 });
