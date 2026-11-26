@@ -691,11 +691,20 @@ test("Workflow protected release requires exact v23 and keeps maintenance gate o
  assert.ok(reopen.includes("workflow-check workflow-mcp-worker"));
  assert.ok(reopen.includes("actions_expected_provider_version"));
  assert.ok(reopen.includes("actions_expected_consumer_version"));
- assert.ok(ci.includes("actions_gate_freeze: true"));
- assert.ok(ci.includes("actions_gate_reopen: true"));
+ assert.ok(freeze.includes("inputs.actions_gate_freeze == true"));
+ assert.ok(reopen.includes("inputs.actions_gate_reopen == true"));
  assert.ok(ci.includes('health_endpoint="https://workflow.lirtual.dpdns.org/health"'));
  assert.ok(ci.includes("body.execution_terminal_proof_schema !== 23"));
  assert.ok(ci.includes("Unauthenticated MCP request denied"));
+ const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
+ const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
+ const gate=ci.indexOf("      - name: Verify current unified Actions binding and gate (read-only)");
+ const activation=ci.indexOf("      - name: Reopen only the now-verified unified Action admission gate");
+ assert.ok(pin>0&&recheck>pin&&gate>recheck&&gate<publish&&activation>unauth);
+ assert.match(ci,/body\.scope !== "workflow"/);
+ assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+ assert.ok(ci.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY"));
+ assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"));
  assert.doesNotMatch(ci,/workflow-prepare|workflow-backfill|workflow-cutover-recheck|workflow-cutover-bookmark|workflow-cutover-proof|wrangler d1 migrations apply workflow-mcp-db/);
 });
 
@@ -1588,4 +1597,14 @@ test('#1046 Session release recognizes definitive rejection and never-dispatched
  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,candidate_run_id:42}]}),/terminal evidence/);
  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,sessions:[{...e.sessions[0],state:'starting'}]}),/terminal evidence/);
  assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[],steps:[]}),/terminal evidence/);
+});
+
+test('current Workflow release D1 evidence is read-only and API failures identify the target',async()=>{
+ const env={CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'test-only'};
+ const io=workflowReleaseIO(env,async()=>new Response('{}',{status:403}));
+ assert.equal(io.write,undefined);
+ await assert.rejects(()=>io.query('UPDATE runs SET outcome=?',['failed']),/must be SELECT/);
+ await assert.rejects(()=>io.query('SELECT name FROM d1_migrations'),error=>
+  error.message.includes('HTTP 403 api.cloudflare.com/client/v4/accounts/')&&
+  error.message.endsWith('/query)'));
 });
