@@ -3,8 +3,8 @@ import test from 'node:test';
 import {randomUUID,createPrivateKey,sign} from 'node:crypto';
 import {newEnrollment} from '../agent/src/v2-enrollment.ts';
 import {signedSessionProof} from '../agent/src/v2-session-client.ts';
-import {ownerIntentTranscript,issueOwnerIntentChallenge,commitOwnerIntent} from '../src/v2-owner-intent.ts';
-import {issueSessionChallenge,authorizeSocketSession,deviceIsAuthorized,listLiveGrants,listApprovedDevices} from '../src/v2-session.ts';
+import {ownerIntentTranscript,issueOwnerIntentChallenge,commitOwnerIntent} from '../src/owner-intent.ts';
+import {issueSessionChallenge,authorizeSocketSession,deviceIsAuthorized,listLiveGrants,listApprovedDevices} from '../src/session.ts';
 const DAY=86_400_000;
 test('signed local Stop fences old WSS, duplicate Stop cannot renew, owner Resume grants fresh epoch only',async()=>{
  const initial=Date.now,id=randomUUID(),material=newEnrollment('owner-local');

@@ -146,9 +146,8 @@ test("IMA accepts old CLIENT_ID Variable in preflight and requires new Variable 
   } }, secrets), /tracing drift/);
 });
 
-test("Remote production requires its own DO and rejects Preview namespace reuse", () => {
+test("Remote production requires its local DeviceCoordinator and rejects legacy bindings", () => {
   const worker = "remote-control-mcp-worker";
-  const previewNs = "c086eb6384ad41df9de13765d868324a";
   const productionNs = "abcd1234abcd1234abcd1234abcd1234";
   const sessionRpc={name:"WORKFLOW_SESSION_AUTHORIZATION",type:"service",
     service:"workflow-mcp-worker",entrypoint:"SessionAuthorization"};
@@ -162,7 +161,7 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
       type: "durable_object_namespace", namespace_id: productionNs },
   ], observability: { enabled: true, logs: { invocation_logs: false } } };
   const secrets = [{name:"MCP_ACCESS_TOKEN"}];
-  const options = { mode: "readback", previousNamespaceId: previewNs, expectedRcaClerkIdentity:clerkIdentity,
+  const options = { mode: "readback", expectedRcaClerkIdentity:clerkIdentity,
     sourceConfig: { routes: [{ pattern: "rca.lirtual.dpdns.org", custom_domain: true }] } };
   const reviewed=readConfiguration(worker,
     readFileSync(new URL('../apps/remote-control-mcp-worker/wrangler.jsonc',import.meta.url),'utf8'));
@@ -209,41 +208,36 @@ test("Remote production requires its own DO and rejects Preview namespace reuse"
   }, secrets, options), /installer origin/);
   assert.throws(() => verifyBindings(worker, {
     ...prod, bindings: prod.bindings.map(x => x.name === "DEVICE_COORDINATOR"
-      ? { ...x, namespace_id: previewNs } : x),
-  }, secrets, options), /distinct from Preview/);
+      ? { ...x, class_name: "LegacyCoordinator" } : x),
+  }, secrets, options), /DeviceCoordinator/);
+  assert.throws(() => verifyBindings(worker, {
+    ...prod, bindings: prod.bindings.map(x => x.name === "DEVICE_COORDINATOR"
+      ? { ...x, script_name: "another-worker" } : x),
+  }, secrets, options), /local DeviceCoordinator/);
   assert.throws(() => verifyBindings(worker, {
     ...prod, bindings: [...prod.bindings,
       { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" }],
-  }, secrets, options), /runtime switches/);
+  }, secrets, options), /retired runtime switches/);
   assert.throws(() => verifyBindings(worker, {
     ...prod, bindings: [...prod.bindings,
-      { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service" }],
-  }, secrets, options), /VPC/);
-  const previous = { ...prod, bindings: [
-    { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
-    ...["BROWSER_APPROVAL_ACCESS_ISSUER","BROWSER_APPROVAL_ACCESS_AUD","BROWSER_APPROVAL_ALLOWED_EMAIL"].map(name=>({name,type:"secret_text"})),
-    { name: "REMOTE_CONTROL_V2_ONLY", type: "plain_text", text: "true" },
-    { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: previewNs,
-      class_name: "V2OwnerCoordinator", script_name: "remote-control-v2-preview" },
-  ] };
-  assert.equal(verifyBindings(worker, previous, secrets,
-    { mode: "preflight", previousNamespaceId: previewNs }), true);
-  assert.throws(() => verifyBindings(worker, previous, secrets, options), /DeviceCoordinator/);
-  // A former Preview script and its DO can be deleted after cutover. Readback
-  // compares against the saved preflight namespace, not a live Preview call.
+      { name: "REMOTE_CONTROL_V2_PREVIEW_ONLY", type: "plain_text", text: "true" }],
+  }, secrets, options), /retired runtime switches/);
+  assert.throws(() => verifyBindings(worker, {
+    ...prod, bindings: [...prod.bindings,
+      { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: "legacy-namespace",
+        class_name: "LegacyCoordinator", script_name: "legacy-worker" }],
+  }, secrets, { mode: "preflight" }), /legacy coordinator binding/);
+  assert.throws(() => verifyBindings(worker, {
+    ...prod, bindings: [...prod.bindings,
+      { name: "V2_OWNER", type: "durable_object_namespace", namespace_id: "legacy-namespace",
+        class_name: "LegacyCoordinator", script_name: "legacy-worker" }],
+  }, secrets, options), /legacy coordinator binding/);
+  const legacyVpc = { ...prod, bindings: [...prod.bindings,
+    { name: "REMOTE_CONTROL_DEVICE", type: "vpc_service" }] };
+  assert.throws(() => verifyBindings(worker, legacyVpc, secrets, options), /VPC/);
+  assert.throws(() => verifyBindings(worker, legacyVpc, secrets, { mode: "preflight" }), /VPC/);
   assert.equal(verifyBindings(worker, prod, secrets,
-    options), true);
-  assert.equal(verifyBindings(worker, prod, secrets,
-    { mode: "preflight" }), true, "subsequent releases need no Preview worker");
-  assert.throws(() => verifyBindings(worker, { ...prod,
-    bindings: prod.bindings.map(x => x.name === "DEVICE_COORDINATOR"
-      ? { ...x, script_name: "remote-control-v2-preview" } : x),
-  }, secrets, options), /distinct from Preview/);
-  assert.throws(() => verifyBindings(worker, { ...previous,
-    bindings: previous.bindings.map(x => x.name === "V2_OWNER"
-      ? { ...x, script_name: "unknown-worker" } : x),
-  }, secrets, { mode: "preflight" }), /DeviceCoordinator/,
-    "legacy preflight requires the known old Preview source");
+    { mode: "preflight" }), true, "preflight accepts the current binding inventory only");
 });
 
 test("Wrangler Prepare failure diagnostic reports only stage and error code", () => {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { handleDeviceInfoMessage, listApprovedDevices } from "../src/v2-session.ts";
+import { handleDeviceInfoMessage, listApprovedDevices } from "../src/session.ts";
 
 function harness() {
   const activeId = randomUUID(), otherId = randomUUID();

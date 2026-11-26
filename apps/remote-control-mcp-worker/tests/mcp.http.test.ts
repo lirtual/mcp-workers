@@ -34,7 +34,7 @@ function fixture(respond: (url: string, init?: RequestInit) => Promise<Response>
     // A stale v1 binding or credential must never become a transport fallback.
     REMOTE_CONTROL_DEVICE_TOKEN: "unused-legacy-token",
     REMOTE_CONTROL_DEVICE: {
-      fetch(): never { legacyCalls++; throw new Error("v1 VPC must never be called"); },
+      fetch(): never { legacyCalls++; throw new Error("legacy VPC must never be called"); },
     },
   } as unknown as Env;
   return { env, calls, legacyCalls: () => legacyCalls };

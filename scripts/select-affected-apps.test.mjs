@@ -105,11 +105,11 @@ test('GitHub Actions MCP is CI-checked and manually deployable from main', async
 
 test('retired Preview cannot be redeployed, and production still requires main', async () => {
   const workflow = await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
-  assert.doesNotMatch(workflow, /remote-control-v2-preview|deploy-preview:|wrangler\\.v2-preview/);
+  assert.doesNotMatch(workflow, /remote-control-preview|deploy-preview:|wrangler\\.v2-preview/);
   const run=(worker,ref)=>'Selected applications: '+selectionForEvent({EVENT_NAME:'workflow_dispatch',
     MANUAL_WORKER:worker,MANUAL_REF:ref}).selected.join(' ');
-  assert.throws(()=>run('remote-control-v2-preview','refs/heads/topic-review'),/Unsupported manual Worker selection/);
-  assert.throws(()=>run('remote-control-v2-preview','refs/heads/main'),/Unsupported manual Worker selection/);
+  assert.throws(()=>run('remote-control-preview','refs/heads/topic-review'),/Unsupported manual Worker selection/);
+  assert.throws(()=>run('remote-control-preview','refs/heads/main'),/Unsupported manual Worker selection/);
   assert.throws(()=>run('remote-control-mcp-worker','refs/heads/topic-review'),/Unsupported manual Worker selection/);
   assert.match(run('remote-control-mcp-worker','refs/heads/main'),/Selected applications: remote-control-mcp-worker/);
 });

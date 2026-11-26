@@ -26,7 +26,7 @@ class FakeSocket extends EventTarget {
 async function harness(
   selectedProtocol: string, event: "open" | "error" | "close" = "open",
 ) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-session-protocol-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "session-protocol-"));
   const file = path.join(dir, "identity.pem");
   const enrollment = newEnrollment("host");
   const id = randomUUID();
@@ -49,7 +49,7 @@ async function harness(
   };
 }
 
-test("v2 client accepts only the negotiated safe protocol marker, never a proof or another protocol", async () => {
+test("session client accepts only the negotiated safe protocol marker, never a proof or another protocol", async () => {
   const good = await harness("rc-v2");
   try {
     const result = await openAuthenticatedDeviceSocket("https://trusted.example/", good.file, good.send, good.makeSocket);
@@ -73,7 +73,7 @@ test("v2 client accepts only the negotiated safe protocol marker, never a proof 
   }
 });
 
-test("v2 client aborts failed or rejected handshake and closes unauthenticated socket", async () => {
+test("session client aborts failed or rejected handshake and closes unauthenticated socket", async () => {
   for (const event of ["error", "close"] as const) {
     const fixture = await harness("rc-v2", event);
     try {

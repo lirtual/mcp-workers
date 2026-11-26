@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
 import test from "node:test";
-import worker, {V2OwnerCoordinator} from "../src/worker.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 
 test("retired temporary-to-permanent web route stays absent with Portal and Access credentials",async()=>{
   const deviceId=randomUUID();
@@ -33,10 +34,10 @@ test("owner DO cannot change an existing temporary grant into permanent in place
     public_key:"test-key",fingerprint:"f".repeat(24),approved_at:Date.now(),
   };
   const rows=new Map<string,unknown>([["device:"+deviceId,structuredClone(grant)]]);
-  const owner=new V2OwnerCoordinator({storage:{
+  const owner=new OwnerCoordinator({storage:{
     get:async<T>(key:string)=>rows.get(key) as T|undefined,
   }} as unknown as DurableObjectState);
-  const response=await owner.fetch(new Request("https://v2.internal/grant/permanent",{
+  const response=await owner.fetch(new Request("https://device.internal/grant/permanent",{
     method:"POST",headers:{"content-type":"application/json"},
     body:JSON.stringify({
       device_id:deviceId,expected_fingerprint:grant.fingerprint,

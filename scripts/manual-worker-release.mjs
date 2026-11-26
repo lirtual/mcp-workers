@@ -336,28 +336,18 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
     }
   }
   if (worker === "remote-control-mcp-worker") {
+    // Production is already on its local DeviceCoordinator; no legacy Preview/VPC preflight path remains.
     const coordinator = find("DEVICE_COORDINATOR", "durable_object_namespace");
-    const previous = find("V2_OWNER", "durable_object_namespace");
-    // Preflight may inspect the currently deployed Preview-backed v2 or legacy VPC
-    // version. Identify the previous namespace from THIS Worker, not from a
-    // separate Preview Worker that may already have been deleted.
-    const isPreflightPrevious = options.mode === "preflight" && !coordinator &&
-      ((previous?.class_name === "V2OwnerCoordinator" &&
-        previous?.script_name === "remote-control-v2-preview" &&
-        typeof previous.namespace_id === "string") ||
-        !!find("REMOTE_CONTROL_DEVICE", "vpc_service"));
-    if (!isPreflightPrevious) {
-      invariant(coordinator?.class_name === "DeviceCoordinator" &&
-        typeof coordinator.namespace_id === "string" &&
-        !coordinator.script_name &&
-        coordinator.namespace_id !== options.previousNamespaceId,
-        "Production must have its own DeviceCoordinator namespace distinct from Preview");
-      invariant(!previous && !find("REMOTE_CONTROL_V2_ONLY", "plain_text") &&
-        !find("REMOTE_CONTROL_V2_PREVIEW_ONLY", "plain_text"),
-        "Production must not retain Preview binding or v1/v2 runtime switches");
-      invariant(!bindings.some(x => x.type === "vpc_service" ||
-        x.name === "REMOTE_CONTROL_DEVICE"), "Production VPC binding must be absent");
-    }
+    invariant(coordinator?.class_name === "DeviceCoordinator" &&
+      typeof coordinator.namespace_id === "string" && coordinator.namespace_id.length > 0 &&
+      !coordinator.script_name,
+      "Production must use its own local DeviceCoordinator namespace");
+    // These exact retired names remain negative guards, not supported bindings or modes.
+    invariant(!bindings.some(x => x.name === "V2_OWNER" ||
+      x.name === "REMOTE_CONTROL_V2_ONLY" || x.name === "REMOTE_CONTROL_V2_PREVIEW_ONLY"),
+      "Production must not retain a legacy coordinator binding or retired runtime switches");
+    invariant(!bindings.some(x => x.type === "vpc_service" ||
+      x.name === "REMOTE_CONTROL_DEVICE"), "Production VPC binding must be absent");
     // Existing production has no Session RPC binding. Permit that only
     // during preflight; the post-deploy inventory must prove the exact private
     // Workflow WorkerEntrypoint and reject wrong or duplicate destinations.
@@ -468,9 +458,7 @@ export function verifyBindings(worker, settings, secrets, options = {}) {
       ? ["RATE_LIMITER", ...(options.mode === "preflight" ? ["SETUP_RATE_LIMITER", "DB"] : []), ...((options.sourceConfig?.hyperdrive ?? []).map(x => x.binding))]
       : worker === "ssh-mcp-worker" ? (options.mode === "preflight" ? ["EDGE_SSH_BROKER", "EDGE_SSH_DB", "SSH_OPERATIONS"] : ["EDGE_SSH_DB", "SSH_OPERATIONS"])
       : worker === "remote-control-mcp-worker"
-        ? (options.mode === "preflight"
-          ? ["DEVICE_COORDINATOR", "V2_OWNER", "REMOTE_CONTROL_DEVICE", "WORKFLOW_SESSION_AUTHORIZATION"]
-          : ["DEVICE_COORDINATOR", "WORKFLOW_SESSION_AUTHORIZATION"]) : []);
+        ? ["DEVICE_COORDINATOR", "WORKFLOW_SESSION_AUTHORIZATION"] : []);
   if (worker === "workflow-mcp-worker" && options.mode === "readback") {
     invariant(bindings.filter(x=>x.name === "ACTIONS").length === 1 &&
       find("ACTIONS", "service")?.service === "cloudflare-actions" &&
@@ -1209,20 +1197,7 @@ async function current(account, worker, token, options) {
     cfGet(account, worker, token, "/deployments?per_page=1"),
     cfGet(account, worker, token, "/script-settings"),
   ]);
-  const existingOwner = worker === "remote-control-mcp-worker" &&
-    Array.isArray(settings.bindings)
-    ? settings.bindings.find(x => x.name === "V2_OWNER" &&
-      x.type === "durable_object_namespace" &&
-      x.class_name === "V2OwnerCoordinator" &&
-      x.script_name === "remote-control-v2-preview")
-    : null;
-  // Capture the namespace before cutover in the protected release state file.
-  // After a successful release, validation must work even if Preview is gone.
-  const previousNamespaceId = options.mode === "preflight"
-    ? existingOwner?.namespace_id : options.previousNamespaceId;
-  verifyBindings(worker, settings, secrets, {
-    ...options, previousNamespaceId,
-  });
+  verifyBindings(worker, settings, secrets, options);
   let workflowExecutorBaseline;
   if(worker==="workflow-mcp-worker") {
     const active=activeVersion(deployments);
@@ -1252,8 +1227,6 @@ async function current(account, worker, token, options) {
   return {
     ...activeVersion(deployments),
     ...(worker === "browser-mcp-worker" ? {browserNamespaceId: settings.bindings.find(b=>b.name==="BROWSER_OWNER").namespace_id} : {}),
-    ...(options.mode === "preflight" && typeof previousNamespaceId === "string"
-      ? { previousNamespaceId } : {}),
     ...(worker==="workflow-mcp-worker" && options.mode==="preflight" ? {
       workflowExecutorBaseline
     } : {}),
@@ -1478,7 +1451,6 @@ async function main() {
       sourceConfig,
       requireExistingSecrets: mode === "preflight" &&
         process.env.WORKFLOW_CODE_ONLY === "true",
-      previousNamespaceId: previous?.previousNamespaceId,
       browserNamespaceId: previous?.browserNamespaceId,
       browserIdentity,
       sharedAccessTeamDomain: browserIdentity?.teamDomain,

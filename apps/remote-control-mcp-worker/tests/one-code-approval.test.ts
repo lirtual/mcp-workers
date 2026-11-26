@@ -8,10 +8,11 @@ import {exportJWK,generateKeyPair,SignJWT} from "jose";
 import {newEnrollment, saveNewPrivateKey} from "../agent/src/v2-enrollment.ts";
 import {recoverDeviceId, signedSessionProof} from "../agent/src/v2-session-client.ts";
 import {ReceiptStore, operationDigest} from "../agent/src/operations.ts";
-import worker, {V2OwnerCoordinator} from "../src/worker.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 import {approvalArgs, lookupOwnerPairing, approveOwnerPairing} from "../src/pairing-owner.ts";
-import {approvePendingKey} from "../src/v2-pairing.ts";
-import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/v2-session.ts";
+import {approvePendingKey} from "../src/pairing.ts";
+import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/session.ts";
 
 function fixture(browser=false) {
   let dropApprovalReply=false;
@@ -35,8 +36,8 @@ function fixture(browser=false) {
       try{return await fn(store);} finally{release();}
     },
   };
-  const owner = new V2OwnerCoordinator({storage:store} as unknown as DurableObjectState);
-  const V2_OWNER = {
+  const owner = new OwnerCoordinator({storage:store} as unknown as DurableObjectState);
+  const DEVICE_COORDINATOR = {
     idFromName() {return "single-owner";},
     get() {return {fetch:async(input:RequestInfo|URL,init?:RequestInit) => {
       dispatches++;
@@ -48,7 +49,7 @@ function fixture(browser=false) {
       return response;
     }};},
   } as unknown as DurableObjectNamespace;
-  const env = {MCP_ACCESS_TOKEN:"owner-test-credential",V2_OWNER,
+  const env = {MCP_ACCESS_TOKEN:"owner-test-credential",DEVICE_COORDINATOR,
     REMOTE_CONTROL_DEVICE_TOKEN:"legacy-v1-fixture",
     ...(browser?{CLERK_OWNER_USER_ID:"user_fixture",CLERK_PUBLISHABLE_KEY:"pk_live_"+Buffer.from("clerk.lirtual.dpdns.org$").toString("base64")}:{} )} as unknown as Env;
   const origin=browser?"https://rca.lirtual.dpdns.org/":"https://pairing.test/";
@@ -66,7 +67,7 @@ function fixture(browser=false) {
   // Protocol/lifecycle scenarios exercise the same owner adapter and real
   // coordinator without coupling to an authentication ingress. Browser HTTP
   // authentication and retired MCP ingress are covered separately below.
-  const ownerStub=V2_OWNER.get(V2_OWNER.idFromName("single-owner"));
+  const ownerStub=DEVICE_COORDINATOR.get(DEVICE_COORDINATOR.idFromName("single-owner"));
   const parsed=async(response:Response)=>({response,object:await response.json() as Record<string,unknown>});
   const lookup=async({code}:{code:string})=>parsed(await lookupOwnerPairing(ownerStub,code));
   const approve=async(input:object)=>{
@@ -82,7 +83,7 @@ function fixture(browser=false) {
 
 test("#97 explicit owner approval is separate from lookup and Agent claims by existing signed recovery",async()=>{
   const f=fixture(), pending=newEnrollment("one-code-host");
-  const dir=await mkdtemp(path.join(os.tmpdir(),"remote-v2-one-code-"));
+  const dir=await mkdtemp(path.join(os.tmpdir(),"remote-one-code-"));
   const keyPath=path.join(dir,"identity.pem");
   try {
     await saveNewPrivateKey(keyPath,pending.privateKeyPem);
@@ -133,7 +134,7 @@ test("#97 explicit owner approval is separate from lookup and Agent claims by ex
 
 test("#76 lost original pending HTTP reply retries same Ed25519 key, invalidates old code and signs one grant",async()=>{
   const f=fixture(), initial=newEnrollment("lost-reply-agent");
-  const dir=await mkdtemp(path.join(os.tmpdir(),"rc-v2-real-do-retry-"));
+  const dir=await mkdtemp(path.join(os.tmpdir(),"real-do-retry-"));
   const keyPath=path.join(dir,"identity.pem");
   try{
     await saveNewPrivateKey(keyPath,initial.privateKeyPem);
@@ -248,7 +249,7 @@ test("#97 a legacy approved key without grant_type keeps signed WSS authority af
   f.rows.set("device:"+oldId,{
     device_id:oldId,name:"approved-before-migration",public_key:old.request.public_key,
     fingerprint:"9".repeat(24),approved_at:Date.now()-7200_000,revoked:false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000,
-    // Historical v2 Preview records do not have grant_type.
+    // Historical device records do not have grant_type.
   });
   const incoming=newEnrollment("new-one-code-device");
   assert.equal((await f.register(incoming.request)).status,202);
@@ -312,7 +313,7 @@ test("#97 old signed pending code without new protocol proof cannot be silently 
 
 test("#97 lost signed claim response preserves same Agent key, grant, ID and real SQLite guarded receipts",async()=>{
   const f=fixture(),material=newEnrollment("receipt-preserving-permanent");
-  const directory=await mkdtemp(path.join(os.tmpdir(),"remote-v2-one-code-receipt-"));
+  const directory=await mkdtemp(path.join(os.tmpdir(),"one-code-receipt-"));
   const keyPath=path.join(directory,"identity.pem");
   const databasePath=path.join(directory,"state");
   const receipts=new ReceiptStore(databasePath);

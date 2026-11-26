@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import { V2OwnerCoordinator } from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 
 function testFleet() {
   const a = randomUUID(), b = randomUUID();
@@ -39,9 +39,9 @@ function testFleet() {
     storage,
     getWebSockets: (tag: string) => sockets.get(tag) ?? [],
   } as unknown as DurableObjectState;
-  const owner = new V2OwnerCoordinator(state);
+  const owner = new OwnerCoordinator(state);
   function read(id: string) {
-    return owner.fetch(new Request("https://v2.internal/read", {
+    return owner.fetch(new Request("https://device.internal/read", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ device_id: id, tool: "read_file", arguments: { path: "/tmp/fixture" } }),
     }));
@@ -83,8 +83,8 @@ test("DO websocket error rejects in-flight work, while a reconstructed DO finds 
   assert.equal((await read).status, 503);
   f.removeSocket(f.a);
   // Simulate memory eviction: new class instance, same durable storage and socket registry.
-  const revived = new V2OwnerCoordinator(f.state);
-  const result = await revived.fetch(new Request("https://v2.internal/devices", {
+  const revived = new OwnerCoordinator(f.state);
+  const result = await revived.fetch(new Request("https://device.internal/devices", {
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   assert.deepEqual((await result.json() as Array<{idle_expires_at?:number}>).map(({idle_expires_at,...d})=>d), [
@@ -93,7 +93,7 @@ test("DO websocket error rejects in-flight work, while a reconstructed DO finds 
   ].sort((x, y) => x.device_id.localeCompare(y.device_id)));
   // An actual read dispatched by the reconstructed DO must target the live
   // device and correlate only a new request; no prior in-memory map is needed.
-  const fresh = revived.fetch(new Request("https://v2.internal/read", {
+  const fresh = revived.fetch(new Request("https://device.internal/read", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: f.b, tool: "read_file", arguments: { path: "/tmp/fixture" } }),
   }));
@@ -109,7 +109,7 @@ test("a closing socket is not listed as online even before close handshake compl
   const closing = { readyState: WebSocket.CLOSING,
     deserializeAttachment: () => ({ device_id: f.a, epoch: "epoch-a" }) } as unknown as WebSocket;
   f.replaceSocket(f.a, closing);
-  const listed = await f.owner.fetch(new Request("https://v2.internal/devices", {
+  const listed = await f.owner.fetch(new Request("https://device.internal/devices", {
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   const entries = await listed.json() as Array<{ device_id: string; status: string }>;

@@ -1,4 +1,4 @@
-/** v2 pending enrollment only. No connection or remote-command permission exists here. */
+/** Pending enrollment only. No connection or remote-command permission exists here. */
 const PAIRING_DOMAIN = "remote-control:v2:pending:";
 const MAX_BOOTSTRAP_BODY = 4096;
 const MAX_PENDING = 24;
@@ -8,9 +8,9 @@ const MAX_REGISTRATIONS_PER_MINUTE = 12;
 const MAX_LOOKUPS_PER_MINUTE = 30;
 const MAX_APPROVALS_PER_MINUTE = 8;
 const te = new TextEncoder();
-import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, PERMANENT_IDLE_MS, parsePermanentIdleMs, recordVerifiedSocketClose, grantCurrent, revokedSessionAttemptKey, type V2Device, type SessionCheck } from "./v2-session.ts";
+import { issueSessionChallenge, authorizeSession, acceptAuthenticatedSocket, handleIdleSocketMessage, handleDeviceInfoMessage, listApprovedDevices, deviceIsAuthorized, listLiveGrants, TEMPORARY_GRANT_MS, PERMANENT_IDLE_MS, parsePermanentIdleMs, recordVerifiedSocketClose, grantCurrent, revokedSessionAttemptKey, type DeviceRecord, type SessionCheck } from "./session.ts";
 import { sessionAllowedByWorkflow, type WorkflowSessionAuthorization } from "./session-workflow-authorization.ts";
-import {issueOwnerIntentChallenge,commitOwnerIntent} from './v2-owner-intent.ts';
+import {issueOwnerIntentChallenge,commitOwnerIntent} from './owner-intent.ts';
 import {registerSessionDevice} from "./session-device-registration.ts";
 import { parseLocalRead, parseReadMultiple, parseListDirectory, parseFileInfo, parseSearchStart, parseSearchSessionId, parseLocalWriteFile, parseLocalCreateDirectory, parseLocalEditBlock, parseLocalMoveFile, parseLocalDeleteFile, parseStartProcess, parseLocalProcessOutput, parseListSessions, parseLocalProcessInteraction, parseLocalProcessTermination, parseOperationId } from "./local-read.ts";
 
@@ -175,7 +175,7 @@ export async function checkRevokedIdentity(
       Uint8Array.from(transcript).buffer as ArrayBuffer)) {
       return { status: 403, body: { error: "unauthorized" } };
     }
-    const device = await storage.get<V2Device>("device:" + p.device_id);
+    const device = await storage.get<DeviceRecord>("device:" + p.device_id);
     // Proof confirms possession of the SUPPLIED key, not historical ownership
     // of a deleted device ID. This negative status never grants authority;
     // fresh owner-reviewed pairing is always required.
@@ -183,7 +183,7 @@ export async function checkRevokedIdentity(
       return { status: device.public_key === p.public_key ? 409 : 403,
         body: { error: device.public_key === p.public_key ? "identity_still_approved" : "unauthorized" } };
     }
-    // Tolerate and lazily remove legacy preview tombstones after the new
+    // Tolerate and lazily remove legacy revoked-device tombstones after the new
     // negative-status contract is active. Never retain a new tombstone.
     if (device && !deviceIsAuthorized(device)) {
       await storage.delete("device:" + p.device_id);
@@ -285,7 +285,7 @@ async function limitedJson(request: Request, maxBytes = MAX_BOOTSTRAP_BODY): Pro
   return JSON.parse(new TextDecoder().decode(joined)) as unknown;
 }
 
-export class V2OwnerCoordinator {
+export class OwnerCoordinator {
   private readonly state: DurableObjectState;
   private readonly env?: { WORKFLOW_SESSION_AUTHORIZATION?: WorkflowSessionAuthorization };
   private readonly sessionCheck: SessionCheck;
@@ -339,7 +339,7 @@ export class V2OwnerCoordinator {
     }
     if (this.pendingReads.size >= 4) return Response.json({ error: "busy" }, { status: 503 });
     const [device, epoch] = await Promise.all([
-      this.state.storage.get<V2Device>("device:" + deviceId),
+      this.state.storage.get<DeviceRecord>("device:" + deviceId),
       this.state.storage.get<string>("session:epoch:" + deviceId),
     ]);
     if (!await grantCurrent(device, this.sessionCheck) || !epoch) {
@@ -409,7 +409,7 @@ export class V2OwnerCoordinator {
     }
     try {
       const [device, epoch] = await Promise.all([
-        this.state.storage.get<V2Device>("device:" + pending.deviceId),
+        this.state.storage.get<DeviceRecord>("device:" + pending.deviceId),
         this.state.storage.get<string>("session:epoch:" + pending.deviceId),
       ]);
       // A reply to work admitted BEFORE expiry may still settle its existing
@@ -494,7 +494,7 @@ export class V2OwnerCoordinator {
     }
     const deviceId = args.device_id, name = args.name;
     const result = await this.state.storage.transaction(async txn => {
-      const device = await txn.get<V2Device>("device:" + deviceId);
+      const device = await txn.get<DeviceRecord>("device:" + deviceId);
       if (!deviceIsAuthorized(device)) return null;
       await txn.put("device:" + deviceId, { ...device, name });
       return { device_id: deviceId, name };
@@ -517,10 +517,10 @@ export class V2OwnerCoordinator {
     }
     const id = args.device_id;
     const outcome = await this.state.storage.transaction(async txn => {
-      const record = await txn.get<V2Device>("device:" + id);
+      const record = await txn.get<DeviceRecord>("device:" + id);
       if (!record) return { status: "not_found" as const };
       if (record.revoked === true) {
-        await txn.delete("device:" + id); // Legacy Preview tombstone only.
+        await txn.delete("device:" + id); // Legacy revoked-device tombstone only.
         return { status: "not_found" as const };
       }
       const previousEpoch = await txn.get<string>("session:epoch:" + id);

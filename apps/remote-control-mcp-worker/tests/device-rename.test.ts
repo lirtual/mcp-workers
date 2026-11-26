@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 
 const one = "11111111-1111-4111-8111-111111111111";
 const two = "22222222-2222-4222-8222-222222222222";
@@ -30,7 +31,7 @@ test("owner rename changes only the label; duplicate names require UUID disambig
     },
     async transaction<T>(fn: (txn: TestStorage) => Promise<T>): Promise<T> { return fn(storage); },
   };
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage,
     getWebSockets: () => [],
   } as unknown as DurableObjectState);

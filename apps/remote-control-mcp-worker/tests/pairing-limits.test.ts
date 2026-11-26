@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { newEnrollment } from "../agent/src/v2-enrollment.ts";
-import { lookupPending, registerPending } from "../src/v2-pairing.ts";
+import { lookupPending, registerPending } from "../src/pairing.ts";
 
 // Same transaction/storage contract as SQLite-backed DO's async KV API.
 interface StorageMock {

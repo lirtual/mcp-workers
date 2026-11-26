@@ -18,13 +18,13 @@ export async function lookupOwnerPairing(owner: DurableObjectStub, code: string)
   const value = new TextEncoder().encode("remote-control:v2:pending:" + code);
   const bytes = new Uint8Array(await crypto.subtle.digest("SHA-256", value));
   const verifier = [...bytes].map(x => x.toString(16).padStart(2,"0")).join("");
-  return owner.fetch("https://v2.internal/lookup",{
+  return owner.fetch("https://device.internal/lookup",{
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({verifier}),
   });
 }
 
 export function approveOwnerPairing(owner: DurableObjectStub, args: Approval): Promise<Response> {
-  return owner.fetch("https://v2.internal/approve",{
+  return owner.fetch("https://device.internal/approve",{
     method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(args),
   });
 }

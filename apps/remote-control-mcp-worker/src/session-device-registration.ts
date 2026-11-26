@@ -1,5 +1,5 @@
 /** Session-only enrollment using existing Owner DO and Workflow's private authority. */
-import { deviceIsAuthorized, listLiveGrants, PERMANENT_IDLE_MS, revokedSessionAttemptKey, type V2Device } from './v2-session.ts';
+import { deviceIsAuthorized, listLiveGrants, PERMANENT_IDLE_MS, revokedSessionAttemptKey, type DeviceRecord } from './session.ts';
 import type { WorkflowSessionAuthorization } from './session-workflow-authorization.ts';
 
 const UUID=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
@@ -81,7 +81,7 @@ export async function registerSessionDevice(store:Store,raw:unknown,binding?:Wor
     const keyBytes=bytes(input.public_key);
     const digest=new Uint8Array(await crypto.subtle.digest('SHA-256',keyBytes));
     const fingerprint=[...digest.slice(0,12)].map(x=>x.toString(16).padStart(2,'0')).join('');
-    const row:V2Device={device_id:deviceId,name:'session-'+result.workflow_name+'-'+result.github_run_id,
+    const row:DeviceRecord={device_id:deviceId,name:'session-'+result.workflow_name+'-'+result.github_run_id,
       public_key:input.public_key,fingerprint,approved_at:time,revoked:false,grant_type:'session',
       session_attempt_id:input.attempt_id,session_run_id:result.github_run_id,
       session_run_attempt:result.github_run_attempt,session_workflow_name:result.workflow_name,

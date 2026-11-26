@@ -1,11 +1,11 @@
-/** Authentication-only v2 WSS. This module never dispatches remote tools. */
+/** Authentication-only signed WebSocket session. This module never dispatches remote tools. */
 import { parseDeviceInfo, supportsRuntimeHints, type DeviceInfo } from "./device-info.ts";
 const DOMAIN = "remote-control:v2:session:";
 const TTL_MS = 60_000;
 const te = new TextEncoder();
 type CapabilityHint = "reported_enabled" | "reported_disabled" | "unknown";
 
-export interface V2Device {
+export interface DeviceRecord {
   device_id: string;
   name: string;
   public_key: string;
@@ -39,9 +39,9 @@ export function parsePermanentIdleMs(raw: unknown): number {
   return Number(raw) * TEMPORARY_GRANT_MS;
 }
 const VERIFIED_ONLINE_LEASE_MS = 16 * 60_000;
-const permanent = (d: V2Device) => d.grant_type === undefined || d.grant_type === "permanent";
+const permanent = (d: DeviceRecord) => d.grant_type === undefined || d.grant_type === "permanent";
 /** Never derive an indefinite grant from socket.OPEN or last_auth_check_at. */
-export function permanentDeadline(d: V2Device, now = Date.now()): number | undefined {
+export function permanentDeadline(d: DeviceRecord, now = Date.now()): number | undefined {
   if (!permanent(d)) return undefined;
   if (d.idle_expires_at !== undefined) {
     return Number.isSafeInteger(d.idle_expires_at) && d.idle_expires_at! >= 0
@@ -60,16 +60,16 @@ export function permanentDeadline(d: V2Device, now = Date.now()): number | undef
 }
 /** Single idempotent legacy upgrade; never use the historic last_connected_at. */
 export async function migratePermanentGrant(
-  store: Pick<DurableObjectStorage, "get" | "put"> & { transaction?: DurableObjectStorage["transaction"] }, device: V2Device | undefined,
+  store: Pick<DurableObjectStorage, "get" | "put"> & { transaction?: DurableObjectStorage["transaction"] }, device: DeviceRecord | undefined,
   now = Date.now(), idleMs = PERMANENT_IDLE_MS,
-): Promise<V2Device | undefined> {
+): Promise<DeviceRecord | undefined> {
   if (!device || !permanent(device) || device.revoked) return device;
   if (device.idle_expires_at !== undefined || device.last_verified_online_at !== undefined || device.idle_window_ms !== undefined) return device;
   const migrate = async (tx: Pick<DurableObjectStorage, "get" | "put">) => {
-    const current = await tx.get<V2Device>("device:" + device.device_id);
+    const current = await tx.get<DeviceRecord>("device:" + device.device_id);
     if (!current || current.public_key !== device.public_key || current.revoked || !permanent(current)) return undefined;
     if (current.idle_expires_at !== undefined || current.last_verified_online_at !== undefined || current.idle_window_ms !== undefined) return current;
-    const migrated: V2Device = { ...current, idle_expires_at: now + idleMs, idle_window_ms: idleMs };
+    const migrated: DeviceRecord = { ...current, idle_expires_at: now + idleMs, idle_window_ms: idleMs };
     await tx.put("device:" + device.device_id, migrated);
     return migrated;
   };
@@ -82,8 +82,8 @@ export const revokedSessionAttemptKey = (attemptId: string): string =>
   "session:revoked-attempt:" + attemptId;
 
 
-/** Old v2 Preview grants had no grant_type; they remain permanent. */
-export function deviceStillGranted(device: V2Device | undefined, now = Date.now()): device is V2Device & { revoked: false } {
+/** Legacy device records without grant_type remain permanent. */
+export function deviceStillGranted(device: DeviceRecord | undefined, now = Date.now()): device is DeviceRecord & { revoked: false } {
   if (!device || device.revoked !== false) return false;
   if (permanent(device)) {
     const deadline = permanentDeadline(device, now);
@@ -104,7 +104,7 @@ export function deviceStillGranted(device: V2Device | undefined, now = Date.now(
     (device.expires_at ?? 0) > device.approved_at && now < (device.expires_at ?? 0);
 }
 /** Stop/Resume keeps its grant slot until expiry, but never authorizes ordinary operations. */
-export function deviceIsAuthorized(device: V2Device | undefined, now = Date.now()): device is V2Device & { revoked: false } {
+export function deviceIsAuthorized(device: DeviceRecord | undefined, now = Date.now()): device is DeviceRecord & { revoked: false } {
   return deviceStillGranted(device, now) && device.owner_stopped !== true && device.owner_resume_pending !== true;
 }
 
@@ -121,7 +121,7 @@ export async function recordVerifiedSocketClose(
   const id = attached.device_id,epoch = attached.epoch,now = Date.now();
   await state.storage.transaction(async tx => {
     const [device, liveEpoch] = await Promise.all([
-      tx.get<V2Device>("device:" + id), tx.get<string>("session:epoch:" + id),
+      tx.get<DeviceRecord>("device:" + id), tx.get<string>("session:epoch:" + id),
     ]);
     if (!device || liveEpoch !== epoch || !permanent(device) ||
         device.revoked || device.owner_stopped || device.owner_resume_pending || device.idle_expires_at !== undefined ||
@@ -131,7 +131,7 @@ export async function recordVerifiedSocketClose(
         !deviceIsAuthorized(device, now)) return;
     await tx.put("device:" + id, {
       ...device, idle_expires_at: now + idleMs,
-    } satisfies V2Device);
+    } satisfies DeviceRecord);
   });
 }
 
@@ -140,7 +140,7 @@ export async function recordVerifiedSocketClose(
 export async function listLiveGrants(
   store: Pick<DurableObjectStorage, "get" | "put" | "list" | "delete"> & { transaction?: DurableObjectStorage["transaction"] },
   now = Date.now(), idleMs = PERMANENT_IDLE_MS,
-): Promise<{ active: Map<string, V2Device>; complete: boolean }> {
+): Promise<{ active: Map<string, DeviceRecord>; complete: boolean }> {
   // A full page may hide more active grants after expired rows. Fail closed
   // for this request while lazily cleaning the page, then allow a safe retry.
   // Bound cleanup to one page; no alarm or second grant ledger. Even when a
@@ -153,9 +153,9 @@ export async function listLiveGrants(
       await store.delete(key);
     }
   }
-  const rows = await store.list<V2Device>({ prefix: "device:", limit: 65 });
+  const rows = await store.list<DeviceRecord>({ prefix: "device:", limit: 65 });
   const complete = rows.size < 65;
-  const active = new Map<string, V2Device>();
+  const active = new Map<string, DeviceRecord>();
   for (const [key, row] of rows) {
     const device = await migratePermanentGrant(store, row, now, idleMs);
     if (deviceStillGranted(device, now)) {
@@ -202,9 +202,9 @@ async function consumeBudget(store: DurableStore): Promise<boolean> {
   });
 }
 
-export type SessionCheck = (device: V2Device) => Promise<boolean>;
+export type SessionCheck = (device: DeviceRecord) => Promise<boolean>;
 const denySession: SessionCheck = async () => false;
-export async function grantCurrent(device: V2Device | undefined, check:SessionCheck = denySession): Promise<boolean> {
+export async function grantCurrent(device: DeviceRecord | undefined, check:SessionCheck = denySession): Promise<boolean> {
   return deviceIsAuthorized(device) && (device.grant_type !== "session" || await check(device));
 }
 export async function issueSessionChallenge(store: DurableStore, body: unknown, check:SessionCheck = denySession, idleMs = PERMANENT_IDLE_MS):
@@ -218,9 +218,9 @@ export async function issueSessionChallenge(store: DurableStore, body: unknown, 
     return { status: 400, body: { error: "invalid_request" } };
   }
   if (!await consumeBudget(store)) return { status: 429, body: { error: "rate_limited" } };
-  let device: V2Device | undefined;
+  let device: DeviceRecord | undefined;
   if (isId(device_id)) {
-    device = await migratePermanentGrant(store, await store.get<V2Device>("device:" + device_id), Date.now(), idleMs);
+    device = await migratePermanentGrant(store, await store.get<DeviceRecord>("device:" + device_id), Date.now(), idleMs);
   } else {
     // Small single-owner fleet only; bounded scan, not a new index/service.
     const grants = await listLiveGrants(store, Date.now(), idleMs);
@@ -241,13 +241,13 @@ export function sessionTranscript(deviceId: string, nonce: string, publicKey: st
 }
 
 async function verifyProof(store: DurableStore, deviceId: unknown, nonce: unknown, proof: unknown, allowResume = false):
-  Promise<{ device: V2Device; record: NonceRecord } | null> {
+  Promise<{ device: DeviceRecord; record: NonceRecord } | null> {
   if (!isId(deviceId) || typeof nonce !== "string" || !/^[A-Za-z0-9_-]{24}$/.test(nonce) ||
       typeof proof !== "string") return null;
   const sig = decode64(proof);
   if (!sig) return null;
   const [device, record] = await Promise.all([
-    store.get<V2Device>("device:" + deviceId),
+    store.get<DeviceRecord>("device:" + deviceId),
     store.get<NonceRecord>(nonceKey(deviceId)),
   ]);
   if (!(allowResume && device?.owner_resume_pending && deviceStillGranted(device) ||
@@ -281,7 +281,7 @@ async function consumeAuthorizedProof(
   const success = await store.transaction(async tx => {
     const [nonce, current] = await Promise.all([
       tx.get<NonceRecord>(nonceKey(verified.device.device_id)),
-      tx.get<V2Device>("device:" + verified.device.device_id),
+      tx.get<DeviceRecord>("device:" + verified.device.device_id),
     ]);
     if (!nonce || nonce.nonce !== verified.record.nonce || nonce.expires_at <= Date.now() ||
         !(activateSocket && current?.owner_resume_pending && deviceStillGranted(current) ||
@@ -292,11 +292,11 @@ async function consumeAuthorizedProof(
       if (permanent(current)) await tx.put("device:" + verified.device.device_id, {
         ...current, last_verified_online_at: Date.now(), idle_window_ms: idleMs,
         idle_expires_at: undefined, owner_resume_pending: false,
-      } satisfies V2Device);
+      } satisfies DeviceRecord);
     }
     return true;
   });
-  const latest = success ? await store.get<V2Device>("device:" + verified.device.device_id) : undefined;
+  const latest = success ? await store.get<DeviceRecord>("device:" + verified.device.device_id) : undefined;
   return latest && await grantCurrent(latest,check)
     ? { device_id: verified.device.device_id, ...(epoch ? { epoch } : {}) } : null;
 }
@@ -343,7 +343,7 @@ export async function acceptAuthenticatedSocket(
   // login cannot attach after a newer epoch has superseded it.
   const [currentEpoch, currentDevice] = await Promise.all([
     store.get<string>("session:epoch:" + auth.device_id),
-    store.get<V2Device>("device:" + auth.device_id),
+    store.get<DeviceRecord>("device:" + auth.device_id),
   ]);
   if (currentEpoch !== auth.epoch || !await grantCurrent(currentDevice,check)) {
     return new Response("Unauthorized.", { status: 401 });
@@ -396,13 +396,13 @@ export async function handleDeviceInfoMessage(
     const sessionEpoch = attached.epoch as string;
     const stored = await state.storage.transaction(async tx => {
       const [device, epoch] = await Promise.all([
-        tx.get<V2Device>("device:" + attached.device_id),
+        tx.get<DeviceRecord>("device:" + attached.device_id),
         tx.get<string>("session:epoch:" + attached.device_id),
       ]);
       if (!device || !await grantCurrent(device,check) || epoch !== sessionEpoch) return false;
       await tx.put("device:" + attached.device_id, {
         ...device, device_info: info, last_connected_at: attached.connected_at as number,
-      } satisfies V2Device);
+      } satisfies DeviceRecord);
       return true;
     });
     if (!stored) { socket.close(1008, "revoked"); return true; }
@@ -451,14 +451,14 @@ export async function handleIdleSocketMessage(state: DurableObjectState, socket:
     socket.serializeAttachment({ ...att, last_auth_check_at: now });
     const updated = await state.storage.transaction(async tx => {
       const [device, epoch] = await Promise.all([
-        tx.get<V2Device>("device:" + att.device_id),
+        tx.get<DeviceRecord>("device:" + att.device_id),
         tx.get<string>("session:epoch:" + att.device_id),
       ]);
       if (!device || !await grantCurrent(device,check) || epoch !== att.epoch) return false;
       if (permanent(device)) await tx.put("device:" + att.device_id, {
         ...device, last_verified_online_at: now, idle_window_ms: idleMs,
         idle_expires_at: undefined,
-      } satisfies V2Device);
+      } satisfies DeviceRecord);
       return true;
     });
     if (!updated) {
@@ -483,7 +483,7 @@ const ONLINE_AUTH_LEASE_MS = 16 * 60_000;
 
 /** Bounded, observational device status. No heartbeat, session mutation or secret disclosure. */
 export async function listApprovedDevices(
-  state: DurableObjectState, sessionAllowed: (device: V2Device) => Promise<boolean> = async () => false, idleMs = PERMANENT_IDLE_MS,
+  state: DurableObjectState, sessionAllowed: (device: DeviceRecord) => Promise<boolean> = async () => false, idleMs = PERMANENT_IDLE_MS,
 ):
   Promise<{ status: number; body: object }> {
   const grants = await listLiveGrants(state.storage, Date.now(), idleMs);

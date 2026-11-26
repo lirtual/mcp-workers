@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
-import { issueSessionChallenge, handleIdleSocketMessage, type V2Device } from "../src/v2-session.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
+import { issueSessionChallenge, handleIdleSocketMessage, type DeviceRecord } from "../src/session.ts";
 
-type Row = V2Device | string | object;
+type Row = DeviceRecord | string | object;
 interface StorageFixture {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: Row): Promise<void>;
@@ -48,12 +49,12 @@ function setup() {
     storage,
     getWebSockets: (tag: string) => sockets.get(tag) ?? [],
   } as unknown as DurableObjectState;
-  const owner = new V2OwnerCoordinator(state);
+  const owner = new OwnerCoordinator(state);
   let doCalls = 0;
   const env = {
     MCP_ACCESS_TOKEN: "my-portal",
     REMOTE_CONTROL_DEVICE_TOKEN: "v1-test-only",
-    V2_OWNER: {
+    DEVICE_COORDINATOR: {
       idFromName: () => "owner",
       get: () => ({ fetch(input: RequestInfo | URL, init?: RequestInit) {
         doCalls++;
@@ -100,18 +101,18 @@ test("Portal-only revoke deletes grant before closing A, preserves B, and is rep
   assert.equal(f.entries.has("session:epoch:" + f.a), false);
   assert.deepEqual(f.closes.get(f.a), [{ code: 1008, reason: "revoked" }]);
   assert.equal(f.closes.has(f.b), false);
-  assert.equal((f.entries.get("device:" + f.b) as V2Device).revoked, false);
+  assert.equal((f.entries.get("device:" + f.b) as DeviceRecord).revoked, false);
 
   // Deletion survives reconstruction; challenge is denied and old socket
   // application messages cannot pass the ordinary persisted policy guard.
-  const rehydrated = new V2OwnerCoordinator(f.state);
+  const rehydrated = new OwnerCoordinator(f.state);
   const login = await issueSessionChallenge(f.storage as never, { device_id: f.a });
   assert.equal(login.status, 404);
   const surviving = await issueSessionChallenge(f.storage as never, { device_id: f.b });
   assert.equal(surviving.status, 200);
   await handleIdleSocketMessage(f.state, f.aSocket, "rc-v2:auth:" + "d".repeat(32));
   assert.deepEqual(f.closes.get(f.a)?.at(-1), { code: 1008, reason: "revoked" });
-  const list = await rehydrated.fetch(new Request("https://v2.internal/devices", {
+  const list = await rehydrated.fetch(new Request("https://device.internal/devices", {
     method: "POST", headers: { "content-type": "application/json" }, body: "{}",
   }));
   const devices = await list.json() as Array<{ device_id: string; status: string }>;
@@ -134,11 +135,11 @@ test("revoking an offline device deletes the grant without claiming to stop a pr
 test("DO storage failure refuses to close a socket or claim revocation", async () => {
   const f = setup();
   // Prevent committing the deletion. All cleanup side effects must happen later.
-  const fail = new V2OwnerCoordinator({
+  const fail = new OwnerCoordinator({
     storage: { transaction: async () => { throw new Error("backend unavailable"); } },
     getWebSockets: () => [f.aSocket],
   } as unknown as DurableObjectState);
-  const response = await fail.fetch(new Request("https://v2.internal/revoke", {
+  const response = await fail.fetch(new Request("https://device.internal/revoke", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: f.a }),
   }));
@@ -165,13 +166,13 @@ test("revocation cancels an in-flight A request before closing A, without cancel
   const bSocket = buildSocket(f.b, "epoch-b", seenB);
   f.sockets.set("device:" + f.a, [aSocket]);
   f.sockets.set("device:" + f.b, [bSocket]);
-  const read = (device_id: string) => f.owner.fetch(new Request("https://v2.internal/read", {
+  const read = (device_id: string) => f.owner.fetch(new Request("https://device.internal/read", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id, tool: "read_file", arguments: { path: "/tmp/file" } }),
   }));
   const aPending = read(f.a), bPending = read(f.b);
   await Promise.all([startedA, startedB]);
-  const revoke = await f.owner.fetch(new Request("https://v2.internal/revoke", {
+  const revoke = await f.owner.fetch(new Request("https://device.internal/revoke", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: f.a }),
   }));

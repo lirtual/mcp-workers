@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {generateKeyPairSync,sign,randomBytes} from 'node:crypto';
 import {registerSessionDevice} from '../src/session-device-registration.ts';
 import type {WorkflowSessionAuthorization} from '../src/session-workflow-authorization.ts';
-import type {V2Device} from '../src/v2-session.ts';
+import type {DeviceRecord} from '../src/session.ts';
 
 const attemptId='123e4567-e89b-42d3-a456-426614174001';
 const decision=()=>({allowed:true as const,attempt_id:attemptId,github_run_id:112233,
@@ -50,7 +50,7 @@ test('one reviewed physical Attempt gets exactly one durable Session device and 
  assert.equal(replies.filter(r=>r.status===200).length,11);
  assert.equal(rows.size,1,'no separate Attempt ledger or growing index');
  assert.equal([...rows.keys()].filter(x=>x.startsWith('device:')).length,1);
- const device=rows.get('device:'+ids[0]) as V2Device;
+ const device=rows.get('device:'+ids[0]) as DeviceRecord;
  assert.equal(device.grant_type,'session');
  assert.equal(device.expires_at,meta.expires_at);
  assert.equal(device.session_attempt_id,attemptId);
@@ -101,9 +101,9 @@ test('explicit owner revocation fences the physical Attempt against every replac
   const first=await registerSessionDevice(store,body,auth);
   assert.equal(first.status,201);
   const deviceId=(first.body as {device_id:string}).device_id;
-  const {V2OwnerCoordinator}=await import('../src/v2-pairing.ts');
-  const owner=new V2OwnerCoordinator({storage:store,getWebSockets:()=>[]} as unknown as DurableObjectState);
-  const revoked=await owner.fetch(new Request('https://v2.internal/revoke',{
+  const {OwnerCoordinator}=await import('../src/pairing.ts');
+  const owner=new OwnerCoordinator({storage:store,getWebSockets:()=>[]} as unknown as DurableObjectState);
+  const revoked=await owner.fetch(new Request('https://device.internal/revoke',{
     method:'POST',headers:{'content-type':'application/json'},
     body:JSON.stringify({device_id:deviceId}),
   }));
@@ -115,7 +115,7 @@ test('explicit owner revocation fences the physical Attempt against every replac
   assert.equal((await registerSessionDevice(store,request(meta),auth)).status,403);
   assert.equal([...rows.keys()].filter(k=>k.startsWith('device:')).length,0);
   // No periodic cleanup service: bounded ordinary grant-list reads reclaim it.
-  const {listLiveGrants}=await import('../src/v2-session.ts');
+  const {listLiveGrants}=await import('../src/session.ts');
   await listLiveGrants(store,meta.expires_at+1);
   assert.equal(rows.has('session:revoked-attempt:'+attemptId),false);
 });
@@ -129,9 +129,9 @@ test('unavailable Workflow and expired physical window fail closed',async()=>{
 
 test('existing public pairing ingress can register Session without exposing private Workflow RPC',async()=>{
  const {store,rows}=fixture(),meta=decision(),body=request(meta);
- const {V2OwnerCoordinator}=await import('../src/v2-pairing.ts');
+ const {OwnerCoordinator}=await import('../src/pairing.ts');
  const {default:worker}=await import('../src/worker.ts');
- const owner=new V2OwnerCoordinator({storage:store,getWebSockets:()=>[]} as unknown as DurableObjectState,{
+ const owner=new OwnerCoordinator({storage:store,getWebSockets:()=>[]} as unknown as DurableObjectState,{
    WORKFLOW_SESSION_AUTHORIZATION:{authorizeSessionAttempt:async input=>{
       assert.equal(input.attempt_id,attemptId);
       return meta;
@@ -147,5 +147,5 @@ test('existing public pairing ingress can register Session without exposing priv
  }),env);
  assert.equal(response.status,201);
  const result=await response.json() as {device_id:string};
- assert.equal((rows.get('device:'+result.device_id) as V2Device).grant_type,'session');
+ assert.equal((rows.get('device:'+result.device_id) as DeviceRecord).grant_type,'session');
 });

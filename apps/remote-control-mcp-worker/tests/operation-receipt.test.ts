@@ -6,7 +6,8 @@ import path from "node:path";
 import test from "node:test";
 import { createAgentExecutionEngine } from "../agent/src/execution.ts";
 import { monitorDeviceSocket, executeV2FileOperation, executeV2SessionRead } from "../agent/src/v2-connection-lifecycle.ts";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
 
 class Client extends EventTarget {
   readyState: number = WebSocket.OPEN;
@@ -21,8 +22,8 @@ class Client extends EventTarget {
   }
 }
 
-test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallback or cross-device lookup", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-receipt-"));
+test("paired-device write_file preserves Agent receipt idempotency per device; no legacy VPC fallback or cross-device lookup", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "receipt-"));
   const a = randomUUID(), b = randomUUID(), absent = randomUUID();
   const id = "intent-" + randomUUID();
   const markerA = path.join(dir, "a.log");
@@ -39,7 +40,7 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     ["device:" + b, { device_id: b, revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
     ["session:epoch:" + a, "epoch-a"], ["session:epoch:" + b, "epoch-b"],
   ]);
-  let owner!: V2OwnerCoordinator;
+  let owner!: OwnerCoordinator;
   let legacy = 0;
   const serverSockets = new Map<string, WebSocket[]>();
   for (const [index, device] of [a, b].entries()) {
@@ -63,14 +64,14 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     serverSockets.set("device:" + device, [server]);
   }
   const storage = { get: async <T>(key: string) => data.get(key) as T | undefined };
-  owner = new V2OwnerCoordinator({
+  owner = new OwnerCoordinator({
     storage, getWebSockets: (tag: string) => serverSockets.get(tag) ?? [],
   } as unknown as DurableObjectState);
   const env = {
     MCP_ACCESS_TOKEN: "authorized",
     REMOTE_CONTROL_DEVICE_TOKEN: "legacy",
     REMOTE_CONTROL_DEVICE: { fetch() { legacy++; throw new Error("v1 call forbidden"); } },
-    V2_OWNER: { idFromName: () => "single-owner", get: () => ({
+    DEVICE_COORDINATOR: { idFromName: () => "single-owner", get: () => ({
       fetch(input: RequestInfo | URL, init?: RequestInit) {
         return owner.fetch(input instanceof Request ? input : new Request(input, init));
       },
@@ -149,7 +150,7 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     assert.equal(await readFile(markerB, "utf8"), "B\n");
     const launchId = "launch-" + randomUUID();
     const launchArgs = { device_id: a, operation_id: launchId,
-      command: "printf 'mcp-v2-session-A\\n'", timeout_ms: 1000 };
+      command: "printf 'mcp-session-A\\n'", timeout_ms: 1000 };
     const launched = JSON.parse((await call("run_command", launchArgs)).content) as {
       operation_id: string; status: string; session_id?: string;
     };
@@ -182,7 +183,7 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
       device_id: a, session_id: launched.session_id, offset: 0, length: 1024,
     })).content) as { session_id: string; output: string; next_offset: number };
     assert.equal(outputA.session_id, launched.session_id);
-    assert.match(outputA.output, /mcp-v2-session-A/);
+    assert.match(outputA.output, /mcp-session-A/);
     assert.ok(outputA.next_offset > 0);
     const outputB = await call("read_session_output", {
       device_id: b, session_id: launched.session_id,
@@ -197,7 +198,7 @@ test("v2 write_file preserves Agent receipt idempotency per device; no v1 fallba
     assert.equal(interactive.status, "running");
     assert.match(interactive.session_id!, /^[a-f0-9-]{36}$/);
     const inputArgs = { device_id: a, operation_id: "input-" + randomUUID(),
-      session_id: interactive.session_id, input: "hello-v2\\n" };
+      session_id: interactive.session_id, input: "hello-session\\n" };
     const writeInput = JSON.parse((await call("send_input", inputArgs)).content);
     assert.equal(writeInput.status, "completed");
     assert.equal(JSON.parse((await call("send_input", inputArgs)).content).status, "completed");
@@ -237,11 +238,11 @@ test("a socket send failure does not promise an operation was never dispatched",
     deserializeAttachment: () => ({ device_id: deviceId, epoch: "current" }),
     send() { throw new Error("ambiguous transport failure"); },
   } as unknown as WebSocket;
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: { get: async <T>(key: string) => rows.get(key) as T | undefined },
     getWebSockets: (tag: string) => tag === "device:" + deviceId ? [socket] : [],
   } as unknown as DurableObjectState);
-  const reply = await owner.fetch(new Request("https://v2.internal/operation", {
+  const reply = await owner.fetch(new Request("https://device.internal/operation", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: deviceId, operation_id: operationId,
       tool: "write_file", arguments: { path: "/tmp/not-sent", content: "x", mode: "append" } }),
@@ -256,7 +257,7 @@ test("Worker labels only proven pre-dispatch busy and offline as not dispatched"
   let reason = "busy";
   const env = {
     MCP_ACCESS_TOKEN: "authorized",
-    V2_OWNER: { idFromName: () => "owner", get: () => ({
+    DEVICE_COORDINATOR: { idFromName: () => "owner", get: () => ({
       fetch: async () => Response.json({ error: reason }, { status: 503 }),
     }) },
   } as unknown as Env;
@@ -280,7 +281,7 @@ test("Worker labels only proven pre-dispatch busy and offline as not dispatched"
   assert.deepEqual(await call(), { operation_id: operationId, status: "timeout_unknown" });
 });
 
-test("a read-only signed v2 Agent refuses mutation without dropping WSS", async () => {
+test("a read-only signed Agent refuses mutation without dropping WSS", async () => {
   const stop = new AbortController();
   const responses: Array<{ kind: string; request_id: string; result: { operation_id: string; status: string } }> = [];
   const socket = new Client(frame => responses.push(JSON.parse(frame)));
@@ -298,7 +299,7 @@ test("a read-only signed v2 Agent refuses mutation without dropping WSS", async 
   assert.equal(await run, "aborted");
 });
 
-test("a file-write-only v2 Agent denies Shell without disconnecting or invoking executor", async () => {
+test("a file-write-only Agent denies Shell without disconnecting or invoking executor", async () => {
   const stop = new AbortController();
   const responses: Array<{ kind: string; request_id: string; result: { operation_id: string; status: string } }> = [];
   const socket = new Client(frame => responses.push(JSON.parse(frame)));
@@ -320,14 +321,14 @@ test("a file-write-only v2 Agent denies Shell without disconnecting or invoking 
 });
 
 test("response-lost-after-write returns timeout_unknown; reconnect only queries the persisted receipt", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "v2-response-lost-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "response-lost-"));
   const marker = path.join(dir, "output.txt");
   const deviceId = randomUUID();
   const id = "lost-" + randomUUID();
   const engine = createAgentExecutionEngine({ receiptDirectory: path.join(dir, "receipts") });
   const controllers: AbortController[] = [];
   const monitors: Promise<unknown>[] = [];
-  let owner!: V2OwnerCoordinator;
+  let owner!: OwnerCoordinator;
   let currentSocket: WebSocket | undefined;
   let epoch = "first";
   let loseFirstResult = true;
@@ -339,7 +340,7 @@ test("response-lost-after-write returns timeout_unknown; reconnect only queries 
     storage: { get: async <T>(key: string) => rows.get(key) as T | undefined },
     getWebSockets: (tag: string) => tag === "device:" + deviceId && currentSocket ? [currentSocket] : [],
   } as unknown as DurableObjectState;
-  owner = new V2OwnerCoordinator(state);
+  owner = new OwnerCoordinator(state);
   function connect() {
     const stop = new AbortController();
     controllers.push(stop);
@@ -373,7 +374,7 @@ test("response-lost-after-write returns timeout_unknown; reconnect only queries 
   const env = {
     MCP_ACCESS_TOKEN: "portal",
     REMOTE_CONTROL_DEVICE_TOKEN: "legacy",
-    V2_OWNER: {
+    DEVICE_COORDINATOR: {
       idFromName: () => "owner",
       get: () => ({ fetch(input: RequestInfo | URL, init?: RequestInit) {
         return owner.fetch(input instanceof Request ? input : new Request(input, init));

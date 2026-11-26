@@ -9,6 +9,7 @@ test("production Worker has only the reviewed DO, Access and Custom Domain bindi
   const prod=JSON.parse(await readFile(path.join(root,"wrangler.jsonc"),"utf8"));
   assert.equal(prod.name,"remote-control-mcp-worker");
   assert.equal(prod.vars?.REMOTE_CONTROL_V2_ONLY,undefined);
+  assert.equal(prod.vars?.REMOTE_CONTROL_V2_PREVIEW_ONLY,undefined);
   assert.equal(prod.keep_vars,false);
   assert.deepEqual(prod.routes,[{pattern:"rca.lirtual.dpdns.org",custom_domain:true}]);
   assert.deepEqual(prod.secrets.required,["MCP_ACCESS_TOKEN"]);
@@ -23,11 +24,10 @@ test("production Worker has only the reviewed DO, Access and Custom Domain bindi
 test("production DO binding lists per-device tools without v1 fallback", async () => {
   const { default: worker } = await import("../src/worker.ts");
   const env = { MCP_ACCESS_TOKEN: "token",
-    
     DEVICE_COORDINATOR: { idFromName: () => "single-owner-v2", get: () => ({
       fetch: async () => Response.json([{ device_id: "11111111-1111-4111-8111-111111111111", name: "test", status: "online" }]),
     }) },
-    REMOTE_CONTROL_DEVICE: { fetch: () => { throw Error("v1 VPC called"); } },
+    REMOTE_CONTROL_DEVICE: { fetch: () => { throw Error("legacy VPC called"); } },
     REMOTE_CONTROL_DEVICE_TOKEN: "unused",
   };
   const rpc = async (method, params) => {

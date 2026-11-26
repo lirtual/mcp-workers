@@ -7,8 +7,9 @@ import test from "node:test";
 import { executeReadTool } from "../agent/src/read-execution.ts";
 import { monitorDeviceSocket } from "../agent/src/v2-connection-lifecycle.ts";
 import { SearchSessions } from "../agent/src/search.ts";
-import worker, { V2OwnerCoordinator } from "../src/worker.ts";
-import { TEMPORARY_GRANT_MS } from "../src/v2-session.ts";
+import worker from "../src/worker.ts";
+import { OwnerCoordinator } from "../src/pairing.ts";
+import { TEMPORARY_GRANT_MS } from "../src/session.ts";
 
 class ClientSocket extends EventTarget {
   readyState: number = WebSocket.OPEN;
@@ -25,7 +26,7 @@ class ClientSocket extends EventTarget {
 }
 
 test("MCP read_file with explicit device_id routes through DO WSS only to the approved current device", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remote-v2-dispatch-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remote-dispatch-"));
   const file = path.join(dir, "marker.txt");
   await writeFile(file, "private-A-marker\n", { mode: 0o600 });
   await Promise.all(Array.from({ length: 45 }, (_, i) =>
@@ -37,7 +38,7 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     ["session:epoch:" + a, "epoch-a"], ["session:epoch:" + b, "epoch-b"],
   ]);
   const storage = { get: async <T>(key: string) => rows.get(key) as T | undefined };
-  let owner!: V2OwnerCoordinator;
+  let owner!: OwnerCoordinator;
   const controllers = [new AbortController(), new AbortController()];
   const monitors: Promise<unknown>[] = [];
   const sentToServer: string[] = [];
@@ -75,9 +76,9 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
       return tag === "device:" + a ? [serverA] : tag === "device:" + b ? [serverB] : [];
     },
   } as unknown as DurableObjectState;
-  owner = new V2OwnerCoordinator(state);
+  owner = new OwnerCoordinator(state);
   let legacyCalls = 0, doCalls = 0;
-  const V2_OWNER = {
+  const DEVICE_COORDINATOR = {
     idFromName: () => "only-owner",
     get: () => ({
       fetch(input: RequestInfo | URL, init?: RequestInit) {
@@ -90,7 +91,7 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     MCP_ACCESS_TOKEN: "portal-test",
     REMOTE_CONTROL_DEVICE_TOKEN: "legacy-v1-test",
     REMOTE_CONTROL_DEVICE: { fetch() { legacyCalls++; throw new Error("v1 must not be used"); } },
-    V2_OWNER,
+    DEVICE_COORDINATOR,
   } as unknown as Env;
   async function callTool(name: string, args: Record<string, unknown>, token = "portal-test") {
     const res = await worker.fetch(new Request("https://mcp.test/mcp", {
@@ -166,7 +167,7 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
     assert.match(missingDirectory.body, /directory listing failed/i);
     assert.doesNotMatch(missingDirectory.body, /device is unavailable/i);
 
-    // The default v2 Agent has Shell/session access disabled; report that
+    // The default Agent has Shell/session access disabled; report that
     // capability failure without falsely claiming that its WSS is offline.
     const sessions = await callTool("list_sessions", { device_id: a });
     assert.match(sessions.body, /managed-session request failed/i);
@@ -240,11 +241,11 @@ test("a second device cannot spoof a read reply and a superseded epoch cannot re
     deserializeAttachment: () => ({ device_id: b, epoch: "current-b" }),
     close(code: number) { assert.equal(code, 1008); wrongClosed = true; },
   } as unknown as WebSocket;
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: { get: async <T>(key: string) => rows.get(key) as T | undefined },
     getWebSockets(tag: string) { return tag === "device:" + a ? [good] : [wrong]; },
   } as unknown as DurableObjectState);
-  const pending = owner.fetch(new Request("https://v2.internal/read", {
+  const pending = owner.fetch(new Request("https://device.internal/read", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: a, tool: "read_file", arguments: { path: "/tmp/safe" } }),
   }));
@@ -275,11 +276,11 @@ test("old epoch and revoked device are rejected before WSS dispatch", async () =
     deserializeAttachment: () => ({ device_id: id, epoch: "old" }),
     send() { sends++; },
   } as unknown as WebSocket;
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: { get: async <T>(key: string) => rows.get(key) as T | undefined },
     getWebSockets: () => [socket],
   } as unknown as DurableObjectState);
-  const request = () => owner.fetch(new Request("https://v2.internal/read", {
+  const request = () => owner.fetch(new Request("https://device.internal/read", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: id, tool: "read_file", arguments: { path: "/tmp/safe" } }),
   }));
@@ -306,11 +307,11 @@ test("five simultaneous DO reads admit only four bounded in-flight requests", as
       if (sent.length === 4) reachedFour();
     },
   } as unknown as WebSocket;
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: { get: async <T>(key: string) => rows.get(key) as T | undefined },
     getWebSockets: () => [socket],
   } as unknown as DurableObjectState);
-  const makeRequest = () => owner.fetch(new Request("https://v2.internal/read", {
+  const makeRequest = () => owner.fetch(new Request("https://device.internal/read", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: id, tool: "read_file", arguments: { path: "/tmp/marker" } }),
   }));
@@ -338,7 +339,7 @@ test("#72 temporary expiry rejects new work on old WSS and after DO reconstructi
     ["session:epoch:"+id,epoch],
   ]);
   let sent=0;
-  let owner!: V2OwnerCoordinator;
+  let owner!: OwnerCoordinator;
   const socket={
     readyState:WebSocket.OPEN,
     deserializeAttachment:()=>({device_id:id, epoch}),
@@ -354,13 +355,13 @@ test("#72 temporary expiry rejects new work on old WSS and after DO reconstructi
     storage:{get:async <T>(key:string)=>rows.get(key) as T|undefined},
     getWebSockets:(tag:string)=>tag==="device:"+id?[socket]:[],
   } as unknown as DurableObjectState;
-  const request=()=>new Request("https://v2.internal/read",{
+  const request=()=>new Request("https://device.internal/read",{
     method:"POST",headers:{"content-type":"application/json"},
     body:JSON.stringify({device_id:id,tool:"read_file",arguments:{path:"/tmp/harmless"}}),
   });
   try {
     Date.now=()=>expiresAt-1;
-    owner=new V2OwnerCoordinator(state);
+    owner=new OwnerCoordinator(state);
     const allowed=await owner.fetch(request());
     assert.equal(allowed.status,200);
     assert.match(await allowed.text(),/admitted-before-expiry/);
@@ -375,7 +376,7 @@ test("#72 temporary expiry rejects new work on old WSS and after DO reconstructi
     assert.equal(sent,1,"old socket must not receive post-expiry work");
 
     // Hibernation discards JS in-memory maps but preserves socket attachments.
-    owner=new V2OwnerCoordinator(state);
+    owner=new OwnerCoordinator(state);
     const afterWake=await owner.fetch(request());
     assert.equal(afterWake.status,503);
     assert.equal((await afterWake.json() as {error:string}).error,"offline");
@@ -410,11 +411,11 @@ test("#72: admitted uncertain operation receipt can settle across expiry without
       resolveSent();
     },
   } as unknown as WebSocket;
-  const owner = new V2OwnerCoordinator({
+  const owner = new OwnerCoordinator({
     storage: { get: async <T>(key:string) => rows.get(key) as T | undefined },
     getWebSockets: (tag:string) => tag === "device:" + deviceId ? [socket] : [],
   } as unknown as DurableObjectState);
-  const request = () => new Request("https://v2.internal/operation", {
+  const request = () => new Request("https://device.internal/operation", {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ device_id: deviceId, tool:"get_operation_status",
       operation_id: operationId, arguments: {operation_id: operationId} }),
