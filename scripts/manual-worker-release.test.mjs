@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, retryReleaseReadback, readConfiguration, workflowReleaseIO } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -1668,4 +1668,27 @@ test('#1046 arbitrary new Task identity can be proven by live physical read and 
   assert.deepEqual(db.prepare('SELECT * FROM step_attempts').all(),rowBefore);
   assert.deepEqual(db.prepare('SELECT id,outcome,error_code,updated_at FROM runs').all(),runBefore);
  }finally{db.close();}
+});
+
+test('#1046 historical physical Task evidence uses the existing repository-scoped dispatch credential',async()=>{
+ const requests=[];
+ const io=workflowReleaseIO({
+  CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-test',
+  GITHUB_TOKEN:'same-repository-token',WORKFLOW_GITHUB_DISPATCH_TOKEN:'task-dispatch-token'
+ },async(url,init)=>{
+  requests.push({url,authorization:init.headers.Authorization});
+  return Response.json({success:true});
+ });
+ await io.historySources.githubRun('lirtual/mcp-workers',1);
+ await io.historySources.githubRun('lirtual/github-actions',2);
+ await io.historySources.githubRun('lirtual/cloudflare-actions',3);
+ assert.equal(requests[0].authorization,'Bearer same-repository-token');
+ assert.equal(requests[1].authorization,'Bearer task-dispatch-token');
+ assert.equal(requests[2].authorization,undefined,
+  'the dispatch credential must not cross into the unrelated Cloudflare Actions repository');
+ await assert.rejects(()=>workflowReleaseIO({
+  CLOUDFLARE_ACCOUNT_ID:'a'.repeat(32),CLOUDFLARE_API_TOKEN:'cloudflare-test',
+  GITHUB_TOKEN:'same-repository-token'
+ },async()=>Response.json({success:true})).historySources.githubRun('lirtual/github-actions',2),
+ /Historical GitHub Actions read credential unavailable/);
 });
