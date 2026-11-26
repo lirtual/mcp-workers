@@ -596,11 +596,19 @@ fn provider_principal(
                 return Err("provider_auth_unavailable");
             }
             let who = parse_json_object(&out).ok_or("provider_auth_unavailable")?;
-            let user = who.get("user").filter(|v| v.is_object()).unwrap_or(&who);
-            let identity = user["email"]
-                .as_str()
-                .filter(|v| !v.is_empty())
-                .ok_or("provider_auth_unavailable")?;
+            if who["loggedIn"] != true {
+                return Err("provider_auth_unavailable");
+            }
+            // Account API tokens represent the account, not a user email.
+            let identity = if who["authType"] == "Account API Token" {
+                format!("account:{account_id}")
+            } else {
+                who["email"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("provider_auth_unavailable")?
+                    .to_owned()
+            };
             let accounts = who["accounts"]
                 .as_array()
                 .ok_or("provider_auth_unavailable")?;

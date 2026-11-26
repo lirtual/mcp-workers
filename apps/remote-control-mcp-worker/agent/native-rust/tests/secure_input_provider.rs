@@ -33,7 +33,12 @@ set -eu
 [ "$(/bin/cat "$2")" = '{"account_id":"0123456789abcdef0123456789abcdef"}' ]
 shift 2
 case "$*" in
-  'whoami --account 0123456789abcdef0123456789abcdef --json') printf '%s' '{"user":{"email":"fixture@example.test"},"accounts":[{"id":"0123456789abcdef0123456789abcdef"}]}' ;;
+  'whoami --account 0123456789abcdef0123456789abcdef --json')
+    if [ -f "$HOME/account-token" ]; then
+      printf '%s' '{"loggedIn":true,"authType":"Account API Token","accounts":[{"id":"0123456789abcdef0123456789abcdef"}]}'
+    else
+      printf '%s' '{"loggedIn":true,"authType":"User API Token","email":"fixture@example.test","accounts":[{"id":"0123456789abcdef0123456789abcdef"}]}'
+    fi ;;
   'deployments list --name fixture-integration --json'|'deployments list --name fixture --json') printf '%s' '[{"id":"fixture-deployment"}]' ;;
   'secret put FIXTURE --name fixture'|'versions secret put FIXTURE --name fixture-integration')
     if IFS= read -r input; then exit 42; fi
@@ -50,6 +55,9 @@ fn run_fixture(mode: &str) {
         let path = dir.path().join(name);
         fs::write(&path, script).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    if mode == "cloudflare-account" {
+        fs::write(dir.path().join("account-token"), b"").unwrap();
     }
     if mode == "slow" {
         fs::write(dir.path().join("slow"), b"").unwrap();
@@ -91,6 +99,11 @@ fn cloudflare_provider_binds_account_and_preserves_input() {
 }
 
 #[test]
+fn cloudflare_account_token_has_account_principal() {
+    run_fixture("cloudflare-account");
+}
+
+#[test]
 fn provider_preflight_has_one_total_deadline() {
     run_fixture("slow");
 }
@@ -125,7 +138,7 @@ fn provider_fixture() {
             json!({"kind":"github_environment_secret","repository":"acme/fixture","environment":"integration","name":"FIXTURE"}),
             json!({"kind":"github_environment_variable","repository":"acme/fixture","environment":"integration","name":"FIXTURE"}),
         ],
-        "cloudflare" => vec![
+        "cloudflare" | "cloudflare-account" => vec![
             json!({"kind":"cloudflare_worker_secret","account_id":ACCOUNT,"worker_name":"fixture","environment":"default","mode":"deploy","name":"FIXTURE"}),
             json!({"kind":"cloudflare_worker_secret","account_id":ACCOUNT,"worker_name":"fixture","environment":"integration","mode":"version","name":"FIXTURE"}),
         ],
@@ -134,7 +147,12 @@ fn provider_fixture() {
     for raw in targets {
         let target = parse_target(&raw).unwrap();
         let principal = prepare(&target, || false).expect("exact target preflight must succeed");
-        let lossy_suffixes: &[&str] = if mode == "cloudflare" {
+        if mode == "cloudflare-account" {
+            assert_eq!(principal["identity"], format!("account:{ACCOUNT}"));
+        } else if mode == "cloudflare" {
+            assert_eq!(principal["identity"], "fixture@example.test");
+        }
+        let lossy_suffixes: &[&str] = if mode.starts_with("cloudflare") {
             &[" ", "\n", "\u{feff}"]
         } else {
             &["\r", "\n", "\r\n"]

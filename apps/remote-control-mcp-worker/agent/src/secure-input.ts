@@ -240,10 +240,11 @@ async function prepareCloudflare(
   const identityFailure = commandFailure(identityResult, "prepare");
   if (identityFailure) return identityFailure;
   const identityData = parseJson(identityResult.stdout);
-  const user = identityData && object(identityData.user) ? identityData.user : identityData;
-  const accounts = identityData && Array.isArray(identityData.accounts) ? identityData.accounts : [];
+  if (!identityData || identityData.loggedIn !== true) return { status: "failed", error_code: "provider_auth_unavailable" };
+  const identity = identityData.authType === "Account API Token" ? `account:${target.account_id}` : identityData.email;
+  const accounts = Array.isArray(identityData.accounts) ? identityData.accounts : [];
   const account = accounts.find((item: unknown) => object(item) && item.id === target.account_id) as Record<string, unknown> | undefined;
-  if (!user || typeof user.email !== "string" || !account) return { status: "failed", error_code: "provider_auth_unavailable" };
+  if (typeof identity !== "string" || !identity || !account) return { status: "failed", error_code: "provider_auth_unavailable" };
 
   const args = ["deployments", "list", "--name", cloudflareScriptName(target.worker_name, target.environment), "--json"];
   const workerResult = await runProviderCommand("cloudflare", "wrangler", args, {
@@ -257,7 +258,7 @@ async function prepareCloudflare(
     deployments = Array.isArray(parsed) ? parsed : object(parsed) ? parsed.deployments : undefined;
   } catch { deployments = undefined; }
   if (!Array.isArray(deployments) || deployments.length === 0) return { status: "failed", error_code: "target_not_accessible" };
-  return { provider: "cloudflare", identity: user.email, account_id: target.account_id,
+  return { provider: "cloudflare", identity, account_id: target.account_id,
     ...(typeof account.name === "string" ? { account_name: account.name } : {}) };
 }
 

@@ -49,7 +49,11 @@ fi
 [ "$(cat "$2")" = '{"account_id":"${accountId}"}' ]
 shift 2
 if [ "$1" = whoami ]; then
-  printf '%s' '{"user":{"email":"fixture@example.test"},"accounts":[{"id":"${accountId}","name":"Disposable test account"}]}'
+  if [ -f ${shellQuote(path.join(root, "account-token"))} ]; then
+    printf '%s' '{"loggedIn":true,"authType":"Account API Token","accounts":[{"id":"${accountId}","name":"Disposable test account"}]}'
+  else
+    printf '%s' '{"loggedIn":true,"authType":"User API Token","email":"fixture@example.test","accounts":[{"id":"${accountId}","name":"Disposable test account"}]}'
+  fi
 elif [ "$1" = deployments ] && [ "$2" = list ]; then
   [ "$*" = 'deployments list --name secure-input-test-preview --json' ]
   printf '%s' '[{"id":"fixture-deployment"}]'
@@ -96,6 +100,11 @@ fi
     assert.equal(await readFile(wrangler.stdin, "utf8"), marker);
     assert.doesNotMatch(await readFile(wrangler.args, "utf8"), /synthetic-secure-input/);
     assert.doesNotMatch(await readFile(wrangler.env, "utf8"), /synthetic-secure-input/);
+    await writeFile(path.join(root, "account-token"), "");
+    const accountPrincipal = await prepareSecureInputProvider(cloudflareTarget, new AbortController().signal);
+    assert.equal(accountPrincipal.identity, `account:${accountId}`);
+    assert.deepEqual(await executeSecureInputProvider(cloudflareTarget, cloudflarePrincipal, marker, new AbortController().signal), { status: "failed", error_code: "target_not_accessible" });
+    assert.deepEqual(await executeSecureInputProvider(cloudflareTarget, accountPrincipal, marker, new AbortController().signal), { status: "succeeded" });
     assert.ok(!(await readdir(root)).some(name => name.startsWith("rca-provider-")));
   } finally {
     if (oldTmp === undefined) delete process.env.TMPDIR;
