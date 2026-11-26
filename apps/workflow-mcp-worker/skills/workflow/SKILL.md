@@ -12,7 +12,7 @@ This Skill documents static routing and DSL usage, not live contracts, credentia
 | Intent | Tool route |
 | --- | --- |
 | Run an existing Published Workflow with a known ID and known inputs | `workflow_run` → `workflow_result`; only use `workflow_status` when unsettled |
-| Unknown Workflow ID | `workflow_list` → choose exact ID |
+| Unknown Workflow ID | `workflow_list({query:"known name or ID"})` → choose exact ID |
 | Unknown Published input contract | `workflow_get` → `published_run_interface`; never infer from editable Draft |
 | Inspect a particular Workflow | `workflow_get` |
 | Author or edit | This Skill → discovery only for external Actions → `workflow_validate({definition})` → `workflow_create` or `workflow_update` |
@@ -20,7 +20,9 @@ This Skill documents static routing and DSL usage, not live contracts, credentia
 | Diagnose or cancel | `workflow_result` / `workflow_status` → `workflow_cancel` if explicitly required |
 | Pause, resume, or delete | Read current state, then the matching named tool only with authorization |
 
-Use `workflow_action_list({})` only to choose source-reviewed GitHub/Cloudflare `action.run` candidates. For an `mcp.call`, explicitly call `workflow_action_list({source:"portal"})` to obtain the separately scoped reviewed Portal tool, actual input/output schema, example arguments, and `schema_digest`. Absence of a read tool does **not** prove a write tool is approved or unavailable: inspect the separate scope statuses. `workflow_connection_status` checks connection generation; a discovered candidate never grants Publish or runtime access. Do not use arbitrary Portal URLs, tools or unreviewed writes.
+Use `workflow_action_list({query:"known keyword"})` to choose source-reviewed GitHub/Cloudflare `action.run` candidates. For an `mcp.call`, explicitly call `workflow_action_list({source:"portal",query:"known tool name"})` to obtain the separately scoped reviewed Portal tool, actual input/output schema, example arguments, and `schema_digest`. Absence of a read tool does **not** prove a write tool is approved or unavailable: inspect the separate scope statuses. `workflow_connection_status` checks connection generation; a discovered candidate never grants Publish or runtime access. Do not use arbitrary Portal URLs, tools or unreviewed writes.
+
+Search is literal (ASCII case-insensitive) and returns complete matching contracts, not an authorization or automatic selection. Use a narrower query on `result_too_large`; no match is not a reason to automatically fetch the entire catalog. Omit query only for inventory or when no useful keyword is known. Unfiltered Workflow List covers the latest 100 updated non-deleted workflows, not the entire history; targeted search covers all non-deleted workflows and retains global Session slots. Search optimizes response size, not underlying discovery calls.
 
 ## Draft language quick reference
 
@@ -32,7 +34,7 @@ A definition is YAML/JSON with `version: 1`, `name`, optional `inputs` and `trig
 
 Each Step needs a stable `id`. `needs` declares dependencies, `if` conditions are compiler-supported structured expressions (not executable scripts), and `{ "ref": "inputs.message" }` references a runtime value. Supported step families include `result.emit`, reviewed `mcp.call`, reviewed GitHub/Cloudflare `action.run`, limited `http.request`, and bounded `flow` operations (`repeat`, `foreach`, `until`, child, wait, wait_event). Cron uses a five-field UTC schedule; Webhook needs its independent bearer token; signed GitHub push relay is not a general webhook. Nested arbitrary loops, unapproved external writes and arbitrary commands are not supported. `workflow_validate` is authoritative for supported shapes, limits and error paths.
 
-For an external `mcp.call`, copy the actual `endpoint`, `tool`, `scope`, `input_schema` and optional `output_schema` from Portal discovery; the compiler and Publish check the exact schema digest. Use `workflow_validate({definition})` **before** creating a Draft; fix every structured issue. Inline Validate never writes D1, publishes or dispatches. Update an existing Draft with its latest `expected_revision`. Publishing freezes an immutable Plan and effect grants; no discovered Action, test result, or account authentication replaces a fresh Owner approval of the actual target and risks. Publication of Cron, Webhook or GitHub event triggers can admit future effects.
+For an external `mcp.call`, copy the actual `endpoint`, `tool`, `scope`, `input_schema` and optional `output_schema` from Portal discovery; the compiler and Publish check the exact schema digest. Use `workflow_validate({definition})` **before** creating a Draft; fix every structured issue. Inline Validate never writes D1, publishes or dispatches. Update an existing Draft with its latest `expected_revision`. Publishing freezes an immutable Plan and effect grants; no discovered Action, test result, or account authentication replaces a fresh Owner approval of the actual target and risks. Publication of Cron, Webhook or GitHub event triggers can admit future effects. For new Cloudflare write effects, review the actual target/effect with the Owner and pass the exact validated `required_cloudflare_actions` as `approved_cloudflare_actions` to `workflow_publish`. Omit automatically derived grants; if a deployment is unconfirmed or a contract/deployment changes, revalidate and obtain fresh approval. Never treat tool discovery or a Provider review marker as permission.
 
 ## Execute and recover
 

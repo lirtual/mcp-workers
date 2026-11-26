@@ -22,8 +22,8 @@ on:
         required: false
         type: string
         default: ''
-      actions_migration_prepare:
-        description: 'Spec #21: prepare only the frozen Workflow D1 0018 gate, without Worker deployment'
+      actions_gate_freeze:
+        description: 'Freeze the existing Workflow Actions gate, without Worker deployment or schema migration'
         type: boolean
         required: false
         default: false
@@ -33,7 +33,7 @@ on:
         required: false
         default: false
       actions_expected_provider_version:
-        description: 'Gate-only recovery: exact reviewed live Bark-only Provider version'
+        description: 'Gate-only recovery: exact reviewed live unified Provider version'
         type: string
         required: false
         default: ''
@@ -42,61 +42,16 @@ on:
         type: string
         required: false
         default: ''
-      actions_old_ingress_quiesced:
-        description: Workflow first cutover only - Owner verified legacy admissions are stopped independently (not a technical substitute)
+      actions_ingress_quiesced:
+        description: Owner verified Workflow admissions are stopped independently for maintenance (not a technical substitute)
         type: boolean
         required: false
         default: false
       workflow_code_only:
-        description: 'Workflow Worker only: deploy code and approved Portal endpoint pin; preserve other Variables/Secrets, no D1 migrations or secret upload'
+        description: 'Workflow Worker only: deploy code and approved Portal endpoint pin; preserve other Variables/Secrets, no secret upload'
         required: false
         type: boolean
         default: false
-      uu_cleanup_approved:
-        description: 'Spec774: authorize destructive empty UU table only, no Worker publish'
-        type: boolean
-        required: false
-        default: false
-      uu_cleanup_expected_sha:
-        description: 'Spec774: exact independently reviewed main SHA'
-        type: string
-        required: false
-        default: ''
-      uu_cleanup_expected_active_version:
-        description: 'Spec774: exact active Version 143 UUID'
-        type: string
-        required: false
-        default: ''
-      uu_session_secret_cleanup:
-        description: 'Spec 774: separately authorized one-key UU runtime Secret retirement via existing versioned Prepare/Publish'
-        required: false
-        type: boolean
-        default: false
-      legacy_secret_cleanup_mode:
-        description: 'Spec 733/774: none, Prepare, reviewed candidate Publish, or exact Workflow 143 to 142 restore'
-        required: true
-        type: choice
-        options:
-          - none
-          - prepare
-          - publish
-          - restore
-        default: none
-      legacy_cleanup_expected_sha:
-        description: 'Spec 733: exact Owner-reviewed main SHA for cleanup'
-        required: false
-        type: string
-        default: ''
-      legacy_cleanup_expected_active_version:
-        description: 'Spec 733: exact active Worker baseline version UUID'
-        required: false
-        type: string
-        default: ''
-      legacy_cleanup_candidate_version:
-        description: 'Spec 733 publish only: exact separately approved prepared candidate UUID'
-        required: false
-        type: string
-        default: ''
       browser_access_readonly:
         description: 'Spec804: Browser-only read-only release Runner permission and active identity preflight; never publishes'
         required: false
@@ -116,20 +71,20 @@ env:
   HUSKY: "0"
 
 jobs:
-  workflow-actions-migration-prepare:
-    name: First Actions D1 cutover preparation (no Worker deployment)
+  workflow-actions-gate-freeze:
+    name: Freeze existing Workflow Actions gate (no Worker deployment)
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare == true &&
-          inputs.actions_gate_reopen != true && inputs.actions_old_ingress_quiesced == true &&
-          inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true }}
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_gate_freeze == true &&
+          inputs.actions_gate_reopen != true && inputs.actions_ingress_quiesced == true }}
     runs-on: ubuntu-latest
     concurrency:
       group: worker-release-workflow-mcp-worker
       cancel-in-progress: false
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -154,15 +109,17 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs preflight
-      - name: Block legacy Actions migration preparation with staged destructive 0021
-        run: |
-          set -euo pipefail
-          [[ ! -f apps/workflow-mcp-worker/migrations/0021_retire_uu_session_data.sql ]] ||
-            { echo 'Spec774 UU DROP requires its isolated job' >&2; exit 1; }
+      - name: Verify strict Workflow execution drain before gate freeze (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
+        run: node scripts/manual-worker-release.mjs workflow-freeze-check workflow-mcp-worker
 
-      - name: Apply existing Workflow D1 migrations and freeze only 0018 admission gate (no release)
+      - name: Freeze only the existing Actions admission gate (no release or migration)
         shell: bash
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -170,13 +127,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
           (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "UPDATE cloudflare_action_gate SET state='frozen',changed_at=unixepoch()*1000 WHERE id=1 AND state='open'") > /dev/null
-      - name: Independently verify migration, frozen gate and continued quiescence (read-only)
+      - name: Independently verify frozen gate and continued quiescence (read-only)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs postflight
 
   workflow-actions-gate-reopen:
@@ -184,9 +140,8 @@ jobs:
     if: >-
       ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
           github.actor == 'lirtual' && inputs.workflow_code_only != true && inputs.worker == 'workflow-mcp-worker' &&
-          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_migration_prepare != true &&
-          inputs.actions_gate_reopen == true && inputs.actions_old_ingress_quiesced == true &&
-          inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true &&
+          inputs.deploy_to_production == false && inputs.browser_access_readonly != true && inputs.actions_gate_freeze != true &&
+          inputs.actions_gate_reopen == true && inputs.actions_ingress_quiesced == true &&
           inputs.actions_expected_provider_version != '' && inputs.actions_expected_consumer_version != '' &&
           inputs.database_expected_release_sha == '' }}
     runs-on: ubuntu-latest
@@ -227,14 +182,22 @@ jobs:
             const e=process.env;
             await inspectGateRecovery(e.CLOUDFLARE_ACCOUNT_ID,e.CLOUDFLARE_API_TOKEN,
               e.ACTIONS_EXPECTED_PROVIDER_VERSION,e.ACTIONS_EXPECTED_CONSUMER_VERSION);
-            console.log("Exact active Bark-only Provider, Consumer and Pin verified; read-only");
+            console.log("Exact active unified Provider, v23 Consumer and authentication boundary verified; read-only");
           '
       - name: Verify frozen gate, paused Workflows and native drain (read-only)
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs activate-preflight
+      - name: Verify strict v23 execution readiness before gate-only recovery (read-only)
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
+        run: node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker
+
       - name: Reopen exactly the existing frozen admission gate (no release)
         shell: bash
         env:
@@ -250,16 +213,15 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: node scripts/actions-cutover-prepare.mjs activate-postflight
 
   checks:
     name: Pre-release checks
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
       (inputs.deploy_to_production == true ||
-       (inputs.browser_access_readonly == true && inputs.worker == 'browser-mcp-worker' && inputs.deploy_to_production == false) ||
-       (inputs.uu_cleanup_approved == true && inputs.deploy_to_production == false)) &&
-      inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true }}
+       (inputs.browser_access_readonly == true && inputs.worker == 'browser-mcp-worker' && inputs.deploy_to_production == false)) &&
+      inputs.actions_gate_freeze != true && inputs.actions_gate_reopen != true }}
     uses: ./.github/workflows/ci.yml
     with:
       worker: ${{ inputs.worker }}
@@ -272,9 +234,7 @@ jobs:
           github.actor == 'lirtual' && github.ref == 'refs/heads/main' &&
           inputs.worker == 'browser-mcp-worker' && inputs.browser_access_readonly == true &&
           inputs.deploy_to_production == false &&
-          inputs.legacy_secret_cleanup_mode == 'none' &&
-          inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
-          inputs.uu_session_secret_cleanup != true && inputs.uu_cleanup_approved != true &&
+          inputs.actions_gate_freeze != true && inputs.actions_gate_reopen != true &&
           needs.checks.result == 'success' &&
           needs.checks.outputs.release_ready == 'true' }}
     runs-on: ubuntu-latest
@@ -323,11 +283,8 @@ jobs:
           github.actor == 'lirtual' &&
           inputs.deploy_to_production == true &&
           inputs.browser_access_readonly != true &&
-          inputs.legacy_secret_cleanup_mode == 'none' &&
-          inputs.uu_session_secret_cleanup != true &&
-          inputs.uu_cleanup_approved != true &&
           needs.checks.result == 'success' &&
-          needs.checks.outputs.release_ready == 'true' && inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true && (inputs.worker == 'raindrop-mcp-worker' ||
+          needs.checks.outputs.release_ready == 'true' && inputs.actions_gate_freeze != true && inputs.actions_gate_reopen != true && (inputs.worker == 'raindrop-mcp-worker' ||
            inputs.worker == 'mcp-gateway-worker' ||
            inputs.worker == 'browser-mcp-worker' ||
            inputs.worker == 'ima-mcp-worker' ||
@@ -357,7 +314,7 @@ jobs:
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
           WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         shell: bash
         run: |
           set -euo pipefail
@@ -368,7 +325,7 @@ jobs:
             exit 1
           }
           if [[ "$WORKFLOW_CODE_ONLY" == "true" ]]; then
-            [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$ACTIONS_OLD_INGRESS_QUIESCED" != "true" ]] || {
+            [[ "$SELECTED_WORKER" == "workflow-mcp-worker" && "$ACTIONS_INGRESS_QUIESCED" != "true" ]] || {
               echo "Code-only release accepts only existing Workflow Worker without admission-gate changes" >&2
               exit 1
             }
@@ -518,593 +475,6 @@ jobs:
             exit 1
           }
 
-      # One known October 26 history record retains indeterminate business
-      # outcome. Verify *live* native Cloudflare + GitHub physical termination
-      # and exact D1 identity before excluding it from migration counters.
-      # Do not include any other Run; no business history is rewritten.
-      - name: Verify historical terminal Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs
-              WHERE id='47739981-0534-4966-8034-1e79c1d17481';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='47739981-0534-4966-8034-1e79c1d17481';
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='47739981-0534-4966-8034-1e79c1d17481';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='47739981-0534-4966-8034-1e79c1d17481'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # This owner-confirmed Weixin delivery remains indeterminate in machine
-      # receipts. Only its exact terminal D1, native and GitHub evidence may
-      # exclude it from release counters; no resend or history mutation.
-      - name: Verify second terminal E2E Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_second
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: second
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs
-              WHERE id='8e0a94a7-136f-41fd-b839-211c9a60ad49';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49';
-            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
-              FROM cloudflare_action_invocations WHERE run_id='8e0a94a7-136f-41fd-b839-211c9a60ad49'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # Third exact Owner-confirmed machine-unknown E2E: proof is independent
-      # and fail-closed. No send/receipt mutation or generic release exception.
-      - name: Verify third terminal E2E Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_third
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: third
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs
-              WHERE id='9da5816a-e7d9-481a-8203-3a2036534563';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='9da5816a-e7d9-481a-8203-3a2036534563' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='9da5816a-e7d9-481a-8203-3a2036534563';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='9da5816a-e7d9-481a-8203-3a2036534563';
-            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
-              FROM cloudflare_action_invocations WHERE run_id='9da5816a-e7d9-481a-8203-3a2036534563'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # Fourth exact Owner-confirmed machine-unknown E2E: proof is independent
-      # and fail-closed. No send/receipt mutation or generic release exception.
-      - name: Verify fourth terminal E2E Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_fourth
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: fourth
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs
-              WHERE id='22625b58-e260-4988-81b6-04352a2d5f11';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='22625b58-e260-4988-81b6-04352a2d5f11' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='22625b58-e260-4988-81b6-04352a2d5f11';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='22625b58-e260-4988-81b6-04352a2d5f11';
-            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
-              FROM cloudflare_action_invocations WHERE run_id='22625b58-e260-4988-81b6-04352a2d5f11'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # Fifth exact Owner-confirmed machine-unknown E2E: proof is independent
-      # and fail-closed. No send/receipt mutation or generic release exception.
-      - name: Verify fifth terminal E2E Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_fifth
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: fifth
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs
-              WHERE id='a1970556-a529-46c2-9bb1-81980b51557e';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='a1970556-a529-46c2-9bb1-81980b51557e' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='a1970556-a529-46c2-9bb1-81980b51557e';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='a1970556-a529-46c2-9bb1-81980b51557e';
-            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
-              FROM cloudflare_action_invocations WHERE run_id='a1970556-a529-46c2-9bb1-81980b51557e'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # Sixth exact Owner-confirmed machine-unknown E2E: proof is independent
-      # and fail-closed. No send/receipt mutation or generic release exception.
-      - name: Verify sixth terminal E2E Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_sixth
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: sixth
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs
-              WHERE id='3e312105-b40e-49ea-a037-c3359074be2b';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='3e312105-b40e-49ea-a037-c3359074be2b' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='3e312105-b40e-49ea-a037-c3359074be2b';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='3e312105-b40e-49ea-a037-c3359074be2b';
-            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
-              FROM cloudflare_action_invocations WHERE run_id='3e312105-b40e-49ea-a037-c3359074be2b'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # Exact 2026-10-30 verified Koofr download / no Weixin invocation.
-      # Do not rewrite the indeterminate result or exempt any other Run.
-      - name: Verify seventh terminal download Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_seventh
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: seventh
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs
-              WHERE id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d';
-            SELECT run_id,step_id,invocation_id,binding_generation,deployment_id
-              FROM cloudflare_action_invocations WHERE run_id='0bb5f19e-627e-440d-9757-7dfd9a0af31d'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # Exact first real IMA write acceptance timed out during Portal discovery,
-      # before any durable MCP dispatch fence. No general indeterminate waiver.
-      - name: Verify eighth MCP no-dispatch Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_eighth
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,workflow_id,version_id,outcome,start_state,error_code FROM runs
-              WHERE id='391e075f-3d5c-449e-ad88-fa13c6d4eb6d';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='391e075f-3d5c-449e-ad88-fa13c6d4eb6d';
-            SELECT run_id,step_id FROM mcp_dispatch_fences
-              WHERE run_id='391e075f-3d5c-449e-ad88-fa13c6d4eb6d';
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='391e075f-3d5c-449e-ad88-fa13c6d4eb6d';
-            SELECT id,plan FROM workflow_versions
-              WHERE id='30a01b13-8a94-48d8-b349-dba2ec4dced4'
-          ") | node scripts/workflow-mcp-no-dispatch-proof.mjs
-
-      # Exact cancelled 2026-10-31 temporary Ubuntu Saga Session;
-      # independent Cloudflare native + GitHub physical proof, no D1 writes.
-      - name: Verify ninth terminal Saga Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_ninth
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: ninth
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs WHERE id='29e121ab-de3e-43dd-b3bb-6e6d495fa2b1';
-            SELECT run_id,step_id,status,error_code FROM run_steps WHERE run_id='29e121ab-de3e-43dd-b3bb-6e6d495fa2b1' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions WHERE run_id='29e121ab-de3e-43dd-b3bb-6e6d495fa2b1';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='29e121ab-de3e-43dd-b3bb-6e6d495fa2b1';
-            SELECT run_id,step_id,invocation_id FROM cloudflare_action_invocations WHERE run_id='29e121ab-de3e-43dd-b3bb-6e6d495fa2b1'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # Exact cancelled 2026-10-31 temporary Ubuntu Saga Session;
-      # independent Cloudflare native + GitHub physical proof, no D1 writes.
-      - name: Verify tenth terminal Saga Run proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_tenth
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: tenth
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,outcome,start_state,error_code FROM runs WHERE id='eab7b71f-b857-4569-afde-fd269cd1b2bb';
-            SELECT run_id,step_id,status,error_code FROM run_steps WHERE run_id='eab7b71f-b857-4569-afde-fd269cd1b2bb' ORDER BY step_id;
-            SELECT run_id,step_id,state FROM session_executions WHERE run_id='eab7b71f-b857-4569-afde-fd269cd1b2bb';
-            SELECT run_id,step_id,state,repository,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='eab7b71f-b857-4569-afde-fd269cd1b2bb';
-            SELECT run_id,step_id,invocation_id FROM cloudflare_action_invocations WHERE run_id='eab7b71f-b857-4569-afde-fd269cd1b2bb'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # One exact 2026-10-31 terminal generic test, no Provider send receipt.
-      # Cloudflare native status and both D1 tables are checked live; no replay.
-      - name: Verify eleventh terminal generic Action proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_eleventh
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: eleventh
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,workflow_id,version_id,start_state,outcome,error_code
-              FROM runs WHERE id='5813140e-6559-469c-8e0a-d6800ff33331';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='5813140e-6559-469c-8e0a-d6800ff33331';
-            SELECT run_id,step_id FROM session_executions
-              WHERE run_id='5813140e-6559-469c-8e0a-d6800ff33331';
-            SELECT run_id,step_id FROM step_attempts
-              WHERE run_id='5813140e-6559-469c-8e0a-d6800ff33331';
-            SELECT run_id,step_id,invocation_id,source_attempt_id,input_digest,
-              binding_generation,contract_digest,deployment_id
-              FROM cloudflare_action_invocations
-              WHERE run_id='5813140e-6559-469c-8e0a-d6800ff33331'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # #179: exact historical GitHub Artifact Task; physical job completed,
-      # signed Claim/result are preserved, business unknown is NOT rewritten.
-      - name: Verify twelfth terminal Artifact Task proof (read-only)
-        if: inputs.worker == 'workflow-mcp-worker'
-        id: terminal_twelfth
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          GITHUB_TOKEN: ${{ github.token }}
-          TERMINAL_PROOF_KIND: twelfth
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "
-            SELECT id,workflow_id,version_id,start_state,outcome,error_code FROM runs
-              WHERE id='f99bb918-2909-46df-b196-d07faa64df27';
-            SELECT run_id,step_id,status,error_code FROM run_steps
-              WHERE run_id='f99bb918-2909-46df-b196-d07faa64df27';
-            SELECT run_id,step_id,state FROM session_executions
-              WHERE run_id='f99bb918-2909-46df-b196-d07faa64df27';
-            SELECT run_id,step_id,attempt_id,state,capability_id,repository,repository_id,
-              workflow_ref,ref,owner_run_id,owner_run_attempt,candidate_run_id,candidate_run_attempt
-              FROM step_attempts WHERE run_id='f99bb918-2909-46df-b196-d07faa64df27';
-            SELECT a.run_id,a.step_id,c.outcome,c.notification_delivered
-              FROM callback_receipts c JOIN step_attempts a ON a.attempt_id=c.attempt_id
-              WHERE a.run_id='f99bb918-2909-46df-b196-d07faa64df27';
-            SELECT run_id,step_id,invocation_id FROM cloudflare_action_invocations
-              WHERE run_id='f99bb918-2909-46df-b196-d07faa64df27';
-            SELECT run_id,step_id FROM github_action_cancellations
-              WHERE run_id='f99bb918-2909-46df-b196-d07faa64df27'
-          ") | node scripts/workflow-terminal-run-exception.mjs
-
-      # A code-only deployment must have precisely the reviewed schema on disk;
-      # the following remote read-only gate checks all twenty-two applied migrations.
-      - name: Require complete Workflow code-only migration inventory
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only == true
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          migrations=(apps/workflow-mcp-worker/migrations/*.sql)
-          [[ "${#migrations[@]}" -eq 22 ]] || { echo 'Code-only release requires exact reviewed migration inventory' >&2; exit 1; }
-
-      - name: Verify Workflow release configuration and remote D1 readiness
-        if: inputs.worker == 'workflow-mcp-worker'
-        shell: bash
-        env:
-          WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
-          WORKFLOW_REQUIRE_COMPLETE_SCHEMA: ${{ inputs.workflow_code_only && 'true' || '' }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_FIRST_DEPLOY: ${{ steps.preflight.outputs.bootstrap }}
-          WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
-          WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
-          WORKFLOW_THIRD_TERMINAL_RUN_ID: ${{ steps.terminal_third.outputs.third_terminal_run_id }}
-          WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
-          WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
-          WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
-          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
-          WORKFLOW_EIGHTH_TERMINAL_RUN_ID: ${{ steps.terminal_eighth.outputs.eighth_terminal_run_id }}
-          WORKFLOW_NINTH_TERMINAL_RUN_ID: ${{ steps.terminal_ninth.outputs.ninth_terminal_run_id }}
-          WORKFLOW_TENTH_TERMINAL_RUN_ID: ${{ steps.terminal_tenth.outputs.tenth_terminal_run_id }}
-          WORKFLOW_ELEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_eleventh.outputs.eleventh_terminal_run_id }}
-          WORKFLOW_TWELFTH_TERMINAL_RUN_ID: ${{ steps.terminal_twelfth.outputs.twelfth_terminal_run_id }}
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker && pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
-            "SELECT
-             (SELECT count(*) FROM d1_migrations) AS migration_count,
-             (SELECT count(*) FROM d1_migrations WHERE name='0001_s1.sql') AS migration_v1,
-             (SELECT count(*) FROM d1_migrations WHERE name='0002_native_complete_seen.sql') AS migration_v2,
-             (SELECT count(*) FROM d1_migrations WHERE name='0003_s3_attempt_claim.sql') AS migration_v3,
-             (SELECT count(*) FROM d1_migrations WHERE name='0004_s3_callback_receipts.sql') AS migration_v4,
-             (SELECT count(*) FROM d1_migrations WHERE name='0005_github_workflow_check.sql') AS migration_v5,
-             (SELECT count(*) FROM d1_migrations WHERE name='0006_action_attempt_capabilities.sql') AS migration_v6,
-             (SELECT count(*) FROM d1_migrations WHERE name='0007_session_executions.sql') AS migration_v7,
-             (SELECT count(*) FROM d1_migrations WHERE name='0008_session_locator.sql') AS migration_v8,
-              (SELECT count(*) FROM d1_migrations WHERE name='0009_fixed_sessions.sql') AS migration_v9,
-              (SELECT count(*) FROM d1_migrations WHERE name='0010_session_runtime_data.sql') AS migration_v10,
-             (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
-             (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
-             (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
-              (SELECT count(*) FROM d1_migrations WHERE name='0014_workflow_deletion.sql') AS migration_v14,
-              (SELECT count(*) FROM d1_migrations WHERE name='0015_runtime_approval.sql') AS migration_v15,
-              (SELECT count(*) FROM d1_migrations WHERE name='0016_portal_connection_revocation.sql') AS migration_v16,
-              (SELECT count(*) FROM d1_migrations WHERE name='0017_http_connection_auth.sql') AS migration_v17,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='http_connection_auth') AS http_auth_table,
-              (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
-              (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
-              (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
-              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
-               (SELECT count(*) FROM d1_migrations WHERE name='0022_drop_claim_receipts.sql') AS migration_v22,
-               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='drop_claim_receipts') AS drop_claim_receipts_table,
-              (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mcp_dispatch_fences') AS mcp_fence_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approval_gates') AS approval_gates_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approvals') AS approvals_table,
-              (SELECT count(*) FROM pragma_table_info('workflows') WHERE name='deleted_at') AS deleted_column,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_invocations') AS invocations_table,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_cancellations') AS cloudflare_cancel_table,
-             (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
-              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
-              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='rca_duration_minutes') AS rca_duration_column,
-              (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data') AS runtime_table,
-             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='capacity_weight') AS capacity_column,
-             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_run_id') AS parent_column,
-             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_step_id') AS parent_step_column,
-             (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_one_awaited_child_per_step') AS child_index,
-             (SELECT count(*) FROM sqlite_master WHERE type='trigger'
-               AND name='runs_top_level_capacity_guard') AS capacity_guard_trigger,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='child_cancellations') AS child_cancel_table,
-             (SELECT count(*) FROM pragma_table_info('child_cancellations') WHERE name='termination_attempted_at') AS child_terminate_fence_column,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_executions') AS session_table,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='github_action_cancellations') AS cancellation_table,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
-             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-             (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_EIGHTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_NINTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_TENTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_ELEVENTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_TWELFTH_TERMINAL_RUN_ID') AS active_runs,
-              (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
-             (SELECT count(*) FROM runs) AS run_count,
-             (SELECT count(*) FROM workflows) AS workflow_count") |
-            node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
-
-      # Read only: an already-applied exact migration inventory needs no D1 write.
-      # Any pending migration retains the original strict all-Workflow fence.
-      - name: Classify Workflow schema migrations without changing D1
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
-        id: workflow_schema
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "SELECT name FROM d1_migrations ORDER BY name") |
-            node scripts/workflow-release-schema-selection.mjs
-
-      # Only the existing production release lock and Owner/main checks can
-      # apply the reviewed Action capability and Session lifecycle migrations. This changes the
-      # schema without changing any running instance.
-      - name: Enforce original all-Workflow migration gate before any ordinary D1 writes
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true && steps.workflow_schema.outputs.apply_required == 'true'
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
-          WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
-          WORKFLOW_THIRD_TERMINAL_RUN_ID: ${{ steps.terminal_third.outputs.third_terminal_run_id }}
-          WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
-          WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
-          WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
-          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
-          WORKFLOW_EIGHTH_TERMINAL_RUN_ID: ${{ steps.terminal_eighth.outputs.eighth_terminal_run_id }}
-          WORKFLOW_NINTH_TERMINAL_RUN_ID: ${{ steps.terminal_ninth.outputs.ninth_terminal_run_id }}
-          WORKFLOW_TENTH_TERMINAL_RUN_ID: ${{ steps.terminal_tenth.outputs.tenth_terminal_run_id }}
-          WORKFLOW_ELEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_eleventh.outputs.eleventh_terminal_run_id }}
-          WORKFLOW_TWELFTH_TERMINAL_RUN_ID: ${{ steps.terminal_twelfth.outputs.twelfth_terminal_run_id }}
-        run: |
-          set -euo pipefail
-          query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
-            node scripts/manual-worker-release.mjs migration-check workflow-mcp-worker
-
-      - name: Prevent normal Workflow release from applying pending UU DROP
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command \
-              "SELECT count(*) AS v21_applied FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql'") |
-            node -e 'let s="";process.stdin.on("data",x=>s+=x).on("end",()=>{
-              const j=JSON.parse(s);
-              if(!Array.isArray(j)||j.length!==1||j[0]?.success!==true||
-                j[0]?.results?.length!==1||j[0].results[0]?.v21_applied!==1)
-                process.exit(1);
-              console.log("Only the isolated retirement job may first apply 0021");
-            })'
-
-      - name: Apply complete Workflow D1 migrations
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true && steps.workflow_schema.outputs.apply_required == 'true'
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'
-          WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
-          WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
-          WORKFLOW_THIRD_TERMINAL_RUN_ID: ${{ steps.terminal_third.outputs.third_terminal_run_id }}
-          WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
-          WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
-          WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
-          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
-          WORKFLOW_EIGHTH_TERMINAL_RUN_ID: ${{ steps.terminal_eighth.outputs.eighth_terminal_run_id }}
-          WORKFLOW_NINTH_TERMINAL_RUN_ID: ${{ steps.terminal_ninth.outputs.ninth_terminal_run_id }}
-          WORKFLOW_TENTH_TERMINAL_RUN_ID: ${{ steps.terminal_tenth.outputs.tenth_terminal_run_id }}
-          WORKFLOW_ELEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_eleventh.outputs.eleventh_terminal_run_id }}
-          WORKFLOW_TWELFTH_TERMINAL_RUN_ID: ${{ steps.terminal_twelfth.outputs.twelfth_terminal_run_id }}
-        run: |
-          set -euo pipefail
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "SELECT
-              (SELECT count(*) FROM d1_migrations) AS migration_count,
-              (SELECT count(*) FROM d1_migrations WHERE name='0001_s1.sql') AS migration_v1,
-              (SELECT count(*) FROM d1_migrations WHERE name='0002_native_complete_seen.sql') AS migration_v2,
-              (SELECT count(*) FROM d1_migrations WHERE name='0003_s3_attempt_claim.sql') AS migration_v3,
-              (SELECT count(*) FROM d1_migrations WHERE name='0004_s3_callback_receipts.sql') AS migration_v4,
-             (SELECT count(*) FROM d1_migrations WHERE name='0005_github_workflow_check.sql') AS migration_v5,
-             (SELECT count(*) FROM d1_migrations WHERE name='0006_action_attempt_capabilities.sql') AS migration_v6,
-             (SELECT count(*) FROM d1_migrations WHERE name='0007_session_executions.sql') AS migration_v7,
-             (SELECT count(*) FROM d1_migrations WHERE name='0008_session_locator.sql') AS migration_v8,
-              (SELECT count(*) FROM d1_migrations WHERE name='0009_fixed_sessions.sql') AS migration_v9,
-              (SELECT count(*) FROM d1_migrations WHERE name='0010_session_runtime_data.sql') AS migration_v10,
-             (SELECT count(*) FROM d1_migrations WHERE name='0011_awaited_child_capacity.sql') AS migration_v11,
-             (SELECT count(*) FROM d1_migrations WHERE name='0012_event_wait_receipts.sql') AS migration_v12,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='wait_event_receipts') AS event_receipts_table,
-             (SELECT count(*) FROM d1_migrations WHERE name='0013_cloudflare_action_invocations.sql') AS migration_v13,
-              (SELECT count(*) FROM d1_migrations WHERE name='0014_workflow_deletion.sql') AS migration_v14,
-              (SELECT count(*) FROM d1_migrations WHERE name='0015_runtime_approval.sql') AS migration_v15,
-              (SELECT count(*) FROM d1_migrations WHERE name='0016_portal_connection_revocation.sql') AS migration_v16,
-              (SELECT count(*) FROM d1_migrations WHERE name='0017_http_connection_auth.sql') AS migration_v17,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='http_connection_auth') AS http_auth_table,
-              (SELECT count(*) FROM d1_migrations WHERE name='0018_cloudflare_action_migration_fence.sql') AS migration_v18,
-              (SELECT count(*) FROM d1_migrations WHERE name='0019_session_rca_duration.sql') AS migration_v19,
-              (SELECT count(*) FROM d1_migrations WHERE name='0020_github_action_main_sha.sql') AS migration_v20,
-              (SELECT count(*) FROM d1_migrations WHERE name='0021_retire_uu_session_data.sql') AS migration_v21,
-               (SELECT count(*) FROM d1_migrations WHERE name='0022_drop_claim_receipts.sql') AS migration_v22,
-               (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='drop_claim_receipts') AS drop_claim_receipts_table,
-              (SELECT count(*) FROM pragma_table_info('step_attempts') WHERE name='resolved_sha') AS resolved_sha_column,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_gate') AS cloudflare_gate_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='portal_connection_auth') AS portal_auth_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='mcp_dispatch_fences') AS mcp_fence_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approval_gates') AS approval_gates_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='runtime_approvals') AS approvals_table,
-              (SELECT count(*) FROM pragma_table_info('workflows') WHERE name='deleted_at') AS deleted_column,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_invocations') AS invocations_table,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='cloudflare_action_cancellations') AS cloudflare_cancel_table,
-             (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='session_url') AS locator_column,
-              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='fixed_key') AS fixed_column,
-              (SELECT count(*) FROM pragma_table_info('session_executions') WHERE name='rca_duration_minutes') AS rca_duration_column,
-              (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='session_active_fixed_keys') AS fixed_index,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_runtime_data') AS runtime_table,
-             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='capacity_weight') AS capacity_column,
-             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_run_id') AS parent_column,
-             (SELECT count(*) FROM pragma_table_info('runs') WHERE name='parent_step_id') AS parent_step_column,
-             (SELECT count(*) FROM sqlite_master WHERE type='index' AND name='runs_one_awaited_child_per_step') AS child_index,
-             (SELECT count(*) FROM sqlite_master WHERE type='trigger'
-               AND name='runs_top_level_capacity_guard') AS capacity_guard_trigger,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='child_cancellations') AS child_cancel_table,
-             (SELECT count(*) FROM pragma_table_info('child_cancellations') WHERE name='termination_attempted_at') AS child_terminate_fence_column,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='session_executions') AS session_table,
-             (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='github_action_cancellations') AS cancellation_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='step_attempts') AS attempt_table,
-              (SELECT count(*) FROM sqlite_master WHERE type='table' AND name='callback_receipts') AS receipt_table,
-              (SELECT count(*) FROM pragma_table_info('runs') WHERE name='native_complete_seen_at') AS native_column,
-              (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled') AND id <> '$WORKFLOW_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SECOND_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_THIRD_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FOURTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_FIFTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SIXTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_SEVENTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_EIGHTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_NINTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_TENTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_ELEVENTH_TERMINAL_RUN_ID' AND id <> '$WORKFLOW_TWELFTH_TERMINAL_RUN_ID') AS active_runs,
-              (SELECT count(*) FROM session_executions WHERE state != 'terminated') AS active_sessions,
-              (SELECT count(*) FROM runs) AS run_count,
-              (SELECT count(*) FROM workflows) AS workflow_count") |
-            node scripts/manual-worker-release.mjs d1-check workflow-mcp-worker
-
-      - name: Verify code-only Workflow D1 gate at publication (Ready Sessions preserved)
-        if: inputs.worker == 'workflow-mcp-worker'
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          WORKFLOW_TERMINAL_RUN_ID: ${{ steps.terminal.outputs.terminal_run_id }}
-          WORKFLOW_SECOND_TERMINAL_RUN_ID: ${{ steps.terminal_second.outputs.second_terminal_run_id }}
-          WORKFLOW_THIRD_TERMINAL_RUN_ID: ${{ steps.terminal_third.outputs.third_terminal_run_id }}
-          WORKFLOW_FOURTH_TERMINAL_RUN_ID: ${{ steps.terminal_fourth.outputs.fourth_terminal_run_id }}
-          WORKFLOW_FIFTH_TERMINAL_RUN_ID: ${{ steps.terminal_fifth.outputs.fifth_terminal_run_id }}
-          WORKFLOW_SIXTH_TERMINAL_RUN_ID: ${{ steps.terminal_sixth.outputs.sixth_terminal_run_id }}
-          WORKFLOW_SEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_seventh.outputs.seventh_terminal_run_id }}
-          WORKFLOW_EIGHTH_TERMINAL_RUN_ID: ${{ steps.terminal_eighth.outputs.eighth_terminal_run_id }}
-          WORKFLOW_NINTH_TERMINAL_RUN_ID: ${{ steps.terminal_ninth.outputs.ninth_terminal_run_id }}
-          WORKFLOW_TENTH_TERMINAL_RUN_ID: ${{ steps.terminal_tenth.outputs.tenth_terminal_run_id }}
-          WORKFLOW_ELEVENTH_TERMINAL_RUN_ID: ${{ steps.terminal_eleventh.outputs.eleventh_terminal_run_id }}
-          WORKFLOW_TWELFTH_TERMINAL_RUN_ID: ${{ steps.terminal_twelfth.outputs.twelfth_terminal_run_id }}
-        run: |
-          set -euo pipefail
-          query="$(node scripts/manual-worker-release.mjs migration-sql workflow-mcp-worker)"
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "$query") |
-            node scripts/manual-worker-release.mjs code-release-check workflow-mcp-worker
-
       # Read-only native Hyperdrive checks: reviewed bindings, strict origin TLS
       # and disabled query caching. Database has no runtime D1 dependency.
       - name: Verify Database Hyperdrive TLS, CA, origin and cache before publication
@@ -1142,15 +512,14 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-actions-provider-pin.mjs recheck
 
-      # Read-only release gate; the old native instance admission MUST be
-      # independently quiesced before binding switch. Frozen D1 alone is insufficient.
-      - name: Verify unified Actions binding transition (read-only)
+      # Verify the current unified Provider and the existing gate; this is not a drain proof.
+      - name: Verify current unified Actions binding and gate (read-only)
         if: inputs.worker == 'workflow-mcp-worker'
         shell: bash
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
         run: |
           set -euo pipefail
           (cd apps/workflow-mcp-worker &&
@@ -1164,8 +533,10 @@ jobs:
           DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
           DATABASE_EXPECTED_RELEASE_SHA: ${{ inputs.database_expected_release_sha }}
           WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ inputs.worker == 'workflow-mcp-worker' && secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN || '' }}
         run: |
           set -euo pipefail
           [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
@@ -1208,6 +579,10 @@ jobs:
               deploy_args+=(--var "$variable_pair")
             done < "$RUNNER_TEMP/mcp-worker-variables.txt"
           fi
+          if [[ "$SELECTED_WORKER" == "workflow-mcp-worker" ]]; then
+            node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker
+          fi
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
           if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler deploy "${deploy_args[@]}") >"$log" 2>&1; then
             echo "Wrangler deploy failed (stage=deploy); no automated rollback attempted" >&2
             # Report only a whitelisted error code and a bounded, sanitized summary.
@@ -1247,39 +622,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/reviewed-actions-provider-pin.mjs postflight
 
-      # First transition only. Do not reopen admission until the active
-      # Consumer version, single Actions Service Binding and Provider pin
-      # have already been independently read back; all plans remain paused.
-      - name: Verify frozen Action gate and paused unified runtime before activation (read-only)
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_old_ingress_quiesced == true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
-        run: node scripts/actions-cutover-prepare.mjs activate-preflight
-
-      - name: Reopen only the now-verified unified Action admission gate
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_old_ingress_quiesced == true
-        shell: bash
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command               "UPDATE cloudflare_action_gate SET state='open',changed_at=unixepoch()*1000 WHERE id=1 AND state='frozen'") > /dev/null
-
-      - name: Verify only unified admission reopened and all Workflow plans still paused (read-only)
-        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_old_ingress_quiesced == true
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          ACTIONS_OLD_INGRESS_QUIESCED: ${{ inputs.actions_old_ingress_quiesced }}
-        run: node scripts/actions-cutover-prepare.mjs activate-postflight
-
-      - name: Remove temporary Actions pin proof
+      - name: Remove temporary Workflow release files
         if: always() && inputs.worker == 'workflow-mcp-worker'
         run: rm -f "$RUNNER_TEMP/actions-provider-version.txt"
 
@@ -1320,7 +663,7 @@ jobs:
             const fs = require("node:fs");
             const body = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
             const worker = process.argv[2];
-            if (!body || (worker === "workflow-mcp-worker" ? (body.ok !== true || body.scope !== "workflow" || body.service !== "workflow-mcp-worker") : worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
+            if (!body || (worker === "workflow-mcp-worker" ? (body.ok !== true || body.scope !== "workflow" || body.service !== "workflow-mcp-worker" || body.execution_terminal_proof_schema !== 23) : worker === "ima-mcp-worker" ? body.ok !== true : body.status !== "healthy")) process.exit(1);
           ' "$response" "$SELECTED_WORKER" || { echo "Health check failed (invalid response)" >&2; exit 1; }
           echo "Existing health endpoint verified (HTTP 200)"
 
@@ -1380,6 +723,39 @@ jobs:
             exit 1
           done
 
+      # Frozen maintenance only. Do not reopen admission until the active
+      # Consumer version, single Actions Service Binding and Provider pin
+      # have already been independently read back; all plans remain paused.
+      - name: Verify frozen Action gate and paused unified runtime before activation (read-only)
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
+        run: node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker
+
+      - name: Reopen only the now-verified unified Action admission gate
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
+          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
+          (cd apps/workflow-mcp-worker &&
+            pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command               "UPDATE cloudflare_action_gate SET state='open',changed_at=unixepoch()*1000 WHERE id=1 AND state='frozen'") > /dev/null
+
+      - name: Verify only unified admission reopened and all Workflow plans still paused (read-only)
+        if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          ACTIONS_INGRESS_QUIESCED: ${{ inputs.actions_ingress_quiesced }}
+        run: node scripts/actions-cutover-prepare.mjs activate-postflight
+
       - name: Register production Browser MCP with existing One-MCP Portal
         if: inputs.worker == 'browser-mcp-worker'
         shell: bash
@@ -1388,337 +764,3 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           MCP_ACCESS_TOKEN: ${{ secrets.MCP_ACCESS_TOKEN }}
         run: node scripts/register-browser-portal.mjs
-
-  workflow-uu-table-retirement:
-    name: Spec #774 single-table UU retirement (no Worker deployment)
-    needs: checks
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' &&
-          github.ref == 'refs/heads/main' && github.actor == 'lirtual' &&
-          inputs.worker == 'workflow-mcp-worker' &&
-          inputs.uu_cleanup_approved == true &&
-          inputs.deploy_to_production == false && inputs.browser_access_readonly != true &&
-          inputs.workflow_code_only != true &&
-          inputs.uu_session_secret_cleanup != true &&
-          inputs.legacy_secret_cleanup_mode == 'none' &&
-          inputs.actions_migration_prepare != true &&
-          inputs.actions_gate_reopen != true &&
-          inputs.actions_old_ingress_quiesced != true &&
-          needs.checks.result == 'success' &&
-          needs.checks.outputs.release_ready == 'true' }}
-    runs-on: ubuntu-latest
-    concurrency:
-      group: worker-release-workflow-mcp-worker
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      UU_CLEANUP_APPROVED: ${{ inputs.uu_cleanup_approved }}
-      UU_CLEANUP_EXPECTED_SHA: ${{ inputs.uu_cleanup_expected_sha }}
-      UU_CLEANUP_EXPECTED_ACTIVE_VERSION: ${{ inputs.uu_cleanup_expected_active_version }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Verify exact Owner-reviewed source before credentials
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
-          [[ "$GITHUB_SHA" == "$UU_CLEANUP_EXPECTED_SHA" ]]
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.17.1
-          run_install: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install pinned dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Prove isolated empty UU table and unchanged history (read-only)
-        id: preflight
-        run: node scripts/workflow-uu-cleanup-gate.mjs before
-      - name: Apply exactly pending 0021 via normal Wrangler D1 migration registry
-        id: apply
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          node scripts/workflow-uu-cleanup-gate.mjs before
-          (cd apps/workflow-mcp-worker &&
-            pnpm exec wrangler d1 migrations apply workflow-mcp-db --remote)
-      - name: Independently verify UU table absent and historical data unchanged
-        if: ${{ always() && steps.preflight.outcome == 'success' &&
-                 (steps.apply.outcome == 'success' || steps.apply.outcome == 'failure') }}
-        run: node scripts/workflow-uu-cleanup-gate.mjs after
-
-  legacy-secret-cleanup:
-    name: Spec 733/774 protected versioned Secret cleanup
-    needs: checks
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' &&
-          github.actor == 'lirtual' && inputs.deploy_to_production == true && inputs.browser_access_readonly != true &&
-          needs.checks.result == 'success' && needs.checks.outputs.release_ready == 'true' &&
-          (
-            (
-              (inputs.legacy_secret_cleanup_mode == 'prepare' || inputs.legacy_secret_cleanup_mode == 'publish') &&
-              inputs.workflow_code_only != true &&
-              (inputs.worker == 'ssh-mcp-worker' || inputs.worker == 'workflow-mcp-worker' || inputs.worker == 'database-mcp-worker')
-            ) ||
-            (
-              inputs.legacy_secret_cleanup_mode == 'restore' && inputs.worker == 'workflow-mcp-worker' &&
-              (
-                (inputs.uu_session_secret_cleanup == true && inputs.workflow_code_only != true) ||
-                (inputs.workflow_code_only == true && inputs.uu_session_secret_cleanup != true)
-              )
-            )
-          ) &&
-          inputs.actions_old_ingress_quiesced != true &&
-          inputs.actions_migration_prepare != true && inputs.actions_gate_reopen != true &&
-          inputs.uu_cleanup_approved != true }}
-    runs-on: ubuntu-latest
-    concurrency:
-      group: worker-release-${{ inputs.worker }}
-      cancel-in-progress: false
-    permissions:
-      contents: read
-    env:
-      SELECTED_WORKER: ${{ inputs.worker }}
-      LEGACY_CLEANUP_MODE: ${{ inputs.legacy_secret_cleanup_mode }}
-      UU_SESSION_SECRET_CLEANUP: ${{ inputs.uu_session_secret_cleanup }}
-      WORKFLOW_CODE_ONLY: ${{ inputs.workflow_code_only }}
-      EXPECTED_SOURCE_SHA: ${{ inputs.legacy_cleanup_expected_sha }}
-      EXPECTED_ACTIVE_VERSION: ${{ inputs.legacy_cleanup_expected_active_version }}
-      CANDIDATE_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify Owner-approved exact main, mode and Worker before credentials
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_ACTOR" == 'lirtual' && "$GITHUB_REF" == 'refs/heads/main' ]]
-          [[ "$GITHUB_SHA" =~ ^[a-f0-9]{40}$ && "$GITHUB_SHA" == "$EXPECTED_SOURCE_SHA" ]]
-          [[ "$GITHUB_SHA" == "$(git rev-parse HEAD)" ]]
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          [[ "$EXPECTED_ACTIVE_VERSION" =~ ^[a-f0-9-]{36}$ ]]
-          case "$SELECTED_WORKER:$LEGACY_CLEANUP_MODE" in
-            ssh-mcp-worker:prepare|ssh-mcp-worker:publish|workflow-mcp-worker:prepare|workflow-mcp-worker:publish|workflow-mcp-worker:restore|database-mcp-worker:prepare|database-mcp-worker:publish) ;;
-            *) exit 1 ;;
-          esac
-          if [[ "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
-            [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
-               "${{ inputs.workflow_code_only }}" != 'true' &&
-               "${{ inputs.actions_migration_prepare }}" != 'true' &&
-               "${{ inputs.actions_gate_reopen }}" != 'true' &&
-               "${{ inputs.actions_old_ingress_quiesced }}" != 'true' ]] || {
-              echo 'UU Secret cleanup is limited to the existing protected Workflow Worker release' >&2
-              exit 1
-            }
-          fi
-          if [[ "$LEGACY_CLEANUP_MODE" == 'restore' && "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
-            [[ "$WORKFLOW_CODE_ONLY" != 'true' &&
-               "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
-               "$EXPECTED_ACTIVE_VERSION" == '3f27e9ca-790c-4ec9-914e-cb4204a736e6' &&
-               "$CANDIDATE_VERSION_ID" == '414da2d7-a16f-4ce6-9350-013ad4f7166a' ]]
-          fi
-          if [[ "$LEGACY_CLEANUP_MODE" == 'restore' && "$WORKFLOW_CODE_ONLY" == 'true' ]]; then
-            [[ "$UU_SESSION_SECRET_CLEANUP" != 'true' &&
-               "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
-               "$CANDIDATE_VERSION_ID" == '3f27e9ca-790c-4ec9-914e-cb4204a736e6' &&
-               "$EXPECTED_ACTIVE_VERSION" != '3f27e9ca-790c-4ec9-914e-cb4204a736e6' ]]
-          fi
-          if [[ "$LEGACY_CLEANUP_MODE" == 'prepare' ]]; then
-            [[ -z "$CANDIDATE_VERSION_ID" ]]
-          else
-            [[ "$CANDIDATE_VERSION_ID" =~ ^[a-f0-9-]{36}$ && "$CANDIDATE_VERSION_ID" != "$EXPECTED_ACTIVE_VERSION" ]]
-          fi
-
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10.17.1
-          run_install: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install pinned dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
-
-      - name: Validate active version, exact Secret inventory and Workflow quiescence (read-only)
-        if: inputs.uu_session_secret_cleanup != true && inputs.workflow_code_only != true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
-          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
-          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
-        run: node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
-
-      - name: Verify scoped UU Secret retirement and original historical proof (read-only)
-        if: inputs.uu_session_secret_cleanup == true && inputs.legacy_secret_cleanup_mode != 'restore'
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/workflow-uu-secret-cleanup.mjs preflight "$SELECTED_WORKER"
-
-      - name: Create one unpublished version removing only reviewed legacy Secrets
-        if: inputs.legacy_secret_cleanup_mode == 'prepare'
-        id: prepare
-        shell: bash
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          file="$(mktemp --suffix=.json)"
-          log="$(mktemp)"
-          chmod 600 "$file" "$log"
-          trap 'rm -f "$file" "$log"' EXIT
-          if [[ "$SELECTED_WORKER" == 'ssh-mcp-worker' ]]; then
-            printf '%s\n' '{"ENCRYPTION_KEY":null}' > "$file"
-          elif [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' &&
-               "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
-            printf '%s\n' '{"WORKFLOW_SESSION_RUNTIME_DATA_KEY":null}' > "$file"
-          elif [[ "$SELECTED_WORKER" == 'workflow-mcp-worker' ]]; then
-            printf '%s\n' '{"MCP_PORTAL_CLIENT_SECRET":null,"SESSION_RUNTIME_DATA_KEY":null}' > "$file"
-          else
-            printf '%s\n' '{"DATABASE_ENCRYPTION_KEY":null,"DATABASE_GITHUB_ACTIONS_TOKEN":null,"DATABASE_KEY_ID":null}' > "$file"
-          fi
-          # Unlike wrangler secret delete, versions secret bulk never deploys the candidate.
-          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions secret bulk "$file" \
-              --name "$SELECTED_WORKER" --message 'Reviewed version-only Secret cleanup candidate; not deployed' >"$log" 2>&1); then
-            # Emit only a bounded error-code classification, never the raw Wrangler log.
-            node scripts/manual-worker-release.mjs diagnostic "$log" prepare || true
-            echo "Candidate creation failed/unknown; do not retry; inspect Worker version inventory read-only" >&2
-            exit 1
-          fi
-          candidate="$(node scripts/manual-worker-release.mjs version "$log")"
-          echo "candidate_version_id=$candidate" >> "$GITHUB_OUTPUT"
-
-      - name: Verify unpublished candidate and unchanged 100% active version
-        if: inputs.legacy_secret_cleanup_mode == 'prepare' && inputs.uu_session_secret_cleanup != true
-        env:
-          CANDIDATE_VERSION_ID: ${{ steps.prepare.outputs.candidate_version_id }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
-          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
-          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
-        run: node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
-
-      - name: Verify scoped unpublished UU Secret candidate and unchanged active version
-        if: inputs.legacy_secret_cleanup_mode == 'prepare' && inputs.uu_session_secret_cleanup == true
-        env:
-          CANDIDATE_VERSION_ID: ${{ steps.prepare.outputs.candidate_version_id }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/workflow-uu-secret-cleanup.mjs candidate "$SELECTED_WORKER"
-
-      - name: Revalidate reviewed candidate immediately before production promotion
-        if: inputs.legacy_secret_cleanup_mode == 'publish'
-        env:
-          CANDIDATE_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
-          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
-          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          if [[ "$UU_SESSION_SECRET_CLEANUP" == 'true' ]]; then
-            node scripts/workflow-uu-secret-cleanup.mjs preflight "$SELECTED_WORKER"
-          else
-            node scripts/legacy-secret-cleanup.mjs preflight "$SELECTED_WORKER"
-            node scripts/legacy-secret-cleanup.mjs candidate "$SELECTED_WORKER"
-          fi
-
-      - name: Verify exact Version 143 to 142 restore conditions (read-only)
-        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true && inputs.workflow_code_only != true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/workflow-uu-secret-cleanup.mjs restore-preflight "$SELECTED_WORKER"
-
-      - name: Verify code-only Version 143 restore conditions (read-only)
-        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.workflow_code_only == true && inputs.uu_session_secret_cleanup != true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/workflow-version-restore.mjs preflight "$SELECTED_WORKER"
-
-      - name: Deploy only the independently approved candidate to 100 percent
-        if: inputs.legacy_secret_cleanup_mode == 'publish' || inputs.legacy_secret_cleanup_mode == 'restore'
-        shell: bash
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          set -euo pipefail
-          [[ "$GITHUB_SHA" == "$(git ls-remote origin refs/heads/main | cut -f1)" ]]
-          log="$(mktemp)"
-          chmod 600 "$log"
-          trap 'rm -f "$log"' EXIT
-          if ! (cd "apps/$SELECTED_WORKER" && pnpm exec wrangler versions deploy \
-            "$CANDIDATE_VERSION_ID@100" --yes) >"$log" 2>&1; then
-            node scripts/manual-worker-release.mjs diagnostic "$log" deploy || true
-            echo "Candidate promotion failed/unknown; read active deployment before any action" >&2
-            exit 1
-          fi
-
-      - name: Verify exact live version, retained canonical bindings and old Secret absence
-        if: inputs.legacy_secret_cleanup_mode == 'publish' && inputs.uu_session_secret_cleanup != true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          EXPECTED_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
-          WORKFLOW_MCP_PORTAL_CLIENT_ID: ${{ vars.WORKFLOW_MCP_PORTAL_CLIENT_ID }}
-          WORKFLOW_GITHUB_ACTION_REPOSITORY: ${{ vars.WORKFLOW_GITHUB_ACTION_REPOSITORY }}
-          WORKFLOW_GITHUB_DISPATCH_TOKEN: ${{ secrets.WORKFLOW_GITHUB_DISPATCH_TOKEN }}
-          DATABASE_CONNECTIONS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_CONNECTIONS || '' }}
-          DB_HOST: ${{ inputs.worker == 'database-mcp-worker' && vars.DB_HOST || '' }}
-          DATABASE_MAX_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_ROWS || '' }}
-          DATABASE_MAX_RESULT_BYTES: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_RESULT_BYTES || '' }}
-          DATABASE_MAX_SCHEMA_BYTES: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_SCHEMA_BYTES || '' }}
-          DATABASE_QUERY_TIMEOUT_MS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_QUERY_TIMEOUT_MS || '' }}
-          DATABASE_MAX_WRITE_AFFECTED_ROWS: ${{ inputs.worker == 'database-mcp-worker' && vars.DATABASE_MAX_WRITE_AFFECTED_ROWS || '' }}
-        run: node scripts/manual-worker-release.mjs cleanup-readback "$SELECTED_WORKER"
-
-      - name: Verify UU Secret removed from the exact 100 percent active version
-        if: inputs.legacy_secret_cleanup_mode == 'publish' && inputs.uu_session_secret_cleanup == true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CANDIDATE_VERSION_ID: ${{ inputs.legacy_cleanup_candidate_version }}
-        run: node scripts/workflow-uu-secret-cleanup.mjs readback "$SELECTED_WORKER"
-
-      - name: Verify exact Version 142 restored to 100 percent (read-only)
-        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.uu_session_secret_cleanup == true && inputs.workflow_code_only != true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/workflow-uu-secret-cleanup.mjs restore-readback "$SELECTED_WORKER"
-
-      - name: Verify exact Version 143 restored to 100 percent (read-only)
-        if: inputs.legacy_secret_cleanup_mode == 'restore' && inputs.workflow_code_only == true && inputs.uu_session_secret_cleanup != true
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/workflow-version-restore.mjs readback "$SELECTED_WORKER"

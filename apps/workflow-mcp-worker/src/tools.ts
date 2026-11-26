@@ -1,3 +1,4 @@
+import {matchingCandidates} from './discovery-query.ts';
 import {listUnifiedActions} from './action-catalog.ts';
 import { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
@@ -9,6 +10,7 @@ import type { Env } from './store.ts';
 
 const id=z.string().uuid();
 const revision=z.number().int().positive();
+const discoveryQuery=z.string().max(256).trim().min(1).optional();
 // ChatGPT fileParams needs a top-level descriptor, not a nested Run input.
 // Shape validation only; the upload path enforces the source allowlist.
 const chatGptFileDescriptor=z.object({
@@ -40,12 +42,16 @@ async function safe(f:()=>Promise<unknown>){try{return success(await f());}catch
 export function buildMcpServer(env:Env){
  const service=new WorkflowService(env);
  const server=new McpServer({name:'workflow-mcp-worker',version:'0.1.0'},
- {capabilities:{tools:{}},instructions:'Known published workflow ID and inputs: call workflow_run, then workflow_result; use workflow_status only if not terminal. Unknown ID: workflow_list; unknown inputs: workflow_get.published_run_interface (Draft is not runnable). To author, consult the Workflow Skill or README for DSL, use workflow_action_list() for source-reviewed GitHub/Cloudflare Actions or workflow_action_list({source:"portal"}) for reviewed Portal MCP tool contracts, then workflow_validate inline before creating a Draft. Publish requires explicit human authorization for real effects and the exact target-risk grants; discovery or validation alone grants nothing. Published Plans are immutable; opt into expected_published_version_id when consistency with workflow_get matters. One-time EnvShare delivery keys cannot be recovered, File disclosure requires reviewed Action consent and Owner authorization; Unknown external effects must never be blindly retried.'});
+ {capabilities:{tools:{}},instructions:'Known published workflow ID and inputs: call workflow_run, then workflow_result; use workflow_status only if not terminal. Unknown ID: workflow_list with query (name or ID); unknown inputs: workflow_get.published_run_interface (Draft is not runnable). To author, consult the Workflow Skill or README for DSL, use workflow_action_list with query for source-reviewed GitHub/Cloudflare Actions or explicit source=portal and query for reviewed Portal MCP tool contracts; omit query for inventory, narrow query on result_too_large, then workflow_validate inline before creating a Draft. Publish requires explicit human authorization for real effects and the exact target-risk grants; discovery or validation alone grants nothing. Published Plans are immutable; opt into expected_published_version_id when consistency with workflow_get matters. One-time EnvShare delivery keys cannot be recovered, File disclosure requires reviewed Action consent and Owner authorization; Unknown external effects must never be blindly retried.'});
  server.registerTool('workflow_connection_status',{description:'Read current authorization and generation for portal (default) or the independent HTTP Action connection; no credentials.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:read},async({target})=>safe(()=>target==='http'?service.httpConnectionStatus():service.portalConnectionStatus()));
  server.registerTool('workflow_connection_revoke',{description:'Revoke portal (default) or http Connection. New calls are fenced atomically; existing physical effects may finish. Repeated revoke is idempotent.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionRevoke():service.portalConnectionRevoke()));
  server.registerTool('workflow_connection_enable',{description:'Re-enable portal (default) or http Connection for newly republished Plans. Previous generation stays fenced; no unknown effect replay.',inputSchema:z.object({target:z.enum(['portal','http']).optional()}).strict(),annotations:write},async({target})=>safe(()=>target==='http'?service.httpConnectionEnable():service.portalConnectionEnable()));
- server.registerTool('workflow_action_list',{description:'Without source, discover current reviewed GitHub and Cloudflare action.run candidates (unchanged contract). Use source=portal only to discover approved Portal mcp.call read/write tool contracts and schema digests; discovery never executes tools or grants permission.',inputSchema:z.object({source:z.literal('portal').optional()}).strict(),annotations:externalRead},async({source})=>safe(async()=>{
-   if(source===undefined)return listUnifiedActions(env);
+ server.registerTool('workflow_action_list',{description:'Discover current reviewed GitHub and Cloudflare action.run candidates; optional query matches ID, name, description or type literally (ASCII case-insensitive). Explicit source=portal searches approved Portal mcp.call read/write Tool names, retaining scope status and schema digests. Omit query for inventory; narrow query on result_too_large. Discovery never executes tools or grants permission.',inputSchema:z.object({source:z.literal('portal').optional(),query:discoveryQuery}).strict(),annotations:externalRead},async({source,query})=>safe(async()=>{
+   if(source===undefined){
+     const {actions}=await listUnifiedActions(env);
+     return {actions:matchingCandidates(actions,query,a=>a.action_id,a=>a.name,
+       a=>['description' in a?a.description:undefined,'type' in a?a.type:undefined])};
+   }
    const authorization=await portalAuthorization(env.DB);
    if(authorization.state==='revoked')return {source:'portal_mcp',availability:'revoked',
      read:{availability:'revoked',tools:[]},write:{availability:'revoked',tools:[]}};
@@ -55,18 +61,19 @@ export function buildMcpServer(env:Env){
      found.availability==='unavailable'?'unavailable':'not_authorized';
    return {source:'portal_mcp',availability:readTools.length||writeTools.length?
      'verified_contract':found.availability,
-     read:{availability:scopeStatus(readTools),tools:readTools},
-     write:{availability:scopeStatus(writeTools),tools:writeTools},
+     read:{availability:scopeStatus(readTools),tools:matchingCandidates(readTools,query,t=>t.tool,t=>t.tool)},
+     write:{availability:scopeStatus(writeTools),tools:matchingCandidates(writeTools,query,t=>t.tool,t=>t.tool)},
      ...(found.reason?{reason:found.reason}:{})};
  }));
- server.registerTool('workflow_list',{description:'List workflows, publication state, and up to four active Session quota holders (Run ID, Step ID and last recorded state). Physical health is not inferred from D1.',inputSchema:z.object({}).strict(),annotations:read},async()=>safe(()=>service.list()));
+ server.registerTool('workflow_list',{description:'List publication state for the latest 100 updated non-deleted workflows, or use query for literal ID/name search across all non-deleted workflows (ASCII case-insensitive). Narrow query on result_too_large; no silent search truncation. Global active Session quota holders (up to four) are independent of query; physical health is not inferred from D1.',inputSchema:z.object({query:discoveryQuery}).strict(),annotations:read},async({query})=>safe(()=>service.list(query)));
  server.registerTool('workflow_get',{description:'Read editable Draft and active immutable Published Version; published_run_interface describes only provable runtime inputs, never Draft defaults or secret literal values. When recent_runs_limit is explicitly 1–20 (usually 5), include that many latest D1 Run snapshots; omitted performs no Run-history query.',inputSchema:z.object({workflow_id:id,recent_runs_limit:z.number().int().min(1).max(20).optional()}).strict(),annotations:read},async({workflow_id,recent_runs_limit})=>safe(()=>service.get(workflow_id,recent_runs_limit)));
  server.registerTool('workflow_create',{description:'Create a Draft YAML/JSON Workflow without executing it.',inputSchema:z.object({definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({definition})=>safe(()=>service.create(definition)));
  server.registerTool('workflow_update',{description:'Update an editable Draft using its expected revision.',inputSchema:z.object({workflow_id:id,expected_revision:revision,definition:z.string().min(3).max(32768)}).strict(),annotations:write},async({workflow_id,expected_revision,definition})=>safe(()=>service.update(workflow_id,expected_revision,definition)));
  server.registerTool('workflow_validate',{description:'Validate either an existing Draft (workflow_id plus revision) or an inline YAML/JSON definition. Returns structured issues and required Publish approvals. Inline validation never creates a Draft, publishes, dispatches or writes D1.',inputSchema:z.object({workflow_id:id.optional(),revision:revision.optional(),definition:z.string().min(3).max(32768).optional()}).strict(),annotations:externalRead},async input=>safe(()=>validateWorkflowTarget(service,input)));
- server.registerTool('workflow_publish',{description:'Publish a validated immutable Workflow using the current trusted Action catalog. Action identities and minimum grants are derived and rechecked internally for reviewed existing effects and read-only Actions; new Cloudflare write effects require independently approved exact grants, even if a Provider manifest marks them reviewed. External MCP and HTTP targets require exact approved_operations/approved_http_operations, target-risk acceptance, and independent write/HTTP approval. Saga compensation requires separate approval. This authenticated API action never substitutes for explicit permission to affect production data, secrets or protected resources.',inputSchema:z.object({
+ server.registerTool('workflow_publish',{description:'Publish a validated immutable Workflow using the current trusted Action catalog. Action identities and minimum grants are derived and rechecked internally for reviewed existing effects and read-only Actions; new Cloudflare write effects require independently Owner-approved exact approved_cloudflare_actions matching workflow_validate.required_cloudflare_actions, even if a Provider manifest marks them reviewed. Do not supply automatic grants or use discovery as approval. External MCP and HTTP targets require exact approved_operations/approved_http_operations, target-risk acceptance, and independent write/HTTP approval. Saga compensation requires separate approval. This authenticated API action never substitutes for explicit permission to affect production data, secrets or protected resources.',inputSchema:z.object({
    workflow_id:id,expected_revision:revision,
    approved_operations:z.array(readonlyOperation).max(32).optional(),
+   approved_cloudflare_actions:z.array(approvedCloudflareAction).max(32).optional(),
    accept_target_risks:z.literal(true).optional(),
    approved_http_operations:z.array(approvedHttpOperation).max(32).optional(),
    approve_http_execution:z.literal(true).optional(),

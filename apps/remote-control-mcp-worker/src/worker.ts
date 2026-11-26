@@ -5,34 +5,31 @@ import { handleBrowserPairing, isBrowserPairingPath } from "./browser-pairing.ts
 import { handleSecureInput, isSecureInputPath } from "./secure-input-web.ts";
 import { clerkOwnerConfigured, clerkOwnerOrigin } from "./clerk-owner-session.ts";
 import type { ClerkOwnerConfig } from "./clerk-owner-session.ts";
-export { V2OwnerCoordinator } from "./v2-pairing.ts";
-import { V2OwnerCoordinator as PreviewCoordinator } from "./v2-pairing.ts";
-export class DeviceCoordinator extends PreviewCoordinator {}
+import { OwnerCoordinator } from "./pairing.ts";
+export class DeviceCoordinator extends OwnerCoordinator {}
 
-type V2Env = Env & ClerkOwnerConfig & {
-  V2_OWNER?: DurableObjectNamespace;
+type WorkerEnv = Env & ClerkOwnerConfig & {
   DEVICE_COORDINATOR?: DurableObjectNamespace;
-  REMOTE_CONTROL_V2_PREVIEW_ONLY?: string;
   REMOTE_CONTROL_INSTALL_ORIGIN?: string;
 };
-function pairedOnly(env: Env): boolean {
-  return Boolean((env as V2Env).DEVICE_COORDINATOR || (env as V2Env).V2_OWNER);
+function pairedDeviceWorkerConfigured(env: Env): boolean {
+  return Boolean((env as WorkerEnv).DEVICE_COORDINATOR);
 }
-// Preview operations use existing authenticated per-device WSS routing.
+// Paired-device operations use the existing authenticated per-device WSS routing.
 // The paired Agent, not a temporary Worker secret, opts into write/Shell.
 const SECURE_INPUT_TOOL_NAMES = ["request_secure_input", "get_secure_input_status", "cancel_secure_input"] as const;
 const OWNER_TOOLS = new Set(["list_devices", "device_rename", "revoke_device", ...SECURE_INPUT_TOOL_NAMES]);
-function pendingOwner(env: Env): DurableObjectStub | null {
-  const ns = (env as V2Env).DEVICE_COORDINATOR ?? (env as V2Env).V2_OWNER;
+function deviceCoordinator(env: Env): DurableObjectStub | null {
+  const ns = (env as WorkerEnv).DEVICE_COORDINATOR;
   return ns ? ns.get(ns.idFromName("single-owner-v2")) : null;
 }
 
 function pairedReadErrorMessage(tool: string, code: unknown): string {
   if (code === "offline") {
-    return "The requested v2 device is unavailable: it is offline or has no current authenticated session.";
+    return "The requested device is unavailable: it is offline or has no current authenticated session.";
   }
   if (code === "busy") {
-    return "The v2 device is busy handling other reads; retry later.";
+    return "The device is busy handling other reads; retry later.";
   }
   if (code === "timeout") {
     return "The remote read timed out; no result was confirmed.";
@@ -61,11 +58,11 @@ function pairedReadErrorMessage(tool: string, code: unknown): string {
     }
     return "The remote file read failed; check the path and the Agent account's read permissions.";
   }
-  return "The requested v2 device is unavailable.";
+  return "The requested device is unavailable.";
 }
 
-const V2_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search", "list_sessions", "read_session_output"]);
-const V2_AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "list_sessions", "read_process_output"]);
+const DEVICE_READ_TOOLS = new Set(["read_file", "read_files", "list_directory", "stat_file", "search_files", "search_next", "stop_search", "list_sessions", "read_session_output"]);
+const AGENT_READ_TOOLS = new Set(["read_file", "read_multiple_files", "list_directory", "get_file_info", "start_search", "get_more_search_results", "stop_search", "list_sessions", "read_process_output"]);
 
 async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
@@ -76,13 +73,13 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
     return toolError(id, "An explicit valid device_id is required.");
   }
   const parsed = parseLocalCall(name, readArgs);
-  if (!parsed || !V2_AGENT_READ_TOOLS.has(parsed.tool)) {
+  if (!parsed || !AGENT_READ_TOOLS.has(parsed.tool)) {
     return toolError(id, "The requested tool call was rejected.");
   }
-  const owner = pendingOwner(env);
-  if (!owner) return toolError(id, "The requested v2 device is unavailable.");
+  const owner = deviceCoordinator(env);
+  if (!owner) return toolError(id, "The requested device is unavailable.");
   try {
-    const response = await owner.fetch("https://v2.internal/read", {
+    const response = await owner.fetch("https://device.internal/read", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ device_id, tool: parsed.tool, arguments: upstreamArguments(parsed) }),
     });
@@ -98,20 +95,20 @@ async function callPairedDeviceRead(env: Env, id: unknown, name: string, args: u
         } catch { /* Unknown response bodies never cross the public boundary. */ }
         return toolError(id, pairedReadErrorMessage(name, code));
       }
-      return toolError(id, "The requested v2 device is unavailable.");
+      return toolError(id, "The requested device is unavailable.");
     }
     const result = await response.json() as { status?: unknown; text?: unknown };
     if (result.status !== "completed" || typeof result.text !== "string" || result.text.length > 65536) {
       return toolError(id, "The remote file read failed.");
     }
     return toolText(id, result.text);
-  } catch { return toolError(id, "The requested v2 device is unavailable."); }
+  } catch { return toolError(id, "The requested device is unavailable."); }
 }
 
 const REVOKE_DEVICE_TOOL = {
   name: "revoke_device",
-  title: "Revoke a paired v2 device",
-  description: "Permanently reject a paired v2 identity and attempt to close its WSS. Agent-owned processes are not confirmed stopped.",
+  title: "Revoke a paired device",
+  description: "Permanently reject a paired identity and attempt to close its WSS. Agent-owned processes are not confirmed stopped.",
   inputSchema: {
     type: "object",
     properties: { device_id: { type: "string", description: "Exact paired device ID" } },
@@ -127,10 +124,10 @@ async function revokePairedDevice(env: Env, id: unknown, args: unknown): Promise
       !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test((args as { device_id: string }).device_id)) {
     return toolError(id, "Invalid device revocation request.");
   }
-  const owner = pendingOwner(env);
+  const owner = deviceCoordinator(env);
   if (!owner) return toolError(id, "Device revocation is disabled.");
   try {
-    const response = await owner.fetch("https://v2.internal/revoke", {
+    const response = await owner.fetch("https://device.internal/revoke", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args),
     });
     if (!response.ok) return toolError(id, "Device revocation was not confirmed.");
@@ -164,10 +161,10 @@ async function renamePairedDevice(env: Env, id: unknown, args: unknown): Promise
       record.name.trim() !== record.name || /[\x00-\x1f]/.test(record.name)) {
     return toolError(id, "Invalid device rename request.");
   }
-  const owner = pendingOwner(env);
+  const owner = deviceCoordinator(env);
   if (!owner) return toolError(id, "Device renaming is disabled.");
   try {
-    const response = await owner.fetch("https://v2.internal/rename", {
+    const response = await owner.fetch("https://device.internal/rename", {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(record),
     });
     if (!response.ok) return toolError(id, "Device rename was rejected or the device is no longer approved.");
@@ -176,26 +173,26 @@ async function renamePairedDevice(env: Env, id: unknown, args: unknown): Promise
 }
 
 // T07 staged file/command capability; managed-session actions remain disabled.
-const V2_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "send_input", "stop_session", "get_operation_status"]);
-const V2_AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "start_process", "interact_with_process", "force_terminate", "get_operation_status"]);
+const DEVICE_OPERATION_TOOLS = new Set(["write_file", "create_directory", "replace_text", "move_file", "delete_file", "run_command", "send_input", "stop_session", "get_operation_status"]);
+const AGENT_OPERATION_TOOLS = new Set(["write_file", "create_directory", "edit_block", "move_file", "delete_file", "start_process", "interact_with_process", "force_terminate", "get_operation_status"]);
 async function callPairedDeviceOperation(env: Env, id: unknown, name: string, args: unknown): Promise<Response> {
   if (!args || typeof args !== "object" || Array.isArray(args)) {
-    return toolError(id, "The requested v2 operation was rejected.");
+    return toolError(id, "The requested operation was rejected.");
   }
   const { device_id, ...localArgs } = args as Record<string, unknown>;
   if (typeof device_id !== "string" || !/^[a-f0-9]{8}(-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(device_id)) {
     return toolError(id, "An explicit valid device_id is required.");
   }
   const parsed = parseLocalCall(name, localArgs);
-  if (!parsed || !V2_AGENT_OPERATION_TOOLS.has(parsed.tool)) {
-    return toolError(id, "The requested v2 operation was rejected.");
+  if (!parsed || !AGENT_OPERATION_TOOLS.has(parsed.tool)) {
+    return toolError(id, "The requested operation was rejected.");
   }
   const operationId = callOperationId(parsed);
   if (!operationId) return toolError(id, "A valid operation_id is required.");
-  const owner = pendingOwner(env);
-  if (!owner) return toolError(id, "The requested v2 device is unavailable.");
+  const owner = deviceCoordinator(env);
+  if (!owner) return toolError(id, "The requested device is unavailable.");
   try {
-    const response = await owner.fetch("https://v2.internal/operation", {
+    const response = await owner.fetch("https://device.internal/operation", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ device_id, tool: parsed.tool,
         operation_id: operationId,
@@ -238,7 +235,7 @@ async function callPairedDeviceOperation(env: Env, id: unknown, name: string, ar
 
 const LIST_DEVICES_TOOL = {
   name: "list_devices",
-  title: "List paired v2 devices",
+  title: "List paired devices",
   description: "List approved paired devices and full UUIDs with online status, OS/runtime and grant metadata. capability_hints are advisory Agent-reported file read/write/Shell support, or unknown when old/offline/stale; they never grant permissions. Duplicate names require an explicit full device_id. Does not execute commands.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
@@ -248,10 +245,10 @@ async function listPairedDevices(env: Env, id: unknown, args: unknown): Promise<
   if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length !== 0) {
     return toolError(id, "The device list request was rejected.");
   }
-  const owner = pendingOwner(env);
+  const owner = deviceCoordinator(env);
   if (!owner) return toolError(id, "Device listing is disabled.");
   try {
-    const response = await owner.fetch("https://v2.internal/devices", {
+    const response = await owner.fetch("https://device.internal/devices", {
       method: "POST", headers: { "content-type": "application/json" }, body: "{}",
     });
     if (!response.ok) return toolError(id, "Device listing is unavailable.");
@@ -305,8 +302,8 @@ const CANCEL_SECURE_INPUT_TOOL = {
 async function callSecureInputTool(
   request: Request, env: Env, id: unknown, name: string, args: unknown,
 ): Promise<Response> {
-  const owner = pendingOwner(env);
-  const config = env as V2Env;
+  const owner = deviceCoordinator(env);
+  const config = env as WorkerEnv;
   if (!owner || !clerkOwnerConfigured(config) || !config.CLERK_OWNER_USER_ID) {
     return toolError(id, "Clerk Owner secure input is not configured.");
   }
@@ -328,7 +325,7 @@ async function callSecureInputTool(
     ? { owner_user_id: config.CLERK_OWNER_USER_ID, request: record }
     : { owner_user_id: config.CLERK_OWNER_USER_ID, request_id: requestId };
   try {
-    const response = await owner.fetch("https://v2.internal/secure-input/" + route, {
+    const response = await owner.fetch("https://device.internal/secure-input/" + route, {
       method: "POST", headers: { "content-type": "application/json", "cache-control": "no-store" },
       body: JSON.stringify(payload),
     });
@@ -1012,7 +1009,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
   }
 
   if (rpcMessage.method === "tools/list") {
-    if (pairedOnly(env)) {
+    if (pairedDeviceWorkerConfigured(env)) {
       return rpc(rpcMessage.id, { tools: [
         ...LOCAL_TOOLS.map(tool => ({
           ...tool,
@@ -1024,7 +1021,7 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
         REQUEST_SECURE_INPUT_TOOL, GET_SECURE_INPUT_STATUS_TOOL, CANCEL_SECURE_INPUT_TOOL,
       ] });
     }
-    return rpc(rpcMessage.id, { tools: pendingOwner(env) ? [
+    return rpc(rpcMessage.id, { tools: deviceCoordinator(env) ? [
       ...LOCAL_TOOLS, LIST_DEVICES_TOOL, DEVICE_RENAME_TOOL, REVOKE_DEVICE_TOOL,
       REQUEST_SECURE_INPUT_TOOL, GET_SECURE_INPUT_STATUS_TOOL, CANCEL_SECURE_INPUT_TOOL,
     ] : LOCAL_TOOLS });
@@ -1037,43 +1034,43 @@ async function handleMcp(request: Request, env: Env): Promise<Response> {
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
     }
     const call = params as { name?: unknown; arguments?: unknown };
-    if (pairedOnly(env)) {
+    if (pairedDeviceWorkerConfigured(env)) {
       const name = typeof call.name === "string" ? call.name : "";
-      const requiresDevice = V2_READ_TOOLS.has(name) || V2_OPERATION_TOOLS.has(name);
+      const requiresDevice = DEVICE_READ_TOOLS.has(name) || DEVICE_OPERATION_TOOLS.has(name);
       const target = call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments)
         ? (call.arguments as Record<string, unknown>).device_id : undefined;
-      // Never fall back to the v1 VPC. A caller must choose a paired device.
+      // Never fall back to the legacy VPC. A caller must choose a paired device.
       if ((!requiresDevice && !OWNER_TOOLS.has(name)) ||
           (requiresDevice && (typeof target !== "string" ||
             !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(target)))) {
         return toolError(rpcMessage.id, "The requested tool call was rejected: a valid device_id is required.");
       }
     }
-    if (typeof call.name === "string" && V2_OPERATION_TOOLS.has(call.name) &&
+    if (typeof call.name === "string" && DEVICE_OPERATION_TOOLS.has(call.name) &&
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
       return callPairedDeviceOperation(env, rpcMessage.id, call.name, call.arguments);
     }
-    if (typeof call.name === "string" && V2_READ_TOOLS.has(call.name) &&
+    if (typeof call.name === "string" && DEVICE_READ_TOOLS.has(call.name) &&
         call.arguments && typeof call.arguments === "object" && !Array.isArray(call.arguments) &&
         Object.hasOwn(call.arguments, "device_id")) {
       return callPairedDeviceRead(env, rpcMessage.id, call.name, call.arguments);
     }
-    if (call.name === "device_rename" && pendingOwner(env)) {
+    if (call.name === "device_rename" && deviceCoordinator(env)) {
       return renamePairedDevice(env, rpcMessage.id, call.arguments);
     }
-    if (call.name === "revoke_device" && pendingOwner(env)) {
+    if (call.name === "revoke_device" && deviceCoordinator(env)) {
       return revokePairedDevice(env, rpcMessage.id, call.arguments);
     }
-    if (call.name === "list_devices" && pendingOwner(env)) {
+    if (call.name === "list_devices" && deviceCoordinator(env)) {
       return listPairedDevices(env, rpcMessage.id, call.arguments ?? {});
     }
     if (typeof call.name === "string" && SECURE_INPUT_TOOL_NAMES.includes(call.name as typeof SECURE_INPUT_TOOL_NAMES[number]) &&
-        pendingOwner(env)) {
+        deviceCoordinator(env)) {
       return callSecureInputTool(request, env, rpcMessage.id, call.name, call.arguments);
     }
-    // A production or Preview owner never falls back to the v1 VPC.
-    if (pairedOnly(env)) return toolError(rpcMessage.id, "The requested paired-device tool is unavailable.");
+    // A configured paired-device Worker never falls back to the legacy VPC.
+    if (pairedDeviceWorkerConfigured(env)) return toolError(rpcMessage.id, "The requested paired-device tool is unavailable.");
     if (!isKnownTool(call.name)) {
       log("rejected");
       return toolError(rpcMessage.id, "The requested tool call was rejected.");
@@ -1132,37 +1129,37 @@ function linuxLatestInstall(request: Request, origin: string): Response {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    // A newly uploaded public preview must not expose even the bounded
+    // An unconfigured public Worker must not expose even the bounded
     // unauthenticated Agent bootstrap until its distinct owner key is set.
-    if (pairedOnly(env) && !env.MCP_ACCESS_TOKEN) {
-      return jsonError(503, "preview_unconfigured", "The preview is not yet configured.");
+    if (pairedDeviceWorkerConfigured(env) && !env.MCP_ACCESS_TOKEN) {
+      return jsonError(503, "owner_worker_unconfigured", "The owner Worker is not configured.");
     }
     const url = new URL(request.url);
     if (isSecureInputPath(url.pathname)) {
-      const owner = pendingOwner(env);
+      const owner = deviceCoordinator(env);
       if (!owner) return jsonError(404, "not_found", "The route was not found.");
-      return handleSecureInput(request, env as V2Env, owner);
+      return handleSecureInput(request, env as WorkerEnv, owner);
     }
     if (isBrowserPairingPath(url.pathname)) {
-      return handleBrowserPairing(request, env as V2Env, ()=>pendingOwner(env), readBounded);
+      return handleBrowserPairing(request, env as WorkerEnv, ()=>deviceCoordinator(env), readBounded);
     }
 
     if (url.pathname === "/" || url.pathname === "/install.sh" || url.pathname === "/install.ps1" || url.pathname === "/install-macos.sh") {
       // Serve public installers only from the existing, configured
       // production owner Worker; other environments remain fail-closed.
-      if (!pairedOnly(env) || !env.MCP_ACCESS_TOKEN || !pendingOwner(env)) {
-        return new Response("Preview installer is disabled.\n", {
+      if (!pairedDeviceWorkerConfigured(env) || !env.MCP_ACCESS_TOKEN || !deviceCoordinator(env)) {
+        return new Response("Agent installer is not configured.\n", {
           status: 503, headers: { "cache-control": "no-store", "x-content-type-options": "nosniff" },
         });
       }
-      const origin = (env as V2Env).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
+      const origin = (env as WorkerEnv).REMOTE_CONTROL_INSTALL_ORIGIN ?? "https://rca.lirtual.dpdns.org";
       if (url.pathname === "/install-macos.sh") {
         return handleLatestMacInstallRequest(request, origin);
       }
       if (url.pathname === "/install.sh") return linuxLatestInstall(request, origin);
       return handleAgentInstallerRequest(request, origin);
     }
-    if (url.pathname.startsWith("/agent/connect/") && pendingOwner(env)) {
+    if (url.pathname.startsWith("/agent/connect/") && deviceCoordinator(env)) {
       const deviceId = url.pathname.slice("/agent/connect/".length);
       if (request.method !== "GET" || !/^[a-f0-9-]{36}$/.test(deviceId) ||
           url.search || request.headers.has("origin") ||
@@ -1172,7 +1169,7 @@ export default {
       const protocols = request.headers.get("sec-websocket-protocol");
       if (!protocols || protocols.length > 256) return jsonError(401, "unauthorized", "Invalid session proof.");
       try {
-        return await pendingOwner(env)!.fetch("https://v2.internal/ws/" + deviceId, {
+        return await deviceCoordinator(env)!.fetch("https://device.internal/ws/" + deviceId, {
           headers: { upgrade: "websocket", "sec-websocket-protocol": protocols },
         });
       } catch { return jsonError(503, "unavailable", "Device session is unavailable."); }
@@ -1180,7 +1177,7 @@ export default {
     if ((url.pathname === "/agent/pair/start" ||
          url.pathname === "/agent/session/challenge" || url.pathname === "/agent/session/recover" ||
          url.pathname === "/agent/owner/intent/challenge" || url.pathname === "/agent/owner/intent" ||
-         url.pathname === "/agent/re-pair/status") && pendingOwner(env)) {
+         url.pathname === "/agent/re-pair/status") && deviceCoordinator(env)) {
       if (request.method !== "POST" || request.headers.has("origin")) {
         return jsonError(405, "method_not_allowed", "The request was rejected.");
       }
@@ -1189,11 +1186,11 @@ export default {
           url.pathname === "/agent/owner/intent" ? 65_536 : 4096;
         const raw = await readBounded(request, bodyLimit);
         if (raw === null) return jsonError(400, "bad_request", "The request was rejected.");
-        return await pendingOwner(env)!.fetch(url.pathname === "/agent/session/challenge" ? "https://v2.internal/session/challenge" :
-          url.pathname === "/agent/session/recover" ? "https://v2.internal/session/recover" :
-          url.pathname === "/agent/owner/intent/challenge" ? "https://v2.internal/owner/intent/challenge" :
-          url.pathname === "/agent/owner/intent" ? "https://v2.internal/owner/intent" :
-          url.pathname === "/agent/re-pair/status" ? "https://v2.internal/re-pair/status" : "https://v2.internal/register", {
+        return await deviceCoordinator(env)!.fetch(url.pathname === "/agent/session/challenge" ? "https://device.internal/session/challenge" :
+          url.pathname === "/agent/session/recover" ? "https://device.internal/session/recover" :
+          url.pathname === "/agent/owner/intent/challenge" ? "https://device.internal/owner/intent/challenge" :
+          url.pathname === "/agent/owner/intent" ? "https://device.internal/owner/intent" :
+          url.pathname === "/agent/re-pair/status" ? "https://device.internal/re-pair/status" : "https://device.internal/register", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: raw,

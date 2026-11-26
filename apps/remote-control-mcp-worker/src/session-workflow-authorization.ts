@@ -1,5 +1,5 @@
 /** Fail-closed, per-admission Workflow decision through a private Service Binding. */
-import type { V2Device, SessionCheck } from './v2-session.ts';
+import type { DeviceRecord, SessionCheck } from './session.ts';
 
 /** Only the named WorkerEntrypoint may provide this RPC; there is no public URL. */
 export interface WorkflowSessionAuthorization {
@@ -8,7 +8,7 @@ export interface WorkflowSessionAuthorization {
 
 /** No cache: each new remote operation and authenticated socket checks Workflow. */
 export function sessionAllowedByWorkflow(binding?: WorkflowSessionAuthorization): SessionCheck {
-  return async (device: V2Device): Promise<boolean> => {
+  return async (device: DeviceRecord): Promise<boolean> => {
     if (!binding || device.grant_type !== 'session' || !device.session_attempt_id) return false;
     try {
       const decision = await binding.authorizeSessionAttempt({ attempt_id: device.session_attempt_id });

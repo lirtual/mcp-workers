@@ -1,3 +1,4 @@
+import {asciiLower} from './discovery-query.ts';
 import {resolvePublicActionDefinition} from './public-action-definition.ts';
 import {needsExplicitCloudflareEffectGrant} from './action-catalog.ts';
 import {requestGitHubActionCancellation} from './github-action-cancel.ts';
@@ -16,7 +17,7 @@ import { currentExecutorRepository } from './github-action-catalog.ts';
 import {hasHistoricalTaggedGitHubAction,isDynamicMainAction} from './github-action-main.ts';
 import { compilePublicPlan, assertPublicActionSyntax, PlanError, canonicalJsonString, isAuxiliaryBarkPair, validateStaticOutputReferences } from './plan.ts';
 import {settleVerifiedAuxiliaryBusiness} from './auxiliary-bark-recovery.ts';
-import {observeInstance, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
+import {observeInstance, recordNativeTerminalObservation, type InstanceObservation, shouldExpireUnconfirmedOutcome, unresolvedNativeTerminalError, OUTCOME_SETTLE_WINDOW_MS} from './instance-observation.ts';
 import YAML from 'yaml';
 import {reviewedActionDeployment,cloudflareActionManifest,hasRetiredWeixinAction} from './cloudflare-action-contract.ts';
 import {encryptEnvshareAdmission,isEnvsharePlan,buildEnvshareLink} from './envshare-transient.ts';
@@ -65,8 +66,7 @@ export type Env = {
   // Dedicated reverse-direction key: only the Owner MCP result can decrypt
   // a Runner-sealed Cloudflare claim. Never reuse a generic access token.
   WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY?: string;
-  // New source-reviewed single Actions binding. Legacy bindings remain read-only during cutover.
-  ACTIONS_DEPLOYMENT_ID?: string;
+  // Current unified Actions service binding.
   ACTIONS?: {
     listActions():Promise<Array<{action_id:string}>>;
     getContract(action_id:string,contract_digest?:string):Promise<{deployment_id:string;contract_digest:string;manifest?:unknown}>;
@@ -74,25 +74,6 @@ export type Env = {
     getReceipt(action_id:string,query:unknown):Promise<{status:string}>;
     getBinding(action_id:string):Promise<{generation:number;ready:boolean}>;
   };
-  // The Worker Version ID is pinned by the separately authorized release.
-  BARK_ACTION_DEPLOYMENT_ID?: string;
-  BARK_ACTION_PROVIDER?: {
-    getContract():Promise<{deployment_id:string;contract_digest:string}>;
-    sendNotification(input:{invocation_id:string;deployment_id:string;contract_digest:string;
-      input_digest:string;notification:Record<string,unknown>}):Promise<{status:string;input_digest:string}>;
-  };
-  WEIXIN_ACTION_DEPLOYMENT_ID?: string;
-  WEIXIN_ACTION_PROVIDER?: {
-    getBinding():Promise<{generation:number;ready:boolean}>;
-    getContract():Promise<{deployment_id:string;contract_digest:string}>;
-    getDownloadContract():Promise<{deployment_id:string;contract_digest:string}>;
-    getGenericContract():Promise<{deployment_id:string;contract_digest:string}>;
-    sendGenericText(input:{invocation_id:string;binding_generation:number;text:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
-    sendDownloadComplete(input:{invocation_id:string;binding_generation:number;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
-    sendText(input:{invocation_id:string;binding_generation:number;session_url:string;deployment_id:string;contract_digest:string}):Promise<{status:string;input_digest:string}>;
-    getReceipt(input:{invocation_id:string;binding_generation:number;input_digest:string}):Promise<{status:string}>;
-  };
-
   // Legacy personal direct-target mode requires a separate explicit opt-in.
   // Without it, MCP must have a pinned Portal endpoint at Publish and Run.
 };
@@ -138,7 +119,7 @@ export function applyStatus(native:string, outcome:string):string {
 }
 type WorkflowRow={id:string;name:string;draft:string;draft_revision:number;active_version_id:string|null;state:string;deleted_at:number|null};
 type VersionRow={id:string;plan:string;digest:string};
-type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null};
+type RunRow={id:string;parent_run_id:string|null;workflow_id:string;version_id:string;instance_id:string;request_digest:string;start_state:string;outcome:string;result:string|null;error_code:string|null;inputs:string;created_at:number;updated_at:number;native_complete_seen_at:number|null;execution_terminal_proof:string|null};
 const workflowView=(row:WorkflowRow)=>({workflow_id:row.id,name:row.name,draft_revision:row.draft_revision,definition:row.draft,published_version_id:row.active_version_id,state:row.state});
 type RecentRunSnapshot={run_id:string;published_version_id:string;created_at:number;
   updated_at:number;start_state:string;recorded_outcome:string;error_code:string|null};
@@ -178,8 +159,17 @@ export class WorkflowService {
   private env:Env;
   constructor(env:Env){this.env=env;}
   private get db(){return this.env.DB;}
-  async list(){
-    const out=await this.db.prepare('SELECT * FROM workflows WHERE deleted_at IS NULL ORDER BY updated_at DESC LIMIT 100').all<WorkflowRow>();
+  async list(query?:string){
+    const columns='id,name,draft_revision,active_version_id,state';
+    const base='SELECT '+columns+' FROM workflows WHERE deleted_at IS NULL';
+    const needle=query===undefined?undefined:asciiLower(query);
+    const statement=needle===undefined
+      ?this.db.prepare(base+' ORDER BY updated_at DESC LIMIT 100')
+      :this.db.prepare(base+' AND (instr(lower(id),?)>0 OR instr(lower(name),?)>0)'+
+        ' ORDER BY CASE WHEN lower(id)=? THEN 0 WHEN lower(name)=? THEN 1 ELSE 2 END,id COLLATE BINARY LIMIT 101')
+        .bind(needle,needle,needle,needle);
+    const out=await statement.all<Pick<WorkflowRow,'id'|'name'|'draft_revision'|'active_version_id'|'state'>>();
+    if(out.results.length>100)throw new StateError('result_too_large');
     // Four global physical Session slots are independent of the parent
     // Workflow's business outcome. The existing read-only workflow_list is
     // enough to discover a held/uncertain slot and its server-pinned run_id;
@@ -347,7 +337,7 @@ export class WorkflowService {
       const resolved=await resolvePublicActionDefinition(definition,this.env);
       const {digest,plan}=await compilePublicPlan(resolved.definition,resolved.manifests);
       const reviewed_actions=await this.checkedGitHubActions(plan);
-      const reviewed_cloudflare_actions=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
+      const reviewedCloudflare=await Promise.all(plan.steps.filter(s=>s.uses==='action.run')
         .map(async s=>{
           const bark=s.with.provider==='bark';
           const manifest=(plan.cloudflare_action_contracts?.[s.id]??await cloudflareActionManifest(s.with.action==='weixin.notify_download'?'download':bark?'bark':s.with.action==='dub.shorten_url'?'dub':s.with.action==='envshare.share_text'?'envshare':s.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
@@ -356,10 +346,13 @@ export class WorkflowService {
           let live=null;
           try{live=this.env.ACTIONS?await this.env.ACTIONS.getContract(manifest.action,manifest.contract_digest):null;}
           catch{/* Unavailable Provider must not become an approval. */}
-          return {executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
+          return {explicit:needsExplicitCloudflareEffectGrant(manifest),grant:{
+            executor:'cloudflare' as const,provider:manifest.provider,action:manifest.action,
             contract_digest:manifest.contract_digest,
-            deployment_id:reviewedActionDeployment(live,manifest.contract_digest)};
+            deployment_id:reviewedActionDeployment(live,manifest.contract_digest)}};
         }));
+      const reviewed_cloudflare_actions=reviewedCloudflare.map(x=>x.grant);
+      const required_cloudflare_actions=reviewedCloudflare.filter(x=>x.explicit).map(x=>x.grant);
       const required_children=await this.checkedChildWorkflows(plan);
       const required_approvals=[...new Map(approvedMcpSteps(plan).map(s=>{
         const grant:ReadonlyOperation={endpoint:s.with.endpoint as string,tool:s.with.tool as string,
@@ -377,6 +370,7 @@ export class WorkflowService {
           'mcp_schema_pinned_live_call_unverified':'compiler_and_github_revision_verified',
         ...(reviewed_actions.length?{reviewed_actions}:{}),
         ...(reviewed_cloudflare_actions.length?{reviewed_cloudflare_actions,requires_cloudflare_execution_approval:true}:{}),
+        ...(required_cloudflare_actions.length?{required_cloudflare_actions}:{}),
         ...(required_approvals.length?{required_approvals,
           ...(required_approvals.some(x=>x.scope==='write')?{requires_mcp_write_execution_approval:true}:{})}:{}),
         ...(required_http_operations.length?{required_http_operations,requires_http_execution_approval:true}:{}),
@@ -444,6 +438,7 @@ export class WorkflowService {
   async publishReviewed(workflow_id:string,expected_revision:number,options:{
     approved_operations?:ReadonlyOperation[];accept_target_risks?:boolean;
     approved_http_operations?:HttpOperation[];approve_http_execution?:boolean;
+    approved_cloudflare_actions?:NonNullable<Plan['cloudflare_action_approvals']>;
     approve_mcp_write_execution?:boolean;approve_saga_compensation?:boolean;
   }={}){
     assertId(workflow_id);
@@ -453,7 +448,7 @@ export class WorkflowService {
     // publish() would scan it again in the same request.
     return this.publish(workflow_id,expected_revision,
       options.approved_operations??[],options.accept_target_risks===true,
-      false,[],[],[],false,options.approved_http_operations??[],
+      false,[],[],options.approved_cloudflare_actions??[],false,options.approved_http_operations??[],
       options.approve_http_execution===true,options.approve_mcp_write_execution===true,
       options.approve_saga_compensation===true,true);
   }
@@ -508,22 +503,28 @@ if(required.length){
     if(cloudflareSteps.length){
       const provider=this.env.ACTIONS;
       if(!provider)throw new StateError('cloudflare_provider_not_configured');
-      cloudflareGrants=await Promise.all(cloudflareSteps.map(async step=>{
+      const reviewedCloudflare=await Promise.all(cloudflareSteps.map(async step=>{
         const bark=step.with.provider==='bark';
         const contract=(plan.cloudflare_action_contracts?.[step.id]??await cloudflareActionManifest(step.with.action==='weixin.notify_download'?'download':bark?'bark':step.with.action==='dub.shorten_url'?'dub':step.with.action==='envshare.share_text'?'envshare':step.with.action==='litterbox.upload_file'?'litterbox':'unified-generic')) as Record<string,any>;
         // Each business effect and the optional Bark has its own reviewed grant.
-        if(selfApproved&&needsExplicitCloudflareEffectGrant(contract))
-          throw new StateError('cloudflare_action_explicit_authorization_required');
         let live;
         try{live=await provider.getContract(contract.action,contract.contract_digest);}
         catch{throw new StateError('cloudflare_provider_identity_unconfirmed');}
         const deployment=reviewedActionDeployment(live,contract.contract_digest);
         if(!deployment)throw new StateError('cloudflare_provider_identity_mismatch');
-        return {executor:'cloudflare' as const,provider:contract.provider as string,
+        return {explicit:needsExplicitCloudflareEffectGrant(contract),grant:{
+          executor:'cloudflare' as const,provider:contract.provider as string,
           action:contract.action as string,contract_digest:contract.contract_digest as string,
-          deployment_id:deployment};
+          deployment_id:deployment}};
       }));
+      cloudflareGrants=reviewedCloudflare.map(x=>x.grant);
       if(selfApproved){
+        // The caller supplies only independently approved new effects. Existing
+        // reviewed effects still derive their grants from the live catalog.
+        const required=reviewedCloudflare.filter(x=>x.explicit).map(x=>x.grant);
+        const exact=(grants:typeof cloudflareGrants)=>grants.map(canonicalJsonString).sort();
+        if(JSON.stringify(exact(required))!==JSON.stringify(exact(approved_cloudflare_actions)))
+          throw new StateError('cloudflare_action_explicit_authorization_required');
         approve_cloudflare_execution=true;
         approved_cloudflare_actions=cloudflareGrants;
       }
@@ -991,7 +992,10 @@ throw new StateError('reserved_idempotency_key');
         // never reconcile them into a new physical execution or rewrite facts.
         if(hasRetiredWeixinAction(plan))continue;
         const observed=await observeInstance(this.env.WORKFLOW,run.instance_id);
-        if(observed.kind==='found')await this.settleNativeOutcome(run,observed.status);
+        if(observed.kind==='found'){
+          await this.rememberNativeTerminal(run,observed);
+          await this.settleNativeOutcome(run,observed.status);
+        }
       }
     }
     const wf=await this.row(workflow_id);
@@ -1128,6 +1132,7 @@ throw new StateError('reserved_idempotency_key');
       const observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
       if(observation.kind==='found'){
         await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+        await this.rememberNativeTerminal(row,observation);
       }
       return {run_id:row.id,published_version_id:row.version_id,status:row.outcome,start_state:observation.kind==='found'?'started':row.start_state,idempotent_replay:true};
     }
@@ -1136,6 +1141,7 @@ throw new StateError('reserved_idempotency_key');
     let observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
     if(observation.kind==='found'){
       await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+      await this.rememberNativeTerminal(row,observation);
       return started();
     }
     if(observation.kind==='missing' && row.outcome==='queued' && now()-row.created_at<START_RECONCILE_WINDOW_MS){
@@ -1144,6 +1150,7 @@ throw new StateError('reserved_idempotency_key');
       observation=await observeInstance(this.env.WORKFLOW,row.instance_id);
       if(observation.kind==='found'){
         await this.db.prepare("UPDATE runs SET start_state='started',updated_at=? WHERE id=? AND start_state IN ('reserved','start_unknown')").bind(now(),row.id).run();
+        await this.rememberNativeTerminal(row,observation);
         return started();
       }
     }
@@ -1156,6 +1163,12 @@ throw new StateError('reserved_idempotency_key');
     if(latest?.start_state==='started')return {run_id:row.id,published_version_id:row.version_id,status:latest.outcome,start_state:'started',idempotent_replay:true};
     // Unknown lookup error: retain quota and audit identity until observation works.
     return {run_id:row.id,published_version_id:row.version_id,status:'start_unknown',start_state:'start_unknown',idempotent_replay:true};
+  }
+  private async rememberNativeTerminal(row:RunRow, observation:InstanceObservation):Promise<void>{
+    try{
+      const saved=await recordNativeTerminalObservation(this.db,row,observation);
+      if(saved==='conflict')console.warn('workflow_terminal_observation_conflict',row.id);
+    }catch{console.warn('workflow_terminal_observation_unavailable',row.id);}
   }
   private async settleNativeOutcome(row:RunRow, native:string):Promise<RunRow>{
     if(row.start_state!=='started'||!['queued','running'].includes(row.outcome))return row;
@@ -1208,10 +1221,12 @@ throw new StateError('reserved_idempotency_key');
       row=(await this.db.prepare('SELECT * FROM runs WHERE id=?').bind(run_id).first<RunRow>())!;
     }
     let native='unknown';
-    if(!legacy&&row.start_state==='started' && ['queued','running'].includes(row.outcome)){
+    if(!legacy&&row.start_state==='started' &&
+      (['queued','running'].includes(row.outcome)||row.execution_terminal_proof===null)){
       const observed=await observeInstance(this.env.WORKFLOW,row.instance_id);
       if(observed.kind==='found'){
         native=observed.status;
+        await this.rememberNativeTerminal(row,observed);
         row=await this.settleNativeOutcome(row,native);
       }
     }

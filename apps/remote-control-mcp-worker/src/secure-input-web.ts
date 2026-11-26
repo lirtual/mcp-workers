@@ -1,5 +1,5 @@
 import { clerkOwnerConfigured, clerkOwnerOrigin, verifyClerkOwner, type ClerkOwnerConfig } from "./clerk-owner-session.ts";
-import { validateSecureInputSecret } from "./v2-secure-input.ts";
+import { validateSecureInputSecret } from "./secure-input.ts";
 
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 const MAX_BODY = 65_536;
@@ -213,7 +213,7 @@ export async function handleSecureInput(
   if (action === "details") {
     if (!exact(body, [])) return json({ error: "bad_request" }, 400);
     try {
-      const response = await owner.fetch("https://v2.internal/secure-input/status", {
+      const response = await owner.fetch("https://device.internal/secure-input/status", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ owner_user_id: ownerUserId, request_id: requestId }),
       });
@@ -228,7 +228,7 @@ export async function handleSecureInput(
   }
   let secret = body.secret;
   try {
-    const response = await owner.fetch("https://v2.internal/secure-input/submit", {
+    const response = await owner.fetch("https://device.internal/secure-input/submit", {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ owner_user_id: ownerUserId, request_id: requestId, secret,
         target_confirmed: body.target_confirmed, production_authorized: body.production_authorized }),

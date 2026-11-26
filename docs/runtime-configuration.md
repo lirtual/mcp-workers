@@ -1,6 +1,6 @@
 # Cloudflare runtime configuration
 
-**Spec #849 migration state:** The code change removes GitHub job Environment bindings, but the last read-only GitHub Settings snapshot still has 10 Environments and six unmigrated Secrets. Do not merge/activate the new release workflow until separately authorized exact-byte source migration and verification pass; final removal is separately authorized. Worker runtime values and Cloudflare production are not modified by code/CI.
+**Spec #849 completed:** Release jobs no longer bind GitHub Environments. Repository-scoped Variables and Secrets are authoritative; the current read-only Environment inventory is zero. Historical migration evidence remains in [#849](https://github.com/lirtual/mcp-workers/issues/849); do not recreate former configuration scopes or replay their migration.
 
 **Spec #392 and subsequent Bark-only retirement:** The legacy Weixin MCP Worker and release entry are no longer maintained in this repository. [cloudflare-actions](https://github.com/lirtual/cloudflare-actions) owns the unified Action Provider; its current executable catalog contains no Weixin send operation. Historical data and recovery evidence are governed separately and are not deleted by GitHub configuration cleanup.
 
@@ -17,7 +17,7 @@ Spec #392 生产 Workflow 发布的单记录历史例外：仅对 2026-10-26 的
 
 ## Worker-scoped configuration
 
-| Worker | Additional Repository Secrets (target) | Repository Variables (target) |
+| Worker | Additional Repository Secrets | Repository Variables |
 | --- | --- | --- |
 | `database-mcp-worker` | Referenced independent `DATABASE_B2B_PASSWORD` / `DATABASE_SCRAPE_RELAY_PASSWORD` Secrets | `DATABASE_CONNECTIONS`, referenced `DB_HOST`, optional `DATABASE_*` SQL limits |
 | `browser-mcp-worker` | 无同名 `MCP_ACCESS_TOKEN` Environment Secret 覆盖；现行版本已于 2026-11-10 发布并独立回读 | 仅 `OWNER_EMAIL`（Repository）为现行人工维护的 Owner 身份来源；`ACCESS_TEAM_DOMAIN`（Repository）和 `BROWSER_ACTIVATION_AUDIENCE`（Environment）旧来源均已删除并回读确认不存在；运行时身份绑定由 Organization / 固定 Access App / Wrangler Domain 派生；可选 `BROWSER_REMEMBERED_IDLE_DAYS` |
@@ -118,7 +118,7 @@ The existing CI's pre-release job (which has **no** Worker GitHub Environment) c
 
 Before the separately authorized first SSH or Workflow cutover, both old and new Workflow Portal Client IDs and repository-approval lists (when present) must exactly match the original reviewed values. Database preflight compares each of the five legacy numeric limits and any already-present renamed binding against the GitHub input (falling back to the source Wrangler default). An absent legacy limit is treated as the existing original runtime default, **not** permission to change it. Wrong types, invalid values or mismatches fail before Secret staging and deployment. Database postflight additionally verifies all renamed limits and absence of unprefixed bindings. This is a code-level guard; the GitHub Settings source-value migration is not done by merging this code.
 
-For an independently authorized *post-deletion* negative-inventory acceptance, use the existing **Workflow Acceptance** manual workflow on `main`, selecting `legacy-cleanup-readonly-ssh` or `legacy-cleanup-readonly-workflow`, with `confirm_portal_write=false` and `cleanup_expected_version` equal to the exact approved live Worker version UUID. Its separate environment-scoped job checks GitHub main SHA, performs **only Cloudflare GET** for the selected Worker's settings, Secret inventory, deployments and script settings, verifies current required bindings and forbids the old Secret names, and compares the exact active version. It never removes a Secret, updates a GitHub setting, publishes a Worker or mutates the release state file. A failed or Unknown readback must be investigated without retrying deletion. Deletion itself requires a separate approval under the existing protected release mechanism. Until successful negative-inventory evidence exists, cleanup remains **Not performed**.
+**Current release contract (#1046):** The separately authorized #733/#774 cleanups are complete. The old cleanup-only acceptance and release entry points are retired. Ordinary release readback checks the current allowed Secret inventory for SSH, Workflow and Database, and rejects retired runtime Secret names. Historical acceptance receipts remain below and in the original Issues; no new production change is authorized.
 
 **Spec #733 final production runtime-binding cleanup (2026-11-06; supersedes the historical snapshots above):**
 

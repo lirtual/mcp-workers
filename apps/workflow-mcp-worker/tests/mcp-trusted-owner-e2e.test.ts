@@ -45,8 +45,12 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
   for(const name of ['0001_s1.sql','0014_workflow_deletion.sql','0016_portal_connection_revocation.sql','0017_http_connection_auth.sql','0002_native_complete_seen.sql','0011_awaited_child_capacity.sql',
      '0013_cloudflare_action_invocations.sql','0018_cloudflare_action_migration_fence.sql'])
     sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+  for(const name of ['0003_s3_attempt_claim.sql','0007_session_executions.sql','0009_fixed_sessions.sql'])
+    sqlite.exec(readFileSync(new URL('../migrations/'+name,import.meta.url),'utf8'));
+  let listSql:string|undefined;
   let beforeAdmissionInsert:(()=>void)|undefined;
   function prepare(sql:string){
+    if(sql.includes('FROM workflows WHERE deleted_at IS NULL'))listSql=sql;
     let args:any[]=[];
     return {
       bind(...values:any[]){args=values;return this;},
@@ -136,10 +140,11 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(listed.tools.some(x=>x.name==='workflow_approval'),false);
     const publisher=listed.tools.find(x=>x.name==='workflow_publish')!;
     const publishSchema=(publisher.inputSchema as any).properties;
-    for(const retired of ['approved_actions','approved_cloudflare_actions',
+    for(const retired of ['approved_actions',
       'approved_children','approve_cloudflare_execution','approve_heavy_execution'])
       assert.equal(Object.hasOwn(publishSchema,retired),false,retired);
     assert.ok(publishSchema.approved_operations,'external MCP targets keep independent grants');
+    assert.ok(publishSchema.approved_cloudflare_actions,'new Cloudflare effects require exact grants');
 
     async function call(name:string,args:Record<string,unknown>,error?:string):Promise<any>{
       const output=await client.callTool({name,arguments:args});
@@ -164,6 +169,60 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const actions=await call('workflow_action_list',{});
     assert.deepEqual(actions.actions,[]);
     assert.equal(internetCalls,0,'ordinary Action discovery never contacts Portal');
+    for(const name of ['workflow_list','workflow_action_list']){
+      assert.ok((listed.tools.find(x=>x.name===name)!.inputSchema as any).properties.query);
+      for(const query of ['', '   ', 'x'.repeat(257), ['x'], 123, null]){
+        const rejected=await client.callTool({name,arguments:{query}});
+        assert.equal(rejected.isError,true,JSON.stringify(query));
+      }
+    }
+    assert.deepEqual(await call('workflow_action_list',{query:'session'}),{actions:[]});
+    assert.equal(internetCalls,0);
+    assert.deepEqual(await call('workflow_list',{query:'not-present'}),{workflows:[],active_sessions:[]});
+    assert.ok(listSql);
+    assert.doesNotMatch(listSql,/SELECT \*|\bdraft\b/);
+    const portalFetch=globalThis.fetch;
+    const repo='lirtual/github-actions';
+    const names=['ubuntu','windows','chrome','code-server','openlist','report'];
+    env.WORKFLOW_GITHUB_ACTION_IDENTITY=JSON.stringify({repository:repo,repositoryId:1430925009,ciWorkflowId:901});
+    env.WORKFLOW_GITHUB_DISPATCH_TOKEN='fixture-token';
+    globalThis.fetch=(async(input:RequestInfo|URL)=>{
+      const path=new URL(input instanceof Request?input.url:String(input)).pathname;
+      if(path===`/repos/${repo}`)return Response.json({id:1430925009,full_name:repo,default_branch:'main'});
+      if(path.endsWith('/commits/main'))return Response.json({sha:'a'.repeat(40)});
+      if(path.endsWith('/actions/workflows'))return Response.json({workflows:names.map((n,i)=>({id:810+i,path:'.github/workflows/'+n+'.yml',state:'active'}))});
+      const n=names.find(n=>path.endsWith('/'+n+'.yml'));
+      if(!n)throw Error('unexpected fixture request');
+      const session=n!=='report';
+      const declaration=`name: ${n}
+on:
+  workflow_dispatch:
+    inputs:
+      attempt_id: {type: string, required: true}
+      dispatch_id: {type: string, required: true}
+      capability_id: {type: string, required: true}
+${session?'      duration_minutes: {type: number, default: 300}\n':''}env:
+  WORKFLOW_ACTION_TYPE: ${session?'session':'task'}
+  WORKFLOW_ACTION_PUBLIC: "true"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+${session?'    timeout-minutes: 360\n':''}    steps:
+      - run: echo verified
+`;
+      return Response.json({path:'.github/workflows/'+n+'.yml',encoding:'base64',content:btoa(declaration)});
+    }) as typeof fetch;
+    try{
+      const all=await call('workflow_action_list',{});
+      const sessions=await call('workflow_action_list',{query:'SESSION'});
+      assert.deepEqual(sessions.actions.map((a:any)=>a.action_id),['github.chrome','github.code-server','github.openlist','github.ubuntu','github.windows']);
+      assert.deepEqual((await call('workflow_action_list',{query:'task'})).actions,[all.actions.find((a:any)=>a.action_id==='github.report')]);
+      assert.equal(all.actions.length,6);
+    }finally{
+      globalThis.fetch=portalFetch;
+      delete env.WORKFLOW_GITHUB_ACTION_IDENTITY;
+      delete env.WORKFLOW_GITHUB_DISPATCH_TOKEN;
+    }
     const portal=await call('workflow_action_list',{source:'portal'});
     assert.equal(portal.source,'portal_mcp');
     assert.equal(portal.read.availability,'verified_contract');
@@ -177,23 +236,27 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     }
     assert.equal(JSON.stringify(portal).includes(PORTAL_SECRET),false);
     assert.equal(JSON.stringify(portal).includes('admin_delete_everything'),false);
+    const readSearch=await call('workflow_action_list',{source:'portal',query:'  LIST_NOTEBOOKS  '});
+    assert.deepEqual(readSearch,{...portal,write:{...portal.write,tools:[]}});
+    const noPortalMatch=await call('workflow_action_list',{source:'portal',query:'admin_delete_everything'});
+    assert.deepEqual(noPortalMatch,{...portal,read:{...portal.read,tools:[]},write:{...portal.write,tools:[]}});
     portalListing='write_only';
     const onlyWrite=await call('workflow_action_list',{source:'portal'});
     assert.equal(onlyWrite.read.availability,'not_authorized');
     assert.equal(onlyWrite.write.availability,'verified_contract');
     portalListing='read_duplicate';
-    const duplicate=await call('workflow_action_list',{source:'portal'});
+    const duplicate=await call('workflow_action_list',{source:'portal',query:'create_note'});
     assert.equal(duplicate.read.availability,'not_authorized');
     assert.equal(duplicate.write.availability,'verified_contract');
     portalListing='write_drift';
-    const drifted=await call('workflow_action_list',{source:'portal'});
+    const drifted=await call('workflow_action_list',{source:'portal',query:'list_notebooks'});
     assert.equal(drifted.read.availability,'verified_contract');
     assert.equal(drifted.write.availability,'not_authorized');
     portalListing='reviewed';
     assert.equal(toolCalls,0,'discovery must not execute Portal tools');
     const beforeRevocation=internetCalls;
     await call('workflow_connection_revoke',{});
-    const revokedCatalog=await call('workflow_action_list',{source:'portal'});
+    const revokedCatalog=await call('workflow_action_list',{source:'portal',query:'missing'});
     assert.equal(revokedCatalog.availability,'revoked');
     assert.equal(revokedCatalog.read.availability,'revoked');
     assert.equal(revokedCatalog.write.availability,'revoked');
@@ -254,6 +317,11 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
       published.published_version_id);
     assert.equal(JSON.stringify(stillPublished.published_run_interface)
       .includes('different-UNPUBLISHED-sensitive-value'),false);
+    const currentList=await call('workflow_list',{query:'  NEW UNPUBLISHED  '});
+    assert.deepEqual(currentList.workflows,[{workflow_id:created.workflow_id,name:draftOnly.name,
+      draft_revision:2,published_version_id:published.published_version_id,state:'active'}]);
+    assert.deepEqual((await call('workflow_list',{query:definition.name})).workflows,[]);
+    assert.deepEqual(await call('workflow_list',{query:created.workflow_id}),currentList);
     const badVersion='11111111-1111-4111-8111-111111111111';
     await call('workflow_run',{workflow_id:created.workflow_id,inputs:{message:'no dispatch'},
       expected_published_version_id:badVersion},'published_version_changed');
@@ -376,7 +444,6 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     const bark=await cloudflareActionManifest('bark');
     const deployment='44444444-4444-4444-8444-444444444444';
     let barkSends=0;
-    env.ACTIONS_DEPLOYMENT_ID=deployment;
     env.ACTIONS={
       getContract:async(_action_id:string)=>({deployment_id:deployment,contract_digest:bark.contract_digest}),
       execute:async()=>{barkSends++;throw Error('must_not_send');},
@@ -401,6 +468,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     }});
     assert.equal(forged.isError,true,'retired manual-grant parameters are rejected');
     assert.equal(sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions').get()?.n,2);
+    await call('workflow_publish',{...target,approved_cloudflare_actions:[barkGrant]},'cloudflare_action_explicit_authorization_required');
     const barkPublished=await call('workflow_publish',target);
     const frozen=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
       .get(barkPublished.published_version_id) as {plan:string}).plan);
@@ -439,6 +507,38 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     } as any;
     const catalog=await call('workflow_action_list',{});
     assert.deepEqual(catalog.actions.map((action:any)=>action.action_id),['json.report']);
+    assert.deepEqual(await call('workflow_action_list',{query:'  JSON.REPORT  '}),catalog);
+    assert.deepEqual(await call('workflow_action_list',{query:'message'}),{actions:[]});
+    // Six individually valid manifests are below the Provider's 32-item
+    // and 16 KiB per-manifest limits but exceed the 64 KiB MCP UTF-8 budget.
+    const originalActions=env.ACTIONS!;
+    const manifests=Array.from({length:6},(_,i)=>({...jsonManifest,
+      action:'json.bulk_'+i,name:i===2?'json.bulk_0':'same',
+      description:'É中文'.repeat(1400)}));
+    const contracts=await Promise.all(manifests.map(async manifest=>({
+      manifest,deployment_id:jsonDeployment,
+      contract_digest:createHash('sha256').update(JSON.stringify(canonical(manifest))).digest('hex'),
+    })));
+    let badDigest=false,duplicateId=false;
+    env.ACTIONS={...originalActions,
+      listActions:async()=>[...manifests].reverse().map((m,i)=>({action_id:duplicateId&&i===5?manifests[1]!.action:m.action})),
+      getContract:async(id:string)=>{
+        const contract=contracts.find(c=>c.manifest.action===id)!;
+        return badDigest&&id==='json.bulk_5'?{...contract,contract_digest:'0'.repeat(64)}:contract;
+      },
+    } as any;
+    await call('workflow_action_list',{},'result_too_large');
+    await call('workflow_action_list',{query:'É中文'},'result_too_large');
+    assert.deepEqual(await call('workflow_action_list',{query:'é中文'}),{actions:[]});
+    const ordered=await call('workflow_action_list',{query:'json.bulk_0'});
+    assert.deepEqual(ordered.actions.map((a:any)=>a.action_id),['json.bulk_0','json.bulk_2']);
+    assert.equal(ordered.actions[0].contract_digest,contracts[0]!.contract_digest);
+    badDigest=true;
+    await call('workflow_action_list',{query:'json.bulk_0'},'internal_error');
+    badDigest=false;duplicateId=true;
+    await call('workflow_action_list',{query:'json.bulk_0'},'internal_error');
+    env.ACTIONS=originalActions;
+    assert.equal(jsonCalls,0);
     const jsonDefinition={version:1,name:'new-json-action',steps:[
       {id:'report',uses:'action.run',with:{action_id:'json.report',
         input:{message:{ref:'inputs.message'}}}},
@@ -447,6 +547,7 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     ]};
     const validated=await call('workflow_validate',{definition:JSON.stringify(jsonDefinition)});
     assert.equal(validated.valid,true,JSON.stringify(validated));
+    assert.equal(validated.required_cloudflare_actions,undefined,'read-only effects require no caller grant');
     const jsonDraft=await call('workflow_create',{definition:JSON.stringify(jsonDefinition)});
     const jsonPublished=await call('workflow_publish',{
       workflow_id:jsonDraft.workflow_id,expected_revision:1,
@@ -477,18 +578,25 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
       new TextEncoder().encode(JSON.stringify(canonical(privilegedManifest))));
     const privilegedDigest=Array.from(new Uint8Array(privilegedHash),
       b=>b.toString(16).padStart(2,'0')).join('');
-    let privilegedCalls=0;
+    let privilegedCalls=0, liveDeployment=jsonDeployment;
     env.ACTIONS={
       listActions:async()=>[{action_id:'json.privileged'}],
       getContract:async()=>({manifest:privilegedManifest,contract_digest:privilegedDigest,
-        deployment_id:jsonDeployment}),
-      execute:async()=>{privilegedCalls++;throw Error('must_not_execute');},
+        deployment_id:liveDeployment}),
+      execute:async(action:string,payload:any)=>{
+        assert.equal(action,'json.privileged');
+        assert.equal(payload.message,'never execute');
+        privilegedCalls++;
+        return {status:'accepted',input_digest:payload.input_digest,report_id:'approved-local-marker'};
+      },
     } as any;
     const privilegedDefinition=JSON.stringify({version:1,name:'privileged',steps:[
       {id:'privileged',uses:'action.run',with:{action_id:'json.privileged',
         input:{message:'never execute'}}},
     ]});
     const privilegedValidation=await call('workflow_validate',{definition:privilegedDefinition});
+    const explicitGrant={executor:'cloudflare',provider:'json',action:'json.privileged',
+      contract_digest:privilegedDigest,deployment_id:jsonDeployment};
     assert.equal(privilegedValidation.valid,true);
     const privilegedDraft=await call('workflow_create',{definition:privilegedDefinition});
     const denied=await client.callTool({name:'workflow_publish',arguments:{
@@ -500,6 +608,50 @@ test('Portal-authenticated MCP -> validate -> approve -> Publish -> Run -> Resul
     assert.equal(privilegedCalls,0);
     assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE workflow_id=?')
       .get(privilegedDraft.workflow_id) as {n:number}).n,0);
+    const targetExplicit={workflow_id:privilegedDraft.workflow_id,expected_revision:1};
+    for(const grants of [[],[{...explicitGrant,contract_digest:'0'.repeat(64)}],
+      [{...explicitGrant,action:'json.other'}],[{...explicitGrant,provider:'other'}],
+      [{...explicitGrant,deployment_id:'33333333-3333-4333-8333-333333333333'}],
+      [explicitGrant,explicitGrant],[explicitGrant,barkGrant]]){
+      await call('workflow_publish',{...targetExplicit,approved_cloudflare_actions:grants},
+        'cloudflare_action_explicit_authorization_required');
+    }
+    liveDeployment='33333333-3333-4333-8333-333333333333';
+    await call('workflow_publish',{...targetExplicit,approved_cloudflare_actions:[explicitGrant]},
+      'cloudflare_action_explicit_authorization_required');
+    liveDeployment=jsonDeployment;
+    assert.equal((sqlite.prepare('SELECT COUNT(*) AS n FROM workflow_versions WHERE workflow_id=?')
+      .get(privilegedDraft.workflow_id) as {n:number}).n,0);
+    assert.equal(privilegedCalls,0);
+    const explicitPublished=await call('workflow_publish',{
+      ...targetExplicit,approved_cloudflare_actions:[explicitGrant],
+    });
+    assert.deepEqual(privilegedValidation.required_cloudflare_actions,[explicitGrant]);
+    const explicitPlan=JSON.parse((sqlite.prepare('SELECT plan FROM workflow_versions WHERE id=?')
+      .get(explicitPublished.published_version_id) as {plan:string}).plan);
+    assert.deepEqual(explicitPlan.cloudflare_action_approvals,[explicitGrant]);
+    assert.equal(privilegedCalls,0,'Publish never executes a new effect');
+    // An independently approved JSON effect is not a selected-file capability.
+    const priorInternetCalls=internetCalls;
+    await call('workflow_run',{workflow_id:privilegedDraft.workflow_id,
+      idempotency_key:'local-file-denied',
+      file:{file_id:'file_fixture',file_name:'fixture.txt',
+        download_url:'https://files.oaiusercontent.com/fixture?token=fake-only'}},
+      'litterbox_published_plan_required');
+    assert.equal(internetCalls,priorInternetCalls);
+    assert.equal(privilegedCalls,0);
+
+    const explicitRun=await call('workflow_run',{workflow_id:privilegedDraft.workflow_id});
+    await new WorkflowOrchestrator({} as ExecutionContext,env).run({
+      payload:{run_id:explicitRun.run_id},
+    } as WorkflowEvent<{run_id:string}>, {
+      do:async(_name:unknown,_options:unknown,fn:()=>Promise<unknown>)=>fn(),
+    } as unknown as WorkflowStep);
+    const explicitResult=await call('workflow_result',{run_id:explicitRun.run_id});
+    assert.equal(explicitResult.status,'succeeded',JSON.stringify(explicitResult));
+    assert.equal(privilegedCalls,1);
+    assert.equal((sqlite.prepare('SELECT count(*) AS n FROM cloudflare_action_invocations WHERE run_id=?')
+      .get(explicitRun.run_id) as {n:number}).n,1);
 
   }finally{
     await client.close();

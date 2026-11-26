@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { scopedPublicMcpFetch, PRODUCTION_PORTAL_ENDPOINT } from '../src/mcp-public-fetch.ts';
 import { toolSchemaDigest } from '../src/plan.ts';
-import {WORKFLOW_MIGRATION_READINESS_SQL,verifyWorkflowCodeReleaseReadiness} from '../../../scripts/manual-worker-release.mjs';
+import {workflowReleaseProof,workflowReleaseIO} from '../../../scripts/manual-worker-release.mjs';
 
 const token = process.env.MCP_ACCESS_TOKEN;
 assert.ok(token, 'MCP_ACCESS_TOKEN must be present in GitHub Repository');
@@ -332,11 +332,9 @@ async function runActionTaskSmoke() {
   // this Task-only check and must remain untouched. Any unsettled Task,
   // unexpected Session, unresolved Run/Step or undelivered callback aborts.
   // Cleanup below is still scoped to this test's randomized Workflow UUID.
-  const ready=verifyWorkflowCodeReleaseReadiness([{
-    success:true,results:sql(WORKFLOW_MIGRATION_READINESS_SQL),
-  }]);
+  const ready=await workflowReleaseProof('workflow-check',workflowReleaseIO(),{ACTIONS_INGRESS_QUIESCED:'false'});
   console.log('TASK_SMOKE_PREFLIGHT_OK: code-release safety gate passed; retained Ready Sessions:',
-    ready.confirmed_ready_sessions);
+    ready.ready_sessions);
   await client.connect(transport);
   const catalog=await tool('workflow_action_list',{});
   assert.ok(Array.isArray(catalog.actions),'Action catalog unavailable');

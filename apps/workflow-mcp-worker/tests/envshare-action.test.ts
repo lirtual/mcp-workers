@@ -82,7 +82,7 @@ test('single manual run persists only ciphertext and ID; original key works once
  }};
  const env={DB:{prepare},WORKFLOW:{
   async create(){starts++;},async get(){return {async status(){return {status:'complete'};}};}},
-  ACTIONS_DEPLOYMENT_ID:VERSION,ACTIONS:{
+  ACTIONS:{
    async getContract(){return {deployment_id:VERSION,contract_digest:m.contract_digest};},
    async execute(_name:string,payload:any){
     posts++;assert.equal(Object.hasOwn(payload,'text'),false);

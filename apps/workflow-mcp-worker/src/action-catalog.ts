@@ -1,4 +1,5 @@
 import type {Env} from './store.ts';
+import {jsonActionInputBudget} from './action-input-schema.ts';
 import {canonical} from './cloudflare-action-contract.ts';
 import {listAvailableGitHubActions} from './github-action-catalog.ts';
 import {reviewedCloudflareFilePolicy} from './cloudflare-selected-file.ts';
@@ -49,7 +50,14 @@ function inspectedManifest(actionId:string,raw:unknown){
     typeof raw.side_effect!=='string'||!EFFECT.test(raw.side_effect)||
     (Object.hasOwn(AUDITED_EFFECTS,actionId)?AUDITED_EFFECTS[actionId]!==raw.side_effect:
      RESERVED_EFFECTS.has(raw.side_effect)))reject();
+ try{jsonActionInputBudget(raw.max_input_bytes);}catch{reject();}
+ if(raw.error_codes!==undefined&&(!Array.isArray(raw.error_codes)||raw.error_codes.length<1||
+    raw.error_codes.length>32||new Set(raw.error_codes).size!==raw.error_codes.length||
+    raw.error_codes.some(code=>typeof code!=='string'||!/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(code))))reject();
  validSchema(raw.input_schema);
+ // Invocation metadata belongs to the executor, never to a caller schema.
+ if(Object.keys((raw.input_schema as {properties:object}).properties).some(k=>
+   ['invocation_id','deployment_id','contract_digest','input_digest'].includes(k)))reject();
  if(raw.output_schema!==undefined)validSchema(raw.output_schema);
  if(raw.selected_file!==undefined&&(!reviewedCloudflareFilePolicy(raw.selected_file)||
      raw.output_schema===undefined))reject();
@@ -66,7 +74,7 @@ export async function discoverCloudflareActionCatalog(env:Pick<Env,'ACTIONS'>){
  try{found=await env.ACTIONS.listActions();}catch{throw Error('cloudflare_provider_unavailable');}
  if(!Array.isArray(found)||found.length>32)reject();
  const actions:Array<{action_id:string;executor:'cloudflare';provider:string;name:string;
-  description:string;input_schema:unknown;output_schema?:unknown;
+  description:string;input_schema:unknown;output_schema?:unknown;max_input_bytes?:number;error_codes?:string[];
   selected_file?:unknown;contract_digest:string;
   deployment_id:string;availability:'supported_with_grant';manifest:Record<string,unknown>;}>=[];
  const seen=new Set<string>();let deployment:string|undefined;
@@ -86,6 +94,8 @@ export async function discoverCloudflareActionCatalog(env:Pick<Env,'ACTIONS'>){
     provider:String(manifest.provider),name:String(manifest.name??item.action_id),
     description:String(manifest.description??manifest.side_effect),
     input_schema:manifest.input_schema,
+    ...(manifest.error_codes===undefined?{}:{error_codes:manifest.error_codes as string[]}),
+    ...(manifest.max_input_bytes===undefined?{}:{max_input_bytes:Number(manifest.max_input_bytes)}),
     ...(manifest.output_schema===undefined?{}:{output_schema:manifest.output_schema}),
     ...(manifest.selected_file===undefined?{}:{selected_file:manifest.selected_file}),
     contract_digest:info.contract_digest,deployment_id:info.deployment_id,

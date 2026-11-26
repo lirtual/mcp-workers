@@ -1,12 +1,20 @@
 import {PlanError} from './plan.ts';
 const object=(v:unknown):v is Record<string,unknown>=>v!==null&&typeof v==='object'&&!Array.isArray(v);
-export function validateJsonActionInput(schema:unknown,input:unknown,path='/steps',allowRefs=false){
+// Input-only override. Existing output validation uses the legacy 4096-byte default.
+export function jsonActionInputBudget(value:unknown):number{
+ if(value===undefined)return 4096;
+ if(typeof value!=='number'||!Number.isSafeInteger(value)||value<1||value>24576)
+   throw new PlanError('invalid_json_action_budget');
+ return value;
+}
+export function validateJsonActionInput(schema:unknown,input:unknown,path='/steps',allowRefs=false,maxInputBytes?:unknown){
+ const budget=jsonActionInputBudget(maxInputBytes);
  if(!object(schema)||!object(schema.properties)||!Array.isArray(schema.required)||!object(input))
    throw new PlanError('invalid_json_action_schema',path);
  const fields=schema.properties as Record<string,unknown>;
  if(Object.keys(input).length>32||Object.keys(input).some(k=>!Object.hasOwn(fields,k))||
     schema.required.some(k=>typeof k!=='string'||!Object.hasOwn(input,k))||
-    new TextEncoder().encode(JSON.stringify(input)).byteLength>4096)
+    new TextEncoder().encode(JSON.stringify(input)).byteLength>budget)
    throw new PlanError('invalid_json_action_input',path);
  for(const [name,value] of Object.entries(input)){
    const rule=fields[name];

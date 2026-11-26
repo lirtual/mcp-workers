@@ -1,3 +1,5 @@
+> **历史记录：** 本固定 Version 143 恢复入口已由 #1046 的一次性迁移与前向恢复契约退役。不可作为现行发布或回退操作；保留下文用于审计。
+
 # Spec #775：恢复准入设计与非生产验证
 
 状态：Release 只增加 `workflow_code_only` 的 Version 143 回退。不摘 Triggers，不新增 D1 锁。生产发布和 `openlist` 改 Plan 仍要另一次明确授权。

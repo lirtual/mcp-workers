@@ -67,7 +67,7 @@ async function fixture(t:test.TestContext){
    return {status:'accepted',input_digest:input.input_digest};
   },
  };
- const env={DB:{prepare},ACTIONS:provider,ACTIONS_DEPLOYMENT_ID:version} as unknown as Env;
+ const env={DB:{prepare},ACTIONS:provider} as unknown as Env;
  return {sql,action,plan,env,sent:()=>sent};
 }
 test('one persisted Bark dispatch; repeat is unknown and never calls getReceipt',async t=>{
@@ -107,7 +107,7 @@ test('after persisted send, version drift and lost ACK remain unknown without re
  const f=await fixture(t);
  const first=await runBarkAction(f.env,f.plan,f.action,runId,ctx);
  assert.equal(first.status,'succeeded');
- f.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
+ f.env.ACTIONS={...f.env.ACTIONS!,getContract:async()=>({deployment_id:'44444444-4444-4444-8444-444444444444',contract_digest:f.action.with.contract_digest as string})};
  assert.equal((await runBarkAction(f.env,f.plan,f.action,runId,ctx)).status,'indeterminate');
  assert.equal(f.sent(),1);
  const other=await fixture(t);
@@ -150,7 +150,7 @@ test('D1 reservation failure prevents every Bark side effect',async t=>{
  assert.equal(f.sent(),0);
  assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
 });
-test('invalid current Provider identity denies before reservation; stale Consumer pin is ignored',async t=>{
+test('invalid current Provider identity denies before reservation; current identity is persisted',async t=>{
  const f=await fixture(t);
  f.env.ACTIONS={
   getContract:async(_action_id:string)=>({deployment_id:'untrusted-version',
@@ -162,7 +162,6 @@ test('invalid current Provider identity denies before reservation; stale Consume
  assert.equal(f.sent(),0);
  assert.equal((f.sql.prepare('SELECT COUNT(*) AS n FROM cloudflare_action_invocations').get() as any).n,0);
  const other=await fixture(t);
- other.env.ACTIONS_DEPLOYMENT_ID='44444444-4444-4444-8444-444444444444';
  assert.equal((await runBarkAction(other.env,other.plan,other.action,runId,ctx)).status,'succeeded');
  assert.equal(other.sent(),1);
  const row=other.sql.prepare('SELECT deployment_id FROM cloudflare_action_invocations').get() as any;

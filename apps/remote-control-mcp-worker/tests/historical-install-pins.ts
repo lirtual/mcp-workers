@@ -24,7 +24,7 @@ export const REVIEWED_V012_RELEASE_PIN: InstallReleasePin = Object.freeze({
 
 // Historical immutable v0.1.2 uses two-code and MUST NEVER be offered by
 // a Worker that only accepts one-code signed pending enrollments.
-// Preview may serve the new pinned release only with preview flag, owner DO and token.
+// Historical pins are audit fixtures only; public routes never serve them.
 // Reviewed immutable TEST prerelease; native x64 and ARM64 build #39096572744.
 // The prior v0.1.2 is retained above only as an explicitly incompatible fixture.
 export const REVIEWED_V014_RELEASE_PIN: InstallReleasePin = Object.freeze({

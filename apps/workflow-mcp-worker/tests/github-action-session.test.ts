@@ -247,6 +247,19 @@ test('workflow_list reports four durable quota holders even after parent success
   f.db.prepare("UPDATE session_executions SET state='stopping' WHERE run_id=?").run(run(3));
   f.db.prepare("UPDATE runs SET outcome='succeeded' WHERE id=?").run(run(1));
   const listed=await service.list();
+  assert.deepEqual(await service.list('missing'),{workflows:[],active_sessions:listed.active_sessions});
+  const insert=f.db.prepare("INSERT INTO workflows(id,name,draft,draft_revision,state,created_at,updated_at,deleted_at) VALUES(?,?,'{}',1,'draft',1,?,?)");
+  for(let i=0;i<101;i++)insert.run(run(100+i),'bulk',i+2,null);
+  insert.run(run(301),'É中文%_',0,null);
+  insert.run(run(302),'é中文xx',0,null);
+  insert.run(run(303),'É中文%_',0,1);
+  assert.equal((await service.list()).workflows.length,100);
+  assert.deepEqual((await service.list('É中文%_')).workflows.map(w=>w.workflow_id),[run(301)]);
+  assert.deepEqual((await service.list('é中文')).workflows.map(w=>w.workflow_id),[run(302)]);
+  assert.deepEqual((await service.list(run(301).toUpperCase())).workflows.map(w=>w.workflow_id),[run(301)]);
+  await assert.rejects(service.list('bulk'),/result_too_large/);
+  f.db.prepare('UPDATE workflows SET deleted_at=1 WHERE id=?').run(run(200));
+  assert.deepEqual((await service.list('bulk')).workflows.map(w=>w.workflow_id),Array.from({length:100},(_,i)=>run(100+i)));
   assert.equal(listed.active_sessions.length,4);
   assert.deepEqual(listed.active_sessions.map(s=>s.slot),[1,2,3,4]);
   assert.equal(listed.active_sessions[0]?.run_id,run(1));
@@ -740,20 +753,22 @@ test('Session dispatches once, signed GitHub Claim and Ready complete startup bu
  }finally{f.db.close();}
 });
 test('pre-Ready physical terminal is a verified failure, not an indeterminate terminated Session',async()=>{
- for(const [attemptState,sessionState,expected] of [
-  ['failed','terminated','github_session_ended_before_ready'],
-  ['claimed','stopping','github_session_no_ready'],
+ for(const [attemptState,sessionState,physicalCancels,expected] of [
+  ['failed','terminated',false,'github_session_ended_before_ready'],
+  ['claimed','stopping',true,'github_session_ended_before_ready'],
+  ['claimed','stopping',false,'github_session_ready_unconfirmed'],
  ] as const){
   const f=fixture();
   try{
    const {jwt,publicKey}=await signedReady();
-   let attemptId='';
+   let attemptId='',waits=0,posts=0;
    const http=async(request:Request):Promise<Response>=>{
     const path=new URL(request.url).pathname;
     if(path.endsWith('/git/ref/tags/release-v1'))
      return Response.json({ref:'refs/tags/release-v1',
       object:{type:'commit',sha:action.commitSha}});
     if(request.method==='POST'){
+     posts++;
      const payload=await request.json() as {inputs:{attempt_id:string}};
      attemptId=payload.inputs.attempt_id;
      return Response.json({workflow_run_id:42});
@@ -762,12 +777,14 @@ test('pre-Ready physical terminal is a verified failure, not an indeterminate te
      id:42,workflow_id:456,run_attempt:1,
      repository:{id:123,full_name:action.repository},
      path:action.workflowPath,head_branch:'release-v1',head_sha:action.commitSha,
-     event:'workflow_dispatch',status:'in_progress',conclusion:null,
+     event:'workflow_dispatch',status:physicalCancels&&waits>=2?'completed':'in_progress',
+     conclusion:physicalCancels&&waits>=2?'cancelled':null,
     });
    };
    const workflow={
     do:async(_name:string,_opts:unknown,cb:()=>Promise<unknown>)=>cb(),
     waitForEvent:async()=>{
+     if(++waits>1)return {attemptId};
      assert.equal(await verifyAndClaimPinnedGitHubAction(f.adapter,
       attemptId,jwt,audience,publicKey),true);
      // Simulates an independently verified physical terminal racing the
@@ -785,6 +802,11 @@ test('pre-Ready physical terminal is a verified failure, not an indeterminate te
     (plan as unknown as Plan).steps[0],run(1),workflow,http);
    assert.deepEqual(outcome,{status:expected==='github_session_ended_before_ready'?'failed':'indeterminate',
     error_code:expected});
+   assert.equal(posts,1);
+   assert.equal(f.db.prepare('SELECT state FROM session_executions').get()?.state,
+    expected==='github_session_ended_before_ready'?'terminated':'stopping');
+   if(physicalCancels)assert.equal(waits,2);
+   if(expected==='github_session_ready_unconfirmed')assert.equal(waits,30);
   }finally{f.db.close();}
  }
 });

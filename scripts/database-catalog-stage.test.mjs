@@ -28,7 +28,7 @@ test('missing, unapproved, recursive or malformed references fail before publica
     {DATABASE_CONNECTIONS:catalog.replace('3306','3306?tls=false')},
   ]) assert.throws(()=>collectBootstrapSecrets('database-mcp-worker',{...env,...change}));
 });
-test('postflight requires exact catalog, referenced Secret types and native binding identities; permits only enumerated recovery Secrets',()=>{
+test('postflight requires exact catalog, referenced Secret types and native binding identities; rejects retired runtime Secrets',()=>{
   const source=readConfiguration('database-mcp-worker',readFileSync('apps/database-mcp-worker/wrangler.jsonc','utf8'));
   const bindings=[{name:'MCP_ACCESS_TOKEN',type:'secret_text'},{name:'DATABASE_B2B_PASSWORD',type:'secret_text'},
     {name:'DATABASE_CONNECTIONS',type:'plain_text',text:catalog},{name:'DB_HOST',type:'plain_text',text:'8.8.8.8'},
@@ -42,12 +42,12 @@ test('postflight requires exact catalog, referenced Secret types and native bind
   assert.throws(()=>verifyBindings('database-mcp-worker',settings,secrets,{...options,databaseConnections:'{}'}));
   assert.throws(()=>verifyBindings('database-mcp-worker',{...settings,bindings:[...bindings,{name:'DB',type:'d1',id:'old'}]},secrets,options));
   const legacy={name:'DATABASE_ENCRYPTION_KEY',type:'secret_text'};
-  assert.equal(verifyBindings('database-mcp-worker',{...settings,bindings:[...bindings,legacy]},[...secrets,{name:legacy.name}],options),true);
+  assert.throws(()=>verifyBindings('database-mcp-worker',{...settings,bindings:[...bindings,legacy]},[...secrets,{name:legacy.name}],options),/Unexpected runtime Secret/);
 });
 test('retired lifecycle jobs, inputs and runtime binding requirements stay absent',()=>{
   const source=readFileSync('.github/workflows/release.yml','utf8');
   assert.doesNotMatch(source,/database_hyperdrive_|database-hyperdrive-|database-d1-/);
-  assert.match(source,/\{"DATABASE_ENCRYPTION_KEY":null,"DATABASE_GITHUB_ACTIONS_TOKEN":null,"DATABASE_KEY_ID":null\}/);
+  assert.doesNotMatch(source,/\{"DATABASE_ENCRYPTION_KEY":null,"DATABASE_GITHUB_ACTIONS_TOKEN":null,"DATABASE_KEY_ID":null\}/);
   assert.match(source,/DATABASE_EXPECTED_RELEASE_SHA/);
 });
 
