@@ -159,8 +159,7 @@ for(const name of [
 
 // Completed destructive migrations must not regain a special publisher.
 assert.doesNotMatch(release,/^  (?:workflow-uu-table-retirement|legacy-secret-cleanup):/m);
-assert.ok(release.includes('Apply only the reviewed v23 Workflow D1 migration') && release.includes('workflow-cutover-recheck workflow-mcp-worker'),
-  'Only the reviewed pending v23 migration may be applied');
+assert.doesNotMatch(release,/workflow-prepare|workflow-backfill|workflow-cutover-recheck|wrangler d1 migrations apply workflow-mcp-db/,'Completed v23 migration must not regain an execution path');
 assert.ok(!release.slice(release.indexOf('      - name: Stage selected Worker Secrets for every release'),
   release.indexOf('      - name: Stage approved Worker variables'))
   .includes('secrets.SESSION_RUNTIME_DATA_KEY'),
@@ -183,8 +182,7 @@ for (const marker of [
   'Stage selected Worker Secrets for every release',
   'Stage approved Worker variables',
   'node scripts/manual-worker-release.mjs preflight',
-  'workflow-cutover-recheck workflow-mcp-worker',
-  'Apply only the reviewed v23 Workflow D1 migration',
+  'workflow-check workflow-mcp-worker',
   'Publish exactly selected Worker',
   'Verify exact active version and required production bindings',
   'Check unauthenticated MCP surface without credentials',

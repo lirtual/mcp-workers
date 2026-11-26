@@ -25,7 +25,7 @@
 
 后续 Workflow 日常发布继续使用现有 GitHub Actions Release Worker，保留严格的 D1 schema、真实 GitHub Executor/OIDC 和生产绑定读回校验。不为本次历史清理增加功能开关、迁移系统或第二套发布链路。
 
-**Spec #1046 切换：** 本分支的正常 Workflow 发布仅接受精确 v23 Schema，复用统一终态证明及现有 Ready Session 例外，不再按历史 Run ID 排除。当前生产仍为 v22，第一次发布必须独立获准，等待健康 Session 自然结束，暂停原 Active Workflows 并独立停止所有启动入口。由 Owner/main 通过现有 Release Worker 锁先执行 gate freeze（不部署），再选择 Workflow、`deploy_to_production=true`、`actions_ingress_quiesced=true`、`workflow_code_only=false`。冻结与严格排空通过后记录 D1 Time Travel bookmark，核验唯一待应用的 0023，条件回填并独立回读，再发布。部署、绑定、健康与未认证拒绝均通过后才重新打开 gate；只恢复原 Active Workflows。未通过时保持入流关闭，保留原迁移前 bookmark 和已完成回填证据；回读实际 Schema、版本与 gate 后按独立授权前向修复，不回滚到旧 Worker、不逆向删字段、不盲目重试。生产切换及真实验收后删除仅供此次迁移/恢复使用的历史适配器。
+**Spec #1046：** 生产已完成一次性 v23 切换（[Release 45739200216](https://github.com/lirtual/mcp-workers/actions/runs/45739200216)）。所有 Workflow 发布只接受精确 v23 Schema，复用统一终态事实及现有 Ready Session 兼容例外；普通发布只读核对终态证据，不查询已持久证明的历史外部记录，也不执行迁移或回填。旧历史适配器和迁移执行入口已退役；已应用的 SQL 与历史 Git/Issue 回执保留。需要未来 Schema 变更时另行审查迁移及恢复边界。严格维护发布仍须 Owner/main、独立停止入流、严格排空和冻结 gate；验证版本、绑定、健康及未认证拒绝后才可重新开放 gate，再恢复原 Active Workflows。失败时保持入流关闭，按实际状态前向恢复。
 
 **Actions 维护入口：** `actions_gate_freeze=true` 与 `actions_gate_reopen=true` 为互斥独立操作，要求 `deploy_to_production=false`、`actions_ingress_quiesced=true`、Owner/main。冻结只修改现有 gate，严格排空后执行。单独解冻还要求精确审核当前 Provider / Consumer 版本及 v23 终态证明；单独解冻还检查现有 /health 返回的 v23 终态证明支持标识及未认证 MCP 拒绝，避免仅因数据库已迁移而恢复旧 Worker；若新版本未验证，不得用单独解冻替代前向修复。普通兼容发布不自动改变 gate。旧双 Provider 拓扑与历史逐 Run 发布例外不再支持。
 
