@@ -44,7 +44,7 @@ export default {
   if(url.pathname==='/github/action/claim'||url.pathname==='/github/action/ready'||
      url.pathname==='/github/action/result')
     return handleGithubActionClaimRequest(request,env);
-  if(url.pathname==='/health'&&request.method==='GET')return Response.json({ok:true,service:'workflow-mcp-worker',scope:'workflow'}, {headers:{'cache-control':'no-store'}});
+  if(url.pathname==='/health'&&request.method==='GET')return Response.json({ok:true,service:'workflow-mcp-worker',scope:'workflow',execution_terminal_proof_schema:23}, {headers:{'cache-control':'no-store'}});
   if(url.pathname!=='/mcp')return new Response('Not found',{status:404});
   const auth=await authenticatePortalRequest(request,{expectedToken:env.MCP_ACCESS_TOKEN,allowedOrigins:[]});
   if(!auth.ok)return error(auth.reason==='misconfigured'?503:auth.reason==='invalid_origin'?403:401,auth.reason==='misconfigured'?'auth_misconfigured':auth.reason==='invalid_origin'?'invalid_origin':'unauthorized');

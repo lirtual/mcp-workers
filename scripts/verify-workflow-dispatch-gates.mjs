@@ -159,8 +159,8 @@ for(const name of [
 
 // Completed destructive migrations must not regain a special publisher.
 assert.doesNotMatch(release,/^  (?:workflow-uu-table-retirement|legacy-secret-cleanup):/m);
-assert.ok(release.includes('Prevent normal Workflow release from applying pending UU DROP'),
-  'Retired destructive migration must not be replayed');
+assert.ok(release.includes('Apply only the reviewed v23 Workflow D1 migration') && release.includes('workflow-cutover-recheck workflow-mcp-worker'),
+  'Only the reviewed pending v23 migration may be applied');
 assert.ok(!release.slice(release.indexOf('      - name: Stage selected Worker Secrets for every release'),
   release.indexOf('      - name: Stage approved Worker variables'))
   .includes('secrets.SESSION_RUNTIME_DATA_KEY'),
@@ -170,7 +170,7 @@ assert.ok(prepare.gate.includes("inputs.actions_gate_freeze == true")&&
   prepare.gate.includes("inputs.deploy_to_production == false")&&
   prepare.gate.includes("github.actor == 'lirtual'"),'Gate-freeze release gate missing');
 assert.doesNotMatch(prepare.content,/wrangler deploy|wrangler d1 migrations apply/,'Gate freeze must never deploy or migrate');
-assert.ok(prepare.content.includes('manual-worker-release.mjs migration-check'),'Gate freeze requires strict execution drain');
+assert.ok(prepare.content.includes('manual-worker-release.mjs workflow-freeze-check'),'Gate freeze requires strict execution drain');
 assert.ok(deploy.gate.includes('inputs.actions_gate_freeze != true'),
   'Production release must not overlap gate-freeze mode');
 assert.ok(deploy.gate.includes("github.actor == 'lirtual'"), 'Production release Owner gate missing');
@@ -183,8 +183,8 @@ for (const marker of [
   'Stage selected Worker Secrets for every release',
   'Stage approved Worker variables',
   'node scripts/manual-worker-release.mjs preflight',
-  "WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'",
-  'Apply complete Workflow D1 migrations',
+  'workflow-cutover-recheck workflow-mcp-worker',
+  'Apply only the reviewed v23 Workflow D1 migration',
   'Publish exactly selected Worker',
   'Verify exact active version and required production bindings',
   'Check unauthenticated MCP surface without credentials',

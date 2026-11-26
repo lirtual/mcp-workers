@@ -197,6 +197,11 @@ test('#1046 scheduled entrypoint admits normal Cron work before best-effort proo
   }});
   let worker:typeof import('../src/index.ts').default;
   try{worker=(await import('../src/index.ts')).default;}finally{hook.deregister();}
+  const health=await worker.fetch(new Request('https://workflow.example/health'),s.env);
+  assert.equal(health.status,200);
+  assert.deepEqual(await health.json(),{ok:true,service:'workflow-mcp-worker',scope:'workflow',execution_terminal_proof_schema:23});
+  assert.equal(health.headers.get('cache-control'),'no-store');
+
   const wf=await s.service.create(JSON.stringify(emission('Timed','* * * * *')));
   await s.service.publish(wf.workflow_id,1);
   const prepare=s.env.DB.prepare.bind(s.env.DB);

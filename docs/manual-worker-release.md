@@ -25,7 +25,9 @@
 
 后续 Workflow 日常发布继续使用现有 GitHub Actions Release Worker，保留严格的 D1 schema、真实 GitHub Executor/OIDC 和生产绑定读回校验。不为本次历史清理增加功能开关、迁移系统或第二套发布链路。
 
-**Actions 维护入口：** `actions_gate_freeze=true` 与 `actions_gate_reopen=true` 为互斥的独立维护操作，均要求 `deploy_to_production=false`、明确的 `actions_ingress_quiesced=true` 和受保护 Owner/main；冻结只修改既有 gate，不应用任何 D1 Migration。必须通过严格执行排空和独立原生实例检查，解冻还需核对精确当前 Provider / Consumer 版本。首次迁移、旧双 Provider 拓扑及旧参数不再支持。普通兼容发布不自动改变 gate；明确的冻结维护发布仍按既有回读后解冻流程。#1046 的 v23 通用终态证据接入未完成前，不能宣称历史 Unknown 已通过严格排空。
+**Spec #1046 切换：** 本分支的正常 Workflow 发布仅接受精确 v23 Schema，复用统一终态证明及现有 Ready Session 例外，不再按历史 Run ID 排除。当前生产仍为 v22，第一次发布必须独立获准，等待健康 Session 自然结束，暂停原 Active Workflows 并独立停止所有启动入口。由 Owner/main 通过现有 Release Worker 锁先执行 gate freeze（不部署），再选择 Workflow、`deploy_to_production=true`、`actions_ingress_quiesced=true`、`workflow_code_only=false`。冻结与严格排空通过后记录 D1 Time Travel bookmark，核验唯一待应用的 0023，条件回填并独立回读，再发布。部署、绑定、健康与未认证拒绝均通过后才重新打开 gate；只恢复原 Active Workflows。未通过时保持入流关闭，保留原迁移前 bookmark 和已完成回填证据；回读实际 Schema、版本与 gate 后按独立授权前向修复，不回滚到旧 Worker、不逆向删字段、不盲目重试。生产切换及真实验收后删除仅供此次迁移/恢复使用的历史适配器。
+
+**Actions 维护入口：** `actions_gate_freeze=true` 与 `actions_gate_reopen=true` 为互斥独立操作，要求 `deploy_to_production=false`、`actions_ingress_quiesced=true`、Owner/main。冻结只修改现有 gate，严格排空后执行。单独解冻还要求精确审核当前 Provider / Consumer 版本及 v23 终态证明；单独解冻还检查现有 /health 返回的 v23 终态证明支持标识及未认证 MCP 拒绝，避免仅因数据库已迁移而恢复旧 Worker；若新版本未验证，不得用单独解冻替代前向修复。普通兼容发布不自动改变 gate。旧双 Provider 拓扑与历史逐 Run 发布例外不再支持。
 
 
 ## 发布后核对

@@ -77,16 +77,9 @@ test("reviewed version stays temporary; legacy Consumer pin is not execution aut
       {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}
     ]}),/blocked/);
     assert.equal(verifyConsumerBinding({bindings:[service]}),true);
-    assert.equal(verifyConsumerBinding({bindings:[service]},undefined,true),true);
-    assert.throws(()=>verifyConsumerBinding({bindings:[service,
-      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:version}]},undefined,true),/blocked/);
-    assert.equal(verifyConsumerBinding({bindings:[service,
-      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}]}),true);
-    assert.throws(()=>verifyConsumerBinding({bindings:[service,
-      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:old}]},version),/blocked/);
-    assert.equal(verifyConsumerBinding({bindings:[service]},version),true);
-    assert.throws(()=>verifyConsumerBinding({bindings:[service,
-      {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:'latest'}]}),/blocked/);
+    for(const pin of [version,old,'latest'])
+      assert.throws(()=>verifyConsumerBinding({bindings:[service,
+        {name:'ACTIONS_DEPLOYMENT_ID',type:'plain_text',text:pin}]}),/blocked/);
   }finally{await rm(temp,{recursive:true,force:true});}
 });
 test("cannot write a pin outside approved Runner temporary directory",async()=>{
@@ -107,8 +100,7 @@ test("gate-only recovery requires the exact live Secret-free Provider and 100% C
   const consumerVersion=old;
   const consumerLive={deployments:[{versions:[{version_id:consumerVersion,percentage:100}]}]};
   const consumerSettings={bindings:[
-    {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"},
-    {name:"ACTIONS_DEPLOYMENT_ID",type:"plain_text",text:version}
+    {name:"ACTIONS",type:"service",service:"cloudflare-actions",entrypoint:"ActionsEntrypoint"}
   ]};
   assert.equal(verifySafeRecoveryProvider(metadata,cleanSecrets,version),true);
   assert.equal(verifyRecoveryConsumerVersion(consumerLive,consumerVersion),true);
@@ -127,6 +119,9 @@ test("gate-only recovery requires the exact live Secret-free Provider and 100% C
     return async(url,options)=>{
       const path=new URL(url).pathname;
       opts.calls.push({path,method:options.method});
+      if(path==='/health')return {ok:true,json:async()=>({ok:true,scope:'workflow',service:'workflow-mcp-worker',
+        ...(opts.oldWorker?{}:{execution_terminal_proof_schema:23})})};
+      if(path==='/mcp')return {status:opts.authDrift?200:401};
       let result=path.includes("/workers/workers/cloudflare-actions/versions/")?metadata:
         path.endsWith("/workers/scripts/workflow-mcp-worker/settings")?consumerSettings:
         path.endsWith("/workers/scripts/workflow-mcp-worker/deployments")?consumerLive:
@@ -145,13 +140,13 @@ test("gate-only recovery requires the exact live Secret-free Provider and 100% C
   const ok={calls:[]};
   assert.equal(await inspectGateRecovery("a".repeat(32),"test-token",
     version,consumerVersion,fetcher(ok)),true);
-  assert.equal(ok.calls.length,7);
-  assert.ok(ok.calls.every(x=>x.method===undefined));
-  for(const variation of [{badBinding:true},{badSecret:true},{badConsumer:true}]){
+  assert.equal(ok.calls.length,9);
+  assert.ok(ok.calls.every(x=>x.path==='/mcp'?x.method==='POST':x.method===undefined));
+  for(const variation of [{badBinding:true},{badSecret:true},{badConsumer:true},{oldWorker:true},{authDrift:true}]){
     const x={calls:[],...variation};
     await assert.rejects(()=>inspectGateRecovery("a".repeat(32),"test-token",
       version,consumerVersion,fetcher(x)),/blocked/);
-    assert.ok(x.calls.every(c=>c.method===undefined));
+    assert.ok(x.calls.every(c=>c.path==='/mcp'?c.method==='POST':c.method===undefined));
   }
   await assert.rejects(()=>inspectGateRecovery("a".repeat(32),"test-token",
     "not-a-version",consumerVersion,fetcher({calls:[]})),/blocked/);

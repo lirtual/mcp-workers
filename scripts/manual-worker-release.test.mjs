@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyWorkflowD1Readiness, verifyWorkflowMigrationReadiness, verifyWorkflowCodeReleaseReadiness, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, WORKFLOW_MIGRATION_READINESS_SQL, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
+import { scriptExists, activeVersion, verifyBindings, parseWranglerVersion, verifyPublishedVersion, verifyWorkflowReleaseConfig, verifyDatabaseCutoverSource, verifyDatabaseHyperdriveSource, retryReleaseReadback, readConfiguration } from "./manual-worker-release.mjs";
 
 const required = [
   { name: "MCP_ACCESS_TOKEN", type: "secret_text" },
@@ -368,9 +368,8 @@ test("Workflow code-only release preserves Secrets and other Variables, pins Por
   assert.match(releaseScript, /requireExistingSecrets: mode === "preflight"/,
     "existing Secret names checked in read-only preflight");
   assert.match(releaseScript, /Code-only release requires an existing Workflow Worker/);
-  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only == true/);
-  assert.match(workflow, /WORKFLOW_REQUIRE_COMPLETE_SCHEMA: \$\{\{ inputs.workflow_code_only && 'true' \|\| '' \}\}/);
-  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.workflow_code_only != true/);
+  assert.match(workflow, /inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true/);
+  assert.match(workflow, /if: inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true/);
   const deployment = workflow.slice(workflow.indexOf('      - name: Publish exactly selected Worker'));
   assert.match(deployment, /\[\[ ! -e "\$RUNNER_TEMP\/mcp-worker-secrets.json" \]\]/);
   assert.ok(deployment.includes('mapfile -t portal_pins < <(grep'));
@@ -384,7 +383,6 @@ test("Workflow code-only release preserves Secrets and other Variables, pins Por
     assert.match(block.slice(0,550), /inputs.workflow_code_only != true/,
       "code-only selection must not enter maintenance job "+job);
   }
-  assert.match(workflow, /Require complete Workflow code-only migration inventory/);
 });
 
 test("manual release retains Owner/main and selected-Worker deployment gates without an Environment", () => {
@@ -558,412 +556,15 @@ test("Workflow production release must preserve exact reviewed resource and runt
 
 });
 
-test("Workflow remote D1 checks the exact old, intermediate and full schema", () => {
-  const result = row => [{success:true,results:[row]}];
-  const baseline = {
-    migration_count:5,migration_v1:1,migration_v2:1,migration_v3:1,
-    migration_v4:1,migration_v5:1,migration_v6:0,migration_v7:0,migration_v8:0,migration_v9:0,migration_v10:0,migration_v11:0,migration_v12:0,migration_v14:0,migration_v15:0,migration_v16:0,migration_v17:0,migration_v18:0,migration_v19:0,migration_v20:0,migration_v22:0,drop_claim_receipts_table:0,resolved_sha_column:0,rca_duration_column:0,portal_auth_table:0,mcp_fence_table:0,http_auth_table:0,cloudflare_gate_table:0,deleted_column:0,event_receipts_table:0,runtime_table:0,approval_gates_table:0,approvals_table:0,
-    capacity_column:0,parent_column:0,parent_step_column:0,child_index:0,child_cancel_table:0,
-    child_terminate_fence_column:0,capacity_guard_trigger:0,
-    locator_column:0,fixed_column:0,fixed_index:0,
-    attempt_table:1,receipt_table:1,native_column:1,
-    session_table:0,cancellation_table:0,
-    active_runs:0,active_sessions:0,run_count:0,workflow_count:0,
-  };
-  const partial = {...baseline,migration_count:6,migration_v6:1};
-  const current = {...partial,migration_count:7,migration_v7:1,
-    session_table:1,cancellation_table:1};
-  const completed = {...current,migration_count:8,migration_v8:1,locator_column:1};
-  const oldComplete = {...completed,migration_count:9,migration_v9:1,fixed_column:1,fixed_index:1};
-  const upgraded = {...oldComplete,migration_count:10,migration_v10:1,runtime_table:1};
-  const previousComplete = {...upgraded,migration_count:11,migration_v11:1,
-    capacity_column:1,parent_column:1,parent_step_column:1,child_index:1,child_cancel_table:1,
-    child_terminate_fence_column:1,capacity_guard_trigger:1};
-  const latest = {...previousComplete,migration_count:12,migration_v12:1,event_receipts_table:1};
-  const cloudflareComplete = {...latest,migration_count:13,migration_v13:1,
-    invocations_table:1,cloudflare_cancel_table:1};
-  const deletedComplete = {...cloudflareComplete,migration_count:14,migration_v14:1,deleted_column:1};
-  const approvalComplete={...deletedComplete,migration_count:15,migration_v15:1,approval_gates_table:1,approvals_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(baseline),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(partial),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(current),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(completed),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(oldComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(upgraded),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(previousComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(latest),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(cloudflareComplete),false),true);
-  assert.equal(verifyWorkflowD1Readiness(result(deletedComplete),false),true);
-  const portalComplete={...approvalComplete,migration_count:16,migration_v16:1,portal_auth_table:1,mcp_fence_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(approvalComplete),false),true);
-  const httpComplete={...portalComplete,migration_count:17,migration_v17:1,http_auth_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(portalComplete),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(portalComplete),false,true),/schema migrations/);
-  const actionsComplete={...httpComplete,migration_count:18,migration_v18:1,cloudflare_gate_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(httpComplete),false),true);
-  const sessionComplete={...actionsComplete,migration_count:19,migration_v19:1,rca_duration_column:1};
-  assert.equal(verifyWorkflowD1Readiness(result(actionsComplete),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(actionsComplete),false,true),/schema migrations/);
-  assert.equal(verifyWorkflowD1Readiness(result(sessionComplete),false),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(sessionComplete),false,true),/schema migrations/);
-  const mainComplete={...sessionComplete,migration_count:20,migration_v20:1,resolved_sha_column:1};
-  assert.equal(verifyWorkflowD1Readiness(result(mainComplete),false,true),true);
-  const uuRetired={...mainComplete,migration_count:21,migration_v21:1,runtime_table:0};
-  assert.equal(verifyWorkflowD1Readiness(result(uuRetired),false,true,true),true);
-  const dropComplete={...uuRetired,migration_count:22,migration_v22:1,drop_claim_receipts_table:1};
-  assert.equal(verifyWorkflowD1Readiness(result(dropComplete),false,true,true),true);
-  assert.equal(verifyWorkflowD1Readiness(result(dropComplete),false,true),true);
-  for(const broken of [
-    {migration_v22:0},{drop_claim_receipts_table:0},{migration_count:21},
-    {migration_count:23},{migration_v21:0},{runtime_table:1},
-  ]) assert.throws(()=>verifyWorkflowD1Readiness(result({...dropComplete,...broken}),false,true),
-    /migration\/schema drift|schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(mainComplete),false,true,true),
-    /UU retirement post-migration/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,runtime_table:1}),false,true,true),
-    /UU retirement/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,migration_v21:0}),false,true,true),
-    /UU retirement/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...uuRetired,active_sessions:1}),false,true,true),
-    /active physical Sessions/);
-  // Only v22 code-only releases may keep a healthy Ready Session;
-  // the separate code-release-check still rejects unresolved activity.
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1}),false,true),/active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1}),false,true,false,true),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(
-    result({...dropComplete,active_sessions:1}),false,true,false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...dropComplete,active_sessions:1,drop_claim_receipts_table:0}),false,true,false,true),
-    /migration\/schema drift/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1,active_runs:1}),false,true,false,true),
-    /active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1,rca_duration_column:0}),false,true,false,true),
-    /UU retirement migration\/schema drift/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1}),false,true,true,true),
-    /active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...mainComplete,active_sessions:1,migration_count:19}),false,true,false,true),
-    /schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(
-    result({...uuRetired,active_sessions:1,migration_count:19}),false,true,false,true),
-    /UU retirement migration\/schema drift/);
-
-  for(const broken of [{migration_v16:0},{portal_auth_table:0},{mcp_fence_table:0},
-    {migration_v17:0},{http_auth_table:0},{migration_v18:0},{cloudflare_gate_table:0},
-    {migration_v19:0},{rca_duration_column:0},{migration_v20:0},
-    {resolved_sha_column:0},{migration_count:19},{migration_count:18},{migration_count:17}])
-    assert.throws(()=>verifyWorkflowD1Readiness(result({...mainComplete,...broken}),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(deletedComplete),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(cloudflareComplete),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(latest),false,true),/schema migrations/);
-  for(const row of [
-    {...cloudflareComplete,migration_count:12},
-    {...cloudflareComplete,migration_v13:0},
-    {...cloudflareComplete,invocations_table:0},
-    {...cloudflareComplete,cloudflare_cancel_table:0},
-    {...deletedComplete,migration_count:13},
-    {...deletedComplete,migration_v14:0},
-    {...deletedComplete,deleted_column:0},
-    {...approvalComplete,migration_v15:0},
-    {...approvalComplete,approval_gates_table:0},
-    {...approvalComplete,approvals_table:0},
-  ]) assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result(previousComplete),false,true),/schema migrations/);
-  for(const row of [baseline,partial,current,completed,oldComplete,upgraded]){
-    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false,true),
-      /schema migrations/);
-  }
-  for(const row of [
-    {...baseline,migration_count:4,migration_v5:0},
-    {...baseline,migration_count:6},
-    {...partial,migration_v6:0},
-    {...completed,migration_v4:0},
-    {...completed,migration_v7:0},
-    {...current,migration_count:8},
-    {...completed,migration_v8:0},
-    {...completed,locator_column:0},
-    {...completed,session_table:0},
-    {...completed,cancellation_table:0},
-    {...completed,receipt_table:0},
-    {...completed,migration_count:9},
-    {...completed,migration_v9:1},
-    {...oldComplete,migration_count:10},
-    {...upgraded,migration_v10:0},
-    {...upgraded,runtime_table:0},
-    {...upgraded,migration_v11:1},
-    {...latest,migration_count:10},
-    {...latest,migration_count:11},
-    {...latest,migration_v11:0},
-    {...latest,migration_v12:0},
-    {...latest,event_receipts_table:0},
-    {...previousComplete,migration_v12:1},
-    {...previousComplete,event_receipts_table:1},
-    {...latest,capacity_column:0},
-    {...latest,parent_column:0},
-    {...latest,parent_step_column:0},
-    {...latest,child_index:0},
-    {...latest,child_cancel_table:0},
-    {...latest,child_terminate_fence_column:0},
-    {...latest,capacity_guard_trigger:0},
-    {...upgraded,fixed_index:0},
-    {...upgraded,fixed_column:0},
-    {...completed,native_column:0},
-  ]){
-    assert.throws(()=>verifyWorkflowD1Readiness(result(row),false),
-      /schema migrations/);
-  }
-  assert.equal(verifyWorkflowD1Readiness(result({...mainComplete,run_count:3,
-    workflow_count:1}),false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_runs:1}),false),
-    /active or indeterminate/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...oldComplete,active_sessions:1}),false),
-    /active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...completed,active_sessions:1}),false),
-    /active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,active_sessions:1}),false),/active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...approvalComplete,active_sessions:1}),false,true),/schema migrations/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...portalComplete,active_sessions:1}),false),/active physical Sessions/);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...actionsComplete,active_sessions:1}),false),/active physical Sessions/);
-  assert.equal(verifyWorkflowD1Readiness(result({...mainComplete,active_sessions:1}),false,true),true);
-  assert.throws(()=>verifyWorkflowD1Readiness(result({...upgraded,run_count:1}),true),
-    /empty production/);
-  assert.throws(()=>verifyWorkflowD1Readiness([],true),/readback unavailable/);
-});
-test("Workflow migration preflight requires all independent physical states settled", () => {
-  const ready = {
-    migration_count: 12, expected_migrations: 12,drop_claim_receipts_table:0,
-    workflow_count: 7, run_count: 58, session_count: 49,
-    attempt_count: 31, callback_count: 4, cancellation_count: 31,
-    nonterminal_runs: 0, unresolved_starts: 0, unresolved_steps: 0, invalid_cancelled_steps: 0,
-    nonterminal_attempts: 0, nonterminated_sessions: 0, undelivered_callbacks: 0,
-    reviewed_terminal_artifact_attempts: 0,
-  };
-  const response = row => [{success: true, results: [row]}];
-  for (const count of [18,19,20,21,22]) assert.deepEqual(
-    verifyWorkflowMigrationReadiness(response({...ready,migration_count:count,expected_migrations:count,
-      drop_claim_receipts_table:count===22?1:0})),
-    {workflows:7,runs:58,sessions:49,attempts:31,callbacks:4,cancellations:31});
-  for (const wrong of [
-    {migration_count:23,expected_migrations:23},
-    {migration_count:22,expected_migrations:22},
-    {migration_count:21,expected_migrations:21,drop_claim_receipts_table:1},
-    {migration_count:19,expected_migrations:18},
-  ]) assert.throws(()=>verifyWorkflowMigrationReadiness(response({...ready,...wrong})),/exact reviewed/);
-  assert.deepEqual(verifyWorkflowMigrationReadiness(response(ready)), {
-    workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
-    cancellations: 31,
-  });
-  const exactArtifact = {...ready, nonterminal_attempts: 1,
-    reviewed_terminal_artifact_attempts: 1};
-  assert.deepEqual(verifyWorkflowMigrationReadiness(response(exactArtifact),true),
-    {workflows: 7, runs: 58, sessions: 49, attempts: 31, callbacks: 4,
-      cancellations: 31});
-  assert.throws(()=>verifyWorkflowMigrationReadiness(response(exactArtifact)),
-    /reviewed_terminal_artifact_attempts/);
-  assert.throws(()=>verifyWorkflowMigrationReadiness(response(ready),true),
-    /exact historical Artifact Attempt/);
-  for(const wrong of [
-    {...exactArtifact,nonterminal_attempts:2},
-    {...exactArtifact,reviewed_terminal_artifact_attempts:2},
-    {...exactArtifact,reviewed_terminal_artifact_attempts:0},
-    {...exactArtifact,nonterminal_runs:1},
-    {...exactArtifact,unresolved_steps:1},
-    {...exactArtifact,nonterminated_sessions:1},
-  ]) assert.throws(()=>verifyWorkflowMigrationReadiness(response(wrong),true),
-    /blocked|exact historical Artifact Attempt/);
-  for (const name of [
-    "nonterminal_runs","unresolved_starts","unresolved_steps","invalid_cancelled_steps",
-    "nonterminal_attempts","nonterminated_sessions","undelivered_callbacks",
-    "reviewed_terminal_artifact_attempts",
-  ]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,[name]:1})), new RegExp(name));
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,[name]:-1})), /count unavailable or invalid/);
-  }
-  for (const key of Object.keys(ready)) {
-    const broken = {...ready};
-    delete broken[key];
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response(broken)), /count unavailable or invalid/);
-  }
-  for (const invalid of [[],[{}],[{success:false,results:[ready]}],
-    [{success:true,results:[ready,ready]}]]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(invalid),
-      /readback unavailable/);
-  }
-  for (const wrong of [{migration_count:9},{migration_count:11},
-    {expected_migrations:11}]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,...wrong})), /exact reviewed/);
-  }
-  for (const invalid of [null,NaN,1.5,"0",true]) {
-    assert.throws(() => verifyWorkflowMigrationReadiness(
-      response({...ready,undelivered_callbacks:invalid})),
-      /count unavailable or invalid/);
-  }
-  for (const requiredTable of [
-    "runs","run_steps","step_attempts","session_executions",
-    "callback_receipts","github_action_cancellations","d1_migrations",
-  ]) assert.ok(WORKFLOW_MIGRATION_READINESS_SQL.includes(requiredTable));
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/state != 'terminated'/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/notification_delivered != 1/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0012_event_wait_receipts.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0013_cloudflare_action_invocations.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0014_workflow_deletion.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0016_portal_connection_revocation.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0017_http_connection_auth.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0019_session_rca_duration.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0020_github_action_main_sha.sql/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0022_drop_claim_receipts.sql/);
-  const release=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
-  assert.equal((release.match(/AS migration_v17/g)??[]).length,2);
-  assert.equal((release.match(/AS http_auth_table/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v19/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v20/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v21/g)??[]).length,2);
-  assert.equal((release.match(/AS migration_v22/g)??[]).length,2);
-  assert.equal((release.match(/AS drop_claim_receipts_table/g)??[]).length,2);
-  assert.equal((release.match(/AS resolved_sha_column/g)??[]).length,2);
-  assert.match(release,/migrations\[@\].*eq 22/);
-  assert.equal((release.match(/AS rca_duration_column/g)??[]).length,2);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/invalid_cancelled_steps/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/reviewed_terminal_artifact_attempts/);
-  assert.match(WORKFLOW_MIGRATION_READINESS_SQL,/0 AS reviewed_terminal_artifact_attempts/);
-
-});
-
 test("Task-only production acceptance reuses confirmed Ready Session gate and scoped cleanup",()=>{
   const source=readFileSync(new URL("../apps/workflow-mcp-worker/tests/production-smoke.mjs",import.meta.url),"utf8");
   const fn=source.slice(source.indexOf("async function runActionTaskSmoke()"),
     source.indexOf("async function runWebhookSmoke()"));
-  assert.match(fn,/verifyWorkflowCodeReleaseReadiness\(\[\{/);
-  assert.match(fn,/sql\(WORKFLOW_MIGRATION_READINESS_SQL\)/);
+  assert.match(fn,/await workflowReleaseProof\('workflow-check',workflowReleaseIO\(\)/);
   assert.doesNotMatch(fn,/session_executions WHERE state != 'terminated'/);
   assert.match(source,/DELETE FROM step_attempts WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
   assert.match(source,/DELETE FROM mcp_dispatch_fences WHERE run_id IN \(SELECT id FROM runs WHERE workflow_id = /);
   assert.match(source,/Refusing GitHub cleanup until physical GitHub Job is completed/);
-});
-
-test('cancelled Workflow Steps count as terminal only with matched cancelled Run receipt',()=>{
-  const start=WORKFLOW_MIGRATION_READINESS_SQL.indexOf('(SELECT count(*) FROM run_steps s JOIN runs r');
-  const end=WORKFLOW_MIGRATION_READINESS_SQL.indexOf(' AS invalid_cancelled_steps',start);
-  assert.ok(start>=0&&end>start);
-  const query='SELECT '+WORKFLOW_MIGRATION_READINESS_SQL.slice(start,end+ ' AS invalid_cancelled_steps'.length);
-  const db=new DatabaseSync(':memory:');
-  try{
-    db.exec('CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT,error_code TEXT);');
-    db.exec('CREATE TABLE run_steps(run_id TEXT,status TEXT,error_code TEXT);');
-    db.prepare('INSERT INTO runs VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
-    db.prepare('INSERT INTO run_steps VALUES(?,?,?)').run('r','cancelled','approval_cancel_requested');
-    const count=()=>db.prepare(query).get()?.invalid_cancelled_steps;
-    assert.equal(count(),0);
-    db.exec("UPDATE runs SET outcome='running'");assert.equal(count(),1);
-    db.exec("UPDATE runs SET outcome='cancelled',error_code=NULL");assert.equal(count(),1);
-    db.exec("UPDATE runs SET error_code='approval_cancel_requested';UPDATE run_steps SET error_code=NULL");assert.equal(count(),1);
-    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),0);
-    // Event Wait cancellation is a separate supported, durable Run/Step pair.
-    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code='event_wait_cancel_requested'");
-    assert.equal(count(),0);
-    db.exec("UPDATE run_steps SET error_code='approval_cancel_requested'");assert.equal(count(),1);
-    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code='unknown_cancel_requested'");
-    assert.equal(count(),1);
-    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested';UPDATE run_steps SET error_code=NULL");
-    assert.equal(count(),1);
-    db.exec("UPDATE run_steps SET error_code='event_wait_cancel_requested';UPDATE runs SET error_code=NULL");
-    assert.equal(count(),1);
-    db.exec("UPDATE runs SET error_code='event_wait_cancel_requested'");assert.equal(count(),0);
-  }finally{db.close();}
-});
-
-test("code-only release admits only confirmed Ready Sessions, not migrations",()=>{
-  const row={
-    migration_count:22,expected_migrations:22,drop_claim_receipts_table:1,resolved_sha_column:1,
-    nonterminal_runs:0,unresolved_starts:0,unresolved_steps:0,invalid_cancelled_steps:0,
-    nonterminal_attempts:1,nonterminated_sessions:1,
-    undelivered_callbacks:0,confirmed_ready_sessions:1,reviewed_terminal_artifact_attempts:0,verified_terminal_saga_receipts:0,
-  };
-  const make=value=>[{success:true,results:[value]}];
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(row)),
-    {confirmed_ready_sessions:1});
-  assert.throws(()=>verifyWorkflowMigrationReadiness(make({
-    ...row,workflow_count:5,run_count:53,session_count:1,
-    attempt_count:10,callback_count:1,cancellation_count:0,
-  })),/nonterminal_attempts/);
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
-    ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
-  })),{confirmed_ready_sessions:0});
-  const historical={...row,nonterminal_attempts:2,reviewed_terminal_artifact_attempts:1};
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make(historical),true),
-    {confirmed_ready_sessions:1});
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make(historical)),/unconfirmed/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
-    ...historical,nonterminal_attempts:3,
-  }),true),/unconfirmed/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
-    ...historical,reviewed_terminal_artifact_attempts:0,
-  }),true),/historical Artifact/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness(make({
-    ...historical,reviewed_terminal_artifact_attempts:2,
-  }),true),/historical Artifact/);
-  // Code-only publish can proceed when every remaining unresolved record
-  // is an exact Saga request whose Session and GitHub Attempt both have
-  // verified physical terminal evidence. Schema migrations stay strict.
-  assert.deepEqual(verifyWorkflowCodeReleaseReadiness(make({
-    ...row,nonterminal_attempts:0,nonterminated_sessions:0,confirmed_ready_sessions:0,
-    unresolved_steps:1,verified_terminal_saga_receipts:1,
-  })),{confirmed_ready_sessions:0});
-  for(const broken of [
-    {migration_count:21},{expected_migrations:21},{migration_count:20},
-    {drop_claim_receipts_table:0},
-    {drop_claim_receipts_table:2},{resolved_sha_column:0},{migration_count:19},{expected_migrations:19},
-    {migration_count:18},{expected_migrations:18},
-    {migration_count:12},{expected_migrations:12},
-    {migration_count:13},{expected_migrations:13},
-    {migration_count:14},{expected_migrations:14},
-    {nonterminal_runs:1},{unresolved_starts:1},{unresolved_steps:1},{invalid_cancelled_steps:1},
-    {unresolved_steps:2,verified_terminal_saga_receipts:1},
-    {verified_terminal_saga_receipts:1},{verified_terminal_saga_receipts:-1},
-    {verified_terminal_saga_receipts:'1'},{verified_terminal_saga_receipts:undefined},
-    {undelivered_callbacks:1},{nonterminal_attempts:2},
-    {nonterminated_sessions:2},{confirmed_ready_sessions:0},
-    {confirmed_ready_sessions:-1},{confirmed_ready_sessions:"1"},
-  ]) assert.throws(()=>verifyWorkflowCodeReleaseReadiness(
-    make({...row,...broken})),/blocked|unavailable/);
-  assert.throws(()=>verifyWorkflowCodeReleaseReadiness([]),/readback unavailable/);
-});
-
-test('code-only gate proves terminal Saga receipts using exact physical Session and Attempt',()=>{
-  const db=new DatabaseSync(':memory:');
-  try{
-    db.exec(`CREATE TABLE runs(id TEXT PRIMARY KEY,outcome TEXT);
-      CREATE TABLE run_steps(run_id TEXT,step_id TEXT,status TEXT);
-      CREATE TABLE session_executions(run_id TEXT,step_id TEXT,state TEXT);
-      CREATE TABLE step_attempts(run_id TEXT,step_id TEXT,capability_id TEXT,state TEXT);
-      INSERT INTO runs VALUES('r','failed');
-      INSERT INTO run_steps VALUES('r','__saga_ubuntu','requested');
-      INSERT INTO session_executions VALUES('r','ubuntu','terminated');
-      INSERT INTO step_attempts VALUES('r','ubuntu','github.action','cancelled');`);
-    const begin=WORKFLOW_MIGRATION_READINESS_SQL.indexOf('(SELECT count(*) FROM run_steps receipt');
-    const end=WORKFLOW_MIGRATION_READINESS_SQL.indexOf(' AS verified_terminal_saga_receipts',begin);
-    assert.ok(begin>=0&&end>begin);
-    const query='SELECT '+WORKFLOW_MIGRATION_READINESS_SQL.slice(begin,end+ ' AS verified_terminal_saga_receipts'.length);
-    const count=()=>db.prepare(query).get()?.verified_terminal_saga_receipts;
-    assert.equal(count(),1);
-    db.exec("UPDATE step_attempts SET state='claimed'");
-    assert.equal(count(),0,'claimed Job is never physical terminal');
-    db.exec("UPDATE step_attempts SET state='cancelled'; UPDATE session_executions SET state='stopping'");
-    assert.equal(count(),0,'cancel ACK cannot substitute physical Session terminal');
-    db.exec("UPDATE session_executions SET state='terminated';UPDATE runs SET outcome='running'");
-    assert.equal(count(),0,'parent must have a terminal business outcome');
-    db.exec("UPDATE runs SET outcome='failed';UPDATE run_steps SET step_id='other'");
-    assert.equal(count(),0,'non-Saga Step cannot be accepted');
-  }finally{db.close();}
 });
 
 const executorIdentity={repository:'alternate-owner/private-actions',
@@ -1073,36 +674,32 @@ test("Workflow readback verifies one integrated runtime, GitHub Action audience 
 });
 
 
-test("Workflow manual GitHub Actions requires D1 checks before Owner", () => {
-  const ci=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
-  const pre=ci.indexOf("      - name: Verify Workflow release configuration and remote D1 readiness");
-  const migration=ci.indexOf("      - name: Apply complete Workflow D1 migrations");
-  const publish=ci.indexOf("      - name: Publish exactly selected Worker");
-  assert.ok(pre>0 && migration>pre && publish>migration);
-  assert.match(ci,/wrangler d1 migrations apply workflow-mcp-db --remote/);
-  const finalQuiescence=ci.indexOf("      - name: Verify code-only Workflow D1 gate at publication (Ready Sessions preserved)");
-  assert.ok(finalQuiescence>migration && finalQuiescence<publish);
-  const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
-  const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
-  const freeze=ci.indexOf("      - name: Verify current unified Actions binding and gate (read-only)");
-  assert.ok(pin>0 && recheck>pin && freeze>recheck && freeze<publish);
-  assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
-  assert.equal(ci.split('0018_cloudflare_action_migration_fence.sql').length,3);
-  assert.match(ci,/pnpm exec wrangler d1 execute workflow-mcp-db --remote --json --command "\$query"/);
-
-  for(const name of ["0006_action_attempt_capabilities.sql","0007_session_executions.sql","0009_fixed_sessions.sql","0010_session_runtime_data.sql","0011_awaited_child_capacity.sql"]){
-    assert.equal(ci.split(name).length,3);
-  }
-  assert.ok(ci.includes("WORKFLOW_GITHUB_ACTION_REPOSITORY: " + String.fromCharCode(36)) && ci.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY"));
-  assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"), "Legacy grants must not shadow canonical release inputs");
-  assert.match(ci,/WORKFLOW_REQUIRE_COMPLETE_SCHEMA: 'true'/);
-  assert.ok(ci.includes("WORKFLOW_FIRST_DEPLOY: " + String.fromCharCode(36) + "{{ steps.preflight.outputs.bootstrap }}"));
-  assert.match(ci,/node scripts\/manual-worker-release\.mjs d1-check workflow-mcp-worker/);
-  assert.match(ci,/\(cd apps\/workflow-mcp-worker &&/);
-  assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
-  assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
-  assert.match(ci,/body\.scope !== "workflow"/);
-  assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+test("Workflow protected release retains independent identity, schema and health gates", () => {
+ const ci=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
+ const prepare=ci.indexOf("      - name: Prepare strict Workflow cutover and record recovery point");
+ const migrate=ci.indexOf("      - name: Apply only the reviewed v23 Workflow D1 migration");
+ const backfill=ci.indexOf("      - name: Conditionally backfill terminal facts");
+ const publish=ci.indexOf("      - name: Publish exactly selected Worker");
+ const deploy=ci.indexOf('pnpm exec wrangler deploy',publish);
+ const health=ci.indexOf("      - name: Check existing public health endpoint");
+ const activate=ci.indexOf("      - name: Reopen only the now-verified unified Action admission gate");
+ const check=ci.indexOf("node scripts/manual-worker-release.mjs workflow-check workflow-mcp-worker",publish);
+ assert.ok(prepare>0&&migrate>prepare&&backfill>migrate&&publish>backfill&&check>publish&&deploy>check&&health>deploy&&activate>health);
+ assert.match(ci.slice(prepare,migrate),/d1 time-travel info workflow-mcp-db --json/);
+ assert.match(ci.slice(migrate,backfill),/workflow-cutover-recheck workflow-mcp-worker[\s\S]*wrangler d1 migrations apply workflow-mcp-db --remote/);
+ assert.match(ci.slice(backfill,publish),/workflow-backfill workflow-mcp-worker/);
+ const pin=ci.indexOf("      - name: Pin the reviewed unified Actions Worker (read-only)");
+ const recheck=ci.indexOf("      - name: Recheck unified Actions Worker before Workflow publication (read-only)");
+ const freeze=ci.indexOf("      - name: Verify current unified Actions binding and gate (read-only)");
+ assert.ok(pin>0&&recheck>pin&&freeze>recheck&&freeze<publish);
+ assert.match(ci,/node scripts\/actions-consumer-cutover-gate\.mjs/);
+ assert.ok(ci.includes("vars.WORKFLOW_GITHUB_ACTION_REPOSITORY"));
+ assert.ok(!ci.includes("vars.WORKFLOW_ACTION_APPROVED_REPOSITORIES"));
+ assert.match(ci,/mcp_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/mcp"/);
+ assert.match(ci,/health_endpoint="https:\/\/workflow\.lirtual\.dpdns\.org\/health"/);
+ assert.match(ci,/body\.scope !== "workflow"/);
+ assert.match(ci,/github\.ref == 'refs\/heads\/main'/);
+ assert.doesNotMatch(ci,/WORKFLOW_(?:[A-Z_]+_)?TERMINAL_RUN_ID|steps\.terminal|migration-check workflow-mcp-worker/);
 });
 
 test("Spec 733: scoped GitHub Secret inputs map directly to canonical runtime bindings",()=> {
@@ -1534,14 +1131,15 @@ test('historical Ubuntu terminal execution reproduces the old Unknown release ob
     db.prepare("INSERT INTO run_steps(run_id,step_id,status,error_code,updated_at) VALUES(?,'ubuntu_session','indeterminate','github_session_no_ready',1795401798923),(?,'notify_bark','skipped',NULL,1795401799065)").run(id,id);
     db.prepare("INSERT INTO session_executions(run_id,step_id,slot,state,created_at,updated_at) VALUES(?,'ubuntu_session',1,'terminated',0,0)").run(id);
     db.prepare("INSERT INTO step_attempts(attempt_id,run_id,step_id,capability_id,dispatch_id,state,repository,repository_id,workflow_ref,ref,candidate_run_id,candidate_run_attempt,owner_run_id,owner_run_attempt,created_at,updated_at,resolved_sha) VALUES(?,?,'ubuntu_session','github.action','fixture','cancelled','autoactions/github-actions','1452488311','autoactions/github-actions/.github/workflows/ubuntu.yml@refs/heads/main','refs/heads/main',45101764677,1,45101764677,1,0,0,'dee9dbaf71c3c2e48bf31a8ad20bb24d21d31c27')").run(attempt,id);
-    const row=db.prepare(WORKFLOW_MIGRATION_READINESS_SQL).get();
-    assert.equal(row.nonterminal_runs,1);
-    assert.equal(row.unresolved_steps,1);
-    assert.equal(row.nonterminal_attempts,0);
-    assert.equal(row.nonterminated_sessions,0);
-    assert.equal(row.undelivered_callbacks,0);
-    assert.throws(()=>verifyWorkflowCodeReleaseReadiness([{success:true,results:[row]}]),/nonterminal_runs/);
-    assert.throws(()=>verifyWorkflowMigrationReadiness([{success:true,results:[row]}]),/nonterminal_runs/);
+    // Reconstruct only the retired gate's two blocking predicates, not its
+    // old operational compatibility code.
+    const row=db.prepare(`SELECT
+      (SELECT count(*) FROM runs WHERE outcome NOT IN ('succeeded','failed','cancelled')) AS nonterminal_runs,
+      (SELECT count(*) FROM run_steps WHERE status NOT IN ('succeeded','failed','skipped','cancelled')) AS unresolved_steps,
+      (SELECT count(*) FROM step_attempts WHERE state NOT IN ('rejected','succeeded','failed','cancelled')) AS nonterminal_attempts,
+      (SELECT count(*) FROM session_executions WHERE state!='terminated') AS nonterminated_sessions,
+      (SELECT count(*) FROM callback_receipts WHERE notification_delivered!=1) AS undelivered_callbacks`).get();
+    assert.deepEqual(Object.values(row),[1,1,0,0,0]);
     assert.equal(db.prepare('SELECT outcome FROM runs WHERE id=?').get(id).outcome,'indeterminate');
   } finally {db.close();}
 });
@@ -1924,13 +1522,18 @@ test('#1046 release inventory selects actual unresolved evidence, not historical
   db.exec("UPDATE runs SET execution_terminal_proof=NULL WHERE id='arbitrary-new-unknown'");
   await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/terminal evidence/);
   assert.deepEqual((await verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,observe:async()=>fact})).proofs[fact.instance_id],fact);
+  // A settled business result cannot hide an invalid physical identity.
+  db.exec("PRAGMA ignore_check_constraints=ON; UPDATE step_attempts SET owner_run_id=2 WHERE attempt_id='a'; PRAGMA ignore_check_constraints=OFF");
+  await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,
+    observe:async r=>({instance_id:r.id,status:'complete',observed_at:1000})}),/Attempt a physical termination or identity unresolved/);
+  db.exec("UPDATE step_attempts SET owner_run_id=1 WHERE attempt_id='a'");
   db.exec("DELETE FROM d1_migrations WHERE name='0022_drop_claim_receipts.sql'");
   await assert.rejects(()=>verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files}),/inventory|prefix/);
  }finally{db.close();}
 });
 
 test('#1046 once-only v22 to v23 proof backfill preserves outcomes and resumes after a lost write receipt',async()=>{
- const {verifyWorkflowReleaseInventory,backfillWorkflowTerminalProofs}=await import('./manual-worker-release.mjs');
+ const {verifyWorkflowReleaseInventory,backfillWorkflowTerminalProofs,workflowReleaseProof}=await import('./manual-worker-release.mjs');
  const db=new DatabaseSync(':memory:');
  try{
   const dir=new URL('../apps/workflow-mcp-worker/migrations/',import.meta.url);
@@ -1947,7 +1550,21 @@ test('#1046 once-only v22 to v23 proof backfill preserves outcomes and resumes a
   const snapshot=db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all();
   const stepSnapshot=db.prepare("SELECT * FROM run_steps ORDER BY run_id").all();
   const query=async(sql,params=[])=>db.prepare(sql).all(...params);
-  const prep=await verifyWorkflowReleaseInventory(query,{mode:'strict',sourceFiles:files,observe:async r=>({instance_id:r.instance_id,status:'complete',observed_at:1000})});
+  const checks=[];
+  const io={query,sourceFiles:files,
+   observe:async r=>({instance_id:r.instance_id,status:'complete',observed_at:1000}),
+   maintenance:async phase=>checks.push(phase),
+   nativeDrain:async ids=>checks.push(ids),
+   };
+  // The adapter receives sources only for actual recognized history;
+  // synthetic current IDs may not perform any external history requests.
+  const historyFree={...io,historySources:{githubRun:async()=>{throw Error('history consulted');},
+    githubJobs:async()=>{throw Error('history consulted');},providerVersions:async()=>{throw Error('history consulted');}}};
+  await assert.rejects(()=>workflowReleaseProof('workflow-check',historyFree,{ACTIONS_INGRESS_QUIESCED:'false'}),/exact v23/);
+  await assert.rejects(()=>workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'false'}),/quiescence/);
+  assert.deepEqual(checks,[]);
+  const prep=await workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'true'});
+  assert.deepEqual(checks,['frozen','frozen']);checks.length=0;
   assert.equal(prep.schema,22);
   await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('write before migration');},prep,files),/schema/);
   migrate(files.at(-1));
@@ -1956,13 +1573,40 @@ test('#1046 once-only v22 to v23 proof backfill preserves outcomes and resumes a
   await assert.rejects(()=>backfillWorkflowTerminalProofs(query,interrupted,prep,files),/lost write receipt/);
   assert.equal(writes,1);
   assert.equal(db.prepare("SELECT count(*) AS n FROM runs WHERE execution_terminal_proof IS NOT NULL").get().n,1);
-  const resumed=await backfillWorkflowTerminalProofs(query,async(sql,params)=>{writes++;return Number(db.prepare(sql).run(...params).changes);},prep,files);
+  // Reconstructed preparation in a separately authorized forward recovery
+  // reads existing facts after an uncertain migration/write receipt.
+  const recovery=await workflowReleaseProof('workflow-prepare',historyFree,{ACTIONS_INGRESS_QUIESCED:'true'});
+  assert.equal(recovery.schema,23);
+  assert.deepEqual(recovery.proofs,prep.proofs);
+  const resumed=await backfillWorkflowTerminalProofs(query,async(sql,params)=>{writes++;return Number(db.prepare(sql).run(...params).changes);},recovery,files);
   assert.equal(writes,2,'confirmed existing proof must not be written again');
   assert.equal(resumed.schema,23);
   assert.deepEqual(db.prepare("SELECT id,outcome,start_state,error_code,updated_at FROM runs ORDER BY id").all(),snapshot);
   assert.deepEqual(db.prepare("SELECT * FROM run_steps ORDER BY run_id").all(),stepSnapshot);
-  assert.deepEqual((await verifyWorkflowReleaseInventory(query,{mode:'compatible',sourceFiles:files,observe:async()=>{throw Error('history is retired');}})).proofs,prep.proofs);
+  checks.length=0;
+  const routine=await workflowReleaseProof('workflow-check',{...historyFree,observe:async()=>{throw Error('persisted proof was not reused');},
+   get historySources(){throw Error('normal v23 release entered history adapter');}},{ACTIONS_INGRESS_QUIESCED:'false'});
+  assert.deepEqual(routine.proofs,prep.proofs);
+  assert.deepEqual(checks,[[]],'ordinary release must independently check native active inventory');
   db.exec("UPDATE runs SET execution_terminal_proof=NULL,updated_at=3 WHERE id='b'");
   await assert.rejects(()=>backfillWorkflowTerminalProofs(query,async()=>{throw Error('must not write changed state');},prep,files),/changed/);
  }finally{db.close();}
+});
+
+
+test('#1046 Session release recognizes definitive rejection and never-dispatched slots, not an unresolved dispatch',async()=>{
+ const {verifyWorkflowTerminalEvidence}=await import('./manual-worker-release.mjs');
+ const run={id:'r',instance_id:'r',version_id:'v',start_state:'started',outcome:'failed'};
+ const native={instance_id:'r',status:'complete',observed_at:1000};
+ const attempt={run_id:'r',step_id:'session',attempt_id:'a',capability_id:'github.action',state:'rejected',
+  candidate_run_id:null,candidate_run_attempt:null,owner_run_id:null,owner_run_attempt:null};
+ const e={steps:[{run_id:'r',step_id:'session',status:'failed',error_code:'github_session_dispatch_rejected'}],
+  attempts:[attempt],sessions:[{run_id:'r',step_id:'session',state:'terminated'}],callbacks:[],children:[],
+  invocations:[],mcpFences:[],githubCancellations:[],cloudflareCancellations:[],childCancellations:[],gates:[],approvals:[],waits:[]};
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,e),native);
+ assert.deepEqual(verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[]}),native);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,state:'dispatch_unknown'}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[{...attempt,candidate_run_id:42}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,sessions:[{...e.sessions[0],state:'starting'}]}),/terminal evidence/);
+ assert.throws(()=>verifyWorkflowTerminalEvidence(run,native,{...e,attempts:[],steps:[]}),/terminal evidence/);
 });

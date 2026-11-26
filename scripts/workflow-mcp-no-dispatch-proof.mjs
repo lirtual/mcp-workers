@@ -1,8 +1,5 @@
 // Exact #176 first live MCP write acceptance: never dispatched (zero D1 fence).
 // Importing this module is pure; the CLI reads only existing D1 and native logs.
-import {readFileSync,appendFileSync} from 'node:fs';
-import {pathToFileURL} from 'node:url';
-import {resolve} from 'node:path';
 
 export const EIGHTH_MCP_RUN_ID='391e075f-3d5c-449e-ad88-fa13c6d4eb6d';
 const WORKFLOW_ID='1e070f56-b5a4-43e6-8671-670d120740b4';
@@ -83,47 +80,4 @@ export function historicalMcpNoDispatchTerminalProof(d1,priorRun,priorJobs){
   return {instance_id:id,status:'errored',observed_at:at,
     historical_source:{release_run_id:priorRun.id,job_id:job.id,step:step.name},
     no_dispatch_step_id:d1[1].results[0].step_id};
-}
-
-async function main(){
-  const d1=JSON.parse(readFileSync(0,'utf8'));
-  requireProof(process.env.CLOUDFLARE_API_TOKEN&&process.env.CLOUDFLARE_ACCOUNT_ID,
-    'Cloudflare read credentials unavailable');
-  const url='https://api.cloudflare.com/client/v4/accounts/'+process.env.CLOUDFLARE_ACCOUNT_ID+
-    '/workflows/'+WORKFLOW+'/instances/'+EIGHTH_MCP_RUN_ID;
-  const response=await fetch(url,{headers:{Authorization:'Bearer '+process.env.CLOUDFLARE_API_TOKEN,
-    Accept:'application/json'},signal:AbortSignal.timeout(15000)});
-  let native;
-  if(response.ok){
-    const parsed=await response.json();
-    requireProof(parsed?.success===true&&parsed?.result,
-      'native instance readback rejected');
-    native=parsed.result;
-  }else if(response.status===404){
-    // Strictly pinned prior proof, not a general 404 waiver. Current D1
-    // Run/Step/Plan and EMPTY outbound dispatch fence are checked below.
-    requireProof(process.env.GITHUB_TOKEN,
-      'pinned previous release read credential unavailable');
-    const get=async path=>{
-      const r=await fetch('https://api.github.com/repos/lirtual/mcp-workers/actions/runs/'+
-        PRIOR_RELEASE_ID+path,{
-        headers:{Authorization:'Bearer '+process.env.GITHUB_TOKEN,
-          Accept:'application/vnd.github+json'},signal:AbortSignal.timeout(15000)});
-      requireProof(r.ok,'pinned previous release API unavailable (HTTP '+r.status+')');
-      return r.json();
-    };
-    const run=await get('');
-    const jobs=await get('/jobs?per_page=100');
-    native=verifyPriorMcpNoDispatchProof(run,jobs);
-    console.log('Pinned prior protected eighth Native proof reverified after 404');
-  }else{
-    requireProof(false,'native instance unavailable (HTTP '+response.status+')');
-  }
-  const id=verifyMcpNoDispatchEvidence(d1,native);
-  requireProof(process.env.GITHUB_OUTPUT,'GitHub receipt path unavailable');
-  appendFileSync(process.env.GITHUB_OUTPUT,'eighth_terminal_run_id='+id+'\n');
-  console.log('Verified exact MCP no-dispatch native terminal Run; historical outcome preserved');
-}
-if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
-  main().catch(e=>{console.error(e.message);process.exitCode=1;});
 }

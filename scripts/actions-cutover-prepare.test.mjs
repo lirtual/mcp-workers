@@ -48,11 +48,11 @@ test('gate freeze uses current main, strict drain and existing release lock with
  for(const required of ["github.actor == 'lirtual'", "inputs.deploy_to_production == false",
   "inputs.actions_gate_freeze == true", "inputs.actions_ingress_quiesced == true",
   'group: worker-release-workflow-mcp-worker',
-  'actions-cutover-prepare.mjs preflight','manual-worker-release.mjs migration-check workflow-mcp-worker',
+  'actions-cutover-prepare.mjs preflight','manual-worker-release.mjs workflow-freeze-check workflow-mcp-worker',
   "state='frozen'",'actions-cutover-prepare.mjs postflight'])
   assert.ok(job.includes(required),required);
- assert.ok(job.indexOf('mjs preflight')<job.indexOf('migration-check workflow-mcp-worker'));
- assert.ok(job.indexOf('migration-check workflow-mcp-worker')<job.indexOf("UPDATE cloudflare_action_gate SET state='frozen'"));
+ assert.ok(job.indexOf('mjs preflight')<job.indexOf('workflow-freeze-check workflow-mcp-worker'));
+ assert.ok(job.indexOf('workflow-freeze-check workflow-mcp-worker')<job.indexOf("UPDATE cloudflare_action_gate SET state='frozen'"));
  assert.ok(job.indexOf("UPDATE cloudflare_action_gate SET state='frozen'")<job.indexOf('mjs postflight'));
  assert.doesNotMatch(job,/wrangler d1 migrations apply/);
  assert.ok(!job.includes('wrangler deploy')&&!job.includes('deploy_to_production == true'));
@@ -123,7 +123,7 @@ test('consumer release reopens only after exact version and Provider pin verific
  const source=readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
  const deployed=source.slice(source.indexOf('  deploy:'));
  const first=source.indexOf('Verify Workflow pin matches deployed Actions Worker (read-only)');
- const pre=source.indexOf('actions-cutover-prepare.mjs activate-preflight',first);
+ const pre=source.indexOf('manual-worker-release.mjs workflow-check workflow-mcp-worker',first);
  const update=source.indexOf("UPDATE cloudflare_action_gate SET state='open'",first);
  const post=source.indexOf('actions-cutover-prepare.mjs activate-postflight',first);
  assert.ok(first>=0&&first<pre&&pre<update&&update<post);

@@ -16,9 +16,8 @@ export function verifyProviderRelease(deployments,settings,secrets){
   const bindings=settings?.bindings;
   if(!Array.isArray(bindings)||!Array.isArray(secrets))fail("Provider bindings and Secret inventory unavailable");
   const find=(name,type)=>bindings.filter(x=>x.name===name&&x.type===type);
-  // The Provider is now Bark-only. Inherited historic Owner D1/Secret
-  // bindings may remain until separately authorized T7 physical revocation;
-  // they are neither necessary nor proof of new execution authority.
+  // Check the current unified Provider identity and required Bark binding;
+  // additional reviewed action-specific bindings have their own release gates.
   if(["BARK_DEVICE_KEY","BARK_ENCRYPTION_KEY"].some(name=>
        find(name,"secret_text").length!==1||
        secrets.filter(x=>x.name===name).length!==1)||
@@ -28,22 +27,13 @@ export function verifyProviderRelease(deployments,settings,secrets){
     fail("Provider Bark key, version metadata or retired credential drift");
   return versions[0].version_id.toLowerCase();
 }
-export function verifyConsumerBinding(settings,expectedProvider,requireCompatible=false){
+export function verifyConsumerBinding(settings){
   const b=settings?.bindings;
   if(!Array.isArray(b)||b.filter(x=>x.type==='service').length!==1||
      b.filter(x=>x.name==='ACTIONS'&&x.type==='service'&&
-       x.service===PROVIDER&&x.entrypoint==='ActionsEntrypoint').length!==1)
-    fail('trusted Workflow ACTIONS Service Binding missing or changed');
-  // Legacy plaintext version metadata is optional and never execution authority.
-  const legacy=b.filter(x=>x.name===PIN_NAME);
-  if(legacy.length>1||legacy.some(x=>x.type!=='plain_text'||!UUID.test(x.text??'')))
-    fail('invalid legacy Provider version metadata');
-  if(requireCompatible&&legacy.length)fail('compatible Consumer still retains legacy deployment pin');
-  // Gate reopening must not resume an old exact-pin Consumer against a newer
-  // Provider. The compatible Consumer release omits this obsolete variable.
-  if(expectedProvider&&(!UUID.test(expectedProvider)||legacy.some(x=>
-    x.text.toLowerCase()!==expectedProvider.toLowerCase())))
-    fail('legacy Consumer cannot safely reopen against a different Provider');
+       x.service===PROVIDER&&x.entrypoint==='ActionsEntrypoint').length!==1||
+     b.some(x=>x.name===PIN_NAME))
+    fail('trusted unified Workflow ACTIONS Service Binding missing, changed or retired pin present');
   return true;
 }
 export async function inspectProvider(account,token,fetchImpl=fetch){
@@ -106,7 +96,7 @@ export async function inspectGateRecovery(account,token,provider,consumer,fetchI
     fail("exact reviewed recovery versions and read credential required");
   const active=await inspectProvider(account,token,fetchImpl);
   if(active!==provider.toLowerCase())fail("active Provider version drift");
-  verifyConsumerBinding(await inspectConsumer(account,token,fetchImpl),provider);
+  verifyConsumerBinding(await inspectConsumer(account,token,fetchImpl));
   const base="https://api.cloudflare.com/client/v4/accounts/"+account;
   const read=async path=>{
     const response=await fetchImpl(base+path,{redirect:"manual",headers:{
@@ -124,6 +114,26 @@ export async function inspectGateRecovery(account,token,provider,consumer,fetchI
   ]);
   verifySafeRecoveryProvider(metadata,secrets,provider);
   verifyRecoveryConsumerVersion(activeConsumer,consumer);
+  // The database schema alone cannot prove that the active Worker is the
+  // new implementation. Reuse public health, with no new binding or endpoint.
+  // Verify the independently observed active Version before checking its
+  // schema support and existing authentication boundary.
+  await verifyWorkflowRecoveryHealth(fetchImpl);
+  return true;
+}
+
+export async function verifyWorkflowRecoveryHealth(fetchImpl=fetch){
+  const origin='https://workflow.lirtual.dpdns.org';
+  const health=await fetchImpl(origin+'/health',{redirect:'manual',signal:AbortSignal.timeout(12000)});
+  if(!health.ok)fail('Workflow recovery health unavailable');
+  const body=await health.json();
+  if(body?.ok!==true||body.service!==CONSUMER||body.scope!=='workflow'||
+     body.execution_terminal_proof_schema!==23)
+    fail('active Worker does not confirm v23 terminal proof support');
+  const unauthorized=await fetchImpl(origin+'/mcp',{method:'POST',redirect:'manual',
+    headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'tools/list'}),
+    signal:AbortSignal.timeout(12000)});
+  if(![401,403].includes(unauthorized.status))fail('Workflow recovery authentication boundary not verified');
   return true;
 }
 
@@ -164,7 +174,7 @@ async function main(){
   const pin=verifyStagedPin(await readFile(pinFile,"utf8"),active);
   if(mode==="postflight"){
     const settings=await inspectConsumer(account,token);
-    verifyConsumerBinding(settings,undefined,true);
+    verifyConsumerBinding(settings);
   }
   console.log("Reviewed Provider version "+pin+" and Consumer binding verified at "+mode+"; no Provider write or message sent");
 }

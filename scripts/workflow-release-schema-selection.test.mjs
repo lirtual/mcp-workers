@@ -37,39 +37,20 @@ test("unknown, out of order, duplicate and malformed inventories fail closed", (
   assert.throws(()=>selectWorkflowSchemaRelease(response([]),[]));
   assert.throws(()=>selectWorkflowSchemaRelease(response([]),["INVALID.sql"]));
 });
-test("protected release only skips a redundant apply, preserving full migration and physical gates", () => {
-  const yaml=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
-  const detect=yaml.indexOf("      - name: Classify Workflow schema migrations without changing D1");
-  const full=yaml.indexOf("      - name: Enforce original all-Workflow migration gate before any ordinary D1 writes");
-  const apply=yaml.indexOf("      - name: Apply complete Workflow D1 migrations");
-  const physical=yaml.indexOf("      - name: Verify code-only Workflow D1 gate at publication");
-  const publish=yaml.indexOf("      - name: Publish exactly selected Worker");
-  assert.ok(detect>0 && full>detect && apply>full && physical>apply && publish>physical);
-  const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
-  assert.match(ci,/node --test [^\n]*scripts\/workflow-release-schema-selection\.test\.mjs/);
-  assert.match(yaml.slice(detect,full),/id: workflow_schema[\s\S]*SELECT name FROM d1_migrations ORDER BY name[\s\S]*node scripts\/workflow-release-schema-selection\.mjs/);
-  const conditional="steps.workflow_schema.outputs.apply_required == 'true'";
-  assert.ok(yaml.slice(full,apply).includes(conditional));
-  const migrationGate=yaml.slice(full,apply);
-  const proofNames=[
-    ["TERMINAL", "terminal", "terminal_run_id"],
-    ["SECOND_TERMINAL", "terminal_second", "second_terminal_run_id"],
-    ["THIRD_TERMINAL", "terminal_third", "third_terminal_run_id"],
-    ["FOURTH_TERMINAL", "terminal_fourth", "fourth_terminal_run_id"],
-    ["FIFTH_TERMINAL", "terminal_fifth", "fifth_terminal_run_id"],
-    ["SIXTH_TERMINAL", "terminal_sixth", "sixth_terminal_run_id"],
-    ["SEVENTH_TERMINAL", "terminal_seventh", "seventh_terminal_run_id"],
-    ["EIGHTH_TERMINAL", "terminal_eighth", "eighth_terminal_run_id"],
-    ["NINTH_TERMINAL", "terminal_ninth", "ninth_terminal_run_id"],
-    ["TENTH_TERMINAL", "terminal_tenth", "tenth_terminal_run_id"],
-    ["ELEVENTH_TERMINAL", "terminal_eleventh", "eleventh_terminal_run_id"],
-    ["TWELFTH_TERMINAL", "terminal_twelfth", "twelfth_terminal_run_id"],
-  ];
-  for(const [name,step,output] of proofNames){
-    assert.ok(migrationGate.includes(`WORKFLOW_${name}_RUN_ID: \${{ steps.${step}.outputs.${output} }}`),
-      `migration gate must forward verified ${name} Run ID`);
-  }
-  assert.ok(yaml.slice(apply,physical).includes(conditional));
-  assert.match(yaml.slice(physical,publish),/node scripts\/manual-worker-release\.mjs code-release-check workflow-mcp-worker/);
-  assert.match(yaml.slice(apply,physical),/wrangler d1 migrations apply workflow-mcp-db --remote/);
+test("protected release uses a single strict cutover and ordinary v23 verification", () => {
+ const yaml=readFileSync(new URL("../.github/workflows/release.yml",import.meta.url),"utf8");
+ const prepare=yaml.indexOf("      - name: Prepare strict Workflow cutover");
+ const apply=yaml.indexOf("      - name: Apply only the reviewed v23 Workflow D1 migration");
+ const backfill=yaml.indexOf("      - name: Conditionally backfill terminal facts");
+ const publish=yaml.indexOf("      - name: Publish exactly selected Worker");
+ assert.ok(prepare>0&&apply>prepare&&backfill>apply&&publish>backfill);
+ const strict="inputs.worker == 'workflow-mcp-worker' && inputs.actions_ingress_quiesced == true && inputs.workflow_code_only != true";
+ for(const block of [yaml.slice(prepare,apply),yaml.slice(apply,backfill),yaml.slice(backfill,publish)])
+  assert.ok(block.includes(strict));
+ assert.ok(yaml.slice(apply,backfill).includes("steps.workflow_schema.outputs.apply_required == 'true'"));
+ assert.match(yaml.slice(apply,backfill),/workflow-cutover-recheck[\s\S]*wrangler d1 migrations apply workflow-mcp-db --remote/);
+ assert.match(yaml.slice(publish),/workflow-check workflow-mcp-worker[\s\S]*pnpm exec wrangler deploy/);
+ assert.doesNotMatch(yaml,/WORKFLOW_(?:[A-Z_]+_)?TERMINAL_RUN_ID|TERMINAL_PROOF_KIND|steps\.terminal/);
+ const ci=readFileSync(new URL("../.github/workflows/ci.yml",import.meta.url),"utf8");
+ assert.match(ci,/node --test [^\n]*scripts\/workflow-release-schema-selection\.test\.mjs/);
 });
