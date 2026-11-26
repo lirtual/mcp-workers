@@ -723,7 +723,7 @@ jobs:
             exit 1
           done
 
-      - name: Register production Browser MCP with existing One-MCP Portal      - name: Register production Browser MCP with existing One-MCP Portal
+      - name: Register production Browser MCP with existing One-MCP Portal
         if: inputs.worker == 'browser-mcp-worker'
         shell: bash
         env:
