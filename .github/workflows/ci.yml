@@ -335,6 +335,11 @@ jobs:
           HOME="$cli_home" "$native_cli" --help > "$native_out/help.txt"
           grep -q 'status' "$native_out/help.txt"
           grep -q 'uninstall' "$native_out/help.txt"
+          grep -q 'pair' "$native_out/help.txt"
+          if HOME="$cli_home" "$native_cli" pair </dev/null > "$native_out/pair.txt" 2>&1; then
+            echo 'Noninteractive pair unexpectedly accepted' >&2; exit 1
+          fi
+          grep -q 'Pair requires a local owner terminal' "$native_out/pair.txt"
           HOME="$cli_home" "$native_cli" status --json > "$native_out/status.json"
           HOME="$cli_home" "$native_cli" doctor --json > "$native_out/doctor.json"
           node --input-type=module - "$native_out/status.json" "$native_out/doctor.json" <<'JS'

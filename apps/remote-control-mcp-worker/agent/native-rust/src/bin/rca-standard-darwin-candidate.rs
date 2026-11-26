@@ -2052,6 +2052,47 @@ mod darwin {
         Ok(())
     }
 
+    // Match the installed manager's existing-identity reconciliation. This does
+    // not enroll a replacement, alter Owner intent, or start/stop launchd.
+    fn reconcile_installed_pair() -> Result<(), ()> {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            eprintln!("Pair requires a local owner terminal.");
+            return Err(());
+        }
+        let home = home()?;
+        let base = identity_directory(&home, false)?;
+        let _lock = lock_identity_directory(&base)?;
+        let key = base.join("v2-identity.pem");
+        for path in [
+            base.join("macos/switch.json"),
+            base.join("macos/remote-upgrades/active.json"),
+            sidecar(&key, ".re-pair-transition"),
+            sidecar(&key, ".re-pair-new"),
+            sidecar(&key, ".re-pair-new.device-id"),
+        ] {
+            if exists_owned_path(&path)? {
+                return Err(());
+            }
+        }
+        let current = installed(&home, &base)?;
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        let id = id.trim();
+        if !valid_device_id(id) {
+            return Err(());
+        }
+        let client = rca_native_agent::device_pairing::PairingClient::new(&current.endpoint)
+            .map_err(|_| ())?;
+        client.recover(&pem, Some(id)).map_err(|_| {
+            eprintln!(
+                "Existing identity could not be confirmed; identity and service were not changed."
+            );
+        })?;
+        println!("Existing approved permanent identity preserved.");
+        Ok(())
+    }
+
     fn secure_input_local(request_id: &str) -> Result<(), ()> {
         use std::io::IsTerminal;
         if !valid_device_id(request_id)
@@ -2089,8 +2130,8 @@ mod darwin {
     }
 
     fn public_help() {
-        println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|recover|uninstall|secure-input REQUEST_ID|--version|--help]");
-        println!("Use the reviewed installer for installation and upgrade. This candidate does not yet provide installed re-pair or automatic update commands.");
+        println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|pair|recover|uninstall|secure-input REQUEST_ID|--version|--help]");
+        println!("Use the reviewed installer for installation and upgrade. Use pair to reconcile the existing approved identity. Automatic update commands are not yet available.");
     }
 
     fn interactive_menu() -> Result<Option<String>, ()> {
@@ -2108,6 +2149,7 @@ mod darwin {
             "start",
             "stop",
             "restart",
+            "pair",
             "recover",
             "uninstall",
         ];
@@ -2159,6 +2201,9 @@ mod darwin {
             }
             if action == "recover" {
                 return recover_switch();
+            }
+            if action == "pair" {
+                return reconcile_installed_pair();
             }
             if action == "restart" {
                 return restart_local();
