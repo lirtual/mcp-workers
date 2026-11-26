@@ -771,3 +771,152 @@ fn ubuntu_session_idle_protocol_preserves_activity_freeze_and_attempt() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+#[ignore = "requires disposable Unix runner and platform C helper"]
+fn signed_managed_secure_input_suppresses_output_and_bypasses_receipts() {
+    const MARKER: &str = "synthetic-wss-secret-中😀-f382";
+    const REQUEST: &str = "dededede-dede-4ede-8ede-dededededede";
+    let root = tempfile::tempdir().unwrap();
+    let receipt_dir = root.path().join("receipts");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
+        let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
+        let started = reply(
+            &mut socket,
+            operation(
+                "secure-wss-start",
+                "start_process",
+                json!({"command":"printf 'before'; IFS= read -r v || exit 18; test \"$v\" = \"$(printf 'synthetic-wss-%s-中😀-%s' secret f382)\" || exit 19; printf '%s' \"$v\"; printf '%s' \"$v\" >&2; exit 17","timeout_ms":0}),
+            ),
+        );
+        assert_eq!(started["result"]["status"], "running");
+        let sid = started["result"]["session_id"].as_str().unwrap();
+        let other = reply(
+            &mut socket,
+            operation(
+                "secure-wss-other",
+                "start_process",
+                json!({"command":"printf unrelated","timeout_ms":0}),
+            ),
+        );
+        let other_id = other["result"]["session_id"].as_str().unwrap();
+        let target = json!({"kind":"task_process","session_id":sid,"name":"FIXTURE"});
+        let preflight = |socket: &mut WebSocket<TcpStream>, target: Value| {
+            reply(
+                socket,
+                json!({"kind":"secure_input_prepare","preflight_id":REQUEST,"target":target})
+                    .to_string(),
+            )
+        };
+        let missing = preflight(
+            &mut socket,
+            json!({"kind":"task_process","session_id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","name":"FIXTURE"}),
+        );
+        assert_eq!(missing["status"], "failed");
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let before = read(
+                &mut socket,
+                "read_process_output",
+                json!({"session_id":sid,"length":256}),
+            );
+            let page: Value = serde_json::from_str(before["text"].as_str().unwrap()).unwrap();
+            if page["output"] == "before" {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(20));
+        }
+        let ready = preflight(&mut socket, target.clone());
+        assert_eq!(ready["status"], "ready");
+        assert!(ready.get("provider_principal").is_none());
+        socket
+            .send(Message::Text(
+                json!({"kind":"secure_input","request_id":REQUEST,
+            "target":target,"provider_principal":null,"secret":MARKER})
+                .to_string()
+                .into(),
+            ))
+            .unwrap();
+        for kind in [
+            "secure_input_ack",
+            "secure_input_progress",
+            "secure_input_result",
+        ] {
+            let wire = socket.read().unwrap().into_text().unwrap();
+            assert!(!wire.contains(MARKER));
+            let frame: Value = serde_json::from_str(&wire).unwrap();
+            assert_eq!(frame["kind"], kind);
+            assert_eq!(frame["request_id"], REQUEST);
+            if kind == "secure_input_result" {
+                assert_eq!(frame["status"], "succeeded");
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let result = read(
+                &mut socket,
+                "read_process_output",
+                json!({"session_id":sid,"length":256}),
+            );
+            assert!(!result.to_string().contains(MARKER));
+            let page: Value = serde_json::from_str(result["text"].as_str().unwrap()).unwrap();
+            assert_eq!(page["sensitive"], true);
+            assert_eq!(
+                page["output"],
+                "[output suppressed after secure input was delivered]"
+            );
+            if page["state"] == "failed" {
+                assert_eq!(page["exit_code"], 17);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(20));
+        }
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let result = read(
+                &mut socket,
+                "read_process_output",
+                json!({"session_id":other_id,"length":256}),
+            );
+            let page: Value = serde_json::from_str(result["text"].as_str().unwrap()).unwrap();
+            if page["state"] == "completed" && page["output"] == "unrelated" {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(20));
+        }
+        let unavailable = preflight(&mut socket, target);
+        assert_eq!(unavailable["status"], "failed");
+        server_stop.store(true, Ordering::Release);
+    });
+    let registry = managed();
+    let result = run_native_managed_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        registry,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    let store = ReceiptStore::open(&receipt_dir).unwrap();
+    assert!(store.get(REQUEST).unwrap().is_none());
+    drop(store);
+    for file in std::fs::read_dir(&receipt_dir).unwrap() {
+        let file = file.unwrap();
+        if file.file_type().unwrap().is_file() {
+            let bytes = std::fs::read(file.path()).unwrap();
+            assert!(!bytes.windows(MARKER.len()).any(|w| w == MARKER.as_bytes()));
+        }
+    }
+}
