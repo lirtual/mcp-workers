@@ -46,7 +46,7 @@ function fixture(t:any,{grant=true,gate='open',response='accepted',providerVersi
    async get(){return {async status(){return {status:'running'};},
     async sendEvent(event:any){assert.equal(event.type,'litterbox-complete-upload');
      assert.deepEqual(Object.keys(event.payload),['run_id']);audit.signals++;}}},
-  },ACTIONS_DEPLOYMENT_ID:VERSION,ACTIONS:{
+  },ACTIONS:{
     async getContract(_action:string,digest:string){return {deployment_id:providerVersion,contract_digest:digest};},
     async execute(_action:string,params:any){
      audit.posts++;

@@ -28,7 +28,6 @@ test('same Draft, changed actual action Worker version gets new immutable grant;
    sqlite.exec('BEGIN');try{const results=[];for(const stmt of statements)results.push(await stmt.run());
     sqlite.exec('COMMIT');return results;}catch(e){sqlite.exec('ROLLBACK');throw e;}
   }},
-  get ACTIONS_DEPLOYMENT_ID(){return live;},
   ACTIONS:{async getContract(actionId:string){assert.equal(actionId,'bark.send_notification');
     return {deployment_id:live,contract_digest:manifest.contract_digest};}},
  } as unknown as Env;

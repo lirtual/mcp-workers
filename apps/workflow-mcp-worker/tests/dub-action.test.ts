@@ -51,7 +51,7 @@ async function fixture(t:test.TestContext){
    if(uncertain)throw Error('response lost');
    return {status:'accepted',input_digest:input.input_digest,short_link:'https://dub.sh/AbC123'};
   }};
- const env={DB:{prepare},ACTIONS:provider,ACTIONS_DEPLOYMENT_ID:version} as unknown as Env;
+ const env={DB:{prepare},ACTIONS:provider} as unknown as Env;
  const ctx={inputs:{url},steps:{}};
  const run=()=>runPublishedCloudflareAction(env,plan,step,runId,undefined,ctx);
  return {sql,plan,step,env,ctx,run,sends:()=>sends,uncertain:()=>{uncertain=true}};
@@ -84,7 +84,6 @@ test('unauthorized grant, malformed URL, cancellation and frozen gate prevent PO
 test('Dub old immutable grant authorizes matching contract on a new Provider once',async t=>{
  const f=await fixture(t);
  const upgraded='44444444-4444-4444-8444-444444444444';
- f.env.ACTIONS_DEPLOYMENT_ID=version; // old configuration is only history
  f.env.ACTIONS={
   getContract:async()=>({deployment_id:upgraded,
     contract_digest:(await cloudflareActionManifest('dub')).contract_digest}),

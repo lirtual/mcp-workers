@@ -67,7 +67,6 @@ export type Env = {
   // a Runner-sealed Cloudflare claim. Never reuse a generic access token.
   WORKFLOW_GITHUB_DROP_RECEIPT_PRIVATE_KEY?: string;
   // Current unified Actions service binding.
-  ACTIONS_DEPLOYMENT_ID?: string;
   ACTIONS?: {
     listActions():Promise<Array<{action_id:string}>>;
     getContract(action_id:string,contract_digest?:string):Promise<{deployment_id:string;contract_digest:string;manifest?:unknown}>;
