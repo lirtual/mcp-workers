@@ -340,14 +340,16 @@ fn run_cli(
         None
     };
     if let Some(value) = secret {
-        let mut bytes = value.as_bytes().to_vec();
-        bytes.push(b'\n');
-        let write_result = child
-            .stdin
-            .take()
-            .ok_or("execution_interrupted")
-            .and_then(|mut pipe| pipe.write_all(&bytes).map_err(|_| "execution_interrupted"));
-        bytes.fill(0);
+        // Closing stdin supplies EOF; do not append bytes to an opaque input value.
+        let write_result =
+            child
+                .stdin
+                .take()
+                .ok_or("execution_interrupted")
+                .and_then(|mut pipe| {
+                    pipe.write_all(value.as_bytes())
+                        .map_err(|_| "execution_interrupted")
+                });
         value.zeroize();
         if let Err(code) = write_result {
             #[cfg(unix)]
@@ -533,7 +535,7 @@ fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str>
                 None,
                 Duration::from_secs(20),
                 true,
-                None,
+                Some(account_id),
                 None,
             )?;
             if !ok {
