@@ -385,7 +385,9 @@ fn execute_native_file(
                                         json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"failed","error_code":"process_unavailable"})
                                     }
                                 }
-                                _ => match crate::secure_input::prepare(target) {
+                                _ => match crate::secure_input::prepare(target, || {
+                                    !secure_lease.is_active()
+                                }) {
                                     Ok(provider_principal) => {
                                         json!({"kind":"secure_input_prepare_result","preflight_id":id,"status":"ready","provider_principal":provider_principal})
                                     }

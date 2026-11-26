@@ -11,6 +11,7 @@ const ACCOUNT: &str = "0123456789abcdef0123456789abcdef";
 const MARKER: &str = "synthetic-provider-input-7fb2";
 const GH: &str = r#"#!/bin/sh
 set -eu
+if [ -f "$HOME/slow" ]; then /bin/sleep 1.4; fi
 case "$*" in
   'api user') printf '%s' '{"login":"fixture-owner"}' ;;
   'api repos/acme/fixture') printf '%s' '{"full_name":"acme/fixture","permissions":{"admin":true}}' ;;
@@ -46,6 +47,9 @@ fn run_fixture(mode: &str) {
         fs::write(&path, script).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
     }
+    if mode == "slow" {
+        fs::write(dir.path().join("slow"), b"").unwrap();
+    }
     let result = Command::new(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", "provider_fixture", "--nocapture"])
         .env_clear()
@@ -74,6 +78,11 @@ fn cloudflare_provider_binds_account_and_preserves_input() {
 }
 
 #[test]
+fn provider_preflight_has_one_total_deadline() {
+    run_fixture("slow");
+}
+
+#[test]
 #[ignore = "spawned only by the isolated provider boundary tests"]
 fn provider_fixture() {
     let mode = std::env::var("RCA_TEST_PROVIDER_FIXTURE").expect("isolated fixture only");
@@ -81,6 +90,20 @@ fn provider_fixture() {
     assert_eq!(std::env::var_os("PATH").as_deref(), Some(root.as_os_str()));
     for (name, script) in [("gh", GH), ("wrangler", CF)] {
         assert_eq!(fs::read(root.join(name)).unwrap(), script.as_bytes());
+    }
+    if mode == "slow" {
+        let target = parse_target(&json!({"kind":"github_environment_secret","repository":"acme/fixture","environment":"integration","name":"FIXTURE"})).unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(prepare(&target, || false), Err("timed_out"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(4));
+        let start = std::time::Instant::now();
+        assert_eq!(
+            prepare(&target, || start.elapsed()
+                >= std::time::Duration::from_millis(100)),
+            Err("execution_interrupted")
+        );
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        return;
     }
     let targets = match mode.as_str() {
         "github" => vec![
@@ -97,7 +120,7 @@ fn provider_fixture() {
     };
     for raw in targets {
         let target = parse_target(&raw).unwrap();
-        let principal = prepare(&target).expect("exact target preflight must succeed");
+        let principal = prepare(&target, || false).expect("exact target preflight must succeed");
         let mut changed = principal.clone();
         changed["identity"] = json!("different-fixture-owner");
         let rejected = execute(&target, &changed, MARKER.to_owned(), || false);

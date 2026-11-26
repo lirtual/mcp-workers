@@ -412,7 +412,36 @@ fn parse_json_object(output: &str) -> Option<Value> {
     Some(value)
 }
 
-fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str> {
+// Leave response/transport headroom within the coordinator's four-second wait.
+const PREFLIGHT_BUDGET: Duration = Duration::from_millis(3_500);
+
+fn provider_principal(
+    target: &SecureInputTarget,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Value, &'static str> {
+    let deadline = Instant::now() + PREFLIGHT_BUDGET;
+    let read = |provider: &str, args: &[String], account: Option<&str>| {
+        if cancelled() {
+            return Err("execution_interrupted");
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err("timed_out");
+        }
+        let result = run_cli(
+            provider,
+            args,
+            None,
+            remaining,
+            true,
+            account,
+            Some(cancelled),
+        )?;
+        if Instant::now() >= deadline {
+            return Err("timed_out");
+        }
+        Ok(result)
+    };
     match target {
         SecureInputTarget::TaskProcess { .. } => Ok(Value::Null),
         SecureInputTarget::GitHub {
@@ -420,15 +449,7 @@ fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str>
             environment,
             ..
         } => {
-            let (ok, out) = run_cli(
-                "github",
-                &["api".into(), "user".into()],
-                None,
-                Duration::from_secs(20),
-                true,
-                None,
-                None,
-            )?;
+            let (ok, out) = read("github", &["api".into(), "user".into()], None)?;
             if !ok {
                 return Err("provider_auth_unavailable");
             }
@@ -437,13 +458,9 @@ fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str>
                 .as_str()
                 .filter(|v| !v.is_empty())
                 .ok_or("provider_auth_unavailable")?;
-            let (ok, out) = run_cli(
+            let (ok, out) = read(
                 "github",
                 &["api".into(), format!("repos/{repository}")],
-                None,
-                Duration::from_secs(20),
-                true,
-                None,
                 None,
             )?;
             if !ok {
@@ -461,15 +478,7 @@ fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str>
                 let encoded =
                     url::form_urlencoded::byte_serialize(env.as_bytes()).collect::<String>();
                 let route = format!("repos/{repository}/environments/{encoded}");
-                let (ok, out) = run_cli(
-                    "github",
-                    &["api".into(), route],
-                    None,
-                    Duration::from_secs(20),
-                    true,
-                    None,
-                    None,
-                )?;
+                let (ok, out) = read("github", &["api".into(), route], None)?;
                 if !ok
                     || parse_json_object(&out)
                         .and_then(|v| v["name"].as_str().map(str::to_owned))
@@ -494,15 +503,7 @@ fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str>
                 account_id.clone(),
                 "--json".into(),
             ];
-            let (ok, out) = run_cli(
-                "cloudflare",
-                &args,
-                None,
-                Duration::from_secs(20),
-                true,
-                Some(account_id),
-                None,
-            )?;
+            let (ok, out) = read("cloudflare", &args, Some(account_id))?;
             if !ok {
                 return Err("provider_auth_unavailable");
             }
@@ -529,15 +530,7 @@ fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str>
             if environment != "default" {
                 args.extend(["--env".into(), environment.clone()]);
             }
-            let (ok, out) = run_cli(
-                "cloudflare",
-                &args,
-                None,
-                Duration::from_secs(20),
-                true,
-                Some(account_id),
-                None,
-            )?;
+            let (ok, out) = read("cloudflare", &args, Some(account_id))?;
             if !ok {
                 return Err("target_not_accessible");
             }
@@ -558,8 +551,11 @@ fn provider_principal(target: &SecureInputTarget) -> Result<Value, &'static str>
     }
 }
 
-pub fn prepare(target: &SecureInputTarget) -> Result<Value, &'static str> {
-    provider_principal(target)
+pub fn prepare(
+    target: &SecureInputTarget,
+    cancelled: impl Fn() -> bool,
+) -> Result<Value, &'static str> {
+    provider_principal(target, &cancelled)
 }
 
 pub fn execute(
@@ -582,7 +578,7 @@ pub fn execute(
             error_code: Some("input_rejected"),
         };
     }
-    let actual = match provider_principal(target) {
+    let actual = match provider_principal(target, &cancelled) {
         Ok(value) => value,
         Err(code) => {
             secret.zeroize();
