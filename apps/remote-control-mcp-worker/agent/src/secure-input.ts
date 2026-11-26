@@ -1,4 +1,7 @@
 import { spawn } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 export type AgentSecureInputTarget =
   | { kind: "task_process"; session_id: string; name: string }
@@ -87,12 +90,16 @@ function runProviderCommand(
 ): Promise<CommandResult> {
   return new Promise(resolve => {
     let child: ReturnType<typeof spawn>;
+    let directory: string | undefined;
     let stdout = "", timedOut = false, aborted = false, spawnError = false, inputError = false, settled = false;
     const finish = (code: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       options.signal.removeEventListener("abort", abort);
+      if (directory) {
+        try { rmSync(directory, { recursive: true, force: true }); } catch { /* metadata-only temporary directory */ }
+      }
       resolve({ code, stdout, timedOut, aborted, spawnError, inputError });
     };
     const terminate = () => {
@@ -112,7 +119,16 @@ function runProviderCommand(
     const abort = () => { aborted = true; terminate(); };
     const timer = setTimeout(() => { timedOut = true; terminate(); }, options.timeoutMs);
     try {
+      // Explicit metadata-only configuration avoids project account precedence.
+      if (provider === "cloudflare") {
+        if (!options.accountId) throw new Error("missing account");
+        directory = mkdtempSync(join(realpathSync(tmpdir()), "rca-provider-"));
+        const config = join(directory, "wrangler.json");
+        writeFileSync(config, JSON.stringify({ account_id: options.accountId }), { flag: "wx", mode: 0o600 });
+        args = ["--config", config, ...args];
+      }
       child = spawn(program, args, {
+        cwd: directory,
         stdio: [options.input === undefined ? "ignore" : "pipe",
           options.captureStdout ? "pipe" : "ignore", "ignore"],
         env: providerEnvironment(provider, options.accountId),
@@ -211,6 +227,10 @@ async function prepareGitHub(target: GitHubTarget, signal: AbortSignal, deadline
   return { provider: "github", identity: user.login, repository: target.repository, permission: "admin" };
 }
 
+function cloudflareScriptName(worker: string, environment: string): string {
+  return environment === "default" ? worker : `${worker}-${environment}`;
+}
+
 async function prepareCloudflare(
   target: Extract<AgentSecureInputTarget, { kind: "cloudflare_worker_secret" }>, signal: AbortSignal, deadline: number,
 ): Promise<AgentSecureInputPrincipal | SecureInputOutcome> {
@@ -225,8 +245,7 @@ async function prepareCloudflare(
   const account = accounts.find((item: unknown) => object(item) && item.id === target.account_id) as Record<string, unknown> | undefined;
   if (!user || typeof user.email !== "string" || !account) return { status: "failed", error_code: "provider_auth_unavailable" };
 
-  const args = ["deployments", "list", "--name", target.worker_name, "--json"];
-  if (target.environment !== "default") args.push("--env", target.environment);
+  const args = ["deployments", "list", "--name", cloudflareScriptName(target.worker_name, target.environment), "--json"];
   const workerResult = await runProviderCommand("cloudflare", "wrangler", args, {
     accountId: target.account_id, signal, timeoutMs: Math.max(1, Math.min(20_000, deadline - Date.now())), captureStdout: true,
   });
@@ -259,7 +278,10 @@ export async function executeSecureInputProvider(
   target: Exclude<AgentSecureInputTarget, { kind: "task_process" }>,
   expectedPrincipal: unknown, secret: string, signal: AbortSignal,
 ): Promise<SecureInputOutcome> {
-  if (!validateAgentSecureInputSecret(secret)) return { status: "failed", error_code: "input_rejected" };
+  if (!validateAgentSecureInputSecret(secret) ||
+      (target.kind === "cloudflare_worker_secret" && secret.trimEnd() !== secret)) {
+    return { status: "failed", error_code: "input_rejected" };
+  }
   const current = await prepareSecureInputProvider(target, signal);
   if (!current || "status" in current || !principalMatches(expectedPrincipal, current)) {
     return { status: "failed", error_code: "target_not_accessible" };
@@ -276,10 +298,10 @@ export async function executeSecureInputProvider(
   } else {
     const cloudflare = target as Extract<AgentSecureInputTarget, { kind: "cloudflare_worker_secret" }>;
     provider = "cloudflare";
+    const script = cloudflareScriptName(cloudflare.worker_name, cloudflare.environment);
     args = cloudflare.mode === "deploy"
-      ? ["secret", "put", cloudflare.name, "--name", cloudflare.worker_name]
-      : ["versions", "secret", "put", cloudflare.name, "--name", cloudflare.worker_name];
-    if (cloudflare.environment !== "default") args.push("--env", cloudflare.environment);
+      ? ["secret", "put", cloudflare.name, "--name", script]
+      : ["versions", "secret", "put", cloudflare.name, "--name", script];
     program = "wrangler";
   }
   const result = await runProviderCommand(provider, program, args, {

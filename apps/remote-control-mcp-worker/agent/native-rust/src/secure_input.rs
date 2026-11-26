@@ -292,6 +292,81 @@ fn command_env(command: &mut std::process::Command, provider: &str, account: Opt
     }
 }
 
+// Wrangler project configuration overrides its account environment. Isolate
+// only non-sensitive target metadata; the opaque input remains on stdin.
+struct WranglerConfig(std::path::PathBuf);
+
+impl WranglerConfig {
+    fn new(account_id: &str) -> Result<Self, &'static str> {
+        use std::fs::{self, DirBuilder, OpenOptions};
+        use std::io::Write;
+        let root =
+            fs::canonicalize(std::env::temp_dir()).map_err(|_| "provider_cli_unavailable")?;
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).map_err(|_| "provider_cli_unavailable")?;
+        let path = root.join(format!(
+            "rca-provider-{}",
+            random
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        ));
+        let builder = DirBuilder::new();
+        #[cfg(unix)]
+        let mut builder = builder;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+            let metadata = fs::metadata(&root).map_err(|_| "provider_cli_unavailable")?;
+            if metadata.mode() & 0o022 != 0 && metadata.mode() & 0o1000 == 0 {
+                return Err("provider_cli_unavailable");
+            }
+            builder.mode(0o700);
+        }
+        builder
+            .create(&path)
+            .map_err(|_| "provider_cli_unavailable")?;
+        #[cfg(windows)]
+        if crate::seal_new_windows_private_directory(&path).is_err() {
+            let _ = fs::remove_dir(&path);
+            return Err("provider_cli_unavailable");
+        }
+        let config = Self(path);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(config.file())
+            .map_err(|_| "provider_cli_unavailable")?;
+        file.write_all(json!({"account_id":account_id}).to_string().as_bytes())
+            .map_err(|_| "provider_cli_unavailable")?;
+        Ok(config)
+    }
+
+    fn file(&self) -> std::path::PathBuf {
+        self.0.join("wrangler.json")
+    }
+}
+
+impl Drop for WranglerConfig {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+// Read-only preflight and secret commands must resolve the same physical script.
+fn cloudflare_script_name(worker: &str, environment: &str) -> String {
+    if environment == "default" {
+        worker.to_owned()
+    } else {
+        format!("{worker}-{environment}")
+    }
+}
+
 fn run_cli(
     provider: &str,
     args: &[String],
@@ -309,6 +384,19 @@ fn run_cli(
         "wrangler"
     };
     let mut command = Command::new(program);
+    let config = if provider == "cloudflare" {
+        Some(WranglerConfig::new(
+            account.ok_or("target_not_accessible")?,
+        )?)
+    } else {
+        None
+    };
+    if let Some(config) = &config {
+        command
+            .current_dir(&config.0)
+            .arg("--config")
+            .arg(config.file());
+    }
     command.args(args);
     command_env(&mut command, provider, account);
     command.stdin(if secret.is_some() {
@@ -520,16 +608,13 @@ fn provider_principal(
                 .iter()
                 .find(|v| v["id"].as_str() == Some(account_id.as_str()))
                 .ok_or("target_not_accessible")?;
-            let mut args = vec![
+            let args = vec![
                 "deployments".into(),
                 "list".into(),
                 "--name".into(),
-                worker_name.clone(),
+                cloudflare_script_name(worker_name, environment),
                 "--json".into(),
             ];
-            if environment != "default" {
-                args.extend(["--env".into(), environment.clone()]);
-            }
             let (ok, out) = read("cloudflare", &args, Some(account_id))?;
             if !ok {
                 return Err("target_not_accessible");
@@ -571,7 +656,14 @@ pub fn execute(
             error_code: Some("execution_interrupted"),
         };
     }
-    if !valid_secret(&secret) {
+    // Wrangler trims ECMAScript trailing whitespace even for piped input.
+    // Reject values it cannot deliver unchanged instead of reporting false success.
+    let lossy_cloudflare_input = matches!(target, SecureInputTarget::Cloudflare { .. })
+        && secret
+            .chars()
+            .last()
+            .is_some_and(|c| (c.is_whitespace() && c != '\u{85}') || c == '\u{feff}');
+    if !valid_secret(&secret) || lossy_cloudflare_input {
         secret.zeroize();
         return ProviderOutcome {
             status: "failed",
@@ -628,13 +720,13 @@ pub fn execute(
             mode,
             name,
         } => {
-            let mut args = if mode == "deploy" {
+            let args = if mode == "deploy" {
                 vec![
                     "secret".into(),
                     "put".into(),
                     name.clone(),
                     "--name".into(),
-                    worker_name.clone(),
+                    cloudflare_script_name(worker_name, environment),
                 ]
             } else {
                 vec![
@@ -643,12 +735,9 @@ pub fn execute(
                     "put".into(),
                     name.clone(),
                     "--name".into(),
-                    worker_name.clone(),
+                    cloudflare_script_name(worker_name, environment),
                 ]
             };
-            if environment != "default" {
-                args.extend(["--env".into(), environment.clone()]);
-            }
             ("cloudflare", args, Some(account_id.as_str()))
         }
         SecureInputTarget::TaskProcess { .. } => {

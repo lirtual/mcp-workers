@@ -28,10 +28,14 @@ esac
 const CF: &str = r#"#!/bin/sh
 set -eu
 [ "${CLOUDFLARE_ACCOUNT_ID:-}" = 0123456789abcdef0123456789abcdef ]
+[ "$1" = --config ]
+[ "$2" = "$PWD/wrangler.json" ]
+[ "$(/bin/cat "$2")" = '{"account_id":"0123456789abcdef0123456789abcdef"}' ]
+shift 2
 case "$*" in
   'whoami --account 0123456789abcdef0123456789abcdef --json') printf '%s' '{"user":{"email":"fixture@example.test"},"accounts":[{"id":"0123456789abcdef0123456789abcdef"}]}' ;;
-  'deployments list --name fixture --json --env integration'|'deployments list --name fixture --json') printf '%s' '[{"id":"fixture-deployment"}]' ;;
-  'secret put FIXTURE --name fixture'|'versions secret put FIXTURE --name fixture --env integration')
+  'deployments list --name fixture-integration --json'|'deployments list --name fixture --json') printf '%s' '[{"id":"fixture-deployment"}]' ;;
+  'secret put FIXTURE --name fixture'|'versions secret put FIXTURE --name fixture-integration')
     if IFS= read -r input; then exit 42; fi
     [ "$input" = synthetic-provider-input-7fb2 ]
     if /usr/bin/env | /usr/bin/grep -Fq synthetic-provider-input-7fb2; then exit 44; fi
@@ -55,9 +59,18 @@ fn run_fixture(mode: &str) {
         .env_clear()
         .env("PATH", dir.path())
         .env("HOME", dir.path())
+        .env("TMPDIR", dir.path())
         .env("RCA_TEST_PROVIDER_FIXTURE", mode)
         .output()
         .unwrap();
+    assert!(
+        !fs::read_dir(dir.path()).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("rca-provider-")),
+        "provider configuration was not removed"
+    );
     assert!(!String::from_utf8_lossy(&result.stdout).contains(MARKER));
     assert!(!String::from_utf8_lossy(&result.stderr).contains(MARKER));
     assert!(
@@ -121,6 +134,13 @@ fn provider_fixture() {
     for raw in targets {
         let target = parse_target(&raw).unwrap();
         let principal = prepare(&target, || false).expect("exact target preflight must succeed");
+        if mode == "cloudflare" {
+            for ending in [" ", "\n", "\u{feff}"] {
+                let result = execute(&target, &principal, format!("{MARKER}{ending}"), || false);
+                assert_eq!(result.status, "failed");
+                assert_eq!(result.error_code, Some("input_rejected"));
+            }
+        }
         let mut changed = principal.clone();
         changed["identity"] = json!("different-fixture-owner");
         let rejected = execute(&target, &changed, MARKER.to_owned(), || false);
