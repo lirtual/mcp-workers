@@ -160,6 +160,32 @@ pub(super) fn persist_auto_policy(key: &Path, device_id: &str, enabled: bool) ->
     Ok(())
 }
 
+// Called only after a new permanent identity has completed signed activation.
+// Existing consent, including explicit opt-out or an untrusted record, is never
+// overwritten by install-time defaults.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn initialize_auto_policy(key: &Path, device_id: &str) -> &'static str {
+    let target = sidecar(key, ".automatic-update");
+    match exists_owned_path(&target) {
+        Ok(true) => read_private(&target, 256)
+            .ok()
+            .flatten()
+            .map(|raw| rca_native_agent::device_pairing::parse_auto_policy(&raw, device_id))
+            .unwrap_or("unknown"),
+        Ok(false) => {
+            if persist_auto_policy(key, device_id, true).is_err() {
+                return "unknown";
+            }
+            read_private(&target, 256)
+                .ok()
+                .flatten()
+                .map(|raw| rca_native_agent::device_pairing::parse_auto_policy(&raw, device_id))
+                .unwrap_or("unknown")
+        }
+        Err(_) => "unknown",
+    }
+}
+
 pub(super) fn exists_owned_path(path: &Path) -> Result<bool, ()> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -195,6 +221,7 @@ pub(super) fn move_owned_exclusive(from: &Path, to: &Path) -> Result<(), ()> {
     Ok(())
 }
 
+#[cfg_attr(all(test, not(target_os = "macos")), allow(dead_code))]
 pub(super) fn pair_or_repair(
     key: &Path,
     client: &rca_native_agent::device_pairing::PairingClient,
@@ -376,6 +403,41 @@ pub(super) fn repair_identity(
 mod tests {
     use super::*;
     const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+    #[test]
+    fn new_permanent_install_enables_automatic_updates_without_overwriting_existing_consent() {
+        use rca_native_agent::device_pairing::generate_private_pem;
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("v2-identity.pem");
+        write_new(&key, generate_private_pem().unwrap().as_bytes()).unwrap();
+        write_new(&sidecar(&key, ".device-id"), ID.as_bytes()).unwrap();
+        let policy = sidecar(&key, ".automatic-update");
+
+        assert_eq!(initialize_auto_policy(&key, ID), "on");
+        assert_eq!(
+            rca_native_agent::device_pairing::parse_auto_policy(
+                &read_private(&policy, 256).unwrap().unwrap(),
+                ID
+            ),
+            "on"
+        );
+        persist_auto_policy(&key, ID, false).unwrap();
+        let opted_out = read_private(&policy, 256).unwrap().unwrap();
+
+        assert_eq!(initialize_auto_policy(&key, ID), "off");
+        assert_eq!(
+            read_private(&policy, 256).unwrap().as_deref(),
+            Some(opted_out.as_str())
+        );
+
+        fs::remove_file(&policy).unwrap();
+        let foreign = dir.path().join("foreign-policy");
+        fs::write(&foreign, b"preserve").unwrap();
+        symlink(&foreign, &policy).unwrap();
+        assert_eq!(initialize_auto_policy(&key, ID), "unknown");
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+    }
 
     #[test]
     fn automatic_policy_rechecks_identity_and_preserves_private_storage() {

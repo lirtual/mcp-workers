@@ -12,7 +12,7 @@ mod darwin_package;
 #[path = "support/agent_release.rs"]
 mod agent_release;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 #[path = "support/unix_pairing.rs"]
 mod unix_pairing;
 
@@ -272,8 +272,9 @@ mod darwin {
     };
     use super::darwin_package;
     use super::unix_pairing::{
-        exists_owned_path, move_owned_exclusive, pair_or_repair, persist_auto_policy,
-        read_executable, read_private, replace_owned, sidecar, write_executable, write_new,
+        exists_owned_path, initialize_auto_policy, move_owned_exclusive, pair_or_repair,
+        persist_auto_policy, read_executable, read_private, replace_owned, sidecar,
+        write_executable, write_new,
     };
     use super::{
         directory_present, identity_directory, lock_identity_directory, owner_stopped,
@@ -961,8 +962,13 @@ mod darwin {
         let generation = new_generation()?;
         native_plist(&bundle.join(darwin_package::ENTRY), endpoint, &generation)?;
         let _supervisor = checked_supervisor()?;
+        let notice = if darwin_package::stable_version(version) {
+            " For a new permanent identity, automatic updates are enabled after signed activation; disable with rca update --auto off."
+        } else {
+            ""
+        };
         owner_confirm(&format!(
-            "Install {version} as this user's login LaunchAgent?"
+            "Install {version} as this user's login LaunchAgent?{notice}"
         ))?;
         let home = fs::canonicalize(home()?).map_err(|_| ())?;
         unsafe {
@@ -970,6 +976,8 @@ mod darwin {
         }
         let (key, _lock) = pairing_store(&home, false)?;
         let base = key.parent().ok_or(())?;
+        let new_identity = read_private(&key, 8192)?.is_none()
+            && read_private(&sidecar(&key, ".device-id"), 128)?.is_none();
         let macos = ensure_owner_directory(base, "macos", true)?;
         let programs = ensure_owner_directory(&macos, "programs", true)?;
         let agents = ensure_owner_directory(
@@ -1061,11 +1069,23 @@ mod darwin {
             return Err(());
         }
         write_executable(&cli, cli_text.as_bytes())?;
+        let automatic_update =
+            if new_identity && !stopped && darwin_package::stable_version(version) {
+                initialize_auto_policy(&key, id.trim())
+            } else {
+                match read_private(&sidecar(&key, ".automatic-update"), 256) {
+                    Ok(Some(raw)) => {
+                        rca_native_agent::device_pairing::parse_auto_policy(&raw, id.trim())
+                    }
+                    Ok(None) => "off",
+                    Err(_) => "unknown",
+                }
+            };
         sync_remove(&journal)?;
         println!(
             "{}",
             serde_json::json!({"status":if stopped {"stopped_preserved"}else{"connected_observed"},
-            "version":version,"cli":cli})
+            "version":version,"cli":cli,"automatic_update":automatic_update})
         );
         Ok(())
     }

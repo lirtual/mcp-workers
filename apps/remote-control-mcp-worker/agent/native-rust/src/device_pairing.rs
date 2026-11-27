@@ -629,7 +629,7 @@ fn lock_windows_mode(
 }
 
 // Same identity-bound record used by the Linux owner manager.
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, unix, test))]
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AutoPolicy {
@@ -637,7 +637,7 @@ struct AutoPolicy {
     enabled: bool,
 }
 
-#[cfg(any(windows, target_os = "macos", test))]
+#[cfg(any(windows, unix, test))]
 pub fn parse_auto_policy(value: &str, device_id: &str) -> &'static str {
     if value.len() > 256 {
         return "unknown";
