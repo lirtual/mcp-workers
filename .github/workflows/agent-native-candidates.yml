@@ -1,7 +1,7 @@
 name: Native Agent candidates
 
 # Unpublished five-platform packages only. Publication is agent-release.yml.
-# PR/main CI calls this with v0.0.0-ci and does not upload a promotable Release.
+# PR/main CI builds same-source candidates but does not upload promotable Release assets.
 on:
   workflow_call:
     inputs:
