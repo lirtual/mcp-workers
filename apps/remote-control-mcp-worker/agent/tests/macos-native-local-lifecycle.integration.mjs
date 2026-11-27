@@ -133,9 +133,6 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
   const deferred = local(exe,["update","--auto","on"]);
   assert.equal(deferred.status,1,deferred.stdout+deferred.stderr);
   assert.match(deferred.stderr,/Automatic update is not available on macOS/);
-  const deferredStatus = JSON.parse(ok(local(exe,["update","--auto"])));
-  assert.equal(deferredStatus.automatic_update,"off");
-  assert.equal(deferredStatus.automatic_update_activity,"disabled");
   assert.equal(JSON.parse(await readFile(policy,"utf8")).enabled,true);
   await noJournal();
   await preserved();
@@ -187,6 +184,12 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
   assert.equal(ok(local(cli,["--version"])).trim(),meta.version);
   await noJournal();
   await preserved();
+  // The diagnostic entrypoint requires the exact installed executable.
+  // Check the effective policy through the new installed launcher after cutover.
+  const deferredStatus = JSON.parse(ok(local(cli,["update","--auto"])));
+  assert.equal(deferredStatus.automatic_update,"off");
+  assert.equal(deferredStatus.automatic_update_activity,"disabled");
+  assert.equal(JSON.parse(await readFile(policy,"utf8")).enabled,true);
   // Inject the existing journal boundary, not an actual crash. An unknown
   // configuration must remain untouched; a proven stopped switch can reconcile.
   const record=JSON.stringify({version:meta.version+"-"+meta.target,
