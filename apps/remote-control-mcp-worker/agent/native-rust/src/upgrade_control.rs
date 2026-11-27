@@ -1,5 +1,5 @@
-//! Linux Standard candidate's owner-local upgrade consent socket.
-//! Wire-compatible with the existing Node installer: never accepts remote commands.
+//! Unix Standard Agent's owner-local upgrade consent socket.
+//! Never accepts remote commands.
 use std::fs;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -118,9 +118,12 @@ fn clear_stale_owned(socket: &Path) -> io::Result<()> {
 }
 
 fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>) {
-    if stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .is_err()
+    // BSD/Darwin accept can inherit the listener's nonblocking mode.
+    // Use blocking I/O with the existing bounded read timeout on every host.
+    if stream.set_nonblocking(false).is_err()
+        || stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .is_err()
     {
         return;
     }
@@ -156,7 +159,7 @@ fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>
     }
 }
 
-/// A single owner-private IPC endpoint per Node-compatible identity directory.
+/// A single owner-private IPC endpoint per identity directory.
 /// It has no network listener and shares admission decisions with the executor.
 pub struct UpgradeServer {
     path: PathBuf,
@@ -222,6 +225,37 @@ impl Drop for UpgradeServer {
 #[cfg(test)]
 mod online_tests {
     use super::*;
+
+    #[test]
+    fn nonblocking_accepted_stream_waits_for_read_only_query() {
+        // BSD sockets can inherit the listener's nonblocking mode. Force
+        // that state on a private socket pair on every Unix test host.
+        let (mut client, accepted) = UnixStream::pair().unwrap();
+        accepted.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let (sender, receiver) = sync_channel(1);
+        let worker = thread::spawn(move || handle_connection(accepted, &sender));
+
+        // A client is allowed to connect before sending its request.
+        let error = client.read(&mut [0u8; 1]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::WouldBlock | ErrorKind::TimedOut
+        ));
+        client.write_all(b"verify-online\n").unwrap();
+        let request = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request.command, UpgradeCommand::VerifyOnline);
+        request.reply.send("ready\n".into()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).unwrap();
+        assert_eq!(reply, b"ready\n");
+        worker.join().unwrap();
+    }
 
     #[test]
     fn owner_gate_preserves_exact_freeze_verify_release_protocol() {
