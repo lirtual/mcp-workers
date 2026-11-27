@@ -396,12 +396,32 @@ pub(super) fn switch_outcome(
 pub(super) struct SwitchRecord {
     pub version: String,
     pub previous: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding: Option<String>,
     pub generation: String,
     pub stopped: bool,
     pub phase: String,
 }
 
 impl SwitchRecord {
+    // Restore only the journal-bound installation when no service is registered.
+    pub fn can_restore_previous(
+        &self,
+        binding: &str,
+        configuration: Option<&str>,
+        next_configuration: &str,
+        registration: &Registration,
+    ) -> bool {
+        !self.stopped
+            && self.binding.as_deref() == Some(binding)
+            && self.previous.as_deref().is_some_and(|previous| {
+                previous != next_configuration
+                    && (configuration == Some(previous)
+                        || configuration == Some(next_configuration))
+            })
+            && *registration == Registration::Absent
+    }
+
     pub fn can_abandon_initial(
         &self,
         configuration: Option<&str>,
@@ -421,7 +441,12 @@ impl SwitchRecord {
             .version
             .strip_suffix(&format!("-{target}"))
             .ok_or(())?;
-        if record.phase != "switch_pending"
+        if record.binding.as_ref().is_some_and(|digest| {
+            digest.len() != 64
+                || !digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }) || record.phase != "switch_pending"
             || !valid_device_id(&record.generation)
             || !super::darwin_package::valid_version(version)
         {
@@ -879,10 +904,56 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_online_switch_can_restore_only_bound_absent_service() {
+        let mut record = SwitchRecord {
+            version: "v0.1.61-darwin-arm64".into(),
+            previous: Some("old".into()),
+            binding: Some("a".repeat(64)),
+            generation: ID.into(),
+            stopped: false,
+            phase: "switch_pending".into(),
+        };
+        let binding = "a".repeat(64);
+        assert!(record.can_restore_previous(&binding, Some("old"), "next", &Registration::Absent));
+        assert!(record.can_restore_previous(&binding, Some("next"), "next", &Registration::Absent));
+        assert!(!record.can_restore_previous(
+            "changed",
+            Some("old"),
+            "next",
+            &Registration::Absent
+        ));
+        assert!(!record.can_restore_previous(
+            &binding,
+            Some("foreign"),
+            "next",
+            &Registration::Absent
+        ));
+        assert!(!record.can_restore_previous(&binding, None, "next", &Registration::Absent));
+        assert!(!record.can_restore_previous(
+            &binding,
+            Some("old"),
+            "next",
+            &Registration::Unknown
+        ));
+        assert!(!record.can_restore_previous(
+            &binding,
+            Some("old"),
+            "next",
+            &Registration::Present(None)
+        ));
+        record.stopped = true;
+        assert!(!record.can_restore_previous(&binding, Some("old"), "next", &Registration::Absent));
+        record.stopped = false;
+        record.binding = None;
+        assert!(!record.can_restore_previous(&binding, Some("old"), "next", &Registration::Absent));
+    }
+
+    #[test]
     fn initial_configured_but_unregistered_can_be_abandoned_only_with_exact_evidence() {
         let mut record = SwitchRecord {
             version: "v0.1.61-darwin-arm64".into(),
             previous: None,
+            binding: None,
             generation: ID.into(),
             stopped: false,
             phase: "switch_pending".into(),

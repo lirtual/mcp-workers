@@ -1341,6 +1341,11 @@ mod darwin {
         let pem = read_private(&key, 8192)?.ok_or(())?;
         let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
         signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        if let Registration::Present(Some(pid)) = &prior {
+            if !connection_evidence(&old, &key, *pid).is_some_and(|(_, _, online)| online) {
+                return Err(());
+            }
+        }
         owner_confirm(&format!(
             "Upgrade {} to {version}, retaining identity and receipts?",
             old.version
@@ -1366,12 +1371,20 @@ mod darwin {
         };
         let next_raw = native_plist(&next.executable, endpoint, &next.generation)?;
         let next_cli = native_cli(&next.executable)?;
-        let unchanged = || -> Result<(), ()> {
-            if read_private(&plist, 65536)?.as_deref() != Some(previous.as_str())
-                || read_executable(&cli)?.as_deref() != Some(old_cli.as_str())
+        let identity_unchanged = || -> Result<(), ()> {
+            if read_private(&base.join("macos/endpoint"), 2048)?.as_deref() != Some(stored.as_str())
                 || owner_stopped(&key)? != stopped
                 || read_private(&key, 8192)?.as_deref() != Some(pem.as_str())
                 || read_private(&sidecar(&key, ".device-id"), 128)?.as_deref() != Some(id.as_str())
+            {
+                return Err(());
+            }
+            Ok(())
+        };
+        let unchanged = || -> Result<(), ()> {
+            identity_unchanged()?;
+            if read_private(&plist, 65536)?.as_deref() != Some(previous.as_str())
+                || read_executable(&cli)?.as_deref() != Some(old_cli.as_str())
                 || observe_registration(&old.executable) != prior
             {
                 return Err(());
@@ -1382,6 +1395,7 @@ mod darwin {
         let record = SwitchRecord {
             version: format!("{version}-{}", package.target),
             previous: Some(previous.clone()),
+            binding: Some(binding_digest(&[&pem, &id, &stored, &previous, &next_raw])),
             generation: next.generation.clone(),
             stopped,
             phase: "switch_pending".to_owned(),
@@ -1399,8 +1413,13 @@ mod darwin {
             if unchanged().is_err() || !gate(&key, Gate::VerifyFrozen)? {
                 return Err(());
             }
+            unchanged()?;
+            if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
+                return Err(());
+            }
             unregister(&old)?;
         }
+        identity_unchanged()?;
         if observe_registration(&old.executable) != Registration::Absent
             || read_private(&journal, 65536)?.as_deref() != Some(raw.as_str())
         {
@@ -1415,6 +1434,7 @@ mod darwin {
             if !activate(&old, &key) {
                 return Err(());
             }
+            identity_unchanged()?;
             if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
                 return Err(());
             }
@@ -1425,6 +1445,7 @@ mod darwin {
         if stopped && observe_registration(&next.executable) != Registration::Absent {
             return Err(());
         }
+        identity_unchanged()?;
         replace_owned(&cli, &old_cli, &next_cli, 0o700)?;
         if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
             return Err(());
@@ -1896,8 +1917,8 @@ mod darwin {
             println!("Initial installation not configured; rerun the installer. Identity and receipts retained.");
             return Ok(());
         }
-        let endpoint = endpoint.ok_or(())?;
-        let endpoint = endpoint.trim();
+        let endpoint_record = endpoint.ok_or(())?;
+        let endpoint = endpoint_record.trim();
         let next = Installed {
             executable: root.join(darwin_package::ENTRY),
             endpoint: endpoint.to_owned(),
@@ -1926,8 +1947,22 @@ mod darwin {
         if current_cli != previous_cli && current_cli.as_deref() != Some(next_cli.as_str()) {
             return Err(());
         }
-        let evidence = || -> Result<SwitchOutcome, ()> {
+        let binding = record
+            .previous
+            .as_deref()
+            .map(|old| binding_digest(&[&pem, &id, &endpoint_record, old, &next_raw]));
+        let verify_binding = || -> Result<(), ()> {
             unchanged()?;
+            if read_private(&endpoint_path, 2048)?.as_deref() != Some(endpoint_record.as_str())
+                || (record.binding.is_some() && record.binding != binding)
+                || (!record.stopped && previous.is_some() && record.binding.is_none())
+            {
+                return Err(());
+            }
+            Ok(())
+        };
+        let evidence = || -> Result<SwitchOutcome, ()> {
+            verify_binding()?;
             if read_executable(&cli)? != current_cli {
                 return Err(());
             }
@@ -1955,14 +1990,64 @@ mod darwin {
                     .is_some_and(|old| online(old, &old_registration)),
             ))
         };
-        let outcome = evidence()?;
+        let mut outcome = evidence()?;
+        let mut restored = false;
         if outcome == SwitchOutcome::Unknown {
-            eprintln!("Switch outcome unconfirmed; journal and both packages retained.");
-            return Err(());
-        }
-        owner_confirm("Reconcile the proven service configuration and local command?")?;
-        if evidence()? != outcome {
-            return Err(());
+            // A crash between bootout and bootstrap can leave no service.
+            // Do not stop a registered service as part of this recovery.
+            let absent = || -> Result<bool, ()> {
+                verify_binding()?;
+                if read_executable(&cli)? != current_cli {
+                    return Err(());
+                }
+                let configuration = read_private(&plist, 65536)?;
+                let registration = observe_registration(&next.executable);
+                Ok(binding.as_deref().is_some_and(|binding| {
+                    record.can_restore_previous(
+                        binding,
+                        configuration.as_deref(),
+                        &next_raw,
+                        &registration,
+                    )
+                }))
+            };
+            if !absent()? {
+                eprintln!("Switch outcome unconfirmed; journal and both packages retained.");
+                return Err(());
+            }
+            let old = previous.as_ref().ok_or(())?;
+            let old_raw = record.previous.as_deref().ok_or(())?;
+            owner_confirm("Restore the original version after the interrupted online switch?")?;
+            unregister_owned(
+                || observe_registration(&next.executable),
+                || false,
+                || std::thread::sleep(Duration::from_millis(250)),
+                true,
+            )?;
+            ensure_no_other_programs(old.executable.parent().ok_or(())?)?;
+            ensure_no_other_programs(next.executable.parent().ok_or(())?)?;
+            if !absent()? {
+                return Err(());
+            }
+            if read_private(&plist, 65536)?.as_deref() == Some(next_raw.as_str()) {
+                replace_owned(&plist, &next_raw, old_raw, 0o600)?;
+            }
+            if read_private(&plist, 65536)?.as_deref() != Some(old_raw)
+                || !absent()?
+                || !activate(old, &key)
+            {
+                return Err(());
+            }
+            outcome = evidence()?;
+            if outcome != SwitchOutcome::Rollback {
+                return Err(());
+            }
+            restored = true;
+        } else {
+            owner_confirm("Reconcile the proven service configuration and local command?")?;
+            if evidence()? != outcome {
+                return Err(());
+            }
         }
         let (desired, old) = match outcome {
             SwitchOutcome::Complete => (&next_cli, None),
@@ -1973,6 +2058,7 @@ mod darwin {
             // A crash before bootout may leave the original service frozen.
             // This journal holds the exclusive owner lifecycle transaction.
             if !record.stopped
+                && !restored
                 && (!gate(&key, Gate::Release)?
                     || !matches!(
                         observe_registration(&old.executable),
@@ -1981,6 +2067,9 @@ mod darwin {
             {
                 return Err(());
             }
+        }
+        if evidence()? != outcome {
+            return Err(());
         }
         match current_cli.as_deref() {
             Some(current) if current != desired => replace_owned(&cli, current, desired, 0o700)?,
