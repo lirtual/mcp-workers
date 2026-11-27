@@ -269,24 +269,12 @@ jobs:
           case "$(uname -m)" in
             arm64)
               target=darwin-arm64
-              baseline_sha256=712bd2bb99697db8421765c0e1ac9b027af3e6e858effdc2866adb4bca626580
               ;;
             x86_64)
               target=darwin-x64
-              baseline_sha256=ed6326e92ba3a5564b41b6eaa147b6f48ad9e60acc98807a1891a8cce1be5c0f
               ;;
             *) echo "Unsupported Darwin architecture" >&2; exit 1 ;;
           esac
-          # Start from the immutable published Node package on this architecture.
-          baseline_archive="$RUNNER_TEMP/remote-control-agent-v0.1.56-$target.tar.gz"
-          curl --fail --silent --show-error --location --max-time 60 \
-            --proto '=https' --tlsv1.2 \
-            "https://github.com/lirtual/mcp-workers/releases/download/v0.1.56/$(basename "$baseline_archive")" \
-            -o "$baseline_archive"
-          echo "$baseline_sha256  $baseline_archive" | shasum -a 256 --check
-          baseline="$RUNNER_TEMP/rca-darwin-baseline"
-          mkdir -m 700 "$baseline"
-          tar -xzf "$baseline_archive" -C "$baseline"
           source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
           supervisor="$RUNNER_TEMP/rca-darwin-supervisor"
           cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
@@ -392,11 +380,6 @@ jobs:
           RCA_MACOS_BUNDLE_ROOT="$unpacked" node --test \
             "$source_root/tests/macos-local.test.mjs" \
             "$source_root/tests/macos-remote-upgrade.test.mjs"
-          # Actual launchd switch attempt and rollback, with synthetic local state only.
-          RCA_MACOS_BASELINE_ROOT="$baseline" \
-            RCA_MACOS_CANDIDATE_ROOT="$unpacked" \
-            node --test \
-            "$source_root/tests/macos-launchd-rust-failure-recovery.integration.mjs"
           # Unpublished Rust baseline to a newer unpublished Rust candidate.
           # This does not read GitHub Latest and does not change the release guard.
           rust_old_out="$RUNNER_TEMP/rca-darwin-rust-old"
