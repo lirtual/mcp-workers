@@ -187,6 +187,8 @@ def dispatch(command, args, root, info, bootstrap):
         print("status [--json] and doctor [--json] inspect local state without changing it.")
         print("Status reports local update activity/result; Latest refresh uses update --check.")
         print("Update from the reviewed stable Latest: rca update (upgrade is an alias).")
+        print("Approved remote update of a running permanent stable Linux Agent: rca update --unattended.")
+        print("Detached launch is not upgrade completion; recheck status after reconnect. Candidate promotion needs an attended upgrade.")
         print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
         return 0
     if command in ("--version", "version"):
