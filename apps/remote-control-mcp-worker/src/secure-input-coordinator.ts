@@ -169,8 +169,11 @@ export class SecureInputCoordinator {
         typeof body.owner_user_id !== "string" || !OWNER.test(body.owner_user_id) ||
         typeof body.request_id !== "string" || !ID.test(body.request_id)) return json({ error: "bad_request" }, 400);
     const result = await getSecureInputRecord(this.state.storage, body.request_id, body.owner_user_id);
-    return json(result.status === 200 && "request_id" in result.body
-      ? publicSecureInputRecord(result.body as SecureInputRecord) : result.body, result.status);
+    if (result.status !== 200 || !("request_id" in result.body)) return json(result.body, result.status);
+    const record = result.body as SecureInputRecord;
+    const device = await this.state.storage.get<DeviceRecord>("device:" + record.execution.device_id);
+    // Presentation only: current name from the existing device record, not the signed binding.
+    return json({ ...publicSecureInputRecord(record), ...(device?.name ? { device_name: device.name } : {}) });
   }
 
   private async cancel(request: Request): Promise<Response> {
