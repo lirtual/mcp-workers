@@ -230,6 +230,9 @@ with tempfile.TemporaryDirectory(prefix="rca-native-only-") as t:
         env={**os.environ,"HOME":str(home)},capture_output=True,text=True,timeout=8)
     assert help_result.returncode==0,help_result.stderr
     assert "reviewed-64-char-asset-sha256" in help_result.stdout
+    assert "rca update --unattended" in help_result.stdout
+    assert "Candidate promotion needs an attended upgrade" in help_result.stdout
+    assert "Detached launch is not upgrade completion" in help_result.stdout
     assert "recover" in help_result.stdout
     assert "browser authorization link" in help_result.stdout
     assert "rca pair [--temporary] [https://approved-worker-origin/]" in help_result.stdout
