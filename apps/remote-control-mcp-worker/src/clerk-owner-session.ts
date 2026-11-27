@@ -3,6 +3,11 @@ import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
 export const pairingOrigin = "https://rca.lirtual.dpdns.org";
 export const clerkOwnerOrigin = pairingOrigin;
 export const clerkIssuer = "https://clerk.lirtual.dpdns.org";
+export const clerkBrowserSdk = clerkIssuer + "/npm/@clerk/clerk-js@6.46.3/dist/clerk.browser.js";
+/** Callers supply a fixed application route, not a browser-controlled return URL. */
+export function clerkOwnerSignInUrl(path: string): string {
+  return "https://accounts.lirtual.dpdns.org/sign-in?redirect_url=" + encodeURIComponent(clerkOwnerOrigin + path);
+}
 const jwks = createRemoteJWKSet(new URL(clerkIssuer + "/.well-known/jwks.json"), {
   [customFetch]: (input, init) => fetch(input, {...init, redirect:"manual"}),
 });

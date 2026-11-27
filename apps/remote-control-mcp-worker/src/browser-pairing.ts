@@ -1,4 +1,4 @@
-import { clerkIssuer, pairingOrigin, clerkOwnerConfigured, verifyClerkOwner } from "./clerk-owner-session.ts";
+import { clerkIssuer, clerkBrowserSdk, clerkOwnerSignInUrl, pairingOrigin, clerkOwnerConfigured, verifyClerkOwner } from "./clerk-owner-session.ts";
 import type { ClerkOwnerConfig } from "./clerk-owner-session.ts";
 import { approvalArgs, pairingCode, lookupOwnerPairing, approveOwnerPairing } from "./pairing-owner.ts";
 
@@ -22,8 +22,8 @@ function render(key: string): Response {
   const nonce=crypto.randomUUID().replaceAll("-","");
   const config=JSON.stringify({
     key,
-    sdk:clerkIssuer+"/npm/@clerk/clerk-js@6.46.3/dist/clerk.browser.js",
-    login:"https://accounts.lirtual.dpdns.org/sign-in?redirect_url="+encodeURIComponent(pairingOrigin+pagePath),
+    sdk:clerkBrowserSdk,
+    login:clerkOwnerSignInUrl(pagePath),
     lookup:lookupPath,approve:approvePath,
   });
   const html=`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize RCA device</title></head><body>

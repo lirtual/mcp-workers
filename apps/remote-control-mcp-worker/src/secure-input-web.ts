@@ -1,9 +1,8 @@
-import { clerkOwnerConfigured, clerkOwnerOrigin, verifyClerkOwner, type ClerkOwnerConfig } from "./clerk-owner-session.ts";
+import { clerkIssuer, clerkBrowserSdk, clerkOwnerSignInUrl, clerkOwnerConfigured, clerkOwnerOrigin, verifyClerkOwner, type ClerkOwnerConfig } from "./clerk-owner-session.ts";
 import { validateSecureInputSecret } from "./secure-input.ts";
 
 const ROUTE = /^\/secure-input\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})(?:\/(details|submit|cancel))?$/;
 const MAX_BODY = 65_536;
-const CLERK_ORIGIN = "https://clerk.lirtual.dpdns.org";
 const headers = {
   "cache-control": "no-store, max-age=0", "pragma": "no-cache",
   "referrer-policy": "no-referrer", "x-content-type-options": "nosniff",
@@ -46,7 +45,6 @@ function page(requestId: string, config: ClerkOwnerConfig): Response {
   const token = nonce();
   const script = `
 const requestId = ${JSON.stringify(requestId)};
-const publishableKey = ${JSON.stringify(config.CLERK_PUBLISHABLE_KEY ?? "")};
 const form = document.getElementById("secure-form"), field = document.getElementById("secret");
 const submit = document.getElementById("submit"), status = document.getElementById("status");
 const cancel = document.getElementById("cancel");
@@ -81,6 +79,7 @@ function showState(value) {
   form.hidden = !pending;
   submit.disabled = !pending || busy || inputAttempted;
   cancel.disabled = !pending || busy;
+  if (pending && !inputAttempted) status.textContent = "Review the exact target before submitting.";
   if (value.state === "accepted" || value.state === "running") status.textContent = "Input submitted once. Waiting for the target Agent.";
   if (value.state === "unknown") status.textContent = "Outcome uncertain. Do not submit again; check the original ChatGPT request.";
   if (value.state === "succeeded") status.textContent = "The target Agent confirmed completion.";
@@ -92,7 +91,7 @@ async function ownerPost(action, body) {
   const ownerToken = window.Clerk.session ? await window.Clerk.session.getToken() : null;
   if (!ownerToken) throw new Error("Owner sign-in unavailable.");
   return fetch("/secure-input/" + requestId + "/" + action, {
-    method: "POST", cache: "no-store",
+    method: "POST", cache: "no-store", credentials: "omit", redirect: "manual",
     headers: { authorization: "Bearer " + ownerToken, "content-type": "application/json" },
     body: JSON.stringify(body)
   });
@@ -113,15 +112,20 @@ async function refresh() {
   text("principal", value.provider_principal ? JSON.stringify(value.provider_principal) : "Not applicable");
   text("expires", new Date(value.expires_at).toLocaleString()); showState(value);
 }
-document.getElementById("signin").href =
-  "https://accounts.lirtual.dpdns.org/sign-in?redirect_url=" + encodeURIComponent(location.href);
 (async () => {
   try {
     if (!window.Clerk) throw new Error("Owner sign-in unavailable.");
-    await window.Clerk.load({ publishableKey });
-    if (!window.Clerk.session) { document.getElementById("signin-panel").hidden = false; return; }
-    await refresh(); document.getElementById("details").hidden = false;
-  } catch { status.textContent = "Owner verification failed. No input was sent."; }
+    await window.Clerk.load();
+    if (!window.Clerk.isSignedIn || !window.Clerk.session) {
+      status.textContent = "Sign in with Clerk to review this request.";
+      return;
+    }
+    await refresh();
+    document.getElementById("signin-panel").hidden = true;
+    document.getElementById("details").hidden = false;
+  } catch {
+    status.textContent = "Owner verification failed or sign-in unavailable. No input was sent. Sign in with the configured Owner account or reopen this page.";
+  }
 })();
 form.addEventListener("submit", async event => {
   event.preventDefault();
@@ -179,7 +183,8 @@ button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
 </style></head><body>
 <h1>RCA Secure Input</h1>
 <p>This link is not authorization. Sign in with the configured Clerk Owner account before viewing or submitting.</p>
-<section id="signin-panel" hidden><p>Owner sign-in required.</p><a id="signin">Sign in</a></section>
+<section id="signin-panel"><p>Owner sign-in required.</p><a id="signin" href="${clerkOwnerSignInUrl("/secure-input/" + requestId)}">Sign in with Clerk</a></section>
+<p id="status" role="status" aria-live="polite">Checking Owner session…</p>
 <section id="details" hidden>
 <h2>Review the exact target</h2>
 <p><strong>Purpose</strong></p><pre id="purpose"></pre>
@@ -203,16 +208,15 @@ button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
 <button id="cancel" type="button">Cancel request</button>
 </form>
 <button id="refresh" type="button">Refresh status</button>
-<p id="status" role="status" aria-live="polite"></p>
 </section>
-<script src="${CLERK_ORIGIN}/npm/@clerk/clerk-js@5/dist/clerk.browser.js"></script>
+<script src="${clerkBrowserSdk}" crossorigin="anonymous" data-clerk-publishable-key="${config.CLERK_PUBLISHABLE_KEY}"></script>
 <script nonce="${token}">${script}</script>
 </body></html>`;
   const csp = [
     "default-src 'none'", "base-uri 'none'", "object-src 'none'", "frame-ancestors 'none'",
-    "form-action 'self'", "script-src 'self' 'nonce-" + token + "' " + CLERK_ORIGIN,
-    "connect-src 'self' " + CLERK_ORIGIN, "style-src 'self' 'nonce-" + token + "'",
-    "img-src 'self' data:", "font-src 'self'", "frame-src " + CLERK_ORIGIN,
+    "form-action 'self'", "script-src 'self' 'nonce-" + token + "' " + clerkIssuer,
+    "connect-src 'self' " + clerkIssuer, "style-src 'self' 'nonce-" + token + "'",
+    "img-src 'self' data:", "font-src 'self'", "frame-src " + clerkIssuer,
   ].join("; ");
   return new Response(body, { headers: { ...headers, "content-type": "text/html; charset=utf-8",
     "content-security-policy": csp } });
