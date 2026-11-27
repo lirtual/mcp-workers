@@ -429,9 +429,8 @@ jobs:
           JS
           test -z "$(ls -A "$cli_home")"
           cd "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
-          RCA_MACOS_BUNDLE_ROOT="$unpacked" node --test tests/macos-packaged-runtime-smoke.mjs
-          RCA_MACOS_BUNDLE_ROOT="$unpacked" node --experimental-strip-types --test \
-            tests/macos-local.test.mjs tests/macos-remote-upgrade.test.mjs
+          # Package checks above execute the extracted Rust CLI. Rust WSS/file/
+          # receipt and lifecycle integration coverage lives in the Rust-core matrix.
           if sh scripts/macos-local.sh install --archive "$archive" \
               --sha256 "$(shasum -a 256 "$archive" | awk '{print $1}')" \
               --source-sha "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" \

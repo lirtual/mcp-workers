@@ -40,6 +40,7 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   assert.match(macosReview,/--artifact-profile rust-native-only-v1/);
   assert.match(macosReview,/--rust-agent-bin/);
   assert.doesNotMatch(macosReview,/--node-bin|node_archive_sha256|node-v24[.]21[.]0/);
+  assert.doesNotMatch(macosReview,/macos-packaged-runtime-smoke|macos-local[.]test[.]mjs|macos-remote-upgrade[.]test[.]mjs/);
   const windowsReview=candidates.slice(candidates.indexOf('      - name: Assemble verifiable Windows release candidate'));
   assert.match(windowsReview,/'--artifact-profile','rust-native-only-v1'/);
   assert.doesNotMatch(windowsReview,/\$nativeOnly = \$tag/);
