@@ -108,14 +108,20 @@ fn signed_socket(listener: TcpListener) -> WebSocket<TcpStream> {
     challenge(http);
     let ws = accept_disposable(&listener);
     ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    tungstenite::accept_hdr(ws, |req: &Request, mut resp: Response| {
-        assert!(req
-            .headers()
-            .get(SEC_WEBSOCKET_PROTOCOL)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("rc-v2, rcv2."));
+    let nonce = "ABCDEFGHIJKLMNOPQRSTUVWX";
+    let proof =
+        rca_native_agent::identity::signed_session_proof(&common::test_pem(), DEVICE_ID, nonce)
+            .unwrap();
+    let expected = format!("rc-v2, rcv2.{nonce}.{}", proof.proof);
+    tungstenite::accept_hdr(ws, move |req: &Request, mut resp: Response| {
+        assert_eq!(
+            req.headers()
+                .get(SEC_WEBSOCKET_PROTOCOL)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            expected
+        );
         resp.headers_mut()
             .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
         Ok(resp)
@@ -922,5 +928,145 @@ fn signed_managed_secure_input_suppresses_output_and_bypasses_receipts() {
             let bytes = std::fs::read(file.path()).unwrap();
             assert!(!bytes.windows(MARKER.len()).any(|w| w == MARKER.as_bytes()));
         }
+    }
+}
+
+// Exercise the native Darwin service entry, not the Node lifecycle manager.
+// The shared session transport already supports a disposable IPv4 loopback
+// fixture; no LaunchAgent, TLS policy, release channel or Owner grant is changed.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires disposable macOS runner and real C helper"]
+fn darwin_service_binds_live_connection_evidence_to_native_generation() {
+    use rca_native_agent::upgrade_control::{owner_gate, verify_online, UpgradeCommand};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Child, Command, Stdio};
+
+    struct OwnedChild(Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            if !matches!(self.0.try_wait(), Ok(Some(_))) {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+    fn eventually(mut check: impl FnMut() -> bool, reason: &str) {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !check() {
+            assert!(Instant::now() < deadline, "{reason}");
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
+    let root = tempfile::Builder::new()
+        .prefix("rca-wss-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let home = root.path().canonicalize().unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let identity = home.join("i");
+    fs::create_dir(&identity).unwrap();
+    fs::set_permissions(&identity, fs::Permissions::from_mode(0o700)).unwrap();
+    let key = identity.join("v2-identity.pem");
+    let device = identity.join("v2-identity.pem.device-id");
+    let marker = identity.join("macos-connection.json");
+    let pem = common::test_pem();
+    for (path, value) in [(&key, pem.clone()), (&device, format!("{DEVICE_ID}\n"))] {
+        fs::write(path, value).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let helper = std::env::var("RCA_DARWIN_SUPERVISOR_BIN").expect("real Darwin C helper");
+    let read_marker = || -> Option<Value> { serde_json::from_slice(&fs::read(&marker).ok()?).ok() };
+
+    for (version, generation) in [
+        ("v0.1.59", "11111111-1111-4111-8111-111111111111"),
+        ("v0.1.60", "22222222-2222-4222-8222-222222222222"),
+    ] {
+        // Synthetic package metadata for version reporting; actual release
+        // inventory and full native package validation remain separate gates.
+        let package = home.join(version);
+        let build = package.join("apps/remote-control-agent/.build");
+        fs::create_dir_all(&build).unwrap();
+        let bin = build.join("rca-standard-darwin-candidate");
+        fs::copy(env!("CARGO_BIN_EXE_rca-standard-darwin-candidate"), &bin).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        let supervisor = build.join("darwin-session-supervisor");
+        fs::copy(&helper, &supervisor).unwrap();
+        fs::set_permissions(&supervisor, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            package.join("bundle.json"),
+            json!({"name":"remote-control-agent","version":version}).to_string(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let mut child = OwnedChild(
+            Command::new(&bin)
+                .env_clear()
+                .env("HOME", &home)
+                .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
+                .args([
+                    "--service",
+                    "--endpoint",
+                    &endpoint,
+                    "--generation",
+                    generation,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = child.0.id();
+        eventually(
+            || matches!(verify_online(&key), Ok(false)),
+            "service must refuse online evidence before signed handshake",
+        );
+        let mut socket = signed_socket(listener);
+        let info = common::receive_device_info(&mut socket, true);
+        assert_eq!(info["agent_version"], version);
+        eventually(
+            || {
+                read_marker().is_some_and(|m| {
+                    m["generation"] == generation
+                        && m["version"] == version
+                        && m["pid"] == pid
+                        && m["state"] == "connected"
+                }) && verify_online(&key).unwrap_or(false)
+            },
+            "native signed connection marker and live owner gate must agree",
+        );
+        assert_eq!(
+            fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(owner_gate(&key, UpgradeCommand::Freeze).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::VerifyFrozen).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Release).unwrap());
+        assert!(!owner_gate(&key, UpgradeCommand::VerifyFrozen).unwrap());
+        socket
+            .close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                reason: "disposable test".into(),
+            }))
+            .unwrap();
+        drop(socket);
+        eventually(
+            || child.0.try_wait().unwrap().is_some(),
+            "native service did not exit after policy close",
+        );
+        assert!(child.0.wait().unwrap().success());
+        let disconnected = read_marker().expect("durable disconnect marker");
+        assert_eq!(disconnected["generation"], generation);
+        assert_eq!(disconnected["version"], version);
+        assert_eq!(disconnected["pid"], pid);
+        assert_eq!(disconnected["state"], "disconnected");
+        assert!(!verify_online(&key).unwrap_or(false));
+        assert_eq!(fs::read_to_string(&key).unwrap(), pem);
+        assert_eq!(
+            fs::read_to_string(&device).unwrap(),
+            format!("{DEVICE_ID}\n")
+        );
     }
 }
