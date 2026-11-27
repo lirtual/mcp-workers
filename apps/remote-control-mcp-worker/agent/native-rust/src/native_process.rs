@@ -279,6 +279,9 @@ pub fn execute_process_read(
                 output["output"] = json!(read.page.output);
                 output["eof"] = json!(read.page.eof);
                 output["truncated"] = json!(read.page.truncated);
+                if read.page.sensitive {
+                    output["sensitive"] = json!(true);
+                }
                 let wire = response(output.to_string());
                 if wire.len() <= MAX_WIRE_BYTES {
                     return wire;

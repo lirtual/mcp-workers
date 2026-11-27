@@ -50,6 +50,68 @@ foreach ($stable in @($true,$false)) {
   if ($ok -or $script:fixtureRequests.Count -ne $before) {throw 'Wrong pin class reached the network'}
 }
 'WINDOWS_PINNED_RELEASE_CONTRACT_PASS'
+# Stable Latest must satisfy the shared publication contract before any
+# read-only comparison. Reuse the installer resolver and mock only HTTP.
+foreach ($functionName in @('Resolve-LatestAgentRelease','Get-LatestUpdateStatus')) {
+  $fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $functionName},$true)
+  if (-not $fn) { throw "Missing $functionName" }
+  . ([scriptblock]::Create($fn.Extent.Text))
+}
+function New-LatestFixture {
+  $tag='v0.1.60'
+  $assets=@(foreach ($target in @('linux-x64-glibc','linux-arm64-glibc','windows-x64','darwin-arm64','darwin-x64')) {
+    $extension=if ($target -eq 'windows-x64') {'zip'} else {'tar.gz'}
+    $name="remote-control-agent-$tag-$target.$extension"
+    [pscustomobject]@{name=$name;state='uploaded';digest=('sha256:'+('a'*64));browser_download_url="https://github.com/lirtual/mcp-workers/releases/download/$tag/$name";size=7000000}
+  })
+  [pscustomobject]@{immutable=$true;draft=$false;prerelease=$false;tag_name=$tag;html_url="https://github.com/lirtual/mcp-workers/releases/tag/$tag";assets=$assets}
+}
+$script:fixtureRelease=New-LatestFixture
+foreach ($case in @(@('v0.1.59','update_available'),@('v0.1.60','up_to_date'),@('v0.1.60-rust-candidate.1','update_available'),@('v0.1.61','older_latest'),@('v00.1.60','unknown'))) {
+  $script:fixtureRequests=@()
+  $result=Get-LatestUpdateStatus $case[0]
+  if ($result.installed_version -cne $case[0] -or $result.status -cne $case[1] -or $script:fixtureRequests.Count -gt 1) {
+    throw "Wrong Latest comparison: $($case -join ',')"
+  }
+  if ($case[1] -ne 'unknown' -and ($result.latest_version -cne 'v0.1.60' -or $script:fixtureRequests.Count -ne 1)) { throw 'Latest observation missing' }
+}
+foreach ($bad in @('wrong-repo','string-immutable','string-size','fraction-size','missing-platform','duplicate','bad-digest','wrong-url','mutable')) {
+  $script:fixtureRelease=New-LatestFixture
+  switch ($bad) {
+    'wrong-repo' {$script:fixtureRelease.html_url='https://example.invalid/release'}
+    'string-immutable' {$script:fixtureRelease.immutable='true'}
+    'string-size' {$script:fixtureRelease.assets[2].size='7000000'}
+    'fraction-size' {$script:fixtureRelease.assets[2].size=7000000.5}
+    'missing-platform' {$script:fixtureRelease.assets=@($script:fixtureRelease.assets[0..3])}
+    'duplicate' {$script:fixtureRelease.assets+= $script:fixtureRelease.assets[2]}
+    'bad-digest' {$script:fixtureRelease.assets[2].digest='sha256:wrong'}
+    'wrong-url' {$script:fixtureRelease.assets[2].browser_download_url='https://example.invalid/asset'}
+    'mutable' {$script:fixtureRelease.immutable=$false}
+  }
+  $script:fixtureRequests=@()
+  $result=Get-LatestUpdateStatus 'v0.1.59'
+  if ($result.status -cne 'unknown' -or $null -ne $result.latest_version -or $script:fixtureRequests.Count -ne 1) { throw "Unsafe Latest accepted: $bad" }
+}
+'WINDOWS_LATEST_CHECK_CONTRACT_PASS'
+# The attended update path can never fall through to first install,
+# and must preserve its exact pre-download binding.
+$fn=$ast.Find({param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Assert-AttendedUpdateTarget'},$true)
+if (-not $fn) { throw 'Missing attended update target guard' }
+. ([scriptblock]::Create($fn.Extent.Text))
+$base=[pscustomobject]@{version='v0.1.60';key_hash=('A'*64);id_hash=('B'*64);execute='owned-exe';arguments='owned-service';working_directory='owned-directory'}
+Assert-AttendedUpdateTarget $base $base
+foreach ($field in @('version','key_hash','id_hash','execute','arguments','working_directory')) {
+  $next=$base.PSObject.Copy()
+  $next.$field='changed'
+  $refused=$false
+  try { Assert-AttendedUpdateTarget $base $next } catch { $refused=$true }
+  if (-not $refused) { throw "Changed attended update target admitted: $field" }
+}
+$refused=$false
+try { Assert-AttendedUpdateTarget $base $null } catch { $refused=$true }
+if (-not $refused) { throw 'Absent attended update target admitted' }
+'WINDOWS_ATTENDED_TARGET_CONTRACT_PASS'
+
 Remove-Item Function:\Invoke-WebRequest
 Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem

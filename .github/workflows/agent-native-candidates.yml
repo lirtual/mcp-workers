@@ -1,7 +1,7 @@
 name: Native Agent candidates
 
 # Unpublished five-platform packages only. Publication is agent-release.yml.
-# PR/main CI calls this with v0.0.0-ci and does not upload a promotable Release.
+# PR/main CI builds same-source candidates but does not upload promotable Release assets.
 on:
   workflow_call:
     inputs:
@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       candidate_tag:
-        description: Unpublished candidate label; this workflow never publishes a Release
+        description: Intended stable Release tag; this workflow only builds unpublished artifacts
         required: true
         type: string
 
@@ -72,13 +72,16 @@ jobs:
         include:
           - runner: ubuntu-24.04
             target: linux-x64-glibc
-            baseline_sha256: 89e02e259cea8c66f4637a4c9ec5ee8cb469ec5f4a64d18f660832f92b0c93d1
+            baseline_sha256: 55c63755b361561ea769eef517c7515d8d42ea5f2cb918f3f6b77b5296e7bf11
           - runner: ubuntu-24.04-arm
             target: linux-arm64-glibc
-            baseline_sha256: ea88fa52cb0ca4733db64f73d9a41302f734f618c9775c5ee6ea8c1d07009aac
+            baseline_sha256: 44d2cfad132b507f457c8224fd4ac137d5546a9237b3dc8051d28995891551c7
     env:
-      SPEC914_TARGET: ${{ matrix.target }}
-      SPEC914_BASELINE_SHA256: ${{ matrix.baseline_sha256 }}
+      RCA_TEST_BASELINE_VERSION: v0.1.60
+      # Unpublished fixture label only; release remains separately authorized.
+      RCA_TEST_TARGET_VERSION: v0.1.61
+      RCA_TEST_TARGET: ${{ matrix.target }}
+      RCA_TEST_BASELINE_SHA256: ${{ matrix.baseline_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,26 +105,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          temp_dir="$(mktemp -d "$RUNNER_TEMP/spec914.XXXXXX")"
-          echo "SPEC914_TEMP=$temp_dir" >> "$GITHUB_ENV"
-          archive="$temp_dir/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz"
-          gh release download v0.1.58 --repo lirtual/mcp-workers \
+          temp_dir="$(mktemp -d "$RUNNER_TEMP/rca-upgrade.XXXXXX")"
+          echo "RCA_TEST_TEMP=$temp_dir" >> "$GITHUB_ENV"
+          archive="$temp_dir/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$RCA_TEST_TARGET.tar.gz"
+          gh release download "$RCA_TEST_BASELINE_VERSION" --repo lirtual/mcp-workers \
             --pattern "$(basename "$archive")" --dir "$temp_dir"
-          echo "$SPEC914_BASELINE_SHA256  $archive" | sha256sum --check
+          echo "$RCA_TEST_BASELINE_SHA256  $archive" | sha256sum --check
           mkdir "$temp_dir/old"
           tar -xzf "$archive" -C "$temp_dir/old"
       - name: Build unpublished Rust candidate and package it beside the baseline
         shell: bash
         run: |
           set -euo pipefail
-          version=v0.1.59-rust-candidate.1
-          mkdir -p "$SPEC914_TEMP"/{cargo,rustup,target,build}
+          version="$RCA_TEST_TARGET_VERSION"
+          mkdir -p "$RCA_TEST_TEMP"/{cargo,rustup,target,build}
           docker run --rm --network bridge \
             -v "$GITHUB_WORKSPACE:/src:ro" \
-            -v "$SPEC914_TEMP/cargo:/cargo" \
-            -v "$SPEC914_TEMP/rustup:/rustup" \
-            -v "$SPEC914_TEMP/target:/target" \
-            -v "$SPEC914_TEMP/build:/out" \
+            -v "$RCA_TEST_TEMP/cargo:/cargo" \
+            -v "$RCA_TEST_TEMP/rustup:/rustup" \
+            -v "$RCA_TEST_TEMP/target:/target" \
+            -v "$RCA_TEST_TEMP/build:/out" \
             rockylinux:9@sha256:03303863808e9cd79f0c58c833db3e5f9cde9f2abe16804a267b05dc54af86e4 \
             bash -lc '
               set -eo pipefail
@@ -144,37 +147,37 @@ jobs:
                 install -m 0755 "$CARGO_TARGET_DIR/release/rca-session-linux-candidate" /out/rca-session-linux-candidate
               fi
             '
-          supervisor="$SPEC914_TEMP/build/session-supervisor"
-          rust_agent="$SPEC914_TEMP/build/rca-standard-linux-candidate"
+          supervisor="$RCA_TEST_TEMP/build/session-supervisor"
+          rust_agent="$RCA_TEST_TEMP/build/rca-standard-linux-candidate"
           # Build the actual native profile; the immutable Rust archive is the rollback baseline.
           session_args=()
-          if [[ "$SPEC914_TARGET" == linux-x64-glibc ]]; then
-            session_bin="$SPEC914_TEMP/build/rca-session-linux-candidate"
+          if [[ "$RCA_TEST_TARGET" == linux-x64-glibc ]]; then
+            session_bin="$RCA_TEST_TEMP/build/rca-session-linux-candidate"
             session_args=(--rust-session-bin "$session_bin" --rust-session-sha256 "$(sha256sum "$session_bin" | cut -d' ' -f1)")
           fi
-          node "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs" \
-            --version "$version" --target "$SPEC914_TARGET" \
+          node "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent/scripts/build-agent-release.mjs" \
+            --version "$version" --target "$RCA_TEST_TARGET" \
             --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
             --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
-            --artifact-profile rust-native-only-v1 "${session_args[@]}" --out "$SPEC914_TEMP/native-only"
-          pure="$SPEC914_TEMP/native-only/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
+            --artifact-profile rust-native-only-v1 "${session_args[@]}" --out "$RCA_TEST_TEMP/native-only"
+          pure="$RCA_TEST_TEMP/native-only/remote-control-agent-$version-$RCA_TEST_TARGET.tar.gz"
           python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("b",sys.argv[1]); b=importlib.util.module_from_spec(s); s.loader.exec_module(b); b.inspect_archive(sys.argv[2],sys.argv[3],sys.argv[4])' \
-            apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$pure" "$version" "$SPEC914_TARGET"
-          node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-v2-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
-            "$pure" "$version" "$SPEC914_TARGET"
+            apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$pure" "$version" "$RCA_TEST_TARGET"
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-agent-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
+            "$pure" "$version" "$RCA_TEST_TARGET"
           if tar -tzf "$pure" | grep -E '(^bin/node$|/src/|[.]mjs$|[.]js$)'; then
             echo 'Node/JavaScript slipped into native-only archive' >&2
             exit 1
           fi
-          chmod 0644 "$pure" "$SPEC914_TEMP/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz"
+          chmod 0644 "$pure" "$RCA_TEST_TEMP/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$RCA_TEST_TARGET.tar.gz"
       - name: Verify actual Node-free Linux archive without development tools
         shell: bash
         run: |
           set -euo pipefail
-          version=v0.1.59-rust-candidate.1
-          archive="$SPEC914_TEMP/native-only/remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
+          version="$RCA_TEST_TARGET_VERSION"
+          archive="$RCA_TEST_TEMP/native-only/remote-control-agent-$version-$RCA_TEST_TARGET.tar.gz"
           agent=apps/remote-control-mcp-worker/agent
-          python3 -B "$agent/scripts/validate-local-archive.py" "$archive" "$version" "$SPEC914_TARGET"
+          python3 -B "$agent/scripts/validate-local-archive.py" "$archive" "$version" "$RCA_TEST_TARGET"
           docker pull --quiet python:3.12-slim-bookworm >/dev/null
           temp_dir="$(mktemp -d)"
           image=rca-native-offline-smoke:local
@@ -200,7 +203,7 @@ jobs:
                if command -v "$tool" >/dev/null; then exit 11; fi
              done
              exec python3 -B /opt/bootstrap/validate-local-archive.py \
-               /opt/agent.tar.gz "$1" "$2"' shell "$version" "$SPEC914_TARGET"
+               /opt/agent.tar.gz "$1" "$2"' shell "$version" "$RCA_TEST_TARGET"
       - name: Kill installer after candidate activation and verify real systemd recovery
         shell: bash
         run: |
@@ -233,24 +236,25 @@ jobs:
           sudo -u "$test_user" "${user_env[@]}" /usr/bin/systemctl --user \
             set-environment "XDG_RUNTIME_DIR=/run/user/$test_uid" \
             "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$test_uid/bus"
-          source_dir="$(mktemp -d /tmp/spec914-agent-source.XXXXXX)"
+          source_dir="$(mktemp -d /tmp/rca-upgrade-source.XXXXXX)"
           chmod 0755 "$source_dir"
           sudo cp -a apps/remote-control-mcp-worker/agent/. "$source_dir/"
           sudo chown -R "$test_user:$test_user" "$source_dir"
           sudo -u "$test_user" test -r "$source_dir/tests/linux-native-only-systemd.integration.mjs"
-          fixture_dir="$(mktemp -d /tmp/spec914-fixtures.XXXXXX)"
+          fixture_dir="$(mktemp -d /tmp/rca-upgrade-fixtures.XXXXXX)"
           chmod 0755 "$fixture_dir"
-          old_archive="$fixture_dir/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz"
-          install -m 0644 "$SPEC914_TEMP/remote-control-agent-v0.1.58-$SPEC914_TARGET.tar.gz" "$old_archive"
+          old_archive="$fixture_dir/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$RCA_TEST_TARGET.tar.gz"
+          install -m 0644 "$RCA_TEST_TEMP/remote-control-agent-${RCA_TEST_BASELINE_VERSION}-$RCA_TEST_TARGET.tar.gz" "$old_archive"
           sudo -u "$test_user" test -r "$old_archive"
           # Real published Rust systemd service -> new Rust attempt with NO signed
           # Worker WSS. The real old service must be restored without replaying
           # existing Unknown receipts; no production endpoint or grant involved.
-          native_archive="$fixture_dir/native-only-v0.1.59-rust-candidate.1-$SPEC914_TARGET.tar.gz"
-          install -m 0644 "$SPEC914_TEMP/native-only/remote-control-agent-v0.1.59-rust-candidate.1-$SPEC914_TARGET.tar.gz" "$native_archive"
+          native_archive="$fixture_dir/native-only-${RCA_TEST_TARGET_VERSION}-$RCA_TEST_TARGET.tar.gz"
+          install -m 0644 "$RCA_TEST_TEMP/native-only/remote-control-agent-${RCA_TEST_TARGET_VERSION}-$RCA_TEST_TARGET.tar.gz" "$native_archive"
           sudo -u "$test_user" test -r "$native_archive"
           sudo -u "$test_user" "${user_env[@]}" \
-            RCA914_AGENT_SOURCE="$source_dir" RCA914_OLD_ARCHIVE="$old_archive" RCA914_NATIVE_ARCHIVE="$native_archive" \
+            RCA_TEST_AGENT_SOURCE="$source_dir" RCA_TEST_OLD_ARCHIVE="$old_archive" RCA_TEST_NATIVE_ARCHIVE="$native_archive" \
+            RCA_TEST_BASELINE_VERSION="$RCA_TEST_BASELINE_VERSION" RCA_TEST_TARGET_VERSION="$RCA_TEST_TARGET_VERSION" \
             "$(node -p 'process.execPath')" --experimental-strip-types \
             "$source_dir/tests/linux-native-only-systemd.integration.mjs"
       - name: Assemble unpublished Linux Node-free artifact
@@ -259,32 +263,30 @@ jobs:
         run: |
           set -euo pipefail
           version="$RCA_CANDIDATE_TAG"
-          [[ "$version" =~ ^v0\.[1-9][0-9]*\.[0-9]+(-rust-candidate\.[1-9][0-9]*)?$ ]]
-          supervisor="$SPEC914_TEMP/build/session-supervisor"
-          rust_agent="$SPEC914_TEMP/build/rca-standard-linux-candidate"
+          [[ "$version" =~ ^v0\.[1-9][0-9]*\.[0-9]+$ ]]
+          supervisor="$RCA_TEST_TEMP/build/session-supervisor"
+          rust_agent="$RCA_TEST_TEMP/build/rca-standard-linux-candidate"
           output="$RUNNER_TEMP/native-review"
           session_args=()
-          if [[ "$SPEC914_TARGET" == linux-x64-glibc ]]; then
-            session_bin="$SPEC914_TEMP/build/rca-session-linux-candidate"
+          if [[ "$RCA_TEST_TARGET" == linux-x64-glibc ]]; then
+            session_bin="$RCA_TEST_TEMP/build/rca-session-linux-candidate"
             session_args=(--rust-session-bin "$session_bin" --rust-session-sha256 "$(sha256sum "$session_bin" | cut -d' ' -f1)")
           fi
-          node apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs \
-            --version "$version" --target "$SPEC914_TARGET" \
+          node apps/remote-control-mcp-worker/agent/scripts/build-agent-release.mjs \
+            --version "$version" --target "$RCA_TEST_TARGET" \
             --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
             --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
             --artifact-profile rust-native-only-v1 "${session_args[@]}" --out "$output"
-          asset="remote-control-agent-$version-$SPEC914_TARGET.tar.gz"
+          asset="remote-control-agent-$version-$RCA_TEST_TARGET.tar.gz"
           python3 -B -c 'import importlib.util,sys; s=importlib.util.spec_from_file_location("b",sys.argv[1]); b=importlib.util.module_from_spec(s); s.loader.exec_module(b); b.inspect_archive(sys.argv[2],sys.argv[3],sys.argv[4])' \
-            apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$output/$asset" "$version" "$SPEC914_TARGET"
-          node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-v2-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
-            "$output/$asset" "$version" "$SPEC914_TARGET"
+            apps/remote-control-mcp-worker/agent/scripts/bootstrap-v2.py "$output/$asset" "$version" "$RCA_TEST_TARGET"
+          node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-agent-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
+            "$output/$asset" "$version" "$RCA_TEST_TARGET"
           (cd "$output"; sha256sum "$asset" > SHA256SUMS.txt; sha256sum -c SHA256SUMS.txt)
-          if [[ "$version" =~ ^v0\.[1-9][0-9]*\.[0-9]+$ ]]; then
-            mkdir -p "release-candidate/$SPEC914_TARGET"
-            cp -- "$output/$asset" "$output/SHA256SUMS.txt" "release-candidate/$SPEC914_TARGET/"
-          fi
+          mkdir -p "release-candidate/$RCA_TEST_TARGET"
+          cp -- "$output/$asset" "$output/SHA256SUMS.txt" "release-candidate/$RCA_TEST_TARGET/"
       - name: Save reviewed native candidate for manual Release promotion
-        if: github.event_name == 'workflow_dispatch' && !contains(inputs.candidate_tag, '-rust-candidate.')
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.candidate_tag }}-${{ matrix.runner }}
@@ -292,19 +294,8 @@ jobs:
           retention-days: 2
           if-no-files-found: error
           compression-level: 0
-      - name: Save unpublished Linux Node-free review artifact
-        if: github.event_name == 'workflow_dispatch' && contains(inputs.candidate_tag, '-rust-candidate.')
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.candidate_tag }}-${{ matrix.target }}-native-only
-          path: |
-            ${{ runner.temp }}/native-review/*.tar.gz
-            ${{ runner.temp }}/native-review/SHA256SUMS.txt
-          retention-days: 2
-          if-no-files-found: error
-          compression-level: 0
   macos-native-candidate:
-    name: Unpublished native macOS 15 / ${{ matrix.arch }} candidate
+    name: Rust-only native macOS 15 / ${{ matrix.arch }} candidate
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
@@ -316,12 +307,10 @@ jobs:
             target: darwin-arm64
             uname_arch: arm64
             runner: macos-15
-            node_archive_sha256: 6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe
           - arch: x64
             target: darwin-x64
             uname_arch: x86_64
             runner: macos-15-intel
-            node_archive_sha256: 0ae5a24c24bb7d015cd816c5036b3f90f2945aa872fcf54e58da054753b3a299
     steps:
       - uses: actions/checkout@v4
         with:
@@ -345,102 +334,108 @@ jobs:
             apps/remote-control-mcp-worker/agent/scripts/darwin-session-supervisor.c \
             -o apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor
           chmod 700 apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor
-      - name: Typecheck and verify native file/receipt seam (no owner pairing)
+      - name: Verify macOS runner and build fixture types
         run: |
           set -euo pipefail
           test "$(uname -m)" = "${{ matrix.uname_arch }}"
           test "$(node -p process.arch)" = "${{ matrix.arch }}"
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 15
           pnpm --filter remote-control-agent typecheck
-          cd apps/remote-control-mcp-worker/agent
-          node --experimental-strip-types --test tests/macos-candidate.test.mjs tests/macos-file-tools.test.ts tests/pair-device.test.ts
-          # macOS-owned child groups must not hold CI indefinitely when
-          # the helper or a test faults. This is the SAME existing job.
-          node -e 'const {spawnSync}=require("node:child_process"); const r=spawnSync(process.execPath,["--experimental-strip-types","--test","tests/macos-managed-sessions.test.ts"],{timeout:45000,stdio:"inherit"}); if(r.error||r.status!==0) {console.error("Native Darwin session tests failed or timed out:",r.error?.code??r.status);process.exit(1)}'
 
-      - name: Build and inspect native unpublished CPU-specific candidate
+      - name: Build, inspect and exercise unpublished Rust-only macOS candidate
         shell: bash
         run: |
           set -euo pipefail
-          temp_dir="$(mktemp -d)"
+          [[ "$RCA_CANDIDATE_TAG" =~ ^v0\.[1-9][0-9]*\.[0-9]+$ ]]
+          temp_dir="$(mktemp -d "$RUNNER_TEMP/rca-darwin.XXXXXX")"
           trap 'rm -rf "$temp_dir"' EXIT
-          archive="$temp_dir/node.tar.xz"
-          curl --fail --silent --show-error --location --max-time 90 \
-            --proto '=https' --tlsv1.2 \
-            https://nodejs.org/dist/v24.21.0/node-v24.21.0-${{ matrix.target }}.tar.xz -o "$archive"
-          echo '${{ matrix.node_archive_sha256 }}  '"$archive" | shasum -a 256 --check
-          tar -xJOf "$archive" node-v24.21.0-${{ matrix.target }}/bin/node > "$temp_dir/node"
-          chmod 700 "$temp_dir/node"
-          test "$("$temp_dir/node" --version)" = v24.21.0
+          source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
+          target="${{ matrix.target }}"
+          supervisor="$RUNNER_TEMP/rca-darwin-supervisor"
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+            "$source_root/scripts/darwin-session-supervisor.c" -o "$supervisor"
+          chmod 700 "$supervisor"
+          cargo build --locked --release --manifest-path \
+            "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
+          rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
           for pass in first second; do
-            "$temp_dir/node" apps/remote-control-mcp-worker/agent/scripts/build-v2-release.mjs \
-              --version "$RCA_CANDIDATE_TAG" --target ${{ matrix.target }} \
-              --node-bin "$temp_dir/node" \
-              --node-sha256 "$(shasum -a 256 "$temp_dir/node" | awk '{print $1}')" \
-              --native "$(pwd)/apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor" \
-              --native-sha256 "$(shasum -a 256 apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor | awk '{print $1}')" \
+            node "$source_root/scripts/build-agent-release.mjs" \
+              --version "$RCA_CANDIDATE_TAG" --target "$target" \
+              --artifact-profile rust-native-only-v1 \
+              --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | awk '{print $1}')" \
+              --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | awk '{print $1}')" \
               --out "$temp_dir/$pass"
           done
-          asset="remote-control-agent-$RCA_CANDIDATE_TAG-${{ matrix.target }}.tar.gz"
+          asset="remote-control-agent-$RCA_CANDIDATE_TAG-$target.tar.gz"
           cmp "$temp_dir/first/$asset" "$temp_dir/second/$asset"
-          mkdir "$temp_dir/unpacked"
-          chmod 700 "$temp_dir/unpacked"
-          tar -xzf "$temp_dir/first/$asset" -C "$temp_dir/unpacked"
-          test "$("$temp_dir/unpacked/bin/node" --version)" = v24.21.0
-          node -e 'const m=require(process.argv[1]); if(m.target!=="darwin-"+process.argv[3] || m.candidate_profile!=="darwin-permanent-local-v1" || m.native_supervisor!=="darwin-owned-group-v1" || m.source_commit!==process.argv[2] || m.upgrade_profile)process.exit(1)' \
-            "$temp_dir/unpacked/bundle.json" "$(git rev-parse HEAD)" "${{ matrix.arch }}"
-          test ! -e "$temp_dir/unpacked/apps/remote-control-agent/.build/session-supervisor"
-          test -x "$temp_dir/unpacked/apps/remote-control-agent/.build/darwin-session-supervisor"
-          test ! -e "$temp_dir/unpacked/apps/remote-control-agent/scripts/install-v2.mjs"
-          for js in "$temp_dir/unpacked"/apps/remote-control-agent/src/*.js; do
-            "$temp_dir/unpacked/bin/node" --check "$js"
-          done
-          home="$temp_dir/unpaired-home"
-          mkdir "$home"
-          chmod 700 "$home"
-          if HOME="$home" "$temp_dir/unpacked/bin/node" \
-              "$temp_dir/unpacked/apps/remote-control-agent/src/macos-temporary.js" \
-              --endpoint https://example.invalid/ </dev/null > "$temp_dir/stdout" 2> "$temp_dir/stderr"; then
-            echo 'Noninteractive candidate unexpectedly enabled a device' >&2; exit 1
+          archive="$temp_dir/first/$asset"
+          node --input-type=module - "$source_root/scripts/verify-agent-release.mjs" "$archive" "$RCA_CANDIDATE_TAG" "$target" <<'JS'
+          import {readFileSync} from 'node:fs';
+          const [verifier,archive,tag,target]=process.argv.slice(2);
+          const {inspectTarGzip}=await import(verifier);
+          inspectTarGzip(readFileSync(archive),{tag,target});
+          JS
+          if tar -tzf "$archive" | grep -E '(^bin/node$|/src/|[.]mjs$|[.]js$)'; then
+            echo 'Node runtime/source slipped into native-only macOS archive' >&2
+            exit 1
           fi
-          test ! -e "$home/.local"
-          grep -q 'interactive owner terminal' "$temp_dir/stderr"
-          python3 apps/remote-control-mcp-worker/agent/tests/packaged-install-mode-pty.py "$temp_dir/unpacked"
-          # Test the extracted native runtime itself: WSS frame adapter, file
-          # effects, permission denial, SQLite receipts and Unknown recovery.
-          RCA_MACOS_BUNDLE_ROOT="$temp_dir/unpacked" \
-            "$temp_dir/unpacked/bin/node" --test \
-            apps/remote-control-mcp-worker/agent/tests/macos-packaged-runtime-smoke.mjs
-          RCA_MACOS_BUNDLE_ROOT="$temp_dir/unpacked" \
-            "$temp_dir/unpacked/bin/node" --experimental-strip-types --test \
-            apps/remote-control-mcp-worker/agent/tests/macos-local.test.mjs \
-            apps/remote-control-mcp-worker/agent/tests/macos-remote-upgrade.test.mjs
-          # Offline first-stage refuses non-owner/noninteractive execution.
-          if sh apps/remote-control-mcp-worker/agent/scripts/macos-local.sh install \
-              --archive "$temp_dir/first/$asset" --sha256 "$(shasum -a 256 "$temp_dir/first/$asset" | awk '{print $1}')" \
-              --source-sha "$(git rev-parse HEAD)" --endpoint https://example.invalid/ \
-              </dev/null; then
-            echo 'macOS offline bootstrap accepted a non-owner terminal' >&2; exit 1
+          unpacked="$temp_dir/unpacked"
+          mkdir -m 700 "$unpacked"
+          tar -xzf "$archive" -C "$unpacked"
+          test ! -e "$unpacked/bin/node"
+          test ! -e "$unpacked/apps/remote-control-agent/src"
+          native_cli="$unpacked/apps/remote-control-agent/.build/rca-standard-darwin-candidate"
+          test -x "$native_cli"
+          test -x "$unpacked/apps/remote-control-agent/.build/darwin-session-supervisor"
+          test ! -e "$unpacked/apps/remote-control-agent/scripts/install-v2.mjs"
+          test "$("$native_cli" --verify-bundle "$RCA_CANDIDATE_TAG" "$target")" = "$(git rev-parse HEAD)"
+          node - "$unpacked/bundle.json" "$RCA_CANDIDATE_TAG" "$target" "$(git rev-parse HEAD)" <<'JS'
+          const fs=require('node:fs');
+          const [file,version,target,source]=process.argv.slice(2);
+          const b=JSON.parse(fs.readFileSync(file,'utf8'));
+          if (b.version!==version || b.target!==target || b.source_commit!==source ||
+              b.artifact_profile!=='rust-native-only-v1' ||
+              b.agent_runtime!=='rust-standard-darwin-v1' ||
+              b.runtime_profile!=='standard-darwin-rust-runtime-v1' ||
+              b.native_supervisor!=='darwin-owned-group-v1' ||
+              b.node!==undefined || b.modules?.length!==0) process.exit(1);
+          JS
+          cli_home="$temp_dir/cli-home"
+          mkdir -m 700 "$cli_home"
+          test "$(HOME="$cli_home" "$native_cli" --version)" = "$RCA_CANDIDATE_TAG"
+          HOME="$cli_home" "$native_cli" --help > "$temp_dir/help.txt"
+          grep -q 'status' "$temp_dir/help.txt"
+          grep -q 'uninstall' "$temp_dir/help.txt"
+          grep -q 'pair' "$temp_dir/help.txt"
+          if HOME="$cli_home" "$native_cli" pair </dev/null > "$temp_dir/pair.txt" 2>&1; then
+            echo 'Noninteractive pair unexpectedly accepted' >&2; exit 1
           fi
-          echo "Verified native candidate from $(git rev-parse HEAD), unpublished SHA:"
-          shasum -a 256 "$temp_dir/first/$asset"
-          # Save *only* an explicitly dispatched, verified candidate for
-          # owner-Mac E2E. Pull-request CI never publishes/downloads assets.
-          # This is a short-lived Actions artifact, NOT a GitHub Release.
-          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
-            mkdir -p "release-candidate/${{ matrix.target }}"
-            cp -- "$temp_dir/first/$asset" "release-candidate/${{ matrix.target }}/"
-            cp -- apps/remote-control-mcp-worker/agent/scripts/macos-local.sh \
-              "release-candidate/${{ matrix.target }}/"
+          grep -q 'Pair requires a local owner terminal' "$temp_dir/pair.txt"
+          HOME="$cli_home" "$native_cli" status --json > "$temp_dir/status.json"
+          HOME="$cli_home" "$native_cli" doctor --json > "$temp_dir/doctor.json"
+          node --input-type=module - "$temp_dir/status.json" "$temp_dir/doctor.json" <<'JS'
+          import {readFileSync} from 'node:fs';
+          import assert from 'node:assert/strict';
+          const [status,doctor]=process.argv.slice(2).map(p=>JSON.parse(readFileSync(p,'utf8')));
+          assert.notEqual(status.installed,true);
+          assert.equal(status.signed_wss,'unconfirmed');
+          assert.equal(status.cloud_authorization,'unconfirmed');
+          assert.deepEqual(doctor.status,status);
+          JS
+          test -z "$(ls -A "$cli_home")"
+          echo "Verified Rust-only candidate from $(git rev-parse HEAD), unpublished SHA:"
+          shasum -a 256 "$archive"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            mkdir -p "release-candidate/$target"
+            cp -- "$archive" "release-candidate/$target/"
             (
-              cd "release-candidate/${{ matrix.target }}"
-              shasum -a 256 "$asset" macos-local.sh > SHA256SUMS.txt
+              cd "release-candidate/$target"
+              shasum -a 256 "$asset" > SHA256SUMS.txt
               shasum -a 256 -c SHA256SUMS.txt
             )
           fi
-          # CI runner is NOT an owner-paired real Mac. No permanent grant or public Release.
       - name: Save unpublished macOS candidate for owner-native E2E
-        if: github.event_name == 'workflow_dispatch' && !contains(inputs.candidate_tag, '-rust-candidate.')
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.candidate_tag }}-${{ matrix.target }}
@@ -469,13 +464,13 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - name: Install pinned source dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Typecheck shared and Windows preview sources
+      - name: Typecheck Agent build and test fixtures
         run: pnpm --filter remote-control-agent typecheck
       - name: Windows helper ACL and lifecycle boundary checks
         shell: pwsh
         run: |
           Set-Location apps/remote-control-mcp-worker/agent
-          node --experimental-strip-types --test tests/shared-execution-boundaries.test.ts tests/windows-acl.test.mjs tests/windows-upgrade-pipe.test.mjs
+          node --experimental-strip-types --test tests/windows-acl.test.mjs tests/windows-upgrade-pipe.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Windows helper lifecycle tests failed' }
       - name: New public PowerShell installer parses under Windows without executing
         shell: pwsh
@@ -620,10 +615,10 @@ jobs:
           $rustBin = Join-Path $env:CARGO_TARGET_DIR 'release/rca-standard-windows-candidate.exe'
           if (-not (Test-Path -LiteralPath $rustBin -PathType Leaf)) { throw 'Windows Rust candidate binary missing' }
           # Build the released native-only profile; no mixed Node+Rust fixture.
-          $nativeTag = 'v0.1.59-rust-candidate.1'
+          $nativeTag = 'v0.1.61'
           $nativeOut = Join-Path $env:RUNNER_TEMP 'windows-native-only'
           $sessionBin = Join-Path $env:CARGO_TARGET_DIR 'release/rca-session-windows-candidate.exe'
-          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $nativeTag --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --artifact-profile rust-native-only-v1 --rust-session-bin $sessionBin --rust-session-sha256 (Get-FileHash -LiteralPath $sessionBin -Algorithm SHA256).Hash.ToLowerInvariant() --out $nativeOut
+          node apps/remote-control-mcp-worker/agent/scripts/build-windows-release.mjs --version $nativeTag --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') --rust-agent-bin $rustBin --rust-agent-sha256 (Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant() --artifact-profile rust-native-only-v1 --rust-session-bin $sessionBin --rust-session-sha256 (Get-FileHash -LiteralPath $sessionBin -Algorithm SHA256).Hash.ToLowerInvariant() --out $nativeOut
           if ($LASTEXITCODE -ne 0) { throw 'Native-only Windows candidate build failed' }
           $nativeStage = Join-Path $nativeOut ('remote-control-agent-' + $nativeTag + '-windows-x64')
           & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File apps/remote-control-mcp-worker/agent/tests/windows-zip-preflight.ps1 -Installer (Join-Path $PWD 'apps/remote-control-mcp-worker/agent/install.ps1')
@@ -657,7 +652,7 @@ jobs:
           try { & $nativeVerifier -Root $nativeReopened -Version $nativeTag } catch { $refused = $true }
           if (-not $refused) { throw 'Undeclared Session entry accepted' }
           [IO.File]::WriteAllText($manifestPath, $originalManifest)
-          $saved = Join-Path $env:RUNNER_TEMP 'spec914-session-exe-saved'
+          $saved = Join-Path $env:RUNNER_TEMP 'rca-session-exe-saved'
           Move-Item -LiteralPath $session -Destination $saved
           try {
             $refused = $false
@@ -781,7 +776,7 @@ jobs:
 
             # Verify/stage the real Node-free archive using the existing
             # installer while the published Rust service is still active.
-            $nativeVersion = 'v0.1.59-rust-candidate.1'
+            $nativeVersion = 'v0.1.61'
             $nativeArchive = Join-Path $env:RUNNER_TEMP 'candidate-native-only.zip'
             $nativeDigest = (Get-FileHash -LiteralPath $nativeArchive -Algorithm SHA256).Hash.ToLowerInvariant()
             $nativeDir = Join-Path $basePrograms ($nativeVersion + '-windows-x64')
@@ -790,6 +785,13 @@ jobs:
             & 'apps/remote-control-mcp-worker/agent/scripts/verify-windows-native.ps1' -Root $nativeDir -Version $nativeVersion
             if (Test-Path -LiteralPath (Join-Path $nativeDir 'bin/node.exe')) { throw 'Unexpected Node runtime in native-only installed directory' }
             $nativeStatus = & (Join-Path $nativeDir 'rca.cmd') status | ConvertFrom-Json
+            # The staged CLI must report the actual existing Task target,
+            # rather than its own newer, inactive executable's version.
+            $taskFacts = & (Join-Path $nativeDir 'rca.cmd') task-status | ConvertFrom-Json
+            $expectedTaskVersion = (Split-Path -Leaf $publishedDir) -replace '-windows-x64$',''
+            if ($LASTEXITCODE -ne 0 -or $taskFacts.installed -ne $true -or $taskFacts.version -cne $expectedTaskVersion) {
+              throw 'Read-only Task version did not match actual installed target'
+            }
             if ($LASTEXITCODE -ne 0 -or $nativeStatus.platform -cne 'win32' -or
                 $nativeStatus.identity_present -ne $true -or
                 $nativeStatus.device_id -cne (Get-Content -LiteralPath $device -Raw).Trim() -or
@@ -1019,9 +1021,9 @@ jobs:
           [IO.File]::WriteAllText($stdinFile, '')
           $sha = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           $root = Join-Path $profile 'mcp-workers\remote-control'
-          $target = Join-Path $root 'programs\v0.1.59-rust-candidate.1-windows-x64'
+          $target = Join-Path $root 'programs\v0.1.61-windows-x64'
           $args = @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass',
-            '-File','apps/remote-control-mcp-worker/agent/install.ps1','-Version','v0.1.59-rust-candidate.1',
+            '-File','apps/remote-control-mcp-worker/agent/install.ps1','-Version','v0.1.61',
             '-OfflineArchive',$archive,'-ExpectedSha256',$sha)
           $env:LOCALAPPDATA = $profile
           try {
@@ -1080,14 +1082,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = $env:RCA_CANDIDATE_TAG
-          if ($tag -cnotmatch '^v0\.[1-9][0-9]*\.[0-9]+(?:-rust-candidate\.[1-9][0-9]*)?$') {
+          if ($tag -cnotmatch '^v0\.[1-9][0-9]*\.[0-9]+$') {
             throw 'Invalid candidate-only version label'
           }
           $output = Join-Path $env:RUNNER_TEMP 'spec24-reviewed-windows-candidate'
           $rustBin = Join-Path $env:RUNNER_TEMP 'windows-rust-cargo-target/release/rca-standard-windows-candidate.exe'
           $sessionBin = Join-Path $env:RUNNER_TEMP 'windows-rust-cargo-target/release/rca-session-windows-candidate.exe'
           $rustArgs = @('--rust-agent-bin',$rustBin,'--rust-agent-sha256',(Get-FileHash -LiteralPath $rustBin -Algorithm SHA256).Hash.ToLowerInvariant(),'--artifact-profile','rust-native-only-v1','--rust-session-bin',$sessionBin,'--rust-session-sha256',(Get-FileHash -LiteralPath $sessionBin -Algorithm SHA256).Hash.ToLowerInvariant())
-          node apps/remote-control-mcp-worker/agent/scripts/build-windows-preview.mjs --version $tag `
+          node apps/remote-control-mcp-worker/agent/scripts/build-windows-release.mjs --version $tag `
             --background-bin (Join-Path $env:RUNNER_TEMP 'rca-background.exe') `
             --out $output @rustArgs
           if ($LASTEXITCODE -ne 0) { throw 'Windows candidate build refused' }
@@ -1118,7 +1120,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.candidate_tag }}-windows-x64${{ contains(inputs.candidate_tag, '-rust-candidate.') && '-native-only' || '' }}
+          name: ${{ inputs.candidate_tag }}-windows-x64
           path: ${{ runner.temp }}/spec24-windows-review-artifacts/
           retention-days: 2
           if-no-files-found: error

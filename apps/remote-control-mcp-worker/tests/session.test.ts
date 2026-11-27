@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { newEnrollment } from "../agent/src/v2-enrollment.ts";
-import { signedSessionProof } from "../agent/src/v2-session-client.ts";
+import { newEnrollment } from "./fixtures/device-protocol.ts";
+import { signedSessionProof } from "./fixtures/device-protocol.ts";
 import { parseDeviceInfo } from "../src/device-info.ts";
 import { acceptAuthenticatedSocket, authorizeSession, authorizeSocketSession, issueSessionChallenge, readWebSocketProof, listApprovedDevices } from "../src/session.ts";
 

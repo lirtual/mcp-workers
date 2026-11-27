@@ -87,6 +87,43 @@ pub fn signed_session_proof(
     })
 }
 
+// Keep every independently signed challenge field explicit at this protocol boundary.
+pub(crate) fn valid_secure_input_binding(binding: &str) -> bool {
+    binding.len() == 64
+        && binding
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn signed_secure_input_owner_intent_proof(
+    pem: &str,
+    request_id: &str,
+    device_id: &str,
+    nonce: &str,
+    generation: u64,
+    target_binding: &str,
+    target_confirmed: bool,
+    production_authorized: bool,
+) -> Result<String, IdentityError> {
+    if !valid_device_id(request_id)
+        || !valid_device_id(device_id)
+        || !valid_nonce(nonce)
+        || generation >= 9_007_199_254_740_991
+        || !valid_secure_input_binding(target_binding)
+    {
+        return Err(IdentityError::InvalidChallenge);
+    }
+    let key = signing_key(pem)?;
+    let public_key = public_key(&key)?;
+    let transcript = format!(
+        "remote-control:v2:secure-input-owner-intent:v1:{request_id}:{device_id}:{generation}:{target_binding}:{nonce}:{}:{}:{public_key}",
+        u8::from(target_confirmed),
+        u8::from(production_authorized),
+    );
+    Ok(URL_SAFE_NO_PAD.encode(key.sign(transcript.as_bytes()).to_bytes()))
+}
+
 pub fn signed_owner_intent_proof(
     pem: &str,
     action: &str,
@@ -106,4 +143,60 @@ pub fn signed_owner_intent_proof(
     let transcript =
         format!("{OWNER_DOMAIN}{action}:{device_id}:{generation}:{nonce}:{public_key}");
     Ok(URL_SAFE_NO_PAD.encode(key.sign(transcript.as_bytes()).to_bytes()))
+}
+
+#[cfg(test)]
+mod secure_input_owner_intent_tests {
+    use super::*;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use ed25519_dalek::Verifier;
+
+    #[test]
+    fn secure_input_owner_signature_binds_request_target_and_separate_production_intent() {
+        let pem = new_private_key_pem().unwrap();
+        let request = "12345678-1234-1234-1234-123456789abc";
+        let device = "abcdefab-cdef-abcd-efab-cdefabcdefab";
+        let nonce = "abcdefghijklmnopqrstuvwx";
+        let binding = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for invalid in [
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopq",
+            &"A".repeat(64),
+            &"g".repeat(64),
+        ] {
+            assert!(signed_secure_input_owner_intent_proof(
+                &pem, request, device, nonce, 7, invalid, true, true,
+            )
+            .is_err());
+        }
+        let proof = signed_secure_input_owner_intent_proof(
+            &pem, request, device, nonce, 7, binding, true, true,
+        )
+        .unwrap();
+        let signature = URL_SAFE_NO_PAD.decode(&proof).unwrap();
+        let key = signing_key(&pem).unwrap();
+        let public = public_key(&key).unwrap();
+        let transcript = format!(
+            "remote-control:v2:secure-input-owner-intent:v1:{request}:{device}:7:{binding}:{nonce}:1:1:{public}"
+        );
+        let raw = ed25519_dalek::Signature::from_slice(&signature).unwrap();
+        key.verifying_key()
+            .verify(transcript.as_bytes(), &raw)
+            .unwrap();
+
+        assert_ne!(
+            proof,
+            signed_secure_input_owner_intent_proof(
+                &pem, request, device, nonce, 7, binding, true, false,
+            )
+            .unwrap()
+        );
+        assert!(signed_secure_input_owner_intent_proof(
+            &pem, "bad", device, nonce, 7, binding, true, true,
+        )
+        .is_err());
+        assert!(signed_secure_input_owner_intent_proof(
+            &pem, request, device, nonce, 7, "short", true, true,
+        )
+        .is_err());
+    }
 }

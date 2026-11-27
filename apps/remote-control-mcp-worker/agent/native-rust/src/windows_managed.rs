@@ -394,7 +394,22 @@ impl WindowsManagedSessions {
     /// Each input action receives its own durable SQLite receipt before this
     /// function is called. A timeout or partial pipe write always means Unknown.
     pub fn write_input(&self, id: &str, input: &str) -> InputOutcome {
-        if input.is_empty() || input.len() > 8192 || input.contains(char::from(0)) {
+        self.write_input_inner(id, input, false)
+    }
+
+    pub fn write_secure_input(&self, id: &str, input: &str) -> InputOutcome {
+        self.write_input_inner(id, input, true)
+    }
+
+    pub(crate) fn secure_input_ready(&self, id: &str) -> bool {
+        self.get(id)
+            .is_some_and(|session| session.state == SessionState::Running)
+    }
+
+    fn write_input_inner(&self, id: &str, input: &str, sensitive: bool) -> InputOutcome {
+        // Secure input includes a newline delimiter after the 8192-byte value.
+        let max = if sensitive { 8193 } else { 8192 };
+        if input.is_empty() || input.len() > max || input.contains(char::from(0)) {
             return InputOutcome::Failed;
         }
         let entry = {
@@ -417,7 +432,15 @@ impl WindowsManagedSessions {
             entry.input_busy.store(false, Ordering::Release);
             return InputOutcome::Unknown;
         };
-        let bytes = input.as_bytes().to_vec();
+        if sensitive {
+            let output = lock(&entry.output);
+            let Some(output) = output.as_ref() else {
+                entry.input_busy.store(false, Ordering::Release);
+                return InputOutcome::Failed;
+            };
+            output.suppress_sensitive();
+        }
+        let bytes = zeroize::Zeroizing::new(input.as_bytes().to_vec());
         let writing = Arc::clone(&entry);
         let (sender, receiver) = sync_channel(1);
         let worker = match thread::Builder::new()

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { newEnrollment } from '../agent/src/v2-enrollment.ts';
-import { signedSessionProof } from '../agent/src/v2-session-client.ts';
+import { newEnrollment } from './fixtures/device-protocol.ts';
+import { signedSessionProof } from './fixtures/device-protocol.ts';
 import { OwnerCoordinator } from "../src/pairing.ts";
 import { issueSessionChallenge, authorizeSocketSession, deviceIsAuthorized, parsePermanentIdleMs, handleIdleSocketMessage } from '../src/session.ts';
 

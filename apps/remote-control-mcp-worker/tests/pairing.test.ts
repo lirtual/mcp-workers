@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
+import { newEnrollment, saveNewPrivateKey } from "./fixtures/device-protocol.ts";
 import worker from "../src/worker.ts";
 import { OwnerCoordinator } from "../src/pairing.ts";
 import { registerPending, lookupPending, verifyRegistration, checkRevokedIdentity, type PendingDevice } from "../src/pairing.ts";
@@ -42,7 +42,7 @@ test("Agent code and Ed25519 public proof are bounded; private key stays local",
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("pending enrollment exposes only bounded owner preview data; MCP pairing retired", async () => {
+test("pending enrollment exposes only bounded owner status; MCP pairing retired", async () => {
   const { store, values } = makeStore();
   const owner = new OwnerCoordinator({ storage: store } as unknown as DurableObjectState);
   const binding = {

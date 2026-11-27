@@ -7,7 +7,12 @@ param(
   [ValidatePattern('^[a-f0-9]{64}$')][string]$SelectedReleaseSha256,
   [string]$OfflineArchive,
   [string]$ExpectedSha256,
-  [switch]$StageOnly
+  [switch]$StageOnly,
+  [switch]$CheckOnly,
+  [switch]$UpdateOnly,
+  [switch]$Automatic,
+  [ValidatePattern('^[0-9a-f]{64}$')][string]$AutomaticBinding,
+  [ValidatePattern('^[0-9a-f]{32}$')][string]$AutomaticOperation
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -143,11 +148,18 @@ function Resolve-LatestAgentRelease {
   }
   if ([int]$response.StatusCode -ne 200) { throw 'GitHub latest Release lookup failed' }
   $release = $response.Content | ConvertFrom-Json
-  if ($release.immutable -ne $true -or $release.draft -ne $false -or $release.prerelease -ne $false -or
-      $release.tag_name -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
+  if ($release.immutable -isnot [bool] -or -not $release.immutable -or
+      $release.draft -isnot [bool] -or $release.draft -or
+      $release.prerelease -isnot [bool] -or $release.prerelease -or
+      $release.tag_name -isnot [string] -or $release.tag_name -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
     throw 'Latest Agent Release is not a stable immutable Agent Release'
   }
   $tag = [string]$release.tag_name
+  $html = $release.PSObject.Properties['html_url']
+  if (($null -ne $html -and ($html.Value -isnot [string] -or $html.Value -cne "https://github.com/lirtual/mcp-workers/releases/tag/$tag")) -or
+      $release.assets -isnot [array]) {
+    throw 'Invalid stable Agent Release identity or assets'
+  }
   $specs = @(
     @{ target = 'linux-x64-glibc'; ext = 'tar.gz' },
     @{ target = 'linux-arm64-glibc'; ext = 'tar.gz' },
@@ -158,7 +170,8 @@ function Resolve-LatestAgentRelease {
   $assets = @($release.assets)
   $platformName = '^remote-control-agent-v[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?-(?:linux-x64-glibc|linux-arm64-glibc|windows-x64|darwin-arm64|darwin-x64)\.(?:tar\.gz|zip)$'
   foreach ($asset in $assets) {
-    $name = [string]$asset.name
+    if ($null -eq $asset -or $asset.name -isnot [string]) { throw 'Invalid stable Agent asset' }
+    $name = $asset.name
     $known = $false
     foreach ($spec in $specs) {
       if ($name -ceq "remote-control-agent-$tag-$($spec.target).$($spec.ext)") { $known = $true }
@@ -174,10 +187,12 @@ function Resolve-LatestAgentRelease {
     if ($matched.Count -ne 1) { throw 'Latest Agent Release is missing a platform asset' }
     $asset = $matched[0]
     $expectedUri = "https://github.com/lirtual/mcp-workers/releases/download/$tag/$name"
-    if ($asset.digest -cnotmatch '^sha256:[a-f0-9]{64}$') {
+    if ($asset.digest -isnot [string] -or $asset.digest -cnotmatch '^sha256:[a-f0-9]{64}$') {
       throw 'Latest Agent Release is missing an official SHA-256'
     }
-    if ($asset.state -ne 'uploaded' -or $asset.browser_download_url -cne $expectedUri -or
+    if ($asset.state -isnot [string] -or $asset.state -cne 'uploaded' -or
+        $asset.browser_download_url -isnot [string] -or $asset.browser_download_url -cne $expectedUri -or
+        ($asset.size -isnot [int] -and $asset.size -isnot [long]) -or
         $asset.size -lt 100000 -or $asset.size -gt 100000000) {
       throw 'Untrusted GitHub Release asset digest/URL'
     }
@@ -186,6 +201,28 @@ function Resolve-LatestAgentRelease {
   if (-not $windows) { throw 'Windows x64 Agent asset is missing' }
   return @{ Tag = $tag; Sha = $windows.digest.Substring(7); Url = [string]$windows.browser_download_url; Size = [long]$windows.size }
 }
+# Metadata observation only. Preserve the installed label and never select
+# a downgrade, a prerelease or a fallback repository.
+function Get-LatestUpdateStatus([string]$installed) {
+  $result = @{ installed_version = $installed; latest_version = $null; status = 'unknown' }
+  $stable = 'v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+  if ($installed -cnotmatch ('^' + $stable + '(?:-rust-candidate\.[1-9][0-9]*)?$')) { return $result }
+  try {
+    $latest = Resolve-LatestAgentRelease
+    $oldNumber = [version](($installed.Substring(1) -split '-')[0])
+    $newNumber = [version]($latest.Tag.Substring(1))
+    $result.latest_version = $latest.Tag
+    $result.status = if ($installed -ceq $latest.Tag) { 'up_to_date' }
+      elseif ($newNumber -lt $oldNumber) { 'older_latest' }
+      else { 'update_available' }
+  } catch {
+    # Never expose signed URL/transport details or continue to installation.
+    $result.latest_version = $null
+    $result.status = 'unknown'
+  }
+  return $result
+}
+
 function Resolve-ReviewedNativeRelease([string]$tag,[string]$sha,[bool]$stable = $false) {
   # Candidate pin or a stable tag selected by the independent upgrade launcher.
   # Never look up Latest a second time or accept an arbitrary URL.
@@ -344,6 +381,90 @@ function Get-ExistingAgentVersion([string]$programs, [string]$taskExe) {
   if (-not $matched.Success) { throw 'Unrecognized existing Agent task executable' }
   return $matched.Groups[1].Value
 }
+# Attended update is an existing-installation operation, not onboarding.
+# Keep the exact reviewed Task and identity binding across release lookup,
+# user confirmation and download. The existing controller still owns cutover.
+function Get-AttendedUpdateBinding {
+  Assert-PrivateFolder ([IO.Path]::GetDirectoryName($root))
+  Assert-PrivateFolder $root
+  $programsPath = Join-Path $root 'programs'
+  Assert-PrivateFolder $programsPath
+  $key = Join-Path $root 'v2-identity.pem'
+  $id = $key + '.device-id'
+  & (Join-Path $PSScriptRoot 'windows-private-store.ps1') -Action Check -Directory $root
+  if (-not (Test-Path -LiteralPath $key -PathType Leaf) -or
+      -not (Test-Path -LiteralPath $id -PathType Leaf) -or
+      (Get-Content -LiteralPath $id -Raw).Trim() -cnotmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$' -or
+      (Get-Content -LiteralPath ($key + '.install-mode') -Raw) -cne ("permanent" + [char]10)) {
+    throw 'Existing approved permanent Agent required'
+  }
+  foreach ($pending in @(($key + '.owner-stopped'), ($key + '.activation-pending'),
+      ($id + '.pending'), (Join-Path $root 'windows-native-upgrade.json'))) {
+    if (Test-Path -LiteralPath $pending) { throw 'Stopped or unresolved Agent; review local status' }
+  }
+  $name = 'RCA-Remote-Control-v2-' + $userSid.Value.Replace('-', '_')
+  $current = Get-ScheduledTask -TaskName $name -ErrorAction Stop
+  if ($current.State -ne 'Running' -or $current.Actions.Count -ne 1) {
+    throw 'Existing running owner Task required'
+  }
+  $action = $current.Actions[0]
+  $installed = Get-ExistingAgentVersion $programsPath ([string]$action.Execute)
+  $ps = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+  $raw = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'windows-user-task.ps1') -Action Status
+  if ($LASTEXITCODE -ne 0) { throw 'Existing Task status uncertain' }
+  $facts = $raw | ConvertFrom-Json
+  if ($facts.installed -ne $true -or $facts.running -ne $true -or $facts.version -cne $installed) {
+    throw 'Existing Task changed during update admission'
+  }
+  [pscustomobject]@{
+    version=$installed
+    key_hash=(Get-FileHash -LiteralPath $key -Algorithm SHA256).Hash
+    id_hash=(Get-FileHash -LiteralPath $id -Algorithm SHA256).Hash
+    execute=[string]$action.Execute
+    arguments=[string]$action.Arguments
+    working_directory=[string]$action.WorkingDirectory
+  }
+}
+function Assert-AttendedUpdateTarget($expected,$observed) {
+  if ($null -eq $expected -or $null -eq $observed) { throw 'Existing update target unavailable' }
+  foreach ($field in @('version','key_hash','id_hash','execute','arguments','working_directory')) {
+    if ($null -eq $expected.PSObject.Properties[$field] -or $null -eq $observed.PSObject.Properties[$field] -or
+        $expected.$field -cne $observed.$field) {
+      throw 'Existing Task or identity changed during update'
+    }
+  }
+}
+# The automatic worker must target exactly the same reviewed installation
+# that the Agent observed before selecting immutable Latest.
+# Pure definition check, shared with the generated one-shot runner. The
+# observed principal is resolved to its immutable SID before this comparison.
+function Test-AutomaticTaskDefinition($task,[string]$taskName,[string]$ownerSid,[string]$observedSid,[string]$executable,[string]$arguments) {
+  return ($null -ne $task -and
+    $task.TaskName -ceq $taskName -and $task.TaskPath -ceq '\' -and
+    $observedSid -ceq $ownerSid -and
+    [string]$task.Principal.RunLevel -ceq 'Limited' -and
+    [string]$task.Principal.LogonType -cin @('Interactive','InteractiveToken') -and
+    @($task.Triggers | Where-Object { $null -ne $_ }).Count -eq 0 -and
+    $task.Actions.Count -eq 1 -and
+    [string]::Equals([string]$task.Actions[0].Execute,$executable,[StringComparison]::OrdinalIgnoreCase) -and
+    [string]$task.Actions[0].Arguments -ceq $arguments -and
+    [string]::IsNullOrEmpty([string]$task.Actions[0].WorkingDirectory))
+}
+function Get-UpdateBindingDigest($binding) {
+  $bytes = [Text.Encoding]::UTF8.GetBytes((@($binding.version,$binding.key_hash,$binding.id_hash,
+    $binding.execute,$binding.arguments,$binding.working_directory) | ConvertTo-Json -Compress))
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant() }
+  finally { $sha.Dispose() }
+}
+function Assert-AutomaticUpdateBinding([string]$targetVersion='') {
+  Assert-AttendedUpdateTarget $attendedBinding (Get-AttendedUpdateBinding)
+  $ps = Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe'
+  $args = @('-Action','VerifyAutomatic')
+  if ($targetVersion) { $args += @('-Version',$targetVersion) }
+  $null = & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'windows-user-task.ps1') @args
+  if ($LASTEXITCODE -ne 0) { throw 'Continuing automatic update authority unconfirmed' }
+}
 # Native first activation requires the owner console. An admitted detached
 # stable upgrade may only invoke the existing transactional Task switch.
 function Complete-NativeInstall([string]$directory) {
@@ -360,13 +481,28 @@ function Complete-NativeInstall([string]$directory) {
   }
   & (Join-Path $scripts 'verify-windows-native.ps1') -Root $directory -Version $Version | Out-Null
   & (Join-Path $scripts 'windows-private-store.ps1') -Action Check -Directory $root
+  $managerCommand = "& '{0}'" -f ((Join-Path $directory 'rca.cmd').Replace("'", "''"))
+  if (-not $detachedUpgrade) {
+    Write-Host "Local manager for this verified package: $managerCommand --help"
+  }
   if (Test-Path -LiteralPath ($identityFile + '.owner-stopped')) {
     if ($detachedUpgrade) { throw 'Owner STOP blocks detached native upgrade' }
+    if ($UpdateOnly) { throw 'Owner STOP blocks attended native upgrade' }
     Write-Output 'Owner STOP preserved. Agent was not started.'
     return
   }
+  if ($UpdateOnly) {
+    if (-not $upgradeExisting) { throw 'Update cannot install or pair a device' }
+    Assert-AttendedUpdateTarget $attendedBinding (Get-AttendedUpdateBinding)
+  }
   if ($upgradeExisting) {
-    & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
+    if ($Automatic) {
+      Assert-AutomaticUpdateBinding $Version
+      $script:automaticSwitchDispatched = $true
+      & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade -Automatic -AutomaticBinding (Get-UpdateBindingDigest $attendedBinding) -AutomaticOperation $AutomaticOperation
+    } else {
+      & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action Switch -Version $Version -Direction Upgrade
+    }
     if ($LASTEXITCODE -ne 0) { throw 'Native upgrade refused or uncertain; review retained state' }
     if ($detachedUpgrade) { Write-Output 'Local switch returned; independent signed-WSS verification required.' }
     return
@@ -401,6 +537,13 @@ function Complete-NativeInstall([string]$directory) {
     if ($LASTEXITCODE -ne 0) { throw 'Native authorization reconciliation incomplete; existing identity retained' }
     return
   }
+  # Missing policy on an existing or interrupted identity is never migration consent.
+  $newStablePolicy = $mode -ceq 'permanent' -and -not $state.installed -and
+    -not (Test-Path -LiteralPath $identityFile) -and -not (Test-Path -LiteralPath $idFile) -and
+    $Version -cmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$'
+  if ($newStablePolicy) {
+    Write-Output "Automatic updates for this new permanent device default to on after signed activation; disable with: $managerCommand update --auto off"
+  }
   $name = [Environment]::MachineName
   if (-not (Test-Path -LiteralPath $idFile)) {
     $entered = Read-Host ('Device name [' + $name + ']')
@@ -420,6 +563,10 @@ function Complete-NativeInstall([string]$directory) {
   }
   & $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $controller -Action ActivateNative -Version $Version -Endpoint $origin
   if ($LASTEXITCODE -ne 0) { throw 'Native initial activation incomplete; identity and intent retained' }
+  if ($newStablePolicy) {
+    & $entry --initialize-auto-policy
+    if ($LASTEXITCODE -ne 0) { throw "Signed activation complete; automatic update consent unconfirmed; inspect with: $managerCommand status" }
+  }
 }
 
 # Read a console key directly: PromptForChoice renders system-localized
@@ -439,19 +586,53 @@ function Confirm-Upgrade([object]$ui) {
 }
 
 
+# The installed manager passes its validated current Task version here.
+# This branch precedes every directory, archive, identity and Task mutation.
+if ($CheckOnly) {
+  if (-not $Version -or $SelectedTag -or $SelectedReleaseSha256 -or $OfflineArchive -or
+      $ExpectedSha256 -or $StageOnly -or $UpdateOnly -or $Automatic -or $AutomaticBinding -or $AutomaticOperation) { throw 'CheckOnly requires only the installed version' }
+  Get-LatestUpdateStatus $Version | ConvertTo-Json -Compress
+  return
+}
+
 # A Remote Control Shell may schedule the *reviewed official installer* in a
 # separate same-user Windows Task. Never infer approval from missing TTY.
 # This opt-in is only valid for an existing approved, currently running Task.
 $detachedUpgrade = $env:RCA_UNATTENDED_UPGRADE -ceq 'owner-approved-task-v1'
 $detachedRequest = $env:RCA_UNATTENDED_UPGRADE -ceq 'launch-approved-task-v1'
+if ($Automatic) {
+  if ($detachedUpgrade -or $detachedRequest -or $Version -or $OfflineArchive -or $ExpectedSha256 -or
+      $StageOnly -or $UpdateOnly -or [bool]$SelectedTag -ne [bool]$AutomaticBinding -or
+      [bool]$SelectedTag -ne [bool]$SelectedReleaseSha256 -or
+      [bool]$SelectedTag -ne [bool]$AutomaticOperation) { throw 'Invalid automatic update arguments' }
+  $detachedUpgrade = [bool]$SelectedTag
+  $detachedRequest = -not $detachedUpgrade
+} elseif ($AutomaticBinding -or $AutomaticOperation) { throw 'Unexpected automatic target binding' }
 $temp = $null
 $stage = $null
 $promoted = $false
 $primaryFailure = $false
+$automaticSwitchDispatched = $false
 $releaseUrl = $null
 $releaseSha = $null
 $releaseSize = [long]0
+$attendedBinding = $null
 try {
+  if ($Automatic) {
+    $attendedBinding = Get-AttendedUpdateBinding
+    if ($AutomaticBinding -and (Get-UpdateBindingDigest $attendedBinding) -cne $AutomaticBinding) {
+      throw 'Existing automatic update target changed before worker admission'
+    }
+    Assert-AutomaticUpdateBinding $SelectedTag
+  }
+  if ($UpdateOnly) {
+    if ($Version -or $SelectedTag -or $SelectedReleaseSha256 -or $OfflineArchive -or
+        $ExpectedSha256 -or $StageOnly -or $detachedUpgrade -or $detachedRequest -or
+        [Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+      throw 'Attended update requires the local owner console and no other options'
+    }
+    $attendedBinding = Get-AttendedUpdateBinding
+  }
   if ($detachedUpgrade -and ($OfflineArchive -or -not $SelectedTag -or -not $SelectedReleaseSha256 -or $StageOnly)) {
     throw 'Detached upgrade requires a selected immutable stable Release'
   }
@@ -485,6 +666,20 @@ try {
     $releaseSha = [string]$latest.Sha
     $releaseUrl = [string]$latest.Url
     $releaseSize = [long]$latest.Size
+  }
+  if ($Automatic) {
+    if ([version]($Version.Substring(1)) -le [version]($attendedBinding.version.Substring(1))) {
+      Write-Output 'No newer Stable Agent available.'
+      return
+    }
+    Assert-AutomaticUpdateBinding $Version
+  }
+  if ($UpdateOnly) {
+    Assert-AttendedUpdateTarget $attendedBinding (Get-AttendedUpdateBinding)
+    if ($Version -ceq $attendedBinding.version) {
+      Write-Output "Already up to date: $Version"
+      return
+    }
   }
   Ensure-PrivateFolder ([IO.Path]::Combine($env:LOCALAPPDATA, 'mcp-workers'))
   Ensure-PrivateFolder $root
@@ -534,21 +729,35 @@ try {
     }
     # The parent attempt already selected one latest snapshot. Do not look up latest again.
     $source = [string]$MyInvocation.MyCommand.ScriptBlock.ToString()
-    if (-not $source.StartsWith('# Native Windows x64 bootstrap.')) {
+    if (-not $Automatic -and -not $source.StartsWith('# Native Windows x64 bootstrap.')) {
       throw 'Cannot stage authenticated installer source'
     }
     $operation = [guid]::NewGuid().ToString('N')
     $name = 'RCA-Upgrade-' + $operation
-    $installer = [IO.Path]::Combine($root,'upgrade-source-' + $operation + '.ps1')
+    if ($Automatic) {
+      # One demand-start Task per installed identity, not a second scheduler.
+      $name = 'RCA-Upgrade-' + (Get-Content -LiteralPath $idFile -Raw).Trim().Replace('-','')
+      if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object { $_.TaskName -ieq $name }).Count -ne 0) {
+        Write-Output 'Automatic update already dispatched or awaiting inspection.'
+        return
+      }
+      Assert-AutomaticUpdateBinding $Version
+    }
+    $installer = if ($Automatic) { $PSCommandPath } else { [IO.Path]::Combine($root,'upgrade-source-' + $operation + '.ps1') }
     $runner = [IO.Path]::Combine($root,'upgrade-runner-' + $operation + '.ps1')
     $receipt = [IO.Path]::Combine($root,'upgrade-result-' + $operation + '.json')
     $claim = [IO.Path]::Combine($root,'upgrade-claim-' + $operation + '.txt')
     $claimQ = $claim.Replace("'", "''")
     $installerQ = $installer.Replace("'", "''")
     $receiptQ = $receipt.Replace("'", "''")
+    $invokeLine = if ($Automatic) {
+      "  & '{0}' -Automatic -SelectedTag '{1}' -SelectedReleaseSha256 '{2}' -AutomaticBinding '{3}' -AutomaticOperation '{4}'" -f $installerQ,$Version,$releaseSha,(Get-UpdateBindingDigest $attendedBinding),$operation
+    } else { "  & '{0}' -SelectedTag '{1}' -SelectedReleaseSha256 '{2}'" -f $installerQ,$Version,$releaseSha }
+    $authorityLine = if ($Automatic) { 'Remove-Item Env:RCA_UNATTENDED_UPGRADE -ErrorAction SilentlyContinue' }
+      else { '$env:RCA_UNATTENDED_UPGRADE = ''owner-approved-task-v1''' }
     $lines = @(
       '$ErrorActionPreference = ''Stop'''
-      '$env:RCA_UNATTENDED_UPGRADE = ''owner-approved-task-v1'''
+      $authorityLine
       # Before any switch: a rerun of the same OS Task must fail closed.
       ('$claim = [IO.File]::Open(''' + $claimQ + ''',[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)')
       'try {'
@@ -556,9 +765,9 @@ try {
       '  $claim.Write($bytes,0,$bytes.Length); $claim.Flush($true)'
       '} finally { $claim.Dispose() }'
       'try {'
-      ("  & '{0}' -SelectedTag '{1}' -SelectedReleaseSha256 '{2}'" -f $installerQ,$Version,$releaseSha)
+      $(if ($Automatic) { "  `$outcome = @($($invokeLine.Trim()))" } else { $invokeLine })
       '  if (-not $?) { throw ''Local switch failed'' }'
-      '  $result = ''local_switch_returned'''
+      $(if ($Automatic) { '  $result = if ($outcome.Count -gt 0 -and $outcome[-1] -ceq ''automatic-pre-switch-refused'') { ''pre_switch_refused'' } else { ''local_switch_returned'' }' } else { '  $result = ''local_switch_returned''' })
       '} catch { $result = ''needs_attention'' }'
       ('$payload = @{ operation_id = ''' + $operation + '''; status = $result } | ConvertTo-Json -Compress')
       ('$stream = [IO.File]::Open(''' + $receiptQ + ''',[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)')
@@ -567,9 +776,33 @@ try {
       '  $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)'
       '} finally { $stream.Dispose() }'
     )
+    $taskExecutable = [IO.Path]::Combine($PSHOME,'powershell.exe')
+    $taskArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '"'
+    if ($Automatic) {
+      # Journal retention is authoritative for an unconfirmed cutover. On
+      # known completion or a pre-switch refusal, retire only this own Task.
+      $journalQ = (Join-Path $root 'windows-native-upgrade.json').Replace("'","''")
+      $runnerQ = $runner.Replace("'","''")
+      $exeQ = $taskExecutable.Replace("'","''")
+      $argsQ = $taskArguments.Replace("'","''")
+      $lines += @(
+        ('function Test-AutomaticTaskDefinition {' + (Get-Command Test-AutomaticTaskDefinition -CommandType Function).Definition + '}')
+        ("if (`$result -in @('local_switch_returned','pre_switch_refused') -and -not (Test-Path -LiteralPath '{0}')) {{" -f $journalQ)
+        ("  `$own = @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object {{ `$_.TaskName -ieq '{0}' }})" -f $name)
+        "  if (`$own.Count -ne 1) { throw 'Automatic Task ownership unconfirmed' }"
+        '  $principal = [string]$own[0].Principal.UserId'
+        '  $observedSid = if ($principal -match ''^S-1-[0-9]+(?:-[0-9]+)+$'') { ([Security.Principal.SecurityIdentifier]::new($principal)).Value } else { ([Security.Principal.NTAccount]::new($principal)).Translate([Security.Principal.SecurityIdentifier]).Value }'
+        ("  if (-not (Test-AutomaticTaskDefinition `$own[0] '{0}' '{1}' `$observedSid '{2}' '{3}')) {{ throw 'Automatic Task changed' }}" -f $name,$userSid.Value,$exeQ,$argsQ)
+        ("  Unregister-ScheduledTask -TaskName '{0}' -TaskPath '\' -Confirm:`$false -ErrorAction Stop" -f $name)
+        ("  if (@(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object {{ `$_.TaskName -ieq '{0}' }}).Count -ne 0) {{ throw 'Automatic Task cleanup unconfirmed' }}" -f $name)
+        ("  Remove-Item -LiteralPath '{0}','{1}','{2}' -ErrorAction Stop" -f $claimQ,$receiptQ,$runnerQ)
+        '}'
+      )
+    }
     $runnerSource = $lines -join [Environment]::NewLine
     # User-private path was ownership/ACL-checked above. No temp-path secrets.
-    foreach ($filename in @($installer,$runner)) {
+    $files = if ($Automatic) { @($runner) } else { @($installer,$runner) }
+    foreach ($filename in $files) {
       $value = if ($filename -ceq $installer) { $source } else { $runnerSource }
       $handle = [IO.File]::Open($filename,[IO.FileMode]::CreateNew,
         [IO.FileAccess]::Write,[IO.FileShare]::None)
@@ -579,8 +812,7 @@ try {
       } finally { $handle.Dispose() }
     }
     # Demand-start only; zero scheduled triggers prevents blind replay.
-    $taskAction = New-ScheduledTaskAction -Execute ([IO.Path]::Combine($PSHOME,'powershell.exe')) -Argument (
-      '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '"')
+    $taskAction = New-ScheduledTaskAction -Execute $taskExecutable -Argument $taskArguments
     $taskPrincipal = New-ScheduledTaskPrincipal -UserId $me.Name -LogonType Interactive -RunLevel Limited
     $taskSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
     $definition = New-ScheduledTask -Action $taskAction -Principal $taskPrincipal -Settings $taskSettings
@@ -642,6 +874,11 @@ try {
   if ($StageOnly -and -not $upgradeExisting) {
     throw 'Staging requires an existing paired device with a strictly newer target version'
   }
+  if ($UpdateOnly) {
+    if (-not $upgradeExisting) { throw 'Update cannot install or pair a device' }
+    Assert-AttendedUpdateTarget $attendedBinding (Get-AttendedUpdateBinding)
+  }
+  if ($Automatic) { Assert-AutomaticUpdateBinding $Version }
   if (Test-Path -LiteralPath $target) {
     Assert-PrivateFolder $target
     # Reuse only the explicitly reviewed immutable native candidate.
@@ -705,13 +942,18 @@ try {
     [IO.Directory]::Move($stage, $target)
   }
   $promoted = $true
-  Write-Output "Installed: $Version"
   if ($StageOnly) {
     Write-Output ('Verified staging complete; running Agent task unchanged: ' + $Version)
     return
   }
+  Write-Output ('Verified candidate staged: ' + $Version + '; activation not yet confirmed.')
   Complete-NativeInstall $target
 } catch {
+  if ($Automatic -and $detachedUpgrade -and -not $automaticSwitchDispatched) {
+    Write-Warning 'Automatic update refused before native switch dispatch; no service cutover attempted.'
+    Write-Output 'automatic-pre-switch-refused'
+    return
+  }
   $primaryFailure = $true
   throw
 } finally {

@@ -395,7 +395,7 @@ def worker_origin(endpoint):
             and uri.path in ("", "/"))
 
 
-def approved_native_detached_worker():
+def approved_native_detached_worker(device_id=None):
     # Same admission boundary as the original one-shot Linux manager.
     if (sys.platform != "linux" or os.getuid() == 0
             or os.environ.get("RCA_UNATTENDED_UPGRADE") != "owner-approved-task-v1"
@@ -405,7 +405,8 @@ def approved_native_detached_worker():
         cgroups = pathlib.Path("/proc/self/cgroup").read_text("ascii")
     except (OSError, UnicodeError):
         return False
-    return bool(re.search(r"(?:^|/)rca-upgrade-[a-f0-9]{32}\.service(?:$|/)", cgroups, re.M))
+    match = re.search(r"(?:^|/)rca-upgrade-([a-f0-9]{32})\.service(?:$|/)", cgroups, re.M)
+    return bool(match and (device_id is None or match[1] == device_id.replace("-", "")))
 
 
 def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False, detached_upgrade=False):
@@ -436,22 +437,25 @@ def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False, det
     return "linux-" + ("x64" if cpu == "x86_64" else "arm64") + "-glibc"
 
 
-def public_forward_version(installed, target):
+def native_latest_status(installed, target):
+    """Classify a reviewed forward update without normalizing away its label."""
     stable = r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
     old = re.fullmatch(stable + r"(?:-rust-candidate\.[1-9][0-9]*)?", installed)
     new = re.fullmatch(stable, target)
     if not old or not new:
-        return False
+        return "unknown"
     old_number, new_number = tuple(map(int, old.groups())), tuple(map(int, new.groups()))
-    return new_number > old_number or (new_number == old_number and installed != target)
+    if installed == target:
+        return "up_to_date"
+    return "update_available" if new_number >= old_number else "older_latest"
 
 
-def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=None):
-    if detached_upgrade:
-        if not approved_native_detached_worker() or expected_root is None:
-            raise ValueError("Detached native upgrade requires an admitted systemd worker")
-    elif not (sys.stdin.isatty() and sys.stdout.isatty()):
-        raise ValueError("Upgrade requires local interactive confirmation")
+def public_forward_version(installed, target):
+    return native_latest_status(installed, target) == "update_available"
+
+
+def native_latest_context(endpoint, expected_root=None):
+    """Validate the same installed service for read-only checks and upgrades."""
     home = pathlib.Path.home()
     _, versions, _, unit, ids = local_inventory(home)
     root = owned_unit_root(unit, versions)
@@ -463,13 +467,63 @@ def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=Non
         raise ValueError("Latest native upgrade requires the installed native-only manager")
     if unit != native_render_unit(root, endpoint, home / STORE / "v2-identity.pem"):
         raise ValueError("Untrusted installed Worker origin")
+    key = home / STORE / "v2-identity.pem"
+    device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+    if device_id != ids["permanent"]:
+        raise ValueError("Existing device identity has changed")
+    binding = (root, device_id, hashlib.sha256(native_owned_file(key, 8192)).hexdigest())
+    return info, binding
+
+
+def confirm_owner(question):
+    """One attended confirmation; absent/closed input never authorizes an effect."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    try:
+        return input(question + " [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def native_check_latest(endpoint):
+    """Observe metadata only; never stage, lock or switch an installation."""
+    info, _ = native_latest_context(endpoint)
+    installed = info["version"]
+    try:
+        selected = resolve_latest_native(info["target"])
+    except (ValueError, OSError):
+        return {"installed_version": installed, "latest_version": None, "status": "unknown"}
+    latest = selected["tag"]
+    return {"installed_version": installed, "latest_version": latest,
+            "status": native_latest_status(installed, latest)}
+
+
+def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=None, automatic=False):
+    if automatic and not detached_upgrade:
+        raise ValueError("Automatic update requires an admitted detached worker")
+    if detached_upgrade:
+        if not approved_native_detached_worker() or expected_root is None:
+            raise ValueError("Detached native upgrade requires an admitted systemd worker")
+    elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Upgrade requires local interactive confirmation")
+    info, binding = native_latest_context(endpoint, expected_root)
+    if detached_upgrade and not approved_native_detached_worker(binding[1]):
+        raise ValueError("Detached worker belongs to a different device")
+    if automatic:
+        key = pathlib.Path.home() / STORE / "v2-identity.pem"
+        device_id = binding[1]
+        if native_auto_policy(key, device_id) != "on":
+            return 0
     selected = resolve_latest_native(info["target"])
     tag = selected["tag"]
-    if tag == info["version"]:
+    status = native_latest_status(info["version"], tag)
+    if status == "up_to_date":
         print("Already up to date with the reviewed Release (" + tag + ").")
         return 0
-    if not public_forward_version(info["version"], tag):
+    if status != "update_available":
         raise ValueError("Silent downgrade or same-version replacement refused")
+    if automatic:
+        native_require_automatic_update(key, device_id, info["version"], tag)
     if preflight(tag, None, endpoint, latest_archive=True,
                  detached_upgrade=detached_upgrade) != info["target"]:
         raise ValueError("Installed Agent target does not match host")
@@ -485,10 +539,11 @@ def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=Non
             stream.write(data)
         return install(tag, None, endpoint, asset_sha256=selected["digest"],
                        native_upgrade=True, latest_archive=archive,
-                       detached_upgrade=detached_upgrade)
+                       detached_upgrade=detached_upgrade, automatic=automatic,
+                       expected_binding=binding)
 
 
-def native_unattended_upgrade(root, *, worker=False):
+def native_unattended_upgrade(root, *, worker=False, automatic=False):
     """Explicit owner-approved remote command; never pair or resume a stopped Agent."""
     if sys.platform != "linux" or os.getuid() == 0 or (worker and not approved_native_detached_worker()):
         raise ValueError("Detached upgrade requires the reviewed owner systemd context")
@@ -506,10 +561,8 @@ def native_unattended_upgrade(root, *, worker=False):
     native_owned_file(key, 8192)
     if native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]:
         raise ValueError("Existing device identity has changed")
-    pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
-    pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
-        ".owner-stopped", ".native-upgrade-intent", ".native-upgrade-proof",
-        ".activation-pending", ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+    pending = (*native_pending_lifecycle(key, unit_file),
+               pathlib.Path(str(key) + ".owner-stopped"))
     if any(os.path.lexists(path) for path in pending):
         raise ValueError("Owner STOP or unreconciled lifecycle blocks detached upgrade")
     endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
@@ -517,22 +570,42 @@ def native_unattended_upgrade(root, *, worker=False):
                     if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
     if native_process_executable(native_main_pid()) != current / APP / ".build/rca-standard-linux-candidate":
         raise ValueError("Detached upgrade requires the running owned Agent")
+    if automatic:
+        if native_auto_policy(key, ids["permanent"]) != "on":
+            return 0
+        if native_consent(key, "verify-online") != "ready":
+            raise ValueError("Automatic update requires a current signed Agent connection")
     if worker:
-        return native_upgrade_latest(endpoint, detached_upgrade=True, expected_root=current)
-    unit_name = "rca-upgrade-" + secrets.token_hex(16)
+        return native_upgrade_latest(endpoint, detached_upgrade=True, expected_root=current,
+                                     automatic=automatic)
+    # One transient unit per identity, shared by automatic and explicit
+    # remote updates. systemd atomically refuses duplicate starts.
+    unit_name = "rca-upgrade-" + ids["permanent"].replace("-", "")
     try:
         result = subprocess.run([
             "/usr/bin/systemd-run", "--user", "--no-block", "--collect", "--quiet",
-            "--service-type=exec", "--unit=" + unit_name, "--property=RuntimeMaxSec=600",
+            "--service-type=exec", "--unit=" + unit_name, "--description=RCA detached update",
+            "--property=RuntimeMaxSec=600",
             "--property=UMask=0077", "--property=NoNewPrivileges=yes",
             "--setenv=RCA_UNATTENDED_UPGRADE=owner-approved-task-v1",
             "--", "/usr/bin/python3", "-I", "-B", str(current / APP / "scripts/manage-v2.py"),
-            "upgrade", "--unattended-worker"
+            * (["update", "--automatic-worker"] if automatic else ["upgrade", "--unattended-worker"])
         ], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
            timeout=15, check=False)
         if result.returncode:
             raise ValueError("systemd launch unconfirmed")
     except (OSError, ValueError, subprocess.SubprocessError) as error:
+        try:
+            observed = native_systemctl("show", unit_name + ".service", "-p", "LoadState",
+                                        "-p", "ActiveState", "-p", "Transient", "-p", "Description")
+            state = dict(line.split("=", 1) for line in observed.splitlines() if "=" in line)
+            if (state.get("LoadState") == "loaded" and state.get("Transient") == "yes"
+                    and state.get("Description") == "RCA detached update"
+                    and state.get("ActiveState") in ("activating", "active", "deactivating", "reloading")):
+                print(json.dumps({"status": "existing", "unit": unit_name}))
+                return 0
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
         print(json.dumps({"status": "launch_unconfirmed", "unit": unit_name}))
         raise ValueError("Detached upgrade launch unconfirmed; inspect the unit before retry") from error
     print(json.dumps({"status": "launched", "unit": unit_name,
@@ -542,7 +615,9 @@ def native_unattended_upgrade(root, *, worker=False):
 
 def install(tag, commit, endpoint, name=None, upgrade=False,
             stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False,
-            latest_archive=None, detached_upgrade=False):
+            latest_archive=None, detached_upgrade=False, automatic=False, expected_binding=None):
+    if automatic and not detached_upgrade:
+        raise ValueError("Automatic update requires an admitted detached worker")
     if detached_upgrade and (not native_upgrade or native_install or stage_only
                              or latest_archive is None or not approved_native_detached_worker()):
         raise ValueError("Detached native upgrade requires the reviewed stable worker")
@@ -562,6 +637,8 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
     # The owned service template uses a canonical origin with a trailing slash.
     if not endpoint.endswith("/"):
         endpoint += "/"
+    if native_upgrade and expected_binding is None:
+        _, expected_binding = native_latest_context(endpoint)
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
     location = program_home(os.path.expanduser("~"))
     version = location / (tag + "-" + target)
@@ -625,9 +702,13 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                     temporary = mode == "2"
             if temporary:
                 return native_temporary(pathlib.Path.home(), version, endpoint, name)
-            if input("Type NATIVE-INSTALL for owner-reviewed permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
+            if not confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
                 raise ValueError("Native installation not confirmed")
-            print(json.dumps(native_pair_or_install(pathlib.Path.home(), version, endpoint, name), indent=2))
+            result = native_pair_or_install(pathlib.Path.home(), version, endpoint, name)
+            print(json.dumps(result, indent=2))
+            if result.get("status") in ("active", "already_installed"):
+                print('Local manager: rca --help; if not on PATH, run "$HOME/.local/bin/rca" --help.',
+                      file=sys.stderr, flush=True)
             return
         if native_upgrade:
             if latest_archive is not None:
@@ -642,11 +723,16 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                     raise ValueError("Detached candidate promotion refused; use attended upgrade")
             print("Signed WSS must be proven after switch; identity and SQLite remain unchanged.")
             if detached_upgrade:
-                if not approved_native_detached_worker():
+                if not approved_native_detached_worker(expected_binding[1]):
                     raise ValueError("Detached worker admission lost")
-            elif input("Type NATIVE-UPGRADE for this owner-local service switch: ").strip() != "NATIVE-UPGRADE":
+            elif not confirm_owner("Switch the local Agent to " + tag + "?"):
                 raise ValueError("Native service switch not confirmed")
-            result = native_cutover(pathlib.Path.home(), version, endpoint)
+            if detached_upgrade:
+                result = native_cutover_when_idle(pathlib.Path.home(), version, endpoint,
+                                                 automatic=automatic, expected_binding=expected_binding)
+            else:
+                result = native_cutover(pathlib.Path.home(), version, endpoint,
+                                        expected_binding=expected_binding)
             print(json.dumps(result, indent=2))
             return
 
@@ -714,6 +800,201 @@ def native_atomic_file(path, data):
             os.unlink(temporary)
 
 
+def native_auto_policy_path(key):
+    return pathlib.Path(str(key) + ".automatic-update")
+
+
+def native_auto_policy(key, device_id):
+    """Absent, invalid or different-identity consent never authorizes updates."""
+    try:
+        value = json.loads(native_owned_file(native_auto_policy_path(key), 256))
+    except FileNotFoundError:
+        return "off"
+    except (OSError, ValueError):
+        return "unknown"
+    if (not isinstance(value, dict) or set(value) != {"device_id", "enabled"}
+            or type(value["enabled"]) is not bool or not isinstance(value["device_id"], str)):
+        return "unknown"
+    return "on" if value["device_id"] == device_id and value["enabled"] else "off"
+
+
+def native_write_auto_policy(key, device_id, enabled):
+    native_atomic_file(native_auto_policy_path(key), json.dumps({
+        "device_id": device_id, "enabled": enabled
+    }, separators=(",", ":")).encode())
+
+
+def native_upgrade_result_path(key):
+    return pathlib.Path(str(key) + ".native-upgrade-result")
+
+
+def native_upgrade_result(key, device_id):
+    try:
+        result = json.loads(native_owned_file(native_upgrade_result_path(key), 512))
+    except FileNotFoundError:
+        return None
+    if (not isinstance(result, dict) or set(result) != {
+            "device_id", "operation_id", "target_version", "installed_version", "status",
+            "updated_at_unix_ms"}
+            or not isinstance(result["device_id"], str)
+            or not isinstance(result["operation_id"], str)
+            or not re.fullmatch(r"[a-f0-9]{32}", result["operation_id"])
+            or type(result["updated_at_unix_ms"]) is not int
+            or not 0 <= result["updated_at_unix_ms"] <= 9_007_199_254_740_991
+            or not all(isinstance(result[field], str) and
+                       native_latest_status(result[field], result[field]) == "up_to_date"
+                       for field in ("target_version", "installed_version"))
+            or result["status"] not in ("success", "failed_recovered", "waiting_idle")
+            or (result["status"] == "success"
+                and result["installed_version"] != result["target_version"])
+            or (result["status"] in ("failed_recovered", "waiting_idle")
+                and result["installed_version"] == result["target_version"])):
+        raise ValueError("Unrecognized final upgrade evidence")
+    return result if result["device_id"] == device_id else None
+
+
+def native_update_job_state(device_id):
+    unit = "rca-upgrade-" + device_id.replace("-", "") + ".service"
+    try:
+        observed = subprocess.run([
+            "systemctl", "--user", "show", unit, "-p", "LoadState",
+            "-p", "ActiveState", "-p", "Transient", "-p", "Description"
+        ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+        if observed.returncode:
+            listed = subprocess.run([
+                "systemctl", "--user", "list-units", "--all", "--no-legend",
+                "--plain", "--no-pager", unit
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+            if listed.returncode or listed.stdout.strip():
+                return "unknown"
+            return "absent"
+        if not isinstance(observed.stdout, bytes):
+            return "unknown"
+        state = dict(line.split("=", 1) for line in
+                     observed.stdout.decode("ascii", errors="strict").splitlines() if "=" in line)
+        if not state.get("LoadState"):
+            listed = subprocess.run([
+                "systemctl", "--user", "list-units", "--all", "--no-legend",
+                "--plain", "--no-pager", unit
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+            if listed.returncode or not isinstance(listed.stdout, bytes):
+                return "unknown"
+            return "absent" if not listed.stdout.strip() else "unknown"
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return "unknown"
+    if state.get("LoadState") == "not-found":
+        return "absent"
+    if (state.get("LoadState") != "loaded" or state.get("Transient") != "yes"
+            or state.get("Description") != "RCA detached update"):
+        return "unknown"
+    if state.get("ActiveState") in ("activating", "active", "deactivating", "reloading"):
+        return "upgrading"
+    if state.get("ActiveState") == "failed":
+        return "needs_attention"
+    if state.get("ActiveState") == "inactive":
+        return "absent"
+    return "unknown"
+
+
+def native_pending_lifecycle(key, unit_file):
+    """One set of unresolved records for update admission and diagnosis."""
+    return (pathlib.Path(str(unit_file) + ".upgrade-backup"), *(
+        pathlib.Path(str(key) + suffix) for suffix in (
+            ".native-upgrade-intent", ".native-upgrade-proof",
+            ".activation-pending", ".re-pair-transition",
+            ".re-pair-new", ".re-pair-new.device-id")))
+
+
+def native_update_activity(home, key, device_id, policy, result, installed_version):
+    job = native_update_job_state(device_id)
+    if job in ("upgrading", "needs_attention", "unknown"):
+        return job
+    pending = native_pending_lifecycle(
+        key, pathlib.Path(home) / ".config/systemd/user" / UNIT)
+    if any(os.path.lexists(path) for path in pending):
+        return "needs_attention"
+    if policy == "unknown":
+        return "unknown"
+    if installed_version is None:
+        return "disabled" if policy == "off" else "unknown"
+    if result and result["installed_version"] == installed_version:
+        if result["status"] == "waiting_idle" and policy == "off":
+            return "disabled"
+        return {"success": "success", "failed_recovered": "recovered",
+                "waiting_idle": "waiting_idle"}.get(result["status"], "unknown")
+    return "disabled" if policy == "off" else "idle"
+
+
+def native_write_upgrade_result(key, device_id, operation, target, installed, status):
+    native_atomic_file(native_upgrade_result_path(key), json.dumps({
+        "device_id": device_id, "operation_id": operation, "target_version": target,
+        "installed_version": installed, "status": status,
+        "updated_at_unix_ms": time.time_ns() // 1_000_000,
+    }, separators=(",", ":")).encode())
+
+
+def native_require_automatic_update(key, device_id, installed, target):
+    if native_auto_policy(key, device_id) != "on":
+        raise ValueError("Automatic update policy is not enabled")
+    if (native_latest_status(installed, installed) != "up_to_date"
+            or native_latest_status(installed, target) != "update_available"):
+        raise ValueError("Automatic update requires a later stable version")
+    result = native_upgrade_result(key, device_id)
+    if result and result["status"] == "failed_recovered" and result["target_version"] == target:
+        raise ValueError("Previously recovered failed version suppressed for automatic update")
+
+
+def native_update_policy(home, action=None):
+    """Read or explicitly change continuing consent, not the device Grant."""
+    if action not in (None, "on", "off") or os.getuid() == 0:
+        raise ValueError("Invalid owner-local automatic update policy action")
+    home = pathlib.Path(home)
+    _, versions, _, unit, ids = local_inventory(home)
+    root = owned_unit_root(unit, versions)
+    if root is None or "permanent" not in ids:
+        raise ValueError("Existing managed permanent service required")
+    key = home / STORE / "v2-identity.pem"
+    if action is None:
+        return {"automatic_update": native_auto_policy(key, ids["permanent"])}
+    base = private_dir(home / STORE)
+    fd = os.open(base / "v2-installer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    with os.fdopen(fd, "r+b") as lock:
+        info = os.fstat(lock.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise ValueError("Untrusted v2 installer lock")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Another owner installer is active")
+        _, versions, unit_file, unit, ids = local_inventory(home)
+        root = owned_unit_root(unit, versions)
+        if root is None or "permanent" not in ids:
+            raise ValueError("Existing managed permanent service required")
+        validated_owned_version(root)
+        native_owned_file(key, 8192)
+        device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+        if device_id != ids["permanent"]:
+            raise ValueError("Existing device identity has changed")
+        if action == "on":
+            manifest = json.loads((root / "bundle.json").read_text("utf8"))
+            if native_latest_status(manifest["version"], manifest["version"]) != "up_to_date":
+                raise ValueError("Automatic update requires a stable native Agent")
+            pending = native_pending_lifecycle(key, unit_file)
+            if any(os.path.lexists(path) for path in pending):
+                raise ValueError("Unreconciled lifecycle; recover before enabling automatic update")
+        native_write_auto_policy(key, device_id, action == "on")
+        if action == "off":
+            try:
+                previous = native_upgrade_result(key, device_id)
+            except (OSError, ValueError):
+                previous = None
+            if previous and previous["status"] == "waiting_idle":
+                native_upgrade_result_path(key).unlink()
+                native_sync_parent(native_upgrade_result_path(key))
+        return {"automatic_update": action}
+
+
 def native_systemctl(*args):
     completed = subprocess.run(["systemctl", "--user", *args],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -743,9 +1024,9 @@ def native_verify_stopped():
 
 def native_owner_lifecycle(home, action):
     """Retain the signed owner STOP/Resume and systemd lifecycle contract."""
-    if action not in ("stop", "start") or os.getuid() == 0 or not (
+    if action not in ("stop", "start", "restart") or os.getuid() == 0 or not (
             sys.stdin.isatty() and sys.stdout.isatty()):
-        raise ValueError("Owner-local Stop/Start requires a real terminal")
+        raise ValueError("Owner-local lifecycle requires a real terminal")
     home = pathlib.Path(home)
     _, _, _, unit, ids = local_inventory(home)
     if not unit or "permanent" not in ids:
@@ -775,16 +1056,51 @@ def native_owner_lifecycle(home, action):
             raise ValueError("Existing device identity has changed")
         endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=") for line in unit.splitlines()
                         if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
-        pending = [pathlib.Path(str(unit_file) + ".upgrade-backup")]
-        pending.extend(pathlib.Path(str(key) + suffix) for suffix in (
-            ".native-upgrade-intent", ".native-upgrade-proof", ".activation-pending",
-            ".re-pair-transition", ".re-pair-new", ".re-pair-new.device-id"))
+        pending = native_pending_lifecycle(key, unit_file)
         if any(os.path.lexists(path) for path in pending):
-            raise ValueError("Unreconciled identity or activation; recover before Stop/Start")
+            raise ValueError("Unreconciled identity or activation; recover before lifecycle change")
         marker = pathlib.Path(str(key) + ".owner-stopped")
         saved = native_owned_file(marker, 32) if os.path.lexists(marker) else None
         if saved is not None and saved != b"stopped\n":
             raise ValueError("Unexpected owner STOP intent")
+        if action == "restart":
+            if saved is not None:
+                raise ValueError("Owner STOP blocks normal restart; use start to explicitly resume")
+            # Restart keeps the same service, key, version and authorization.
+            # Use the existing lock and idle admission, never STOP + Resume.
+            exe = root / APP / ".build/rca-standard-linux-candidate"
+            pid = native_main_pid()
+            original_key = native_owned_file(key, 8192)
+            if native_process_executable(pid) != exe or native_consent(key, "verify-online") != "ready":
+                raise ValueError("Current owned signed Agent not established")
+            if native_consent(key, "freeze") != "ready":
+                raise ValueError("Agent busy or freeze ownership uncertain")
+            try:
+                if (native_consent(key, "verify-frozen") != "ready" or native_main_pid() != pid
+                        or native_process_executable(pid) != exe
+                        or unit_file.read_text("utf8") != unit or os.path.lexists(marker)
+                        or native_owned_file(key, 8192) != original_key
+                        or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]):
+                    raise ValueError("Restart target changed during freeze")
+                native_systemctl("restart", UNIT)
+                next_pid = native_wait_started(exe)
+                if next_pid == pid:
+                    raise ValueError("Replacement process not established")
+                if (native_owned_file(key, 8192) != original_key
+                        or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]):
+                    raise ValueError("Restart identity changed")
+                if not native_wait_online(key, next_pid, exe):
+                    raise ValueError("Local restart observed; current signed WSS unconfirmed")
+                return {"local": "restarted", "signed_wss": "connected_observed"}
+            finally:
+                # Release only the same process that granted this freeze.
+                # Never release an unknown freeze or a replacement process.
+                try:
+                    same = native_main_pid() == pid and native_process_executable(pid) == exe
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    same = False
+                if same and native_consent(key, "release") != "released":
+                    raise ValueError("Restart freeze release unconfirmed")
         if action == "stop":
             if saved is None:
                 native_atomic_file(marker, b"stopped\n")
@@ -867,6 +1183,12 @@ def native_consent(key, action):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(3)
         client.connect(str(endpoint))
+        if action == "verify-online":
+            # Bind signed-transport evidence to the owned systemd process.
+            peer_pid, peer_uid, _ = struct.unpack("3i", client.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
+            if peer_uid != os.getuid() or peer_pid != native_main_pid():
+                raise ValueError("Online evidence is not from the active Agent")
         client.sendall((action + "\n").encode("ascii"))
         answer = bytearray()
         while len(answer) <= 32 and b"\n" not in answer:
@@ -922,6 +1244,21 @@ def native_restore_launcher(home, old_root, new_root):
             stage.unlink()
 
 
+def native_wait_online(key, pid, executable, seconds=60):
+    """A restored owned process must report a currently authenticated transport."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            if (native_main_pid() != pid or native_process_executable(pid) != executable):
+                return False
+            if native_consent(key, "verify-online") == "ready":
+                return native_main_pid() == pid and native_process_executable(pid) == executable
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+        time.sleep(0.25)
+    return False
+
+
 def native_wait_proof(path, operation, device_id, version, pid, seconds=90):
     import time
     expires = time.monotonic() + seconds
@@ -947,8 +1284,8 @@ def native_wait_proof(path, operation, device_id, version, pid, seconds=90):
 
 
 def native_receipts_compatible(home):
-    # Match the existing Node installer read-only header contract. Do not
-    # acquire a second SQLite writer while the old Agent remains online.
+    # Preserve the existing receipt header contract. Do not acquire a second
+    # SQLite writer while the current Agent remains online.
     directory = home / ".local/state/mcp-workers/remote-control-agent"
     if not directory.exists():
         if directory.is_symlink():
@@ -1111,10 +1448,13 @@ def native_temporary(home, root, endpoint, name=None, process_check=None):
     if not (process_check or no_running_programs)(versions):
         raise ValueError("Running or uncertain Agent owns the local runtime; no temporary pairing")
     native_receipts_compatible(home)
-    if input("Type TEMPORARY for an owner-reviewed 24h foreground grant: ").strip() != "TEMPORARY":
+    if not confirm_owner("Start a 24h foreground Agent at " + endpoint + " (no service installed)?"):
         raise ValueError("Temporary pairing not confirmed")
     print("Foreground only; no service will be installed. Closing the terminal disconnects, not revokes.")
     print("Reviewed local manager: " + str(root / APP / "scripts/rca.sh"), flush=True)
+    print("Temporary mode does not install a new short command on PATH. "
+          "Use the reviewed manager path above with --help; "
+          "without a permanent service, pair requires an explicit approved HTTPS origin.", flush=True)
     # Rust holds the existing installer lock from identity recovery through
     # the end of foreground execution; no additional process manager.
     native_pair_local(root, endpoint, name, temporary=True)
@@ -1223,6 +1563,18 @@ def native_first_install(home, root, endpoint, name=None,
             raise ValueError("Existing service without confirmed launcher; manual review required")
         return {"status": "already_installed", "signed_wss": "unconfirmed",
                 "local_service": "active" if pid else "inactive"}
+    # Only a genuinely new identity may receive the disclosed default.
+    # An interrupted activation, re-pair or existing install never migrates
+    # missing consent implicitly.
+    new_stable_policy = (current is None and record is None
+                         and not os.path.lexists(key)
+                         and "permanent" not in state[3])
+    manifest = json.loads((root / "bundle.json").read_text("utf8"))
+    new_stable_policy = (new_stable_policy and
+                         native_latest_status(manifest["version"], manifest["version"]) == "up_to_date")
+    if new_stable_policy:
+        print("Automatic updates for this new permanent device default to on after signed activation; "
+              "disable with rca update --auto off.", flush=True)
     if record is None:
         if not process_check(versions):
             raise ValueError("Running or uncertain Agent blocks first pairing")
@@ -1300,6 +1652,8 @@ def native_first_install(home, root, endpoint, name=None,
             del record["initial_launcher"]
             native_atomic_file(intent, json.dumps(record, separators=(",", ":")).encode())
         native_launcher(home, root)
+        if new_stable_policy:
+            native_write_auto_policy(key, device_id, True)
         for item in (proof, intent):
             item.unlink()
             native_sync_parent(item)
@@ -1357,7 +1711,26 @@ def native_recover_initial(home, versions, record, process_check):
             "signed_wss": "unconfirmed", "cloud_revocation": "NOT_PERFORMED"}
 
 
-def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
+class NativeUpgradeBusy(ValueError):
+    """Confirmed no-effect admission refusal, safe for a bounded later check."""
+
+
+def native_cutover_when_idle(home, new_root, endpoint, verify=native_wait_proof, *, automatic=False,
+                             expected_binding=None):
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            return native_cutover(home, new_root, endpoint, verify, automatic=automatic,
+                                  expected_binding=expected_binding, idle_deadline=deadline)
+        except NativeUpgradeBusy:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"status": "waiting_idle"}
+            time.sleep(min(2, remaining))
+
+
+def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automatic=False,
+                   expected_binding=None, idle_deadline=None):
     """Accept only a pinned staged Rust bundle; preserve old identity and SQLite."""
     home = pathlib.Path(home)
     _, versions, unit_file, current, ids = local_inventory(home)
@@ -1377,6 +1750,8 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
     device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
     if ids["permanent"] != device_id:
         raise ValueError("Existing device identity has changed")
+    if expected_binding is not None and expected_binding != (old_root, device_id, key_before):
+        raise ValueError("Installed Agent or identity changed during update preparation")
     native_receipts_compatible(home)
     if current != native_render_unit(old_root, endpoint, key):
         raise ValueError("Unknown or modified installed systemd unit")
@@ -1392,9 +1767,9 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
     backup = pathlib.Path(str(unit_file) + ".upgrade-backup")
     intent = pathlib.Path(str(key) + ".native-upgrade-intent")
     proof = pathlib.Path(str(key) + ".native-upgrade-proof")
-    if any(os.path.lexists(item) for item in (backup, intent, proof)):
+    if any(os.path.lexists(item) for item in native_pending_lifecycle(key, unit_file)):
         raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
-    # The Node installer owns this existing lock. Never race its pairing/repair.
+    # Pairing, repair and lifecycle changes share this installer lock.
     lock_path = home / STORE / "v2-installer.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+b") as lock:
@@ -1415,13 +1790,19 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                 or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
             raise ValueError("Installed Agent or identity changed before upgrade lock")
         # Recheck pending transaction after acquiring the shared installer lock.
-        if any(os.path.lexists(item) for item in (backup, intent, proof)):
+        if any(os.path.lexists(item) for item in native_pending_lifecycle(key, unit_file)):
             raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
         pid = native_main_pid()
         # The service entrypoint must be the version whose socket we freeze.
         expected_binary = old_root / APP / ".build/rca-standard-linux-candidate"
         if native_process_executable(pid) != expected_binary:
             raise ValueError("Service process differs from frozen Agent")
+        installed_version = json.loads((old_root / "bundle.json").read_text("utf8"))["version"]
+        target_version = manifest["version"]
+        if automatic:
+            native_require_automatic_update(key, device_id, installed_version, target_version)
+            if native_consent(key, "verify-online") != "ready":
+                raise ValueError("Automatic update requires a current signed Agent connection")
         switched = False
         committed = False
         operation = secrets.token_hex(16)
@@ -1432,15 +1813,22 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             "target_version": new_root.name
         }, separators=(",", ":")).encode())
         stage = "freeze"
+        freeze_answer = None
         try:
-            if native_consent(key, "freeze") != "ready":
+            freeze_answer = native_consent(key, "freeze")
+            if freeze_answer != "ready":
                 raise ValueError("Agent has running or unknown operations; upgrade refused")
             stage = "verify-frozen"
             if (native_consent(key, "verify-frozen") != "ready"
                     or native_main_pid() != pid
                     or unit_file.read_text("utf8") != current
-                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before):
+                    or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before
+                    or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id):
                 raise ValueError("Agent changed during freeze")
+            if automatic:
+                native_require_automatic_update(key, device_id, installed_version, target_version)
+                if native_consent(key, "verify-online") != "ready":
+                    raise ValueError("Signed Agent connection lost before automatic switch")
             stage = "publish-service"
             native_atomic_file(backup, current.encode())
             native_atomic_file(unit_file, next_unit.encode())
@@ -1468,6 +1856,9 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
             stage = "publish-launcher"
             native_launcher(home, old_root, new_root)
             committed = True
+            if automatic:
+                native_write_upgrade_result(key, device_id, operation, target_version,
+                                            target_version, "success")
             stage = "retire-evidence"
             # Keep the original unit until the final cleanup step; only
             # an already reconciled service/launcher may leave backup alone.
@@ -1497,29 +1888,52 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof):
                         raise ValueError("Rollback process, identity or unit mismatch")
                     rollback_stage = "restore-launcher"
                     native_restore_launcher(home, old_root, new_root)
+                    if automatic:
+                        rollback_stage = "verify-restored-signed-connection"
+                        if (not native_wait_online(key, restored_pid, expected_binary)
+                                or native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != device_id
+                                or hashlib.sha256(native_owned_file(key, 8192)).hexdigest() != key_before
+                                or unit_file.read_text("utf8") != current):
+                            raise ValueError("Restored signed Agent connection unconfirmed")
+                        rollback_stage = "record-recovered-target"
+                        native_write_upgrade_result(key, device_id, operation, target_version,
+                                                    installed_version, "failed_recovered")
                 except Exception:
                     # Only fixed stage names are safe to disclose; no raw exception.
                     raise ValueError("Native upgrade failed; rollback uncertain; backup retained "
                                      "(upgrade=" + stage + ", rollback=" + rollback_stage + ")") from None
-            # No switch: release any pending freeze before retiring its record.
+            # Only an affirmative reply to this request establishes that
+            # this transaction owns Freeze. A subsequent state observation
+            # cannot attribute ownership or rule out a queued request.
             if not switched and not backup.exists():
-                try:
-                    if native_consent(key, "release") != "released":
-                        raise ValueError("Freeze release unconfirmed")
-                except Exception:
-                    raise ValueError("Native upgrade refused; freeze release uncertain; intent retained") from error
+                if freeze_answer not in ("ready", "busy"):
+                    raise ValueError(
+                        "Native upgrade refused; freeze ownership unknown; intent retained") from error
+                if freeze_answer == "ready":
+                    try:
+                        if native_consent(key, "release") != "released":
+                            raise ValueError("Freeze release unconfirmed")
+                    except Exception:
+                        raise ValueError(
+                            "Native upgrade refused; freeze release uncertain; intent retained") from error
             # No service switch or a verified old unit: evidence can be retired.
             for item in (proof, intent, backup):
                 if os.path.lexists(item):
                     item.unlink()
                     native_sync_parent(item)
+            if freeze_answer == "busy":
+                if automatic and idle_deadline is not None and time.monotonic() >= idle_deadline:
+                    # Keep the last recovered failure authoritative until a
+                    # different version actually succeeds; a Busy observation
+                    # must not erase failed-target suppression.
+                    previous = native_upgrade_result(key, device_id)
+                    if not previous or previous["status"] != "failed_recovered":
+                        native_write_upgrade_result(key, device_id, operation, target_version,
+                                                    installed_version, "waiting_idle")
+                    return {"status": "waiting_idle", "installed_version": installed_version,
+                            "target_version": target_version}
+                raise NativeUpgradeBusy("Agent is busy; no service switch was admitted") from error
             raise ValueError("Native upgrade refused or safely rolled back (stage=" + stage + ")") from error
-        finally:
-            if not switched:
-                try:
-                    native_consent(key, "release")
-                except Exception:
-                    pass
 
 def native_recover(home, process_check=None):
     """Attended recovery of one interrupted, owner-frozen Node-free switch."""
@@ -1762,8 +2176,36 @@ def local_status(home):
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 timeout=5, check=False)
         service = "active" if result.returncode == 0 else "inactive_or_unconfirmed"
+    key = pathlib.Path(home) / STORE / "v2-identity.pem"
+    policy = native_auto_policy(key, ids["permanent"]) if "permanent" in ids else "off"
+    update_result = None
+    activity = "disabled"
+    installed_version = None
+    if "permanent" in ids:
+        try:
+            result = native_upgrade_result(key, ids["permanent"])
+            root = owned_unit_root(unit, versions) if unit else None
+            installed_version = None
+            if root is not None:
+                validated_owned_version(root)
+                installed_version = json.loads((root / "bundle.json").read_text("utf8"))["version"]
+            if result is not None:
+                update_result = {field: result[field] for field in (
+                    "status", "target_version", "installed_version", "updated_at_unix_ms")}
+                update_result["current"] = installed_version == result["installed_version"]
+            activity = native_update_activity(
+                home, key, ids["permanent"], policy, result, installed_version)
+        except (OSError, ValueError):
+            update_result = {"status": "unknown"}
+            activity = "unknown"
+    local_service = {"active": "running_unverified",
+                     "inactive_or_unconfirmed": "unconfirmed",
+                     "not_installed": "not_installed"}[service]
     return {"installed_versions": sorted(x.name for x in versions),
+            "installed_version": installed_version, "local_service": local_service,
             "local_permanent_service": service, "device_ids": ids,
+            "automatic_update": policy, "automatic_update_activity": activity,
+            "automatic_update_result": update_result,
             "cloud_authorization": "unconfirmed", "signed_wss": "unconfirmed",
             "read_only_access": "unconfirmed", "cloud_revoke": "not_performed",
             "temporary_expires_at": "server_authoritative_unconfirmed",
@@ -1875,8 +2317,8 @@ def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
             if any(arg.startswith(prefix) for arg in argv for prefix in prefixes):
                 return False
             # On systemd Linux, the exact per-user session managers may have
-            # unreadable /proc/PID/exe and cwd. They cannot run our bundled Node
-            # as their executable. Do not mistake their EACCES for an Agent.
+            # unreadable /proc/PID/exe and cwd. The exact manager identities below
+            # are not Agent executables. Do not mistake their EACCES for an Agent.
             proc_name = re.search(r"^Name:\s*([^\n]+)", status, re.MULTILINE)
             if proc_name and argv and (proc_name.group(1).strip(), argv[0]) in (
                     ("systemd", b"/usr/lib/systemd/systemd"),
@@ -1942,7 +2384,7 @@ def local_uninstall(home, confirm, systemctl=None, process_check=no_running_prog
 
 def _local_uninstall_locked(home, systemctl, process_check):
     programs, versions, unit_file, unit, ids = local_inventory(home)
-    # A cutover interrupted after freezing the Node process can still need
+    # A cutover interrupted after freezing the current Agent can still need
     # both program versions for recovery. Never erase either one while its
     # durable intent, signed proof or original service backup is present.
     key = pathlib.Path(home) / STORE / "v2-identity.pem"
@@ -2005,6 +2447,8 @@ def local_identity_purge_plan(home):
             raise ValueError("Unresolved v2 re-pair/archive state; purge blocked")
     files = []
     for relative in ("v2-identity.pem", "v2-identity.pem.device-id",
+                     "v2-identity.pem.automatic-update",
+                     "v2-identity.pem.native-upgrade-result",
                      "temporary/v2-identity.pem",
                      "temporary/v2-identity.pem.device-id"):
         file = base / relative
@@ -2114,7 +2558,7 @@ def main():
             if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
                 raise ValueError("Native recovery requires an owner interactive terminal")
             print("Recover the previous local Agent service, or remove an interrupted first activation; identity retained.")
-            if input("Type RECOVER-NATIVE to confirm: ").strip() != "RECOVER-NATIVE":
+            if not confirm_owner("Recover the local Agent service?"):
                 raise ValueError("Native recovery not confirmed")
             print(json.dumps(native_recover(pathlib.Path.home()), indent=2))
         elif args.uninstall:
@@ -2124,7 +2568,7 @@ def main():
             print("Owned local v2 versions:", ", ".join(v.name for v in versions))
             print("Device IDs (cloud grants will NOT be revoked):", ids)
             print("Private keys and SQLite receipts will be retained; use MCP revoke_device separately.")
-            if input("Type UNINSTALL-V2 to confirm local removal: ").strip() != "UNINSTALL-V2":
+            if not confirm_owner("Remove the listed local Agent installations?"):
                 raise ValueError("Local uninstall not confirmed")
             print(json.dumps(local_uninstall(os.path.expanduser("~"), True, systemctl_user), indent=2))
         elif args.purge_local_identity:
@@ -2156,8 +2600,7 @@ def main():
                       "call revoke_device separately BEFORE discarding the local key.")
                 print("SQLite receipts and historical/local operation evidence are",
                       "shared and WILL NOT be deleted. Already executed effects persist.")
-                if input("Type PURGE-V2-IDENTITY to irreversibly remove only the listed keys/IDs: "
-                         ).strip() != "PURGE-V2-IDENTITY":
+                if not confirm_owner("Irreversibly remove only the listed keys/IDs?"):
                     raise ValueError("Local identity purge not confirmed")
                 print(json.dumps(local_identity_purge(home, True), indent=2))
         elif args.latest_archive is not None:
@@ -2171,6 +2614,9 @@ def main():
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
                     args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install, args.temporary)
+    except (EOFError, KeyboardInterrupt):
+        print("Local operation cancelled; check status for any already completed effects.", file=sys.stderr)
+        return 1
     except ValueError as exc:
         # Only messages from explicitly authored validation branches.
         print("Standalone v2 install refused: " + str(exc), file=sys.stderr)

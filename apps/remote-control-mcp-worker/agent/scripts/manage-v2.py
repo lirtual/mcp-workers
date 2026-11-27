@@ -10,6 +10,7 @@ import sys
 
 APP = Path("apps/remote-control-agent")
 UNIT = "remote-control-agent.service"
+USAGE = "Usage: rca [status|doctor|pair|logs|stop|start|restart|update|recover|uninstall|secure-input REQUEST_ID|--version|--help]"
 VERSION = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 ASSET_SHA = re.compile(r"[0-9a-f]{64}\Z")
@@ -58,15 +59,45 @@ def installed_endpoint(bootstrap):
     return lines[0]
 
 
-def status(bootstrap, info):
+def status_facts(bootstrap, info):
     state = bootstrap.local_status(str(Path.home()))
     state["cli_version"] = info["version"]
-    print(json.dumps(state, ensure_ascii=False, indent=2))
-    print("Local service state is NOT proof of signed WSS, cloud approval or Shell rights.")
+    state["platform"] = "linux"
+    state["arch"] = {"linux-x64-glibc": "x64", "linux-arm64-glibc": "arm64"}.get(info["target"])
+    state["device_id"] = state["device_ids"].get("permanent")
+    state["identity_present"] = state["device_id"] is not None
+    return state
+
+
+def status(bootstrap, info, structured=False):
+    state = status_facts(bootstrap, info)
+    print(json.dumps(state, ensure_ascii=False, indent=None if structured else 2))
+    if not structured:
+        print("Local service state is NOT proof of signed WSS, cloud approval or Shell rights.")
+
+
+def doctor(bootstrap, info, structured=False):
+    state = status_facts(bootstrap, info)
+    findings = []
+    service = state["local_permanent_service"]
+    if service == "not_installed":
+        findings.append("permanent_service_not_installed")
+    elif service != "active":
+        findings.append("local_service_unconfirmed")
+    if state["cloud_authorization"] == "unconfirmed":
+        findings.append("cloud_authorization_unconfirmed")
+    if state["signed_wss"] == "unconfirmed":
+        findings.append("signed_wss_unconfirmed")
+    if state["automatic_update_activity"] in ("unknown", "needs_attention"):
+        findings.append("update_state_needs_review")
+    print(json.dumps({"status": state, "findings": findings},
+                     ensure_ascii=False, indent=None if structured else 2))
+    if not structured:
+        print("Read-only local diagnosis. No cloud or Latest check was performed.")
 
 
 def logs(bootstrap):
-    _, _, _, unit, _ = bootstrap.local_inventory(str(Path.home()))
+    _, _, _, unit, ids = bootstrap.local_inventory(str(Path.home()))
     if not unit:
         print("No installer-owned v2 user service. Temporary mode has no journal service.")
         return
@@ -75,6 +106,11 @@ def logs(bootstrap):
     print("Showing local systemd logs only. Review/redact before sharing any excerpts.")
     subprocess.run(["journalctl", "--user", "--unit", UNIT, "--no-pager",
                     "--lines", "40", "--output", "short-iso"], check=False)
+    if "permanent" in ids:
+        update_unit = "rca-upgrade-" + ids["permanent"].replace("-", "") + ".service"
+        print("Showing the existing detached update worker journal, if present.")
+        subprocess.run(["journalctl", "--user", "--unit", update_unit, "--no-pager",
+                        "--lines", "40", "--output", "short-iso"], check=False)
 
 
 def pair(root, bootstrap, arguments):
@@ -93,10 +129,13 @@ def pair(root, bootstrap, arguments):
             raise ValueError("Existing device endpoint cannot be silently changed.")
         endpoint = arguments[0]
     if not endpoint:
-        raise ValueError("Supply an approved HTTPS origin: pair https://example.org/")
+        mode = " --temporary" if temporary else ""
+        print("No installed Worker origin. Usage: rca pair" + mode +
+              " https://approved-worker-origin/", file=sys.stderr)
+        return 1
     if temporary:
         return bootstrap.native_temporary(Path.home(), root, endpoint)
-    if input("Type NATIVE-INSTALL for permanent pairing and activation: ").strip() != "NATIVE-INSTALL":
+    if not bootstrap.confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
         raise ValueError("Native installation not confirmed")
     print(json.dumps(bootstrap.native_pair_or_install(Path.home(), root, endpoint), indent=2))
     return 0
@@ -136,19 +175,29 @@ def upgrade(bootstrap, arguments):
 
 def dispatch(command, args, root, info, bootstrap):
     if command in ("--help", "-h", "help"):
-        print("Usage: rca [status|pair|logs|stop|start|upgrade|recover|uninstall]")
-        print("Permanent pairing / re-pair and pair --temporary are supported.")
+        if args:
+            raise ValueError("help takes no arguments")
+        print(USAGE)
+        print("Pairing / repair uses the browser authorization link shown by the Agent.")
+        print("Usage: rca pair [--temporary] [https://approved-worker-origin/].")
+        print("Without an installed permanent service, provide the approved HTTPS origin explicitly.")
         print("Without arguments: open the interactive local Agent manager.")
-        print("Upgrade from the reviewed stable Latest: rca upgrade.")
+        print("Check the reviewed stable Latest without installing: rca update --check.")
+        print("Automatic update consent: rca update --auto [on|off].")
+        print("status [--json] and doctor [--json] inspect local state without changing it.")
+        print("Status reports local update activity/result; Latest refresh uses update --check.")
+        print("Update from the reviewed stable Latest: rca update (upgrade is an alias).")
         print("Explicit reviewed upgrade: upgrade <immutable-tag> <reviewed-40-char-commit> <reviewed-64-char-asset-sha256>.")
         return 0
     if command in ("--version", "version"):
+        if args:
+            raise ValueError("version takes no arguments")
         print(info["version"])
         return 0
-    if command == "status":
-        if args:
-            raise ValueError("status takes no arguments")
-        status(bootstrap, info)
+    if command in ("status", "doctor"):
+        if args not in ([], ["--json"]):
+            raise ValueError(command + " accepts only --json")
+        (status if command == "status" else doctor)(bootstrap, info, structured=bool(args))
         return 0
     if command == "logs":
         if args:
@@ -157,12 +206,33 @@ def dispatch(command, args, root, info, bootstrap):
         return 0
     if command == "pair":
         return pair(root, bootstrap, args)
-    if command in ("stop", "start"):
+    if command == "secure-input":
+        if len(args) != 1:
+            raise ValueError("Usage: rca secure-input REQUEST_ID")
+        # The reviewed Rust entry owns TTY, identity and request validation.
+        # Replace this process so the original terminal and signals reach Rust.
+        native = root / APP / ".build/rca-standard-linux-candidate"
+        os.execv(str(native), [str(native), "--cli", command, args[0]])
+    if command in ("stop", "start", "restart"):
         if args:
-            raise ValueError("Stop/Start takes no arguments")
+            raise ValueError("Lifecycle command takes no arguments")
         print(json.dumps(bootstrap.native_owner_lifecycle(Path.home(), command)))
         return 0
-    if command == "upgrade":
+    if command in ("update", "upgrade"):
+        if args and args[0] == "--auto":
+            if len(args) > 2 or (len(args) == 2 and args[1] not in ("on", "off")):
+                raise ValueError("Usage: rca update --auto [on|off]")
+            print(json.dumps(bootstrap.native_update_policy(Path.home(), args[1] if len(args) == 2 else None)))
+            return 0
+        if args == ["--check"]:
+            endpoint = installed_endpoint(bootstrap)
+            if not endpoint:
+                raise ValueError("No installer-owned permanent service available to check.")
+            result = bootstrap.native_check_latest(endpoint)
+            print(json.dumps(result, ensure_ascii=False))
+            return 1 if result["status"] == "unknown" else 0
+        if args in (["--automatic"], ["--automatic-worker"]):
+            return bootstrap.native_unattended_upgrade(root, worker=args == ["--automatic-worker"], automatic=True)
         if args in (["--unattended"], ["--unattended-worker"]):
             return bootstrap.native_unattended_upgrade(root, worker=args == ["--unattended-worker"])
         return upgrade(bootstrap, args)
@@ -174,7 +244,7 @@ def dispatch(command, args, root, info, bootstrap):
         if args:
             raise ValueError("uninstall takes no arguments")
         return bootstrap_action(bootstrap, ["--uninstall"])
-    raise ValueError("Usage: rca [status|logs|pair|upgrade|uninstall]")
+    raise ValueError(USAGE)
 
 
 def main():
@@ -186,16 +256,20 @@ def main():
     while True:
         print("\nRemote Control Agent " + info["version"])
         print("1. Status   2. " + "Pair / repair" + "   3. Logs")
-        print("4. Upgrade  5. Uninstall       6. Exit")
-        print("7. Recover interrupted installation/upgrade")
-        choice = input("Choose an option: ").strip()
+        print("4. Update   5. Uninstall       6. Exit")
+        print("7. Recover interrupted installation/upgrade   8. Doctor")
+        print("9. Start   10. Stop   11. Restart")
+        try:
+            choice = input("Choose an option: ").strip()
+        except EOFError:
+            return 0
         if choice in ("6", "q", "Q"):
             return 0
-        mapping = {"1": "status", "2": "pair", "3": "logs", "4": "upgrade",
-                   "5": "uninstall"}
-        mapping["7"] = "recover"
+        mapping = {"1": "status", "2": "pair", "3": "logs", "4": "update",
+                   "5": "uninstall", "7": "recover", "8": "doctor",
+                   "9": "start", "10": "stop", "11": "restart"}
         if choice not in mapping:
-            print("Choose 1–7.")
+            print("Choose 1–11.")
             continue
         action = mapping[choice]
         if action == "pair" and not installed_endpoint(bootstrap):
@@ -215,6 +289,9 @@ def main():
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except (EOFError, KeyboardInterrupt):
+        print("Local operation cancelled; check status for any already completed effects.", file=sys.stderr)
+        sys.exit(1)
     except (ValueError, OSError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
         print("Remote Control Agent manager refused unsafe or unavailable local state.", file=sys.stderr)
         sys.exit(1)

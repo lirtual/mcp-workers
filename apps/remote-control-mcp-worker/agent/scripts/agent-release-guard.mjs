@@ -33,13 +33,16 @@ function bundleMatches(spec, bundle, input) {
     || bundle.artifact_schema !== 1
     || bundle.device_protocol !== 2
     || !absent(bundle.upgrade_protocol)) return false;
-  // Phased #914 delivery retains one complete same-source five-target Release.
-  // Darwin remains the supported Node runtime until native migration acceptance.
+  // One complete same-source five-target Release; every platform is Rust-only.
   if (spec.kind === 'darwin') {
     return bundle.receipt_schema === 1
-      && bundle.agent_runtime === 'node-v2'
-      && absent(bundle.artifact_profile)
-      && absent(bundle.runtime_profile)
+      && bundle.agent_runtime === 'rust-standard-darwin-v1'
+      && bundle.artifact_profile === 'rust-native-only-v1'
+      && bundle.runtime_profile === 'standard-darwin-rust-runtime-v1'
+      && absent(bundle.node)
+      && absent(bundle.browser_runtime)
+      && Array.isArray(bundle.modules)
+      && bundle.modules.length === 0
       && absent(bundle.session_runtime)
       && bundle.candidate_profile === 'darwin-permanent-local-v1'
       && bundle.native_supervisor === 'darwin-owned-group-v1'
@@ -91,9 +94,7 @@ export function reviewAgentPublication(input) {
     || run.conclusion !== 'success') {
     fail('unreviewed native candidate');
   }
-  if (run.head_sha !== input.sourceSha
-    || input.macosScriptSha256 !== input.sourceMacosScriptSha256
-    || !DIGEST.test(input.macosScriptSha256 ?? '')) {
+  if (run.head_sha !== input.sourceSha) {
     fail('candidate source drifted');
   }
 

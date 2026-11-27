@@ -1,7 +1,17 @@
 //! Unshipped Standard Linux RCA entrypoint. No installed Agent path uses it.
 //! Shares the existing owner-reviewed permanent and temporary v2 identities.
 #[cfg(target_os = "linux")]
+#[path = "support/unix_pairing.rs"]
+mod unix_pairing;
+
+#[cfg(target_os = "linux")]
 mod linux {
+    use super::unix_pairing::{
+        exists_owned_path, pair_identity_at, pair_or_repair, read_private, sidecar,
+    };
+    #[cfg(test)]
+    use super::unix_pairing::{repair_identity, write_new};
+    use rca_native_agent::automatic_update::{automatic_jitter, AutomaticCheckSchedule};
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::linux_managed::LinuxManagedSessions;
     use rca_native_agent::native_file::{
@@ -15,17 +25,11 @@ mod linux {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
     extern "C" fn request_stop(_: libc::c_int) {
         SIGNAL_STOP.store(true, Ordering::Release);
-    }
-
-    fn sidecar(key: &Path, suffix: &str) -> PathBuf {
-        let mut name = key.as_os_str().to_os_string();
-        name.push(OsStr::new(suffix));
-        PathBuf::from(name)
     }
 
     fn private_regular(path: &Path, max_size: u64) -> Result<(), ()> {
@@ -53,6 +57,47 @@ mod linux {
             return path.is_absolute().then_some(path).ok_or(());
         }
         Ok(home.join(".local/share/mcp-workers/remote-control/v2-identity.pem"))
+    }
+
+    fn installed_endpoint(home: &Path) -> Result<String, ()> {
+        let directory = home.join(".config/systemd/user");
+        if fs::canonicalize(home).ok().as_deref() != Some(home)
+            || fs::canonicalize(&directory).ok().as_deref() != Some(directory.as_path())
+        {
+            return Err(());
+        }
+        let unit = directory.join("remote-control-agent.service");
+        private_regular(&unit, 16 * 1024)?;
+        if fs::symlink_metadata(&unit).map_err(|_| ())?.nlink() != 1 {
+            return Err(());
+        }
+        let contents = fs::read_to_string(unit).map_err(|_| ())?;
+        if !contents
+            .lines()
+            .any(|line| line == "# Managed by Remote Control Agent installer.")
+        {
+            return Err(());
+        }
+        let endpoints: Vec<&str> = contents
+            .lines()
+            .filter_map(|line| line.strip_prefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
+            .collect();
+        if endpoints.len() != 1 {
+            return Err(());
+        }
+        let endpoint = endpoints[0];
+        let parsed = url::Url::parse(endpoint).map_err(|_| ())?;
+        if parsed.scheme() != "https"
+            || parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.path() != "/"
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(());
+        }
+        Ok(endpoint.to_owned())
     }
 
     fn owner_stopped(key: &Path) -> Result<bool, ()> {
@@ -410,6 +455,34 @@ mod linux {
         Ok(())
     }
 
+    fn secure_input_local(request_id: &str) -> Result<(), ()> {
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let home = home()?;
+        let key = key_path(&home)?;
+        if fs::canonicalize(&home).ok().as_deref() != Some(home.as_path())
+            || fs::canonicalize(&key).ok().as_deref() != Some(key.as_path())
+        {
+            return Err(());
+        }
+        private_regular(&key, 8192)?;
+        let id_path = sidecar(&key, ".device-id");
+        private_regular(&id_path, 128)?;
+        let pem = fs::read_to_string(&key).map_err(|_| ())?;
+        let id = fs::read_to_string(id_path).map_err(|_| ())?;
+        let id = id.trim();
+        if !valid_device_id(id) || owner_stopped(&key)? {
+            return Err(());
+        }
+        let endpoint = installed_endpoint(&home)?;
+        rca_native_agent::secure_input_cli::run_secure_input_owner_flow(
+            &endpoint, &pem, id, request_id,
+        )
+        .map_err(|_| ())
+    }
+
     fn owner_intent_local(endpoint: &str, action: &str, fd: i32) -> Result<(), ()> {
         use rca_native_agent::device_pairing::PairingClient;
         use std::io::IsTerminal;
@@ -544,307 +617,16 @@ mod linux {
         Ok((key, lock))
     }
 
-    fn pair_identity_at(
-        key: &Path,
-        resolve: impl FnOnce(&str, Option<&str>) -> Result<String, ()>,
-    ) -> Result<String, ()> {
-        use rca_native_agent::device_pairing::generate_private_pem;
-        let id_path = sidecar(key, ".device-id");
-        let existing = read_private(&id_path, 128)?;
-        if existing
-            .as_ref()
-            .is_some_and(|id| !valid_device_id(id.trim()))
-        {
-            return Err(());
-        }
-        let pem = match read_private(key, 8192)? {
-            Some(pem) => pem,
-            None if existing.is_none() => {
-                let pem = generate_private_pem().map_err(|_| ())?;
-                write_new(key, pem.as_bytes())?;
-                pem
-            }
-            None => return Err(()),
-        };
-        let id = resolve(&pem, existing.as_deref().map(str::trim))?;
-        if !valid_device_id(&id) || existing.as_ref().is_some_and(|old| old.trim() != id) {
-            return Err(());
-        }
-        if existing.is_none() {
-            write_new(&id_path, format!("{id}\n").as_bytes())?;
-        }
-        Ok(id)
-    }
-
-    fn read_private(path: &Path, limit: u64) -> Result<Option<String>, ()> {
-        use std::io::Read;
-        let file = match fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(path)
-        {
-            Ok(file) => file,
-            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err(()),
-        };
-        let info = file.metadata().map_err(|_| ())?;
-        if !info.is_file()
-            || info.uid() != unsafe { libc::geteuid() }
-            || info.nlink() != 1
-            || info.mode() & 0o777 != 0o600
-            || info.len() == 0
-            || info.len() > limit
-        {
-            return Err(());
-        }
-        let mut value = String::new();
-        file.take(limit + 1)
-            .read_to_string(&mut value)
-            .map_err(|_| ())?;
-        if value.len() as u64 != info.len() {
-            return Err(());
-        }
-        Ok(Some(value))
-    }
-
-    fn write_new(path: &Path, bytes: &[u8]) -> Result<(), ()> {
-        let directory = path.parent().ok_or(())?;
-        let mut random = [0u8; 16];
-        getrandom::fill(&mut random).map_err(|_| ())?;
-        let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
-        let temp = directory.join(format!(".pair-{suffix}.tmp"));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)
-            .map_err(|_| ())?;
-        let result = (|| {
-            file.write_all(bytes).map_err(|_| ())?;
-            file.sync_all().map_err(|_| ())?;
-            move_identity_file(&temp, path)
-        })();
-        if result.is_err() && temp.exists() {
-            let _ = fs::remove_file(&temp);
-        }
-        result
-    }
-
-    fn exists_owned_path(path: &Path) -> Result<bool, ()> {
-        match fs::symlink_metadata(path) {
-            Ok(_) => Ok(true),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
-            Err(_) => Err(()),
-        }
-    }
-
-    fn move_identity_file(from: &Path, to: &Path) -> Result<(), ()> {
-        use std::os::unix::ffi::OsStrExt;
-        let src = std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|_| ())?;
-        let dst = std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|_| ())?;
-        if unsafe {
-            libc::renameat2(
-                libc::AT_FDCWD,
-                src.as_ptr(),
-                libc::AT_FDCWD,
-                dst.as_ptr(),
-                libc::RENAME_NOREPLACE,
-            )
-        } != 0
-        {
-            return Err(());
-        }
-        for dir in [from.parent().ok_or(())?, to.parent().ok_or(())?] {
-            fs::File::open(dir)
-                .and_then(|f| f.sync_all())
-                .map_err(|_| ())?;
-        }
-        Ok(())
-    }
-
-    fn pair_or_repair(
-        key: &Path,
-        client: &rca_native_agent::device_pairing::PairingClient,
-        resolve: impl Fn(&str, Option<&str>) -> Result<String, ()>,
-        prepare_only: bool,
-    ) -> Result<(), ()> {
-        if !exists_owned_path(&sidecar(key, ".re-pair-transition"))?
-            && !exists_owned_path(&sidecar(key, ".re-pair-new"))?
-            && !exists_owned_path(&sidecar(key, ".re-pair-new.device-id"))?
-        {
-            if let Some(id) = read_private(&sidecar(key, ".device-id"), 128)? {
-                let pem = read_private(key, 8192)?.ok_or(())?;
-                let id = id.trim();
-                if !valid_device_id(id) {
-                    return Err(());
-                }
-                match client.recover(&pem, Some(id)) {
-                    Ok(_) => return Ok(()),
-                    Err(rca_native_agent::session_recovery::SessionRecoveryError::Denied) => (),
-                    Err(_) => return Err(()),
-                }
-            } else {
-                return pair_identity_at(key, &resolve).map(|_| ());
-            }
-        }
-        // An explicit denial alone never authorizes replacing a key. The
-        // independent signed negative-status response is mandatory.
-        repair_identity(
-            key,
-            prepare_only,
-            |pem, id| client.assert_revoked(pem, id).map_err(|_| ()),
-            &resolve,
-            |pem, id| client.recover(pem, Some(id)).map(|_| ()).map_err(|_| ()),
-        )
-    }
-
-    // Call only under the existing installer lock, and with no process
-    // using this identity. Reuse the original Node five-prefix transaction
-    // and archive naming. No extra journal or credential format.
-    fn repair_identity(
-        key: &Path,
-        prepare_only: bool,
-        revoked: impl Fn(&str, &str) -> Result<(), ()>,
-        pair: impl FnOnce(&str, Option<&str>) -> Result<String, ()>,
-        approved: impl Fn(&str, &str) -> Result<(), ()>,
-    ) -> Result<(), ()> {
-        use serde_json::{json, Value};
-        use std::os::unix::fs::DirBuilderExt;
-        let parent = key.parent().ok_or(())?;
-        let marker = sidecar(key, ".re-pair-transition");
-        let id_path = sidecar(key, ".device-id");
-        let stage = sidecar(key, ".re-pair-new");
-        let stage_id = sidecar(&stage, ".device-id");
-        let record: Value = if let Some(data) = read_private(&marker, 512)? {
-            serde_json::from_str(&data).map_err(|_| ())?
-        } else {
-            let old = read_private(&id_path, 128)?.ok_or(())?;
-            let old = old.trim();
-            if !valid_device_id(old) {
-                return Err(());
-            }
-            let pem = read_private(key, 8192)?.ok_or(())?;
-            revoked(&pem, old)?;
-            println!("Old identity is no longer approved; a replacement requires independent owner approval.");
-            let next = pair_identity_at(&stage, pair)?;
-            if next == old {
-                return Err(());
-            }
-            let record = json!({"version":1,"old_id":old,"new_id":next});
-            // As in the Node installer: after owner approval, before any
-            // identity move. Every subsequent prefix can be resumed.
-            write_new(&marker, format!("{record}\n").as_bytes())?;
-            record
-        };
-        let fields = record.as_object().ok_or(())?;
-        let old = fields.get("old_id").and_then(Value::as_str).ok_or(())?;
-        let next = fields.get("new_id").and_then(Value::as_str).ok_or(())?;
-        if fields.len() != 3
-            || fields.get("version").and_then(Value::as_u64) != Some(1)
-            || !valid_device_id(old)
-            || !valid_device_id(next)
-            || old == next
-        {
-            return Err(());
-        }
-        let archive = parent.join(format!("revoked-{old}"));
-        let archived = archive.join("identity.pem");
-        let archived_id = sidecar(&archived, ".device-id");
-        let files = [
-            key,
-            id_path.as_path(),
-            stage.as_path(),
-            stage_id.as_path(),
-            archived.as_path(),
-            archived_id.as_path(),
-        ];
-        let present: Vec<bool> = files
-            .iter()
-            .map(|p| exists_owned_path(p))
-            .collect::<Result<_, _>>()?;
-        let phases = [
-            [true, true, true, true, false, false],
-            [false, true, true, true, true, false],
-            [false, false, true, true, true, true],
-            [true, false, false, true, true, true],
-            [true, true, false, false, true, true],
-        ];
-        let phase = phases
-            .iter()
-            .position(|shape| shape.as_slice() == present.as_slice())
-            .ok_or(())?;
-        if exists_owned_path(&archive)? {
-            rca_native_agent::upgrade_control::verify_upgrade_directory(&archived)
-                .map_err(|_| ())?;
-            if fs::metadata(&archive).map_err(|_| ())?.mode() & 0o777 != 0o700
-                || fs::canonicalize(&archive).ok().as_deref() != Some(archive.as_path())
-            {
-                return Err(());
-            }
-            // No unexpected archive entries, even on a resumed promotion.
-            let expected = if phase == 0 {
-                0
-            } else if phase == 1 {
-                1
-            } else {
-                2
-            };
-            if fs::read_dir(&archive).map_err(|_| ())?.count() != expected {
-                return Err(());
-            }
-        } else if phase != 0 {
-            return Err(());
-        }
-        let old_key = if phase == 0 { key } else { &archived };
-        let old_id_file = if phase < 2 { &id_path } else { &archived_id };
-        let new_key = if phase < 3 { &stage } else { key };
-        let new_id_file = if phase < 4 { &stage_id } else { &id_path };
-        let old_pem = read_private(old_key, 8192)?.ok_or(())?;
-        let new_pem = read_private(new_key, 8192)?.ok_or(())?;
-        if read_private(old_id_file, 128)?.ok_or(())?.trim() != old
-            || read_private(new_id_file, 128)?.ok_or(())?.trim() != next
-        {
-            return Err(());
-        }
-        revoked(&old_pem, old)?;
-        approved(&new_pem, next)?;
-        if prepare_only {
-            return Ok(());
-        }
-        if !exists_owned_path(&archive)? {
-            fs::DirBuilder::new()
-                .mode(0o700)
-                .create(&archive)
-                .map_err(|_| ())?;
-            fs::File::open(parent)
-                .and_then(|f| f.sync_all())
-                .map_err(|_| ())?;
-        }
-        let steps = [
-            (key, archived.as_path()),
-            (id_path.as_path(), archived_id.as_path()),
-            (stage.as_path(), key),
-            (stage_id.as_path(), id_path.as_path()),
-        ];
-        for (from, to) in steps.iter().skip(phase) {
-            move_identity_file(from, to)?;
-        }
-        // The previous service must be absent before permanent promotion.
-        // On interruption, the ordinary installer recovers the same approved
-        // replacement and establishes a separate signed activation intent.
-        fs::remove_file(marker).map_err(|_| ())?;
-        fs::File::open(parent)
-            .and_then(|f| f.sync_all())
-            .map_err(|_| ())?;
-        println!("Previous identity archived; approved replacement retained.");
-        Ok(())
-    }
-
     pub fn run() -> Result<(), ()> {
         if unsafe { libc::geteuid() } == 0 {
             return Err(());
         }
         let args: Vec<String> = std::env::args().skip(1).collect();
+        if let [flag, command, request_id] = args.as_slice() {
+            if flag == "--cli" && command == "secure-input" {
+                return secure_input_local(request_id);
+            }
+        }
         if let [command, endpoint, name] = args.as_slice() {
             match command.as_str() {
                 "--pair-local" => return pair_local(endpoint, name, false, None),
@@ -880,6 +662,20 @@ mod linux {
         run_agent(&endpoint, &home, &key)
     }
 
+    fn automatic_manager(home: &Path, key: &Path, executable: &Path) -> Option<PathBuf> {
+        if key != pairing_key(home, false) {
+            return None;
+        }
+        let app = executable.parent()?.parent()?;
+        let root = app.parent()?.parent()?;
+        if root.parent()? != home.join(".local/share/mcp-workers/remote-control/programs") {
+            return None;
+        }
+        let manager = app.join("scripts/manage-v2.py");
+        private_regular(&manager, 1024 * 1024).ok()?;
+        Some(manager)
+    }
+
     fn run_agent(endpoint: &str, home: &Path, key: &Path) -> Result<(), ()> {
         private_regular(key, 8192)?;
         private_regular(&sidecar(key, ".device-id"), 128)?;
@@ -906,11 +702,55 @@ mod linux {
         install_stop_signals()?;
         let stop = Arc::new(AtomicBool::new(false));
         let watch_stop = Arc::clone(&stop);
+        let proof_exe = std::env::current_exe().map_err(|_| ())?;
+        let automatic_manager = automatic_manager(home, key, &proof_exe);
         let monitor = std::thread::spawn(move || {
+            let mut schedule = automatic_manager
+                .as_ref()
+                .map(|_| AutomaticCheckSchedule::new(Instant::now(), automatic_jitter(240)));
+            let mut checker: Option<std::process::Child> = None;
             while !watch_stop.load(Ordering::Acquire) {
                 if SIGNAL_STOP.load(Ordering::Acquire) {
                     watch_stop.store(true, Ordering::Release);
                     break;
+                }
+                if let Some(child) = checker.as_mut() {
+                    match child.try_wait() {
+                        Ok(None) => (),
+                        Ok(Some(_)) => checker = None,
+                        Err(_) => {
+                            // A failed observation must not cause an immediate replay.
+                            checker = None;
+                            eprintln!(
+                                r#"{{"service":"remote-control-agent","event":"automatic_check_unconfirmed"}}"#
+                            );
+                        }
+                    }
+                }
+                if let (Some(manager), Some(schedule)) =
+                    (automatic_manager.as_ref(), schedule.as_mut())
+                {
+                    let now = Instant::now();
+                    if checker.is_none()
+                        && schedule.is_due(now)
+                        && schedule.take_due(now, automatic_jitter(1800))
+                    {
+                        // Manager revalidates the installed permanent identity,
+                        // consent, signed connection and pending transactions.
+                        // Never block the Agent signal or execution loop on I/O.
+                        match std::process::Command::new("/usr/bin/python3")
+                            .args(["-I", "-B"])
+                            .arg(manager)
+                            .args(["update", "--automatic"])
+                            .stdin(std::process::Stdio::null())
+                            .spawn()
+                        {
+                            Ok(child) => checker = Some(child),
+                            Err(_) => eprintln!(
+                                r#"{{"service":"remote-control-agent","event":"automatic_check_launch_failed"}}"#
+                            ),
+                        }
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -919,7 +759,6 @@ mod linux {
         // parallel receipt ledger when switching the runtime.
         let proof_key = key.to_owned();
         let proof_id = device_id.to_owned();
-        let proof_exe = std::env::current_exe().map_err(|_| ())?;
         let proof_endpoint = endpoint.to_owned();
         let result = run_native_managed_session_with_upgrade(
             endpoint,
@@ -955,8 +794,6 @@ mod linux {
         use super::*;
         const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
 
-        const NEW_ID: &str = "123e4567-e89b-42d3-a456-426614174002";
-
         #[test]
         fn temporary_launcher_is_owner_local_and_never_replaces_existing_command() {
             let dir = tempfile::tempdir().unwrap();
@@ -976,117 +813,6 @@ mod linux {
             write_new(&launcher, b"foreign").unwrap();
             publish_temporary_launcher(home, &exe).unwrap();
             assert_eq!(fs::read(&launcher).unwrap(), b"foreign");
-        }
-
-        #[test]
-        fn revoked_promotion_resumes_each_original_node_rename_prefix() {
-            use std::os::unix::fs::DirBuilderExt;
-            for prefix in 0..=4 {
-                let dir = tempfile::tempdir().unwrap();
-                let key = dir.path().join("v2-identity.pem");
-                let id = sidecar(&key, ".device-id");
-                let stage = sidecar(&key, ".re-pair-new");
-                let stage_id = sidecar(&stage, ".device-id");
-                let marker = sidecar(&key, ".re-pair-transition");
-                let archive = dir.path().join(format!("revoked-{ID}"));
-                let archived = archive.join("identity.pem");
-                let archived_id = sidecar(&archived, ".device-id");
-                fs::DirBuilder::new().mode(0o700).create(&archive).unwrap();
-                // Independent fixture for each durable Node transaction prefix.
-                let old_key_path = if prefix > 0 { &archived } else { &key };
-                let old_id_path = if prefix > 1 { &archived_id } else { &id };
-                let new_key_path = if prefix > 2 { &key } else { &stage };
-                let new_id_path = if prefix > 3 { &id } else { &stage_id };
-                write_new(old_key_path, b"old-pem").unwrap();
-                write_new(old_id_path, ID.as_bytes()).unwrap();
-                write_new(new_key_path, b"new-pem").unwrap();
-                write_new(new_id_path, NEW_ID.as_bytes()).unwrap();
-                write_new(
-                    &marker,
-                    format!(r#"{{"version":1,"old_id":"{ID}","new_id":"{NEW_ID}"}}"#).as_bytes(),
-                )
-                .unwrap();
-                repair_identity(
-                    &key,
-                    false,
-                    |pem, device| {
-                        assert_eq!((pem, device), ("old-pem", ID));
-                        Ok(())
-                    },
-                    |_, _| panic!("resumed promotion must not request another grant"),
-                    |pem, device| {
-                        assert_eq!((pem, device), ("new-pem", NEW_ID));
-                        Ok(())
-                    },
-                )
-                .unwrap();
-                assert_eq!(fs::read(&key).unwrap(), b"new-pem");
-                assert_eq!(fs::read_to_string(&id).unwrap(), NEW_ID);
-                assert_eq!(fs::read(&archived).unwrap(), b"old-pem");
-                assert_eq!(fs::read_to_string(&archived_id).unwrap(), ID);
-                assert!(!marker.exists() && !stage.exists() && !stage_id.exists());
-            }
-        }
-
-        #[test]
-        fn revoked_promotion_requires_both_remote_checks_and_preserves_old_key() {
-            let dir = tempfile::tempdir().unwrap();
-            let key = dir.path().join("v2-identity.pem");
-            let id = sidecar(&key, ".device-id");
-            let stage = sidecar(&key, ".re-pair-new");
-            let marker = sidecar(&key, ".re-pair-transition");
-            write_new(&key, b"old-pem").unwrap();
-            write_new(&id, ID.as_bytes()).unwrap();
-            assert!(repair_identity(
-                &key,
-                false,
-                |_, _| Err(()),
-                |_, _| panic!("unverified revoke"),
-                |_, _| panic!("not paired")
-            )
-            .is_err());
-            assert!(!marker.exists() && !stage.exists());
-            assert!(repair_identity(
-                &key,
-                false,
-                |_, _| Ok(()),
-                |_, _| Err(()),
-                |_, _| panic!("not approved")
-            )
-            .is_err());
-            assert!(stage.exists() && !marker.exists());
-            let staged = fs::read_to_string(&stage).unwrap();
-            assert!(repair_identity(
-                &key,
-                false,
-                |_, _| Ok(()),
-                |pem, existing| {
-                    assert_eq!(pem, staged);
-                    assert!(existing.is_none());
-                    Ok(NEW_ID.to_owned())
-                },
-                |_, _| Err(())
-            )
-            .is_err());
-            assert!(marker.exists());
-            assert_eq!(fs::read(&key).unwrap(), b"old-pem");
-            assert_eq!(fs::read_to_string(&id).unwrap(), ID);
-            // Foreign archive contents must never be overwritten.
-            let archive = dir.path().join(format!("revoked-{ID}"));
-            use std::os::unix::fs::DirBuilderExt;
-            fs::DirBuilder::new().mode(0o700).create(&archive).unwrap();
-            write_new(&archive.join("unrelated"), b"preserve").unwrap();
-            assert!(repair_identity(
-                &key,
-                false,
-                |_, _| Ok(()),
-                |_, _| panic!("already paired"),
-                |_, _| Ok(())
-            )
-            .is_err());
-            assert_eq!(fs::read(archive.join("unrelated")).unwrap(), b"preserve");
-            assert_eq!(fs::read(&key).unwrap(), b"old-pem");
-            assert!(marker.exists());
         }
 
         #[test]

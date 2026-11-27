@@ -87,6 +87,18 @@ mod linux {
     }
 
     #[test]
+    fn secure_input_owner_cli_refuses_noninteractive_invocation_before_network() {
+        let root = tempfile::tempdir().unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_rca-standard-linux-candidate"))
+            .env_clear()
+            .env("HOME", root.path())
+            .args(["--cli", "secure-input", ID])
+            .output()
+            .unwrap();
+        refused(&output, root.path());
+    }
+
+    #[test]
     fn unsafe_owner_stop_never_becomes_an_implicit_restart() {
         let root = tempfile::tempdir().unwrap();
         let key = identity(root.path());

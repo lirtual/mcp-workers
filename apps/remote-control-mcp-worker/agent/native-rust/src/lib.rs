@@ -1,5 +1,7 @@
 //! Nonproduction RCA Rust candidate. No production entrypoint or release integration.
 //! Only publish after #914 Gate 0–3, independently authorized per platform.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+pub mod automatic_update;
 #[cfg(target_os = "macos")]
 #[path = "unix_managed.rs"]
 pub mod darwin_managed;
@@ -9,6 +11,7 @@ pub mod darwin_output;
 #[cfg(target_os = "macos")]
 pub mod darwin_supervisor;
 mod device_info;
+pub use device_info::installed_version;
 pub mod device_pairing;
 pub mod digest;
 pub mod gate0_probe;
@@ -32,6 +35,8 @@ mod native_search;
 pub mod native_write;
 mod receipt_boundary;
 pub mod receipts;
+pub mod secure_input;
+pub mod secure_input_cli;
 pub mod session;
 pub mod session_enrollment;
 mod session_idle;
@@ -65,6 +70,15 @@ pub fn validate_windows_private_path(
     is_dir: bool,
 ) -> Result<(), receipts::ReceiptError> {
     windows_private::private_path(path, is_dir)
+}
+
+/// Atomically publish a complete record under an existing owner-private directory.
+#[cfg(windows)]
+pub fn replace_windows_private_record(
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> Result<(), receipts::ReceiptError> {
+    windows_private::replace_private_record(path, bytes)
 }
 
 /// Seal the just-created Session-private directory and verify its final ACL.

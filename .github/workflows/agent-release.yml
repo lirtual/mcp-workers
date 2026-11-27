@@ -96,7 +96,6 @@ jobs:
             echo 'GitHub release conflict' >&2
             exit 1
           fi
-          source_macos="$(git show "$SOURCE_SHA:apps/remote-control-mcp-worker/agent/scripts/macos-local.sh" | sha256sum | awk '{print $1}')"
           candidates='[]'
           declare -a specs=(
             'linux-x64-glibc ubuntu-24.04 tar.gz linux'
@@ -105,7 +104,6 @@ jobs:
             'darwin-arm64 darwin-arm64 tar.gz darwin'
             'darwin-x64 darwin-x64 tar.gz darwin'
           )
-          macos_hashes=()
           for spec in "${specs[@]}"; do
             read -r target artifact ext kind <<<"$spec"
             name="remote-control-agent-$RELEASE_TAG-$target.$ext"
@@ -128,10 +126,6 @@ jobs:
             else
               bundle="$(tar -xzOf "$archive" bundle.json)"
             fi
-            if [[ "$kind" == darwin ]]; then
-              test -f "$dir/macos-local.sh" && test ! -L "$dir/macos-local.sh"
-              macos_hashes+=("$(sha256sum "$dir/macos-local.sh" | awk '{print $1}')")
-            fi
             candidates="$(jq -c \
               --arg target "$target" \
               --arg artifact "$RELEASE_TAG-$artifact" \
@@ -144,10 +138,6 @@ jobs:
               <<<"$candidates")"
             printf '%s\n' "$archive" >> "$work/archives.txt"
           done
-          macos="${macos_hashes[0]:-}"
-          if [[ "${#macos_hashes[@]}" -ne 2 || "${macos_hashes[0]}" != "${macos_hashes[1]}" ]]; then
-            macos="candidate source drifted"
-          fi
           jq -n \
             --arg event "$EVENT_NAME" \
             --arg ref "$REF" \
@@ -158,10 +148,8 @@ jobs:
             --argjson existingRelease "$existing_release" \
             --argjson existingTag "$existing_tag" \
             --argjson run "$run" \
-            --arg macos "$macos" \
-            --arg sourceMacos "$source_macos" \
             --argjson candidates "$candidates" \
-            '{event:$event,ref:$ref,actor:$actor,deployWorker:false,releaseTag:$releaseTag,sourceSha:$sourceSha,immutableReleases:$immutable,existingRelease:$existingRelease,existingTag:$existingTag,candidateRun:{event:$run.event,path:$run.path,head_branch:$run.head_branch,head_sha:$run.head_sha,status:$run.status,conclusion:$run.conclusion},macosScriptSha256:$macos,sourceMacosScriptSha256:$sourceMacos,candidates:$candidates}' \
+            '{event:$event,ref:$ref,actor:$actor,deployWorker:false,releaseTag:$releaseTag,sourceSha:$sourceSha,immutableReleases:$immutable,existingRelease:$existingRelease,existingTag:$existingTag,candidateRun:{event:$run.event,path:$run.path,head_branch:$run.head_branch,head_sha:$run.head_sha,status:$run.status,conclusion:$run.conclusion},candidates:$candidates}' \
             > "$work/preflight.json"
           node apps/remote-control-mcp-worker/agent/scripts/agent-release-guard.mjs preflight < "$work/preflight.json"
           while IFS= read -r archive; do

@@ -58,7 +58,7 @@ fn valid_version(value: &str) -> bool {
         })
 }
 
-fn installed_version(exe: &Path) -> Option<String> {
+pub fn installed_version(exe: &Path) -> Option<String> {
     // Standard packages put the executable in apps/remote-control-agent/.build.
     // Do not use an unrelated ancestor, CWD, or Cargo's internal version.
     let build = exe.parent()?;

@@ -1,18 +1,20 @@
 import assert from "node:assert/strict";
-import {createPrivateKey,sign} from "node:crypto";
+import {createHash,createPrivateKey,sign} from "node:crypto";
 import {mkdtemp, readFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {exportJWK,generateKeyPair,SignJWT} from "jose";
-import {newEnrollment, saveNewPrivateKey} from "../agent/src/v2-enrollment.ts";
-import {recoverDeviceId, signedSessionProof} from "../agent/src/v2-session-client.ts";
-import {ReceiptStore, operationDigest} from "../agent/src/operations.ts";
+import {newEnrollment, saveNewPrivateKey} from "./fixtures/device-protocol.ts";
+import {recoverDeviceId, signedSessionProof} from "./fixtures/device-protocol.ts";
+import {seedUnknownReceipt} from "../agent/tests/fixtures/receipt-ledger.ts";
+import {DatabaseSync} from "node:sqlite";
 import worker from "../src/worker.ts";
 import { OwnerCoordinator } from "../src/pairing.ts";
 import {approvalArgs, lookupOwnerPairing, approveOwnerPairing} from "../src/pairing-owner.ts";
 import {approvePendingKey} from "../src/pairing.ts";
 import {TEMPORARY_GRANT_MS, issueSessionChallenge, authorizeSession, authorizeSocketSession} from "../src/session.ts";
+import {createSecureInputRecord, parseSecureInputRequest} from "../src/secure-input.ts";
 
 function fixture(browser=false) {
   let dropApprovalReply=false;
@@ -315,17 +317,13 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
   const f=fixture(),material=newEnrollment("receipt-preserving-permanent");
   const directory=await mkdtemp(path.join(os.tmpdir(),"one-code-receipt-"));
   const keyPath=path.join(directory,"identity.pem");
-  const databasePath=path.join(directory,"state");
-  const receipts=new ReceiptStore(databasePath);
+  const databasePath=path.join(directory,"state","operation-receipts.sqlite");
   const operationId="one-code-unknown-receipt-97";
-  const digest=operationDigest("write_file",{path:"/tmp/rc-one-code-readonly-fixture"});
+  const digest=createHash("sha256").update('{"arguments":{"path":"/tmp/rc-one-code-readonly-fixture"},"tool":"write_file"}').digest("hex");
   try{
     await saveNewPrivateKey(keyPath,material.privateKeyPem);
-    await receipts.open();
-    assert.equal((await receipts.admit(operationId,"write_file",digest)).kind,"new");
-    await receipts.update(operationId,"unknown","effect is uncertain");
-    const before=await receipts.get(operationId);
-    assert.equal(before?.state,"unknown");
+    seedUnknownReceipt(databasePath,operationId,"write_file",digest,new Date().toISOString(),"effect is uncertain");
+    const before=await readFile(databasePath);
     const originalPem=await readFile(keyPath,"utf8");
     assert.equal((await f.register(material.request)).status,202);
     const looked=await f.lookup({code:material.code});
@@ -357,7 +355,7 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
     assert.equal(dropped,true);
     assert.equal(await readFile(keyPath,"utf8"),originalPem);
     await assert.rejects(readFile(keyPath+".device-id","utf8"),{code:"ENOENT"});
-    assert.deepEqual(await receipts.get(operationId),before);
+    assert.deepEqual(await readFile(databasePath),before);
     const withoutLease = (row: Record<string,unknown>) => (({ idle_expires_at, idle_window_ms, ...rest }) => rest)(row);
     assert.deepEqual(withoutLease(f.rows.get(grantKey) as Record<string,unknown>), withoutLease(originalGrant as Record<string,unknown>));
     assert.ok(Number.isSafeInteger((f.rows.get(grantKey) as {idle_expires_at:number}).idle_expires_at));
@@ -371,23 +369,21 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
     assert.deepEqual(withoutLease(f.rows.get(grantKey) as Record<string,unknown>), withoutLease(originalGrant as Record<string,unknown>));
     assert.ok(Number.isSafeInteger((f.rows.get(grantKey) as {idle_expires_at:number}).idle_expires_at));
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,1);
-    assert.deepEqual(await receipts.get(operationId),before);
-    await receipts.close();
-    const reopened=new ReceiptStore(databasePath);
+    assert.deepEqual(await readFile(databasePath),before);
+    // The Worker fixture cannot execute an Agent operation. Verify that the
+    // historical guarded row is intact; native receipt_contract tests prove
+    // same-intent deduplication and restart behavior in the actual runtime.
+    const reopened=new DatabaseSync(databasePath,{readOnly:true});
     try{
-      await reopened.open();
-      assert.deepEqual(await reopened.get(operationId),before);
-      const guard=await reopened.admit(operationId,"write_file",digest);
-      assert.equal(guard.kind,"same");
-      assert.equal(guard.receipt?.state,"unknown","an uncertain effect must never be re-executed by pairing retries");
-    }finally{await reopened.close();}
+      assert.deepEqual({...reopened.prepare("SELECT state,argument_digest,guarded FROM receipts WHERE operation_id=?").get(operationId)},
+        {state:"unknown",argument_digest:digest,guarded:1});
+    }finally{reopened.close();}
   }finally{
-    await receipts.close();
     await rm(directory,{recursive:true,force:true});
   }
 });
 
-test("#1018 actual Worker browser approval preserves signed enrollment and rejects retired MCP pairing",async t=>{
+test("#1018/#1039 actual Worker browser authorization preserves enrollment and cancels secure input",async t=>{
   const f=fixture(true),origin=f.origin.slice(0,-1);
   const issuer="https://clerk.lirtual.dpdns.org";
   const {publicKey,privateKey}=await generateKeyPair("RS256");
@@ -485,6 +481,45 @@ test("#1018 actual Worker browser approval preserves signed enrollment and rejec
   assert.equal([...f.rows.entries()].filter(([k])=>k.startsWith("device:")).map(([,v])=>(v as {grant_type:string}).grant_type).sort().join(","),"permanent,temporary");
   assert.equal((await post("/pair/approve",args2)).status,404);
   assert.equal(count(),2);
+  // Reuse the real Clerk verifier and coordinator, with only synthetic
+  // identity/metadata and the same isolated transactional store.
+  const deviceId=crypto.randomUUID();
+  const request=parseSecureInputRequest({
+    purpose:"Synthetic cancellation",is_production:false,execution:{device_id:deviceId},
+    target:{kind:"task_process",session_id:crypto.randomUUID(),name:"SYNTHETIC_INPUT"},
+  });
+  assert.ok(request);
+  const input=await createSecureInputRecord(f.store as never,request,"user_fixture",{
+    device_id:deviceId,epoch:"fixture-epoch",grant_type:"permanent",
+  });
+  const route="/secure-input/"+input.request_id;
+  const inputPage=await f.send(origin+route);
+  assert.equal(inputPage.status,200);
+  assert.match(inputPage.headers.get("cache-control")??"",/no-store/);
+  assert.equal(inputPage.headers.get("referrer-policy"),"no-referrer");
+  assert.match(inputPage.headers.get("content-security-policy")??"",/frame-ancestors 'none'/);
+  assert.equal((await post(route+"/details",{})).status,200);
+  const beforeCancel=f.dispatches();
+  assert.equal((await post(route+"/cancel",{},await mint({sub:"user_other"}))).status,401);
+  assert.equal((await post(route+"/cancel",{},token,"https://other.example")).status,403);
+  assert.equal((await f.send("https://other.example"+route+"/cancel",{
+    method:"POST",headers:{origin,authorization:"Bearer "+token,"content-type":"application/json"},body:"{}",
+  })).status,403);
+  assert.equal((await post(route+"/cancel",{unexpected:true})).status,400);
+  assert.equal((await f.send(origin+route+"/cancel",{
+    method:"POST",headers:{origin,authorization:"Bearer "+token,"content-type":"text/plain"},body:"{}",
+  })).status,415);
+  assert.equal(f.dispatches(),beforeCancel);
+  assert.equal((await post(route+"/cancel",{})).status,200);
+  const cancelled=await (await post(route+"/details",{})).json() as {state:string};
+  assert.equal(cancelled.state,"cancelled");
+  assert.equal((await post(route+"/cancel",{})).status,409);
+  const marker="synthetic-cancelled-input-1039";
+  const rejected=await post(route+"/submit",{secret:marker,target_confirmed:true,production_authorized:false});
+  assert.equal(rejected.status,409);
+  assert.doesNotMatch(await rejected.text(),new RegExp(marker));
+  assert.doesNotMatch(JSON.stringify([...f.rows.values()]),new RegExp(marker));
+  assert.match(await inputPage.text(),/Cancel request/);
   assert.equal(keyRequests,1);
 
   // Exercise the real configured verifier and jose's existing JWKS cache

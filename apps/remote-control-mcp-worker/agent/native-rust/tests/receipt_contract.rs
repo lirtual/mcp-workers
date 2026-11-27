@@ -97,6 +97,84 @@ fn interrupted_and_unknown_are_guarded_across_restart() {
     );
 }
 
+// Schema and digests captured from the retired Node ReceiptStore. This
+// checks historical data preservation without retaining a second executor.
+#[cfg(unix)]
+#[test]
+fn historical_sqlite_receipts_keep_identity_and_replay_guards() {
+    let tmp = tempfile::tempdir().unwrap();
+    let directory = folder(&tmp);
+    fs::create_dir(&directory).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = directory.join("operation-receipts.sqlite");
+    private_write(&path, "");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(
+        "CREATE TABLE receipts (operation_id TEXT PRIMARY KEY NOT NULL, tool_name TEXT NOT NULL,
+           argument_digest TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL,
+           updated_at TEXT NOT NULL, safe_result_summary TEXT, session_id TEXT,
+           guarded INTEGER NOT NULL CHECK(guarded IN (0, 1)));
+         PRAGMA user_version = 1;
+         INSERT INTO receipts VALUES
+           ('node-completed','write_file',
+            'bb6388fa6f3543059108e65f237b2e7392feb68d0e8f244427da2cf27d7be9cd',
+            'completed','2026-10-01T00:00:00.000Z','2026-10-01T00:00:01.000Z','Done.',NULL,0),
+           ('node-interrupted','delete_file',
+            'b3ab10d444b4c5b017d225aa3186d493fecca623f2b3956ce13aff94c58916f2',
+            'running','2026-10-01T00:00:00.000Z','2026-10-01T00:00:01.000Z','Dispatched.',NULL,1),
+           ('old-gui','browser_navigate',
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'unknown','2026-10-01T00:00:00.000Z','2026-10-01T00:00:01.000Z',NULL,NULL,1);",
+    )
+    .unwrap();
+    drop(db);
+    let mut store = ReceiptStore::open(&directory).unwrap();
+    assert_eq!(
+        store.get("node-completed").unwrap().unwrap().state,
+        "completed"
+    );
+    assert_eq!(
+        store.get("node-interrupted").unwrap().unwrap().state,
+        "unknown"
+    );
+    for (id, tool, args, changed) in [
+        (
+            "node-completed",
+            "write_file",
+            json!({"path":"/tmp/first","content":"once"}),
+            json!({"path":"/tmp/second","content":"once"}),
+        ),
+        (
+            "node-interrupted",
+            "delete_file",
+            json!({"path":"/tmp/unconfirmed"}),
+            json!({"path":"/tmp/other"}),
+        ),
+    ] {
+        assert!(matches!(
+            store.admit(id, tool, &args).unwrap(),
+            Admission::Same(_)
+        ));
+        assert!(matches!(
+            store.admit(id, tool, &changed).unwrap(),
+            Admission::Conflict(_)
+        ));
+    }
+    assert_eq!(store.get("old-gui").unwrap().unwrap().state, "unknown");
+    assert!(matches!(
+        store.admit("old-gui", "browser_navigate", &json!({})),
+        Err(ReceiptError::InvalidOperation)
+    ));
+    drop(store);
+    let reopened = ReceiptStore::open(&directory).unwrap();
+    assert_eq!(reopened.get("old-gui").unwrap().unwrap().state, "unknown");
+    assert_eq!(
+        reopened.get("node-interrupted").unwrap().unwrap().state,
+        "unknown"
+    );
+}
+
 #[test]
 fn second_writer_cannot_claim_the_same_live_receipt_file() {
     let tmp = tempfile::tempdir().unwrap();

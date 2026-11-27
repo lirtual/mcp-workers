@@ -91,10 +91,11 @@ test("production public installers avoid Worker GitHub lookup for Linux/macOS", 
   assert.doesNotMatch(macShell, /dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803/);
   assert.doesNotMatch(macShell, /raw\.githubusercontent\.com/);
   assert.doesNotMatch(macShell, /api\.github\.com/);
-  assert.ok(macShell.includes('1) case "$1" in --upgrade) mode=upgrade ;; --remote-upgrade) mode=remote-upgrade ;;'));
-  assert.match(macShell,/if \[ "\$mode" != upgrade \] && \[ "\$mode" != remote-upgrade \]/);
-  assert.match(macShell,/--remote-upgrade\) mode=remote-upgrade/);
-  assert.match(macShell,/--source-sha "\$identity"/);
+  assert.match(macShell, /--verify-bundle/);
+  assert.match(macShell, /--install-local/);
+  assert.match(macShell, /--temporary-local/);
+  assert.match(macShell, /Rust-only macOS installer accepts no legacy action arguments/);
+  assert.doesNotMatch(macShell, /--remote-upgrade|macos-local\.mjs|macos-remote-upgrade\.mjs|bin\/node/);
   const rejected = await worker.fetch(new Request("https://unauthorized.test/install.sh"), env);
   assert.equal(rejected.status, 403);
 });

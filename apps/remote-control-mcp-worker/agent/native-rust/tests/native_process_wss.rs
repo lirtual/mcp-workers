@@ -108,14 +108,20 @@ fn signed_socket(listener: TcpListener) -> WebSocket<TcpStream> {
     challenge(http);
     let ws = accept_disposable(&listener);
     ws.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    tungstenite::accept_hdr(ws, |req: &Request, mut resp: Response| {
-        assert!(req
-            .headers()
-            .get(SEC_WEBSOCKET_PROTOCOL)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("rc-v2, rcv2."));
+    let nonce = "ABCDEFGHIJKLMNOPQRSTUVWX";
+    let proof =
+        rca_native_agent::identity::signed_session_proof(&common::test_pem(), DEVICE_ID, nonce)
+            .unwrap();
+    let expected = format!("rc-v2, rcv2.{nonce}.{}", proof.proof);
+    tungstenite::accept_hdr(ws, move |req: &Request, mut resp: Response| {
+        assert_eq!(
+            req.headers()
+                .get(SEC_WEBSOCKET_PROTOCOL)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            expected
+        );
         resp.headers_mut()
             .insert(SEC_WEBSOCKET_PROTOCOL, "rc-v2".parse().unwrap());
         Ok(resp)
@@ -770,4 +776,297 @@ fn ubuntu_session_idle_protocol_preserves_activity_freeze_and_attempt() {
         .get("idle-frozen-write")
         .unwrap()
         .is_none());
+}
+
+#[test]
+#[ignore = "requires disposable Unix runner and platform C helper"]
+fn signed_managed_secure_input_suppresses_output_and_bypasses_receipts() {
+    const MARKER: &str = "synthetic-wss-secret-中😀-f382";
+    const REQUEST: &str = "dededede-dede-4ede-8ede-dededededede";
+    let root = tempfile::tempdir().unwrap();
+    let receipt_dir = root.path().join("receipts");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = Arc::clone(&stop);
+    let server = thread::spawn(move || {
+        let _stop_on_panic = StopOnPanic(Arc::clone(&server_stop));
+        let mut socket = signed_socket(listener);
+        common::receive_device_info(&mut socket, true);
+        let started = reply(
+            &mut socket,
+            operation(
+                "secure-wss-start",
+                "start_process",
+                json!({"command":"printf 'before'; IFS= read -r v || exit 18; test \"$v\" = \"$(printf 'synthetic-wss-%s-中😀-%s' secret f382)\" || exit 19; printf '%s' \"$v\"; printf '%s' \"$v\" >&2; exit 17","timeout_ms":0}),
+            ),
+        );
+        assert_eq!(started["result"]["status"], "running");
+        let sid = started["result"]["session_id"].as_str().unwrap();
+        let other = reply(
+            &mut socket,
+            operation(
+                "secure-wss-other",
+                "start_process",
+                json!({"command":"printf unrelated","timeout_ms":0}),
+            ),
+        );
+        let other_id = other["result"]["session_id"].as_str().unwrap();
+        let target = json!({"kind":"task_process","session_id":sid,"name":"FIXTURE"});
+        let preflight = |socket: &mut WebSocket<TcpStream>, target: Value| {
+            reply(
+                socket,
+                json!({"kind":"secure_input_prepare","preflight_id":REQUEST,"target":target})
+                    .to_string(),
+            )
+        };
+        let missing = preflight(
+            &mut socket,
+            json!({"kind":"task_process","session_id":"eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee","name":"FIXTURE"}),
+        );
+        assert_eq!(missing["status"], "failed");
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let before = read(
+                &mut socket,
+                "read_process_output",
+                json!({"session_id":sid,"length":256}),
+            );
+            let page: Value = serde_json::from_str(before["text"].as_str().unwrap()).unwrap();
+            if page["output"] == "before" {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(20));
+        }
+        let ready = preflight(&mut socket, target.clone());
+        assert_eq!(ready["status"], "ready");
+        assert!(ready.get("provider_principal").is_none());
+        socket
+            .send(Message::Text(
+                json!({"kind":"secure_input","request_id":REQUEST,
+            "target":target,"provider_principal":null,"secret":MARKER})
+                .to_string()
+                .into(),
+            ))
+            .unwrap();
+        for kind in [
+            "secure_input_ack",
+            "secure_input_progress",
+            "secure_input_result",
+        ] {
+            let wire = socket.read().unwrap().into_text().unwrap();
+            assert!(!wire.contains(MARKER));
+            let frame: Value = serde_json::from_str(&wire).unwrap();
+            assert_eq!(frame["kind"], kind);
+            assert_eq!(frame["request_id"], REQUEST);
+            if kind == "secure_input_result" {
+                assert_eq!(frame["status"], "succeeded");
+                assert!(
+                    frame.get("error_code").is_none(),
+                    "success has no error code on the wire"
+                );
+            }
+        }
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let result = read(
+                &mut socket,
+                "read_process_output",
+                json!({"session_id":sid,"length":256}),
+            );
+            assert!(!result.to_string().contains(MARKER));
+            let page: Value = serde_json::from_str(result["text"].as_str().unwrap()).unwrap();
+            assert_eq!(page["sensitive"], true);
+            assert_eq!(
+                page["output"],
+                "[output suppressed after secure input was delivered]"
+            );
+            if page["state"] == "failed" {
+                assert_eq!(page["exit_code"], 17);
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(20));
+        }
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            let result = read(
+                &mut socket,
+                "read_process_output",
+                json!({"session_id":other_id,"length":256}),
+            );
+            let page: Value = serde_json::from_str(result["text"].as_str().unwrap()).unwrap();
+            if page["state"] == "completed" && page["output"] == "unrelated" {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(20));
+        }
+        let unavailable = preflight(&mut socket, target);
+        assert_eq!(unavailable["status"], "failed");
+        server_stop.store(true, Ordering::Release);
+    });
+    let registry = managed();
+    let result = run_native_managed_session(
+        &endpoint,
+        &common::test_pem(),
+        DEVICE_ID,
+        &receipt_dir,
+        registry,
+        &stop,
+        HeartbeatTiming::default(),
+    );
+    server.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    let store = ReceiptStore::open(&receipt_dir).unwrap();
+    assert!(store.get(REQUEST).unwrap().is_none());
+    drop(store);
+    for file in std::fs::read_dir(&receipt_dir).unwrap() {
+        let file = file.unwrap();
+        if file.file_type().unwrap().is_file() {
+            let bytes = std::fs::read(file.path()).unwrap();
+            assert!(!bytes.windows(MARKER.len()).any(|w| w == MARKER.as_bytes()));
+        }
+    }
+}
+
+// Exercise the native Darwin service entry, not the Node lifecycle manager.
+// The shared session transport already supports a disposable IPv4 loopback
+// fixture; no LaunchAgent, TLS policy, release channel or Owner grant is changed.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "requires disposable macOS runner and real C helper"]
+fn darwin_service_binds_live_connection_evidence_to_native_generation() {
+    use rca_native_agent::upgrade_control::{owner_gate, verify_online, UpgradeCommand};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::{Child, Command, Stdio};
+
+    struct OwnedChild(Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            if !matches!(self.0.try_wait(), Ok(Some(_))) {
+                let _ = self.0.kill();
+            }
+            let _ = self.0.wait();
+        }
+    }
+    fn eventually(mut check: impl FnMut() -> bool, reason: &str) {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !check() {
+            assert!(Instant::now() < deadline, "{reason}");
+            thread::sleep(Duration::from_millis(30));
+        }
+    }
+    let root = tempfile::Builder::new()
+        .prefix("rca-wss-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let home = root.path().canonicalize().unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
+    let identity = home.join("i");
+    fs::create_dir(&identity).unwrap();
+    fs::set_permissions(&identity, fs::Permissions::from_mode(0o700)).unwrap();
+    let key = identity.join("v2-identity.pem");
+    let device = identity.join("v2-identity.pem.device-id");
+    let marker = identity.join("macos-connection.json");
+    let pem = common::test_pem();
+    for (path, value) in [(&key, pem.clone()), (&device, format!("{DEVICE_ID}\n"))] {
+        fs::write(path, value).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let helper = std::env::var("RCA_DARWIN_SUPERVISOR_BIN").expect("real Darwin C helper");
+    let read_marker = || -> Option<Value> { serde_json::from_slice(&fs::read(&marker).ok()?).ok() };
+
+    for (version, generation) in [
+        ("v0.1.59", "11111111-1111-4111-8111-111111111111"),
+        ("v0.1.60", "22222222-2222-4222-8222-222222222222"),
+    ] {
+        // Synthetic package metadata for version reporting; actual release
+        // inventory and full native package validation remain separate gates.
+        let package = home.join(version);
+        let build = package.join("apps/remote-control-agent/.build");
+        fs::create_dir_all(&build).unwrap();
+        let bin = build.join("rca-standard-darwin-candidate");
+        fs::copy(env!("CARGO_BIN_EXE_rca-standard-darwin-candidate"), &bin).unwrap();
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o700)).unwrap();
+        let supervisor = build.join("darwin-session-supervisor");
+        fs::copy(&helper, &supervisor).unwrap();
+        fs::set_permissions(&supervisor, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            package.join("bundle.json"),
+            json!({"name":"remote-control-agent","version":version}).to_string(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}/", listener.local_addr().unwrap());
+        let mut child = OwnedChild(
+            Command::new(&bin)
+                .env_clear()
+                .env("HOME", &home)
+                .env("REMOTE_CONTROL_AGENT_KEY_PATH", &key)
+                .args([
+                    "--service",
+                    "--endpoint",
+                    &endpoint,
+                    "--generation",
+                    generation,
+                ])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let pid = child.0.id();
+        eventually(
+            || matches!(verify_online(&key), Ok(false)),
+            "service must refuse online evidence before signed handshake",
+        );
+        let mut socket = signed_socket(listener);
+        let info = common::receive_device_info(&mut socket, true);
+        assert_eq!(info["agent_version"], version);
+        eventually(
+            || {
+                read_marker().is_some_and(|m| {
+                    m["generation"] == generation
+                        && m["version"] == version
+                        && m["pid"] == pid
+                        && m["state"] == "connected"
+                }) && verify_online(&key).unwrap_or(false)
+            },
+            "native signed connection marker and live owner gate must agree",
+        );
+        assert_eq!(
+            fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(owner_gate(&key, UpgradeCommand::Freeze).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::VerifyFrozen).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Release).unwrap());
+        assert!(!owner_gate(&key, UpgradeCommand::VerifyFrozen).unwrap());
+        socket
+            .close(Some(tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::Policy,
+                reason: "disposable test".into(),
+            }))
+            .unwrap();
+        drop(socket);
+        eventually(
+            || child.0.try_wait().unwrap().is_some(),
+            "native service did not exit after policy close",
+        );
+        assert!(child.0.wait().unwrap().success());
+        let disconnected = read_marker().expect("durable disconnect marker");
+        assert_eq!(disconnected["generation"], generation);
+        assert_eq!(disconnected["version"], version);
+        assert_eq!(disconnected["pid"], pid);
+        assert_eq!(disconnected["state"], "disconnected");
+        assert!(!verify_online(&key).unwrap_or(false));
+        assert_eq!(fs::read_to_string(&key).unwrap(), pem);
+        assert_eq!(
+            fs::read_to_string(&device).unwrap(),
+            format!("{DEVICE_ID}\n")
+        );
+    }
 }

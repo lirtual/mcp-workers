@@ -24,7 +24,7 @@ export const REVIEWED_V012_RELEASE_PIN: InstallReleasePin = Object.freeze({
 
 // Historical immutable v0.1.2 uses two-code and MUST NEVER be offered by
 // a Worker that only accepts one-code signed pending enrollments.
-// Preview may serve the new pinned release only with preview flag, owner DO and token.
+// Historical pins are audit fixtures only; public routes never serve them.
 // Reviewed immutable TEST prerelease; native x64 and ARM64 build #39096572744.
 // The prior v0.1.2 is retained above only as an explicitly incompatible fixture.
 export const REVIEWED_V014_RELEASE_PIN: InstallReleasePin = Object.freeze({
@@ -126,90 +126,3 @@ export const REVIEWED_WINDOWS_INSTALL_PIN: WindowsInstallPin = Object.freeze({
 
 /** Reviewed macOS distribution contract. Pin native architectures and exact
  * owner-local installer source separately from the trusted HTTPS Worker script. */
-export type MacInstallPin = Readonly<{
-  tag: string; commit: string; arm64Sha256: string; x64Sha256: string;
-  scriptSha256: string;
-  // Deliberate opt-in only after a separately reviewed immutable Agent Release.
-  remoteUpgradeMode?: "detached-launchd-v1";
-}>;
-// Historical immutable v0.1.51 pins kept for evidence. Public /install.sh,
-// /install.ps1, and /install-macos.sh resolve one current-repository latest
-// Release and do not embed these commits or the old repository download URL.
-// The Windows pin only authorizes that route and is not embedded in the script.
-export const REVIEWED_MACOS_INSTALL_PIN: MacInstallPin = Object.freeze({
-  tag: "v0.1.51",
-  commit: "03a14fd4138ca8d77fa8aced78f7a53ccc51724e",
-  arm64Sha256: "dc3b7ea6cf5ece3c76a053ffde81b1dc1a217f1404daef621eb80ee151433803",
-  x64Sha256: "f75e2eff990a1cf465fbe1697240a8244798584798d552f05459d8dcdc13ede5",
-  scriptSha256: "59ce3cc7a9713e2ed6c01fc9d6d9015ee7dbee2f428e5a1cc45a654288ed5d55",
-  remoteUpgradeMode: "detached-launchd-v1",
-});
-
-function validMacPin(pin: MacInstallPin): boolean {
-  return /^v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(pin.tag) &&
-    /^[a-f0-9]{40}$/.test(pin.commit) &&
-    [pin.arm64Sha256,pin.x64Sha256,pin.scriptSha256].every(s=>/^[a-f0-9]{64}$/.test(s)) &&
-    (pin.remoteUpgradeMode === undefined ||
-      pin.remoteUpgradeMode === "detached-launchd-v1");
-}
-
-/** HTTPS Worker script is the bootstrap trust root. Pinned GitHub source and
- * Release bytes are separately verified before executing any downloaded file.
- * The pinned macos-local.sh supports install, upgrade and temporary actions
- * before execution. The public route stays 503 if the pin is absent. */
-export function renderAgentInstallMacShell(origin: string, pin: MacInstallPin): string {
-  if (!validInstallerOrigin(origin) || !validMacPin(pin))
-    throw new Error("Unapproved macOS release pin or origin");
-  return [
-    "#!/bin/sh",
-    "set -eu",
-    "umask 077",
-    'case "$#" in',
-    '  0) mode= ;;',
-    ...(pin.remoteUpgradeMode === "detached-launchd-v1"
-      ? ['  1) case "$1" in --upgrade) mode=upgrade ;; --remote-upgrade) mode=remote-upgrade ;; *) echo "Unsupported installer action" >&2; exit 1 ;; esac ;;']
-      : ['  1) [ "$1" = "--upgrade" ] || { echo "Unsupported installer action" >&2; exit 1; }; mode=upgrade ;;']),
-    '  *) echo "Unsupported installer action" >&2; exit 1 ;;',
-    'esac',
-    "[ \"$(uname -s)\" = Darwin ] || { echo 'macOS only' >&2; exit 1; }",
-    "[ \"$(id -u)\" -ne 0 ] || { echo 'Non-root macOS owner required' >&2; exit 1; }",
-    'if [ "$mode" != remote-upgrade ]; then',
-    '  [ -t 0 ] && [ -t 1 ] || { echo "Ordinary interactive Terminal required" >&2; exit 1; }',
-    'fi',
-    "for tool in curl shasum tar mktemp uname id sw_vers awk; do command -v \"$tool\" >/dev/null 2>&1 || { echo 'Missing macOS installer tool' >&2; exit 1; }; done",
-    "major=$(sw_vers -productVersion | awk -F. '{print $1}')",
-    "case \"$major\" in ''|*[!0-9]*) exit 1 ;; esac",
-    "[ \"$major\" -ge 15 ] || { echo 'Requires macOS 15 or newer' >&2; exit 1; }",
-    "case \"$(uname -m)\" in",
-    "  arm64) target=darwin-arm64; expected="+pin.arm64Sha256+" ;;",
-    "  x86_64) target=darwin-x64; expected="+pin.x64Sha256+"; [ \"$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || :)\" != 1 ] || { echo 'Rosetta not supported' >&2; exit 1; } ;;",
-    "  *) echo 'Unsupported macOS architecture' >&2; exit 1 ;;",
-    "esac",
-    "stage=$(mktemp -d \"${TMPDIR:-/tmp}/rca-macos.XXXXXXXX\")",
-    "trap 'rm -rf -- \"$stage\"' EXIT",
-    "trap 'exit 130' INT",
-    "trap 'exit 143' TERM",
-    "archive=\"$stage/agent.tar.gz\"",
-    "source=\"$stage/macos-local.sh\"",
-    "download=https://github.com/lirtual/remote-control-agent/releases/download/"+pin.tag+"/remote-control-agent-"+pin.tag+"-$target.tar.gz",
-    "echo 'Downloading pinned native macOS Agent...'",
-    "effective=$(curl -fL --progress-bar --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 3 --max-time 180 --max-filesize 180000000 -w '%{url_effective}' \"$download\" -o \"$archive\")",
-    "case \"$effective\" in \"$download\"|https://release-assets.githubusercontent.com/*|https://objects.githubusercontent.com/*) ;; *) echo 'Unexpected Release redirect' >&2; exit 1 ;; esac",
-    "[ \"$(shasum -a 256 \"$archive\" | awk '{print $1}')\" = \"$expected\" ] || { echo 'Release asset SHA-256 mismatch' >&2; exit 1; }",
-    "script_url=https://raw.githubusercontent.com/lirtual/remote-control-agent/"+pin.commit+"/apps/remote-control-agent/scripts/macos-local.sh",
-    "curl -fSs --proto '=https' --tlsv1.2 --max-redirs 0 --max-time 30 --max-filesize 30000 \"$script_url\" -o \"$source\"",
-    "[ \"$(shasum -a 256 \"$source\" | awk '{print $1}')\" = '"+pin.scriptSha256+"' ] || { echo 'Installer source SHA-256 mismatch' >&2; exit 1; }",
-    'if [ "$mode" != upgrade ] && [ "$mode" != remote-upgrade ]; then',
-    "  printf 'Install mode: [1] Permanent (login LaunchAgent), [2] Temporary (24h foreground): ' > /dev/tty",
-    "  IFS= read -r choice < /dev/tty || { echo 'Owner selection cancelled' >&2; exit 1; }",
-    '  case "$choice" in 1) mode=install ;; 2) mode=temporary ;; *) echo "No mode selected" >&2; exit 1 ;; esac',
-    'fi',
-    "echo 'Verified immutable archive and exact installer source.'",
-    'if [ "$mode" = remote-upgrade ]; then',
-    "  sh \"$source\" \"$mode\" --archive \"$archive\" --sha256 \"$expected\" --source-sha '"+pin.commit+"' --endpoint '"+origin+"/'",
-    'else',
-    "  sh \"$source\" \"$mode\" --archive \"$archive\" --sha256 \"$expected\" --source-sha '"+pin.commit+"' --endpoint '"+origin+"/' < /dev/tty",
-    'fi',
-    "",
-  ].join("\n");
-}

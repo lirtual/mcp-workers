@@ -63,3 +63,42 @@ test("native detached upgrade admits only reviewed existing Task switch, not onb
   assert.ok(complete.indexOf("-Action Switch -Version $Version -Direction Upgrade") < complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }"));
   assert.ok(complete.indexOf("if ($detachedUpgrade) { throw 'Detached native installation is not permitted' }") < complete.indexOf("--pair-local"));
 });
+
+test("attended Latest update is limited to existing installation and the bare CLI verbs",()=>{
+  const builder=readFileSync(fileURLToPath(new URL("../scripts/build-windows-release.mjs",import.meta.url)),"utf8");
+  assert(builder.includes('if "%~1"=="update" if "%2"=="" goto :attended_update'));
+  assert(builder.includes('if "%~1"=="upgrade" if "%2"=="" goto :attended_update'));
+  assert(builder.includes('--cli %*'));
+  assert(builder.includes('windows-stage-install.ps1" -UpdateOnly'));
+  const entry=text.indexOf('$attendedBinding = $null');
+  const preflight=text.indexOf('$attendedBinding = Get-AttendedUpdateBinding',entry);
+  const latest=text.indexOf('$latest = Resolve-LatestAgentRelease',preflight);
+  assert(entry>=0&&preflight>entry&&latest>preflight);
+  const complete=text.slice(text.indexOf("function Complete-NativeInstall"),text.indexOf("function Confirm-Upgrade"));
+  assert(complete.indexOf("Assert-AttendedUpdateTarget")<complete.indexOf("-Action Switch -Version"));
+  assert(complete.includes("Update cannot install or pair a device"));
+  assert(complete.includes("Owner STOP blocks attended native upgrade"));
+});
+
+test("automatic dispatch and result use one operation ID and uncertain outcomes retain evidence",()=>{
+  const task=readFileSync(fileURLToPath(new URL("../scripts/windows-user-task.ps1",import.meta.url)),"utf8");
+  assert.match(text,/-AutomaticOperation '\{4\}'" -f .*\$operation/);
+  assert.match(text,/-AutomaticOperation \$AutomaticOperation/);
+  assert.match(task,/operation_id=\$AutomaticOperation/);
+  assert.match(text,/\$result -in @\('local_switch_returned','pre_switch_refused'\) -and -not \(Test-Path/);
+  assert.match(text,/\$Automatic -and \$detachedUpgrade -and -not \$automaticSwitchDispatched/);
+  assert.match(text,/Write-Output 'automatic-pre-switch-refused'/);
+  assert.match(task,/\[bool\]\$Automatic -ne \[bool\]\$AutomaticOperation/);
+});
+
+
+test("attended Windows installer identifies the verified package manager without changing PATH",()=>{
+  const complete=text.slice(text.indexOf("function Complete-NativeInstall"),text.indexOf("function Confirm-Upgrade"));
+  const verified=complete.indexOf("verify-windows-native.ps1");
+  const manager=complete.indexOf("Join-Path $directory 'rca.cmd'");
+  const hint=complete.indexOf('Write-Host "Local manager for this verified package: $managerCommand --help');
+  assert.ok(verified>=0&&manager>verified&&hint>manager);
+  assert.ok(complete.includes('if (-not $detachedUpgrade) {\n    Write-Host "Local manager for this verified package: $managerCommand --help'));
+  assert.ok(complete.includes('$managerCommand update --auto off'));
+  assert.ok(complete.includes('$managerCommand status'));
+});

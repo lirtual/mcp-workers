@@ -19,7 +19,7 @@ test('retired cross-repo Agent paths do not select Remote Control or a native bu
 });
 
 test('a nested Agent edit selects Remote Control compatibility checks, and a Worker-only edit does not select a five-platform native build', () => {
-  const agent = selectionDetails(['apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+  const agent = selectionDetails(['apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs']);
   assert.deepEqual(agent.apps, ['remote-control-mcp-worker']);
   assert.equal(agent.remoteControlChanged, true);
   assert.equal(agent.agentNativeChanged, true);
@@ -44,7 +44,7 @@ test('Rust-only candidate changes run Rust CI without rebuilding the five unchan
   assert.equal(rust.remoteControlChanged, true);
   const mixed = selectionDetails([
     'apps/remote-control-mcp-worker/agent/native-rust/src/lib.rs',
-    'apps/remote-control-mcp-worker/agent/src/v2-main.ts',
+    'apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs',
   ]);
   assert.equal(mixed.rustCandidateChanged, true);
   assert.equal(mixed.agentNativeChanged, true);

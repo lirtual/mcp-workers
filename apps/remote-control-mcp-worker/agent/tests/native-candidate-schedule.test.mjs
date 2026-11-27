@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -16,35 +16,46 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   const release = read('.github/workflows/release.yml');
 
   assert.match(ci, /agent_native_changed: \$\{\{ steps\.scope\.outputs\.agent_native_changed \}\}/);
-  assert.match(ci, /needs: checks\n    if: needs\.checks\.outputs\.agent_native_changed == 'true'\n    uses: \.\/\.github\/workflows\/agent-native-candidates\.yml\n    with:\n      candidate_tag: v0\.0\.0-ci/);
+  assert.match(ci, /needs: checks\n    if: needs\.checks\.outputs\.agent_native_changed == 'true'\n    uses: \.\/\.github\/workflows\/agent-native-candidates\.yml\n    with:\n      candidate_tag: v0\.1\.61/);
   assert.doesNotMatch(ci, /\bgh release create\b/);
   assert.doesNotMatch(release, /\bgh release create\b|agent-native-candidates|release-pins/);
   assert.doesNotMatch(candidates, /^  push:/m);
-  assert.match(candidates, /rust_agent="\$SPEC914_TEMP\/build\/rca-standard-linux-candidate"/);
-  assert.match(candidates, /--out "\$SPEC914_TEMP\/native-only"/);
-  assert.doesNotMatch(candidates, /SPEC914_TEMP\/package|linux-systemd-upgrade-recovery\.integration\.mjs/);
+  // Explicit Agent test entrypoints must exist after runtime/test retirement.
+  for (const line of candidates.split('\n').filter(line => line.includes('node --experimental-strip-types --test tests/'))) {
+    for (const file of line.trim().split(/\s+/).filter(part => part.startsWith('tests/'))) {
+      assert.ok(existsSync(path.join(root, 'apps/remote-control-mcp-worker/agent', file)), `missing candidate test: ${file}`);
+    }
+  }
+
+  assert.match(candidates, /rust_agent="\$RCA_TEST_TEMP\/build\/rca-standard-linux-candidate"/);
+  assert.match(candidates, /--out "\$RCA_TEST_TEMP\/native-only"/);
+  assert.doesNotMatch(candidates, /RCA_TEST_TEMP\/package|linux-systemd-upgrade-recovery\.integration\.mjs/);
   assert.match(candidates, /linux-native-only-systemd\.integration\.mjs/);
   assert.doesNotMatch(candidates, /\bgh release (?:create|edit|upload|delete)\b|wrangler deploy|uses: \.\/\.github\/workflows\/release\.yml|release-pins/);
   assert.match(candidates, /^  workflow_dispatch:$/m);
   assert.match(candidates, /Manual native candidates are built from main only/);
-  // Prerelease review names cannot satisfy stable publication; stable Linux/Windows
-  // names now come from native-only producers, not the Node reference build.
-  const reviewOnly = "if: github.event_name == 'workflow_dispatch' && contains(inputs.candidate_tag, '-rust-candidate.')";
-  assert.ok(candidates.includes('Save unpublished Linux Node-free review artifact\n        ' + reviewOnly));
-  assert.ok(candidates.includes('name: ${{ inputs.candidate_tag }}-${{ matrix.target }}-native-only'));
-  assert.ok(candidates.includes("name: ${{ inputs.candidate_tag }}-windows-x64${{ contains(inputs.candidate_tag, '-rust-candidate.') && '-native-only' || '' }}"));
+  // New manual candidates use the intended stable tag only; old releases remain historical.
+  assert.doesNotMatch(candidates, /rust-candidate|Save unpublished Linux Node-free review artifact/);
+  assert.ok(candidates.includes('name: ${{ inputs.candidate_tag }}-windows-x64'));
   assert.ok(candidates.includes('name: ${{ inputs.candidate_tag }}-${{ matrix.runner }}'));
-  assert.ok(candidates.includes('cp -- "$output/$asset" "$output/SHA256SUMS.txt" "release-candidate/$SPEC914_TARGET/"'));
+  assert.ok(candidates.includes('cp -- "$output/$asset" "$output/SHA256SUMS.txt" "release-candidate/$RCA_TEST_TARGET/"'));
   assert.ok(!candidates.includes('name: ${{ inputs.candidate_tag }}-${{ matrix.os }}'));
   const linuxReview=candidates.slice(candidates.indexOf('      - name: Assemble unpublished Linux Node-free artifact'),candidates.indexOf('  macos-native-candidate:'));
   assert.match(linuxReview,/--artifact-profile rust-native-only-v1/);
+  const macosReview=candidates.slice(candidates.indexOf('  macos-native-candidate:'));
+  assert.match(macosReview,/name: Rust-only native macOS 15/);
+  assert.match(macosReview,/--artifact-profile rust-native-only-v1/);
+  assert.match(macosReview,/--rust-agent-bin/);
+  assert.doesNotMatch(macosReview,/--node-bin|node_archive_sha256|node-v24[.]21[.]0/);
+  assert.doesNotMatch(macosReview,/macos-packaged-runtime-smoke|macos-local[.]test[.]mjs|macos-remote-upgrade[.]test[.]mjs/);
+  assert.doesNotMatch(macosReview,/macos-local[.]sh install/);
   const windowsReview=candidates.slice(candidates.indexOf('      - name: Assemble verifiable Windows release candidate'));
   assert.match(windowsReview,/'--artifact-profile','rust-native-only-v1'/);
   assert.doesNotMatch(windowsReview,/\$nativeOnly = \$tag/);
   assert.doesNotMatch(candidates,/candidate-rust-version\.zip|windows-rust-candidate-reopened/);
   assert.match(candidates, /WINDOWS_RUNNING_WITHOUT_SIGNED_WSS_REJECTED/);
   for (const name of ['Save reviewed native candidate for manual Release promotion','Save unpublished macOS candidate for owner-native E2E']) {
-    assert.ok(candidates.includes(name + "\n        if: github.event_name == 'workflow_dispatch' && !contains(inputs.candidate_tag, '-rust-candidate.')"));
+    assert.ok(candidates.includes(name + "\n        if: github.event_name == 'workflow_dispatch'"));
   }
 
 
@@ -60,14 +71,14 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
     'darwin-arm64',
     'darwin-x64',
     'validate-local-archive.py',
-    'build-v2-release.mjs',
-    'build-windows-preview.mjs',
+    'build-agent-release.mjs',
+    'build-windows-release.mjs',
     'darwin-session-supervisor',
   ]) {
     assert.ok(candidates.includes(marker), marker);
   }
 
-  const agent = selectionDetails(['apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+  const agent = selectionDetails(['apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs']);
   assert.equal(agent.agentNativeChanged, true);
   assert.deepEqual(agent.apps, ['remote-control-mcp-worker']);
 
@@ -112,7 +123,7 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
       BEFORE_SHA: history.worker,
       GITHUB_SHA: history.agent,
     });
-    assert.deepEqual(agentPush.changedFiles, ['apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+    assert.deepEqual(agentPush.changedFiles, ['apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs']);
     assert.equal(selectionDetails(agentPush.changedFiles).agentNativeChanged, true);
   } finally {
     process.chdir(previous);
@@ -142,9 +153,9 @@ function temporaryPushHistory() {
   git(['add', 'apps/remote-control-mcp-worker/src/worker.ts']);
   git(['commit', '-q', '-m', 'worker']);
   const worker = git(['rev-parse', 'HEAD']).toString().trim();
-  mkdirSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/src'), { recursive: true });
-  writeFileSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/src/v2-main.ts'), 'export {}\n');
-  git(['add', 'apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+  mkdirSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/scripts'), { recursive: true });
+  writeFileSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs'), 'export {}\n');
+  git(['add', 'apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs']);
   git(['commit', '-q', '-m', 'agent']);
   const agent = git(['rev-parse', 'HEAD']).toString().trim();
   return { dir, base, worker, agent };

@@ -105,3 +105,40 @@ fn owned_windows_session_id_is_canonical_uuid_v4() {
         JobCleanup::Confirmed
     );
 }
+
+#[test]
+fn secure_stdin_suppresses_echo_and_preserves_unrelated_output() {
+    let sessions = WindowsManagedSessions::new(Duration::from_secs(10)).unwrap();
+    let target = sessions
+        .start("$line=[Console]::ReadLine();if($line -cne 'synthetic-1039-marker'){exit 23};[Console]::Write($line);[Console]::Error.Write($line)")
+        .unwrap();
+    let other = sessions.start("[Console]::Write('unrelated')").unwrap();
+    assert_eq!(
+        sessions.write_secure_input(&target.session_id, "synthetic-1039-marker\n"),
+        InputOutcome::Completed
+    );
+    settle(&sessions, &target.session_id, Duration::from_secs(10));
+    assert_eq!(sessions.get(&target.session_id).unwrap().exit_code, Some(0));
+    settle(&sessions, &other.session_id, Duration::from_secs(10));
+    let page = sessions
+        .read_output(&target.session_id, 0, 1024)
+        .unwrap()
+        .unwrap()
+        .page;
+    assert!(page.sensitive);
+    assert_eq!(
+        page.output,
+        "[output suppressed after secure input was delivered]"
+    );
+    let unrelated = sessions
+        .read_output(&other.session_id, 0, 1024)
+        .unwrap()
+        .unwrap()
+        .page;
+    assert!(!unrelated.sensitive);
+    assert_eq!(unrelated.output, "unrelated");
+    assert_eq!(
+        sessions.write_secure_input(&target.session_id, "not delivered"),
+        InputOutcome::Failed
+    );
+}

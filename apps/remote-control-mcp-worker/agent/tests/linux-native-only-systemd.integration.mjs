@@ -6,11 +6,11 @@ import {generateKeyPairSync,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {chmodSync,existsSync,mkdirSync,readFileSync,readlinkSync,rmSync,symlinkSync,writeFileSync} from "node:fs";
 import path from "node:path";
-import {ReceiptStore} from "../src/operations.ts";
+import {seedUnknownReceipt} from "./fixtures/receipt-ledger.ts";
 
-const source=process.env.RCA914_AGENT_SOURCE;
-const oldArchive=process.env.RCA914_OLD_ARCHIVE;
-const nativeArchive=process.env.RCA914_NATIVE_ARCHIVE;
+const source=process.env.RCA_TEST_AGENT_SOURCE;
+const oldArchive=process.env.RCA_TEST_OLD_ARCHIVE;
+const nativeArchive=process.env.RCA_TEST_NATIVE_ARCHIVE;
 if(!source||!oldArchive||!nativeArchive)throw Error("Missing isolated native systemd fixture paths");
 if(process.getuid()===0||!process.env.DBUS_SESSION_BUS_ADDRESS||!process.env.XDG_RUNTIME_DIR)
   throw Error("Disposable unprivileged systemd user bus is required");
@@ -21,8 +21,16 @@ const target=process.arch==="arm64"?"linux-arm64-glibc":"linux-x64-glibc";
 const base=path.join(home,".local/share/mcp-workers/remote-control");
 const key=path.join(base,"v2-identity.pem");
 const deviceId=key+".device-id";
-const oldRoot=path.join(base,"programs/v0.1.58-"+target);
-const nativeRoot=path.join(base,"programs/v0.1.59-rust-candidate.1-"+target);
+// The caller supplies independently reviewed version labels, not values inferred
+// from the archives under test. Reuse this real systemd seam for Stable-to-Stable
+// upgrades as well as unpublished builds.
+const oldVersion=process.env.RCA_TEST_BASELINE_VERSION;
+const nextVersion=process.env.RCA_TEST_TARGET_VERSION;
+assert.match(oldVersion,/^v\d+\.\d+\.\d+$/);
+assert.match(nextVersion,/^v\d+\.\d+\.\d+$/);
+assert.notEqual(oldVersion,nextVersion);
+const oldRoot=path.join(base,"programs",oldVersion+"-"+target);
+const nativeRoot=path.join(base,"programs",nextVersion+"-"+target);
 const rustExe=path.join(nativeRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
 const priorExe=path.join(oldRoot,"apps/remote-control-agent/.build/rca-standard-linux-candidate");
 const unitFile=path.join(home,".config/systemd/user",UNIT);
@@ -39,12 +47,26 @@ function systemctl(...args) {
   assert.equal(result.status,0,result.stderr||String(result.error));
   return result.stdout.trim();
 }
-function liveExecutable() {
-  const pid=Number(systemctl("show","-p","MainPID","--value",UNIT));
-  assert.ok(pid>0,"systemd MainPID must be known");
-  const first=readFileSync("/proc/"+pid+"/cmdline").toString().split("\0")[0];
-  assert.ok(first,"systemd MainPID must have an executable");
-  return first;
+function liveExecutable(expected) {
+  // Reuse the production readiness contract: ActiveState/SubState, stable
+  // MainPID and /proc/PID/exe. cmdline argv[0] is mutable argument data, not
+  // the kernel's executable identity.
+  const code=[
+    "import importlib.util,pathlib,sys",
+    "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
+    "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
+    "expected=pathlib.Path(sys.argv[2]).resolve(strict=True)",
+    "pid=b.native_wait_started(expected)",
+    "executable=b.native_process_executable(pid)",
+    "assert b.native_main_pid()==pid,'systemd MainPID changed after executable verification'",
+    "print(executable,end='')",
+  ].join("\n");
+  const result=spawnSync("/usr/bin/python3",["-I","-B","-c",code,
+    path.join(source,"scripts/bootstrap-v2.py"),expected],{
+    env,encoding:"utf8",timeout:10000
+  });
+  assert.equal(result.status,0,result.stdout+"\n"+result.stderr);
+  return result.stdout.trim();
 }
 for(const dir of [base,path.dirname(unitFile),path.dirname(receipts),path.dirname(cli)])
   rmSync(dir,{recursive:true,force:true});
@@ -55,6 +77,10 @@ for(const [archive,destination] of [[oldArchive,oldRoot],[nativeArchive,nativeRo
     encoding:"utf8",timeout:12000
   });
   assert.equal(result.status,0,result.stderr||String(result.error));
+  const bundle=JSON.parse(readFileSync(path.join(destination,"bundle.json"),"utf8"));
+  assert.equal(bundle.version,destination===oldRoot?oldVersion:nextVersion);
+  assert.equal(bundle.target,target);
+  assert.equal(bundle.artifact_profile,"rust-native-only-v1");
 }
 mkdirSync(base,{recursive:true,mode:0o700});
 const privateKey=generateKeyPairSync("ed25519").privateKey.export({type:"pkcs8",format:"pem"});
@@ -63,11 +89,8 @@ writeFileSync(key,privateKey,{mode:0o600});
 writeFileSync(deviceId,id+"\n",{mode:0o600});
 mkdirSync(path.dirname(unitFile),{recursive:true,mode:0o700});
 mkdirSync(path.dirname(cli),{recursive:true,mode:0o700});
-const receiptsStore=new ReceiptStore(path.dirname(receipts));
-await receiptsStore.open();
-await receiptsStore.admit("914-prior-unknown","read_file","a".repeat(64));
-await receiptsStore.update("914-prior-unknown","unknown","unresolved before cutover");
-await receiptsStore.close();
+seedUnknownReceipt(receipts,"914-prior-unknown","read_file","a".repeat(64),
+  new Date().toISOString(),"unresolved before cutover");
 
 const renderCode=[
   "import importlib.util,pathlib,sys",
@@ -100,7 +123,7 @@ try {
     env,encoding:"utf8",timeout:30000});
   assert.equal(first.status,0,first.stdout+"\n"+first.stderr);
   installed=true; // ensure fixture cleanup if a later assertion fails
-  assert.equal(liveExecutable(),rustExe);
+  assert.equal(liveExecutable(rustExe),rustExe);
   assert.ok(existsSync(key+".native-upgrade-intent"));
   assert.ok(!existsSync(key+".native-upgrade-proof"));
   assert.ok(!existsSync(cli));
@@ -133,7 +156,7 @@ try {
   systemctl("enable","--now",UNIT);
   installed=true;
   symlinkSync(path.join(oldRoot,"apps/remote-control-agent/scripts/rca.sh"),cli);
-  assert.equal(liveExecutable(),priorExe,"real published Rust is active before handoff");
+  assert.equal(liveExecutable(priorExe),priorExe,"real published Rust is active before handoff");
 
   // Run the reviewed switch against actual systemd, with a deliberately
   // missing signed Worker WSS proof. This must restore the ORIGINAL Rust.
@@ -154,7 +177,7 @@ try {
   });
   assert.equal(run.status,9,run.stdout+"\n"+run.stderr);
   assert.match(run.stdout,/rolled back/);
-  assert.equal(liveExecutable(),priorExe,"rollback MUST restore real Rust service");
+  assert.equal(liveExecutable(priorExe),priorExe,"rollback MUST restore real Rust service");
   assert.equal(readFileSync(unitFile,"utf8"),oldUnit,"original managed unit restored");
   assert.equal(readlinkSync(cli),path.join(oldRoot,"apps/remote-control-agent/scripts/rca.sh"));
   assert.equal(readFileSync(key,"utf8"),privateKey);
@@ -175,7 +198,7 @@ try {
   // acceptance. Killing the Python owner cannot make an unverified upgrade
   // disappear: the original unit, old launcher, identity and Unknown remain.
   systemctl("start",UNIT);
-  assert.equal(liveExecutable(),priorExe);
+  assert.equal(liveExecutable(priorExe),priorExe);
   const socketDeadline=Date.now()+10000;
   const upgradeSocket=path.join(base,"upgrade.sock");
   while(!existsSync(upgradeSocket)&&Date.now()<socketDeadline)
@@ -209,7 +232,7 @@ try {
           child.signalCode===null)
       await new Promise(resolve=>setTimeout(resolve,40));
     assert.ok(existsSync(marker),"upgrader never reached live native switch: "+childOutput);
-    assert.equal(liveExecutable(),rustExe,"real native Rust process was not active");
+    assert.equal(liveExecutable(rustExe),rustExe,"real native Rust process was not active");
     assert.equal(readFileSync(backupFile,"utf8"),oldUnit,
       "original Rust service backup lost before commit");
     assert.ok(existsSync(key+".native-upgrade-intent"),
@@ -220,7 +243,7 @@ try {
     child.kill("SIGKILL");
     await new Promise(resolve=>child.once("exit",resolve));
     assert.equal(child.signalCode,"SIGKILL","owner upgrader must be interrupted");
-    assert.equal(liveExecutable(),rustExe,"SIGKILL should not erase native systemd state");
+    assert.equal(liveExecutable(rustExe),rustExe,"SIGKILL should not erase native systemd state");
     assert.equal(readFileSync(backupFile,"utf8"),oldUnit);
     assert.ok(existsSync(key+".native-upgrade-intent"));
     assert.equal(readFileSync(key,"utf8"),privateKey);
@@ -252,7 +275,7 @@ try {
     const outcome=JSON.parse(recovery.stdout);
     assert.equal(outcome.status,"previous_service_restored");
     assert.equal(outcome.signed_wss,"unconfirmed");
-    assert.equal(liveExecutable(),priorExe,"original Rust must be restored");
+    assert.equal(liveExecutable(priorExe),priorExe,"original Rust must be restored");
     assert.equal(readFileSync(unitFile,"utf8"),oldUnit);
     assert.equal(readlinkSync(cli),path.join(oldRoot,
       "apps/remote-control-agent/scripts/rca.sh"));

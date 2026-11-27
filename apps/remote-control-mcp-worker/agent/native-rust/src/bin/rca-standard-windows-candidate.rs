@@ -2,6 +2,7 @@
 //! private identity, and explicit same-owner service launch contract.
 #[cfg(windows)]
 mod windows {
+    use rca_native_agent::automatic_update::{automatic_jitter, AutomaticCheckSchedule};
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::native_file::{
         run_native_managed_session_with_upgrade, NativeFileError, UpgradeRuntimeOptions,
@@ -16,7 +17,7 @@ mod windows {
     use std::process::Command;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use windows_sys::Win32::System::Console::{
         SetConsoleCtrlHandler, CTRL_BREAK_EVENT, CTRL_C_EVENT,
     };
@@ -86,7 +87,7 @@ mod windows {
         Ok((pem, id))
     }
 
-    fn local_status() -> Result<(), ()> {
+    fn local_status_facts() -> Result<serde_json::Value, ()> {
         let root = store_root()?;
         match fs::symlink_metadata(&root) {
             Ok(_) => validate_windows_private_path(&root, true).map_err(|_| ())?,
@@ -94,18 +95,90 @@ mod windows {
             Err(_) => return Err(()),
         }
         let (pem, id) = local_identity(&root.join("v2-identity.pem"))?;
-        println!(
-            "{}",
-            serde_json::json!({
-                "platform": "win32",
-                "mode": "native-user-agent",
-                "identity_present": pem.is_some(),
-                "device_id": id,
-                "remote_connection": "unconfirmed",
-                "shell": true,
-                "write_file": true
-            })
-        );
+        let policy = match id.as_deref() {
+            Some(id)
+                if optional_private(&root.join("v2-identity.pem.install-mode"), 32)?.as_deref()
+                    == Some(b"permanent\n") =>
+            {
+                rca_native_agent::device_pairing::windows_auto_policy(&root, id)
+            }
+            _ => "off",
+        };
+        let task = program_root()
+            .ok()
+            .and_then(|(directory, _)| task_command(&directory, &["-Action", "Status"]).ok())
+            .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok());
+        let activity = task
+            .as_ref()
+            .and_then(|value| value["automatic_update_activity"].as_str());
+        let activity = match (activity, policy) {
+            (Some("needs_attention"), _) => "needs_attention",
+            (Some("upgrading"), _) => "upgrading",
+            (Some("unknown"), _) | (_, "unknown") => "unknown",
+            (Some("waiting_idle"), "off") => "disabled",
+            (Some(value), _) => value,
+            (_, "off") => "disabled",
+            _ => "unknown",
+        };
+        let local_service = match task.as_ref() {
+            Some(value) if value["installed"] == false => "not_installed",
+            Some(value) => value["local_service"].as_str().unwrap_or("unconfirmed"),
+            None => "unconfirmed",
+        };
+        let signed = task
+            .as_ref()
+            .and_then(|value| value["signed_wss"].as_str())
+            .unwrap_or("unconfirmed");
+        Ok(serde_json::json!({
+            "platform": "win32",
+            "arch": "x64",
+            "local_service": local_service,
+            "signed_wss": signed,
+            "last_online_unix_ms": task.as_ref().and_then(|value|value["last_online_unix_ms"].as_u64()),
+            "mode": "native-user-agent",
+            "identity_present": pem.is_some(),
+            "device_id": id,
+            "remote_connection": signed,
+            "cloud_authorization": "unconfirmed",
+            "read_only_access": "unconfirmed",
+            "automatic_update": policy,
+            "automatic_update_activity": activity,
+            "automatic_update_result": task.as_ref().map(|value| &value["automatic_update_result"]),
+            "installed_version": task.as_ref().and_then(|value| value["version"].as_str()),
+            "shell": true,
+            "write_file": true
+        }))
+    }
+
+    fn local_status(doctor: bool, structured: bool) -> Result<(), ()> {
+        let state = local_status_facts()?;
+        let result = if doctor {
+            let mut findings = Vec::new();
+            if state["identity_present"] == false || state["device_id"].is_null() {
+                findings.push("local_identity_unconfirmed");
+            }
+            if state["local_service"] != "running_observed" {
+                findings.push("local_service_unconfirmed");
+            }
+            findings.push("cloud_authorization_unconfirmed");
+            if state["signed_wss"] != "connected_observed" {
+                findings.push("signed_wss_unconfirmed");
+            }
+            if matches!(
+                state["automatic_update_activity"].as_str(),
+                Some("unknown" | "needs_attention")
+            ) {
+                findings.push("update_state_needs_review");
+            }
+            serde_json::json!({"status": state, "findings": findings})
+        } else {
+            state
+        };
+        if structured {
+            println!("{result}");
+        } else {
+            println!("{}", serde_json::to_string_pretty(&result).map_err(|_| ())?);
+        }
         Ok(())
     }
 
@@ -212,17 +285,13 @@ mod windows {
             "at": std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).map_err(|_| ())?.as_millis()
         });
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .map_err(|_| ())?;
-        file.write_all(record.to_string().as_bytes())
-            .map_err(|_| ())?;
-        file.write_all(b"\n").map_err(|_| ())?;
-        file.sync_all().map_err(|_| ())?;
-        validate_windows_private_path(&path, false).map_err(|_| ())?;
-        Ok(())
+        // Restarts and rollback may reuse the same Task generation. Replace
+        // that generation's proof only after a fresh authenticated handshake.
+        rca_native_agent::replace_windows_private_record(
+            &path,
+            (record.to_string() + "\n").as_bytes(),
+        )
+        .map_err(|_| ())
     }
 
     fn pair_local(endpoint: &str, name: &str, mode: &str) -> Result<(), ()> {
@@ -308,11 +377,21 @@ mod windows {
     }
 
     fn task_command(directory: &Path, args: &[&str]) -> Result<std::process::Output, ()> {
+        owner_script_command(directory, "windows-user-task.ps1", args)
+    }
+
+    fn owner_script_command(
+        directory: &Path,
+        script_name: &str,
+        args: &[&str],
+    ) -> Result<std::process::Output, ()> {
         let system = PathBuf::from(std::env::var_os("SystemRoot").ok_or(())?);
         if !system.is_absolute() {
             return Err(());
         }
-        let script = directory.join("apps/remote-control-agent/scripts/windows-user-task.ps1");
+        let script = directory
+            .join("apps/remote-control-agent/scripts")
+            .join(script_name);
         validate_windows_private_path(&script, false).map_err(|_| ())?;
         let output = Command::new(system.join("System32/WindowsPowerShell/v1.0/powershell.exe"))
             .args([
@@ -331,6 +410,94 @@ mod windows {
             return Err(());
         }
         Ok(output)
+    }
+
+    fn automatic_policy(action: Option<&str>) -> Result<(), ()> {
+        use rca_native_agent::device_pairing::{
+            lock_windows_permanent_mode, persist_windows_auto_policy, windows_auto_policy,
+        };
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        if optional_private(&root.join("v2-identity.pem.install-mode"), 32)?.as_deref()
+            != Some(b"permanent\n")
+        {
+            return Err(());
+        }
+        let _guard = if action.is_some() {
+            Some(lock_windows_permanent_mode(&root).map_err(|_| ())?)
+        } else {
+            None
+        };
+        let (_, id) = local_identity(&root.join("v2-identity.pem"))?;
+        let id = id.ok_or(())?;
+        let status = task_command(&directory, &["-Action", "Status"])?;
+        let facts: serde_json::Value = serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+        if facts["installed"] != true {
+            return Err(());
+        }
+        if let Some(action) = action {
+            if action == "on" || action == "initialize" {
+                let tag = facts["version"].as_str().ok_or(())?;
+                let parts: Vec<_> = tag.strip_prefix('v').ok_or(())?.split('.').collect();
+                if parts.len() != 3
+                    || parts.iter().any(|part| {
+                        part.is_empty()
+                            || !part.bytes().all(|b| b.is_ascii_digit())
+                            || (part.len() > 1 && part.starts_with('0'))
+                    })
+                {
+                    return Err(());
+                }
+                for name in [
+                    "windows-native-upgrade.json",
+                    "v2-identity.pem.activation-pending",
+                    "v2-identity.pem.device-id.pending",
+                ] {
+                    if optional_private(&root.join(name), 4096)?.is_some() {
+                        return Err(());
+                    }
+                }
+            }
+            // The installer default may only create missing consent, never
+            // replace a policy the owner has already explicitly selected.
+            if action != "initialize"
+                || optional_private(&root.join("v2-identity.pem.automatic-update"), 256)?.is_none()
+            {
+                persist_windows_auto_policy(&root, &id, action != "off").map_err(|_| ())?;
+            }
+        }
+        let policy = windows_auto_policy(&root, &id);
+        println!("{}", serde_json::json!({"automatic_update":policy}));
+        if action.is_some_and(|expected| {
+            policy == "unknown" || (expected != "initialize" && expected != policy)
+        }) {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn check_latest() -> Result<(), ()> {
+        let (directory, _) = program_root()?;
+        let status = task_command(&directory, &["-Action", "Status"])?;
+        let facts: serde_json::Value = serde_json::from_slice(&status.stdout).map_err(|_| ())?;
+        if facts["installed"] != true {
+            return Err(());
+        }
+        let installed = facts["version"].as_str().ok_or(())?;
+        let observed = owner_script_command(
+            &directory,
+            "windows-stage-install.ps1",
+            &["-CheckOnly", "-Version", installed],
+        )?;
+        let result: serde_json::Value = serde_json::from_slice(&observed.stdout).map_err(|_| ())?;
+        if result["installed_version"] != installed {
+            return Err(());
+        }
+        println!("{result}");
+        if result["status"] == "unknown" {
+            return Err(());
+        }
+        Ok(())
     }
 
     fn foreground(endpoint: &str) -> Result<(), ()> {
@@ -444,6 +611,25 @@ mod windows {
         Ok(())
     }
 
+    fn secure_input_local(request_id: &str) -> Result<(), ()> {
+        use rca_native_agent::secure_input_cli::run_secure_input_owner_flow;
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        let key = root.join("v2-identity.pem");
+        let (pem, id) = local_identity(&key)?;
+        let pem = pem.ok_or(())?;
+        let id = id.ok_or(())?;
+        if stopped(&key)? {
+            return Err(());
+        }
+        let output = task_command(&directory, &["-Action", "Endpoint"])?;
+        let endpoint = std::str::from_utf8(&output.stdout).map_err(|_| ())?.trim();
+        run_secure_input_owner_flow(endpoint, &pem, &id, request_id).map_err(|_| ())
+    }
+
     fn owner_lifecycle(resume: bool) -> Result<(), ()> {
         use rca_native_agent::device_pairing::{
             lock_windows_permanent_mode, persist_windows_owner_stop, PairingClient,
@@ -513,6 +699,19 @@ mod windows {
         Ok(())
     }
 
+    fn normal_restart() -> Result<(), ()> {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            return Err(());
+        }
+        let (directory, _) = program_root()?;
+        let root = store_root()?;
+        let _guard =
+            rca_native_agent::device_pairing::lock_windows_permanent_mode(&root).map_err(|_| ())?;
+        let output = task_command(&directory, &["-Action", "Restart"])?;
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+        Ok(())
+    }
+
     pub fn run() -> Result<(), ()> {
         if !cfg!(target_arch = "x86_64")
             || rca_native_agent::is_windows_system_identity().map_err(|_| ())?
@@ -525,12 +724,49 @@ mod windows {
                 return pair_local(endpoint, name, mode);
             }
         }
+        if args.as_slice() == ["--initialize-auto-policy"] {
+            return automatic_policy(Some("initialize"));
+        }
         if args.as_slice() == ["--verify-upgrade-state"] {
             return verify_upgrade_state();
         }
+        if args.as_slice() == ["--menu-choice"] {
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                return Err(());
+            }
+            println!("1. Status   2. Pair / repair   3. Logs\n4. Update   5. Uninstall   6. Exit\n7. Recover   8. Doctor\n9. Start   10. Stop   11. Restart");
+            print!("Choose an option: ");
+            std::io::stdout().flush().map_err(|_| ())?;
+            let mut choice = String::new();
+            if std::io::stdin().read_line(&mut choice).map_err(|_| ())? == 0 {
+                return Ok(());
+            }
+            match choice.trim() {
+                "6" | "" => return Ok(()),
+                value => {
+                    let n = value.parse::<i32>().map_err(|_| ())?;
+                    if !(1..=11).contains(&n) || n.to_string() != value {
+                        return Err(());
+                    }
+                    std::process::exit(10 + n);
+                }
+            }
+        }
         if args.first().map(String::as_str) == Some("--cli") {
             return match args.as_slice() {
-                [_, command] if command == "status" => local_status(),
+                [_, command] if command == "--help" || command == "help" => {
+                    println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|update [--check|--auto [on|off]|--version <staged-tag>]|pair|recover|uninstall|secure-input REQUEST_ID|--version|--help]");
+                    println!("Bare update or upgrade uses the packaged owner installer from rca.cmd. Use the official installer for initial installation.");
+                    Ok(())
+                }
+                [_, command] if command == "status" || command == "doctor" => {
+                    local_status(command == "doctor", false)
+                }
+                [_, command, flag]
+                    if (command == "status" || command == "doctor") && flag == "--json" =>
+                {
+                    local_status(command == "doctor", true)
+                }
                 [_, command] if command == "logs" => {
                     print!(
                         "{}",
@@ -540,6 +776,23 @@ mod windows {
                 }
                 [_, command] if command == "stop" => owner_lifecycle(false),
                 [_, command] if command == "start" => owner_lifecycle(true),
+                [_, command] if command == "restart" => normal_restart(),
+                [_, command] if command == "pair" => {
+                    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                        return Err(());
+                    }
+                    let (directory, _) = program_root()?;
+                    let output = task_command(&directory, &["-Action", "Endpoint"])?;
+                    let endpoint = std::str::from_utf8(&output.stdout).map_err(|_| ())?.trim();
+                    reconcile_existing(endpoint)
+                }
+                [_, command] if command == "uninstall" => {
+                    eprintln!("Use the installed rca.cmd uninstall entrypoint.");
+                    Err(())
+                }
+                [_, command, request_id] if command == "secure-input" => {
+                    secure_input_local(request_id)
+                }
                 [_, command, flag, endpoint] if command == "re-pair" && flag == "--endpoint" => {
                     let name =
                         std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Windows".to_owned());
@@ -567,7 +820,26 @@ mod windows {
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     Ok(())
                 }
-                [_, command, flag, version] if command == "upgrade" && flag == "--version" => {
+                [_, command, flag]
+                    if (command == "upgrade" || command == "update") && flag == "--auto" =>
+                {
+                    automatic_policy(None)
+                }
+                [_, command, flag, action]
+                    if (command == "upgrade" || command == "update")
+                        && flag == "--auto"
+                        && (action == "on" || action == "off") =>
+                {
+                    automatic_policy(Some(action))
+                }
+                [_, command, flag]
+                    if (command == "upgrade" || command == "update") && flag == "--check" =>
+                {
+                    check_latest()
+                }
+                [_, command, flag, version]
+                    if (command == "upgrade" || command == "update") && flag == "--version" =>
+                {
                     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
                         return Err(());
                     }
@@ -610,7 +882,7 @@ mod windows {
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                     Ok(())
                 }
-                [_, command] if command == "version" => {
+                [_, command] if command == "version" || command == "--version" => {
                     let (_, tag) = program_root()?;
                     println!("{tag}");
                     Ok(())
@@ -673,6 +945,92 @@ mod windows {
         run_agent(endpoint, &key, &private_pem, &id, Some(generation))
     }
 
+    fn automatic_installer(root: &Path, key: &Path) -> Option<(PathBuf, PathBuf)> {
+        if key != root.join("v2-identity.pem") {
+            return None;
+        }
+        let (directory, tag) = program_root().ok()?;
+        let parts = tag.strip_prefix('v')?.split('.').collect::<Vec<_>>();
+        if parts.len() != 3
+            || parts.iter().any(|part| {
+                part.is_empty()
+                    || !part.bytes().all(|b| b.is_ascii_digit())
+                    || (part.len() > 1 && part.starts_with('0'))
+            })
+        {
+            return None;
+        }
+        let installer =
+            directory.join("apps/remote-control-agent/scripts/windows-stage-install.ps1");
+        validate_windows_private_path(&installer, false).ok()?;
+        let system = PathBuf::from(std::env::var_os("SystemRoot")?);
+        if !system.is_absolute() {
+            return None;
+        }
+        Some((
+            system.join("System32/WindowsPowerShell/v1.0/powershell.exe"),
+            installer,
+        ))
+    }
+
+    fn automatic_monitor(
+        root: PathBuf,
+        device_id: String,
+        stop: Arc<AtomicBool>,
+        powershell: PathBuf,
+        installer: PathBuf,
+    ) {
+        let mut schedule = AutomaticCheckSchedule::new(Instant::now(), automatic_jitter(240));
+        let mut checker: Option<std::process::Child> = None;
+        while !stop.load(Ordering::Acquire) {
+            if let Some(child) = checker.as_mut() {
+                match child.try_wait() {
+                    Ok(None) => (),
+                    Ok(Some(status)) => {
+                        if !status.success() {
+                            windows_log::record(&root, "automatic_check_refused");
+                        }
+                        checker = None;
+                    }
+                    Err(_) => {
+                        checker = None;
+                        windows_log::record(&root, "automatic_check_unconfirmed");
+                    }
+                }
+            }
+            let now = Instant::now();
+            if checker.is_none()
+                && schedule.is_due(now)
+                && schedule.take_due(now, automatic_jitter(1800))
+                && rca_native_agent::device_pairing::windows_auto_policy(&root, &device_id) == "on"
+            {
+                // The packaged manager revalidates permanent identity, live signed
+                // connection, policy and the exact installed Task. It only submits
+                // the existing demand-start owner upgrade Task; never blocks WSS.
+                match Command::new(&powershell)
+                    .args([
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                    ])
+                    .arg(&installer)
+                    .arg("-Automatic")
+                    .env_remove("RCA_UNATTENDED_UPGRADE")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(child) => checker = Some(child),
+                    Err(_) => windows_log::record(&root, "automatic_check_launch_failed"),
+                }
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
     fn run_agent(
         endpoint: &str,
         key: &Path,
@@ -704,6 +1062,13 @@ mod windows {
                     std::thread::sleep(Duration::from_millis(50));
                 }
             }))
+        } else if let Some((powershell, installer)) = automatic_installer(&root, key) {
+            let monitor_root = root.clone();
+            let monitor_id = device_id.to_owned();
+            let flag = Arc::clone(&stop);
+            Some(std::thread::spawn(move || {
+                automatic_monitor(monitor_root, monitor_id, flag, powershell, installer)
+            }))
         } else {
             None
         };
@@ -714,7 +1079,9 @@ mod windows {
         let on_connected: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             windows_log::record(&connected_root, "connected");
             if let Some(generation) = marker_generation.as_deref() {
-                let _ = record_connected(&connected_root, generation, &marker_id);
+                if record_connected(&connected_root, generation, &marker_id).is_err() {
+                    windows_log::record(&connected_root, "connection_proof_write_failed");
+                }
             }
         });
         let disconnected_root = root.clone();

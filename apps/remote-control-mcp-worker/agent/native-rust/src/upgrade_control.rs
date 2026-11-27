@@ -1,5 +1,5 @@
-//! Linux Standard candidate's owner-local upgrade consent socket.
-//! Wire-compatible with the existing Node installer: never accepts remote commands.
+//! Unix Standard Agent's owner-local upgrade consent socket.
+//! Never accepts remote commands.
 use std::fs;
 use std::io::{self, ErrorKind, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
@@ -15,6 +15,7 @@ use std::time::Duration;
 pub enum UpgradeCommand {
     Freeze,
     VerifyFrozen,
+    VerifyOnline,
     Release,
     IdleStatus,
     IdleFreeze,
@@ -47,6 +48,54 @@ fn private_directory(parent: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Query the existing owner-local execution gate without freezing or
+/// changing any service state. A historical connection marker is not proof.
+pub fn verify_online(key: &Path) -> io::Result<bool> {
+    owner_gate(key, UpgradeCommand::VerifyOnline)
+}
+
+/// Use only the existing bounded owner-local protocol; no new endpoint.
+pub fn owner_gate(key: &Path, command: UpgradeCommand) -> io::Result<bool> {
+    let (request, accepted): (&[u8], &[u8]) = match command {
+        UpgradeCommand::Freeze => (b"freeze\n", b"ready\n"),
+        UpgradeCommand::VerifyFrozen => (b"verify-frozen\n", b"ready\n"),
+        UpgradeCommand::VerifyOnline => (b"verify-online\n", b"ready\n"),
+        UpgradeCommand::Release => (b"release\n", b"released\n"),
+        _ => return Err(io::Error::from(ErrorKind::InvalidInput)),
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let parent = key
+        .parent()
+        .ok_or_else(|| io::Error::from(ErrorKind::InvalidInput))?;
+    private_directory(parent)?;
+    let path = parent.join("upgrade.sock");
+    let meta = fs::symlink_metadata(&path)?;
+    if !meta.file_type().is_socket()
+        || meta.uid() != unsafe { libc::geteuid() }
+        || meta.mode() & 0o077 != 0
+    {
+        return Err(io::Error::from(ErrorKind::PermissionDenied));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            let mut stream = tokio::net::UnixStream::connect(&path).await?;
+            stream.write_all(request).await?;
+            let mut reply = Vec::new();
+            stream.take(33).read_to_end(&mut reply).await?;
+            match reply.as_slice() {
+                reply if reply == accepted => Ok(true),
+                b"busy\n" => Ok(false),
+                _ => Err(io::Error::from(ErrorKind::InvalidData)),
+            }
+        })
+        .await
+        .map_err(|_| io::Error::from(ErrorKind::TimedOut))?
+    })
+}
+
 fn clear_stale_owned(socket: &Path) -> io::Result<()> {
     let info = match fs::symlink_metadata(socket) {
         Ok(info) => info,
@@ -69,9 +118,12 @@ fn clear_stale_owned(socket: &Path) -> io::Result<()> {
 }
 
 fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>) {
-    if stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .is_err()
+    // BSD/Darwin accept can inherit the listener's nonblocking mode.
+    // Use blocking I/O with the existing bounded read timeout on every host.
+    if stream.set_nonblocking(false).is_err()
+        || stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .is_err()
     {
         return;
     }
@@ -90,6 +142,7 @@ fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>
             break match &request[..used] {
                 b"freeze\n" => UpgradeCommand::Freeze,
                 b"verify-frozen\n" => UpgradeCommand::VerifyFrozen,
+                b"verify-online\n" => UpgradeCommand::VerifyOnline,
                 b"release\n" => UpgradeCommand::Release,
                 b"idle-status\n" => UpgradeCommand::IdleStatus,
                 b"idle-freeze\n" => UpgradeCommand::IdleFreeze,
@@ -106,7 +159,7 @@ fn handle_connection(mut stream: UnixStream, sender: &SyncSender<UpgradeRequest>
     }
 }
 
-/// A single owner-private IPC endpoint per Node-compatible identity directory.
+/// A single owner-private IPC endpoint per identity directory.
 /// It has no network listener and shares admission decisions with the executor.
 pub struct UpgradeServer {
     path: PathBuf,
@@ -166,5 +219,98 @@ impl Drop for UpgradeServer {
                 let _ = fs::remove_file(&self.path);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod online_tests {
+    use super::*;
+
+    #[test]
+    fn nonblocking_accepted_stream_waits_for_read_only_query() {
+        // BSD sockets can inherit the listener's nonblocking mode. Force
+        // that state on a private socket pair on every Unix test host.
+        let (mut client, accepted) = UnixStream::pair().unwrap();
+        accepted.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .unwrap();
+        let (sender, receiver) = sync_channel(1);
+        let worker = thread::spawn(move || handle_connection(accepted, &sender));
+
+        // A client is allowed to connect before sending its request.
+        let error = client.read(&mut [0u8; 1]).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::WouldBlock | ErrorKind::TimedOut
+        ));
+        client.write_all(b"verify-online\n").unwrap();
+        let request = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(request.command, UpgradeCommand::VerifyOnline);
+        request.reply.send("ready\n".into()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).unwrap();
+        assert_eq!(reply, b"ready\n");
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn owner_gate_preserves_exact_freeze_verify_release_protocol() {
+        let home = tempfile::tempdir().unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let key = home.path().join("fixture.pem");
+        let (sender, receiver) = sync_channel(4);
+        let server = UpgradeServer::bind(&key, sender).unwrap();
+        let worker = thread::spawn(move || {
+            for (command, reply) in [
+                (UpgradeCommand::Freeze, "busy\n"),
+                (UpgradeCommand::Freeze, "ready\n"),
+                (UpgradeCommand::VerifyFrozen, "ready\n"),
+                (UpgradeCommand::Release, "released\n"),
+                (UpgradeCommand::Release, "ready\n"),
+            ] {
+                let request = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(request.command, command);
+                request.reply.send(reply.into()).unwrap();
+            }
+        });
+        assert!(!owner_gate(&key, UpgradeCommand::Freeze).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Freeze).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::VerifyFrozen).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Release).unwrap());
+        assert!(owner_gate(&key, UpgradeCommand::Release).is_err());
+        assert!(owner_gate(&key, UpgradeCommand::IdleFreeze).is_err());
+        worker.join().unwrap();
+        drop(server);
+    }
+
+    #[test]
+    fn online_query_uses_existing_private_socket_and_exact_read_only_reply() {
+        let home = tempfile::tempdir().unwrap();
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let key = home.path().join("fixture.pem");
+        let (sender, receiver) = sync_channel(4);
+        let server = UpgradeServer::bind(&key, sender).unwrap();
+        let worker = thread::spawn(move || {
+            for reply in ["ready\n", "busy\n", "ready\nextra"] {
+                let request = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
+                assert_eq!(request.command, UpgradeCommand::VerifyOnline);
+                request.reply.send(reply.into()).unwrap();
+            }
+        });
+        assert!(verify_online(&key).unwrap());
+        assert!(!verify_online(&key).unwrap());
+        assert!(verify_online(&key).is_err());
+        worker.join().unwrap();
+        drop(server);
+        assert!(verify_online(&key).is_err());
+        let unrelated = home.path().join("unrelated");
+        fs::write(&unrelated, b"unchanged").unwrap();
+        std::os::unix::fs::symlink(&unrelated, home.path().join("upgrade.sock")).unwrap();
+        assert!(verify_online(&key).is_err());
+        assert_eq!(fs::read(unrelated).unwrap(), b"unchanged");
     }
 }

@@ -12,9 +12,11 @@ use std::io::Read;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use url::Url;
+use zeroize::Zeroize;
 
 pub(crate) const ORIGIN: &str = "https://rca.lirtual.dpdns.org/";
 const BODY_LIMIT: usize = 1024;
+const SECURE_INPUT_CHALLENGE_LIMIT: usize = 16 * 1024;
 
 #[derive(Debug, Error)]
 pub enum SessionRecoveryError {
@@ -41,12 +43,27 @@ pub(crate) fn post_bounded(
     let target = origin
         .join(route)
         .map_err(|_| SessionRecoveryError::InvalidIdentity)?;
-    let mut response = client
+    let response_limit =
+        if route == "/agent/owner/intent/challenge" && body["action"] == "secure_input" {
+            SECURE_INPUT_CHALLENGE_LIMIT
+        } else {
+            BODY_LIMIT
+        };
+    let mut body = body;
+    let response = client
         .post(target)
         .header("cache-control", "no-store")
         .json(&body)
-        .send()
-        .map_err(|_| SessionRecoveryError::Unavailable)?;
+        .send();
+    if body["action"] == "secure_input" {
+        if let Some(Value::String(secret)) = body
+            .as_object_mut()
+            .and_then(|object| object.get_mut("secret"))
+        {
+            secret.zeroize();
+        }
+    }
+    let mut response = response.map_err(|_| SessionRecoveryError::Unavailable)?;
     if allow_pending && response.status().as_u16() == 404 {
         return Err(SessionRecoveryError::Pending);
     }
@@ -61,17 +78,17 @@ pub(crate) fn post_bounded(
     if response.status().as_u16() != expected_status
         || response
             .content_length()
-            .is_some_and(|len| len > BODY_LIMIT as u64)
+            .is_some_and(|len| len > response_limit as u64)
     {
         return Err(SessionRecoveryError::Rejected);
     }
     let mut bytes = Vec::new();
     response
         .by_ref()
-        .take((BODY_LIMIT + 1) as u64)
+        .take((response_limit + 1) as u64)
         .read_to_end(&mut bytes)
         .map_err(|_| SessionRecoveryError::Unavailable)?;
-    if bytes.len() > BODY_LIMIT {
+    if bytes.len() > response_limit {
         return Err(SessionRecoveryError::Rejected);
     }
     let value: Value =
