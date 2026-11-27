@@ -6,14 +6,17 @@ fn affirmative(answer: &str) -> bool {
 }
 
 /// Require an explicit affirmative response from an interactive terminal.
-pub fn confirm(prompt: &str) -> Result<bool, ()> {
+pub fn confirm(prompt: &str) -> io::Result<bool> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(());
+        return Err(io::Error::new(
+            io::ErrorKind::NotConnected,
+            "Interactive terminal required",
+        ));
     }
     print!("{prompt} [y/N]: ");
-    io::stdout().flush().map_err(|_| ())?;
+    io::stdout().flush()?;
     let mut answer = String::new();
-    io::stdin().read_line(&mut answer).map_err(|_| ())?;
+    io::stdin().read_line(&mut answer)?;
     Ok(affirmative(&answer))
 }
 

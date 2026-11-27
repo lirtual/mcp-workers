@@ -370,12 +370,17 @@ fn run_owner_flow(
             "caller marked non-production; verify the exact resource"
         }
     );
-    if !crate::owner_prompt::confirm("Confirm the exact target above?")? {
+    if !crate::owner_prompt::confirm("Confirm the exact target above?")
+        .map_err(|_| SecureInputCliError)?
+    {
         eprintln!("Target confirmation declined; nothing submitted.");
         return Err(SecureInputCliError);
     }
     let production = challenge["is_production"] == true;
-    if production && !crate::owner_prompt::confirm("Authorize this production write?")? {
+    if production
+        && !crate::owner_prompt::confirm("Authorize this production write?")
+            .map_err(|_| SecureInputCliError)?
+    {
         eprintln!("Production authorization declined; nothing submitted.");
         return Err(SecureInputCliError);
     }

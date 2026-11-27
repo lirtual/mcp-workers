@@ -976,7 +976,8 @@ mod darwin {
     }
 
     fn owner_confirm(prompt: &str) -> Result<(), ()> {
-        rca_native_agent::owner_prompt::confirm(&format!("{prompt} Confirm"))?
+        rca_native_agent::owner_prompt::confirm(&format!("{prompt} Confirm"))
+            .map_err(|_| ())?
             .then_some(())
             .ok_or(())
     }
