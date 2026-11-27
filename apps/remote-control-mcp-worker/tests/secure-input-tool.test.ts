@@ -46,7 +46,7 @@ test("request_secure_input forwards explicit production classification and rejec
 
 // Execute the served page script with synthetic DOM/Clerk/HTTP boundaries.
 // No browser account, live endpoint or secret is involved in this regression.
-async function secureInputPageFixture(target = { kind: "task_process" }) {
+async function secureInputPageFixture(target = { kind: "task_process" }, auth: "signed-in" | "signed-out" | "missing" | "load-failed" | "rejected" = "signed-in") {
   const id = randomUUID();
   const origin = "https://rca.lirtual.dpdns.org";
   const env = {
@@ -57,7 +57,8 @@ async function secureInputPageFixture(target = { kind: "task_process" }) {
   } as never;
   const page = await worker.fetch(new Request(origin + "/secure-input/" + id), env);
   assert.equal(page.status, 200);
-  const source = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(await page.text())?.[1];
+  const html = await page.text();
+  const source = /<script nonce="[^"]+">([\s\S]*?)<\/script>/.exec(html)?.[1];
   assert.ok(source);
   type Handler = (event: { preventDefault(): void }) => Promise<void>;
   type Element = { hidden: boolean; disabled: boolean; checked: boolean; value: string;
@@ -65,7 +66,7 @@ async function secureInputPageFixture(target = { kind: "task_process" }) {
   const handlers = new Map<string, Handler>(), elements = new Map<string, Element>();
   const element = (id: string) => {
     if (!elements.has(id)) elements.set(id, {
-      hidden: true, disabled: true, checked: false, value: "", textContent: "",
+      hidden: id !== "signin-panel" && id !== "status", disabled: true, checked: false, value: "", textContent: "",
       addEventListener(type, handler) { handlers.set(id + ":" + type, handler); },
     });
     return elements.get(id)!;
@@ -75,13 +76,21 @@ async function secureInputPageFixture(target = { kind: "task_process" }) {
   let tokens = 0, submissions = 0, cancelled = false;
   let resultState: { state: string; error_code?: string } | undefined;
   const actions: string[] = [];
+  const clerk = auth === "missing" ? undefined : {
+    load: async () => { if (auth === "load-failed") throw Error("SDK initialization failure"); },
+    isSignedIn: auth !== "signed-out",
+    session: auth === "signed-out" ? null : { getToken: async () => "fixture-token-" + ++tokens },
+  };
   runInNewContext(source, {
-    document: { getElementById: element }, location: { href: origin + "/secure-input/" + id },
-    window: { Clerk: { load: async () => {}, session: { getToken: async () => "fixture-token-" + ++tokens } } },
+    document: { getElementById: element }, location: { href: origin + "/secure-input/" + id + "?untrusted=1#fragment" },
+    window: { Clerk: clerk },
     fetch: async (url: string, init: RequestInit) => {
       const action = url.split("/").at(-1)!;
       actions.push(action);
+      assert.equal(init.redirect, "manual");
+      assert.equal(init.credentials, "omit");
       assert.equal(new Headers(init.headers).get("authorization"), "Bearer fixture-token-" + actions.length);
+      if (auth === "rejected") return Response.json({ error: "unauthorized" }, { status: 401 });
       if (action === "submit") { submissions++; throw new Error("synthetic lost response"); }
       if (action === "cancel") {
         assert.equal(init.body, "{}");
@@ -93,8 +102,32 @@ async function secureInputPageFixture(target = { kind: "task_process" }) {
     },
   });
   await new Promise(resolve => setImmediate(resolve));
-  return { element, invoke, actions, setResult: (value: typeof resultState) => { resultState = value; }, counts: () => ({ tokens, submissions }) };
+  return { html, id, element, invoke, actions, setResult: (value: typeof resultState) => { resultState = value; }, counts: () => ({ tokens, submissions }) };
 }
+
+test("secure input provides a static canonical Owner sign-in link and visible status before SDK initialization", async () => {
+  const { html, id } = await secureInputPageFixture(undefined, "missing");
+  const login = "https://accounts.lirtual.dpdns.org/sign-in?redirect_url=" +
+    encodeURIComponent("https://rca.lirtual.dpdns.org/secure-input/" + id);
+  assert.ok(html.includes('<a id="signin" href="' + login + '">'));
+  assert.match(html, /<section id="signin-panel">/);
+  assert.ok(html.indexOf('id="status"') < html.indexOf('id="details"'));
+  assert.match(html, /<script[^>]+clerk-js@6\.46\.3[^>]+data-clerk-publishable-key="pk_live_/);
+});
+
+test("secure input leaves sign-in and failure status visible until Owner verification succeeds", async () => {
+  for (const auth of ["signed-out", "missing", "load-failed", "rejected"] as const) {
+    const { element, actions } = await secureInputPageFixture(undefined, auth);
+    assert.equal(element("signin-panel").hidden, false, auth);
+    assert.equal(element("details").hidden, true, auth);
+    assert.match(element("status").textContent, /sign in|unavailable|failed|not authorized/i, auth);
+    assert.deepEqual(actions, auth === "rejected" ? ["details"] : []);
+  }
+  const signedIn = await secureInputPageFixture();
+  assert.equal(signedIn.element("signin-panel").hidden, true);
+  assert.equal(signedIn.element("details").hidden, false);
+  assert.deepEqual(signedIn.actions, ["details"]);
+});
 
 test("secure input page obtains a current Owner token per action and never re-enables uncertain submission", async () => {
   const { element, invoke, actions, counts } = await secureInputPageFixture();
