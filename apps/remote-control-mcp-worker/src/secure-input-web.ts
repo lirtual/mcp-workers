@@ -48,37 +48,73 @@ const requestId = ${JSON.stringify(requestId)};
 const form = document.getElementById("secure-form"), field = document.getElementById("secret");
 const submit = document.getElementById("submit"), status = document.getElementById("status");
 const cancel = document.getElementById("cancel");
-let busy = false, inputAttempted = false;
+let busy = false, inputAttempted = false, reviewed = null;
 function text(id, value) { document.getElementById(id).textContent = value == null ? "—" : String(value); }
+function describeTarget(target) {
+  if (!target || typeof target.kind !== "string") return "Unsupported target";
+  if (target.kind === "task_process") return "Process input · " + target.name;
+  if (target.kind === "github_repository_secret" || target.kind === "github_repository_variable") {
+    const kind = target.kind.endsWith("_variable") ? "Variable" : "Secret";
+    return "GitHub repository " + kind + " · " + target.repository + " · " + target.name;
+  }
+  if (target.kind === "github_environment_secret" || target.kind === "github_environment_variable") {
+    const kind = target.kind.endsWith("_variable") ? "Variable" : "Secret";
+    return "GitHub environment " + kind + " · " + target.repository + " · " + target.environment + " · " + target.name;
+  }
+  if (target.kind === "cloudflare_worker_secret") {
+    const mode = target.mode === "deploy" ? "deploy now" : target.mode === "version" ? "inactive version" : "unsupported mode";
+    return "Cloudflare Secret · " + target.worker_name + " · " + target.environment + " · " + target.name + " · " + mode;
+  }
+  return "Unsupported target";
+}
 function effectAndRecovery(target) {
-  if (target.kind === "task_process") return {
-    effect: "Deliver this one-time value to the named running process through its input stream. All captured output for that session is permanently suppressed. Use only a trusted target process.",
-    recovery: "Bytes already delivered cannot be recalled. The process lifetime bounds future reuse."
-  };
-  if (target.kind.startsWith("github_")) return {
-    effect: "Set or replace the named GitHub " + (target.kind.endsWith("_variable") ? "Variable" : "Secret") +
-      (target.environment ? " for the selected repository Environment." : " for the selected repository."),
-    recovery: (target.kind.endsWith("_variable")
-      ? "Recover by restoring the prior Variable value or removing it."
-      : "The previous Secret value cannot be read back; recover by setting a replacement or removing it.") +
-      " This does not deploy code by itself."
-  };
-  if (target.kind === "cloudflare_worker_secret") return target.mode === "deploy" ? {
-    effect: "Set the Worker Secret and immediately create and deploy a new Worker version.",
-    recovery: "The previous Secret value cannot be read back. Recovery requires replacing the Secret and, if needed, separately deploying a known-good version."
-  } : {
-    effect: "Set the Worker Secret on a new version without deploying it.",
-    recovery: "The new version stays inactive until separately deployed. The previous Secret value cannot be read back."
-  };
-  return { effect: "Review the exact target operation.", recovery: "Check the original request if the result is uncertain; do not resubmit." };
+  if (target.kind === "task_process") return "Deliver once to a trusted process. All captured output for its session is permanently suppressed; delivery cannot be recalled.";
+  if (target.kind === "github_repository_variable" || target.kind === "github_environment_variable")
+    return "Set or replace the Variable. Restore its prior value or remove it to recover.";
+  if (target.kind === "github_repository_secret" || target.kind === "github_environment_secret")
+    return "Set or replace the Secret. The prior value cannot be read back; recover by replacing or removing it.";
+  if (target.kind === "cloudflare_worker_secret" && target.mode === "deploy")
+    return "Set or replace the Secret and deploy immediately. The prior value cannot be read back; recovery requires replacing it and, if needed, separately deploying a known-good version.";
+  if (target.kind === "cloudflare_worker_secret" && target.mode === "version")
+    return "Set or replace the Secret in an inactive version. The prior value cannot be read back; replace it to recover. Deployment requires a separate action.";
+  return "Unsupported target.";
+}
+function executionLabel(execution, deviceName) {
+  const device = deviceName || execution.device_id;
+  const session = [];
+  if (execution.session_workflow_name) session.push(execution.session_workflow_name);
+  if (execution.session_run_id != null) session.push("Run " + execution.session_run_id);
+  if (execution.session_run_attempt != null) session.push("Attempt " + execution.session_run_attempt);
+  return session.length ? device + " · " + session.join(" · ") : device;
+}
+function exactTarget(value) {
+  const target = value.target, execution = value.execution;
+  return [
+    "Device ID: " + execution.device_id,
+    "Grant: " + execution.grant_type,
+    ...(execution.session_workflow_name ? ["Workflow: " + execution.session_workflow_name] : []),
+    ...(execution.session_run_id != null ? ["Run: " + execution.session_run_id] : []),
+    ...(execution.session_run_attempt != null ? ["Run attempt: " + execution.session_run_attempt] : []),
+    ...(execution.session_attempt_id ? ["Workflow attempt ID: " + execution.session_attempt_id] : []),
+    ...(target.session_id ? ["Process session: " + target.session_id] : []),
+    ...(target.repository ? ["Repository: " + target.repository] : []),
+    ...(target.kind === "github_environment_secret" || target.kind === "github_environment_variable" ? ["Environment: " + target.environment] : []),
+    ...(target.account_id ? ["Cloudflare account ID: " + target.account_id] : []),
+    ...(target.worker_name ? ["Worker: " + target.worker_name] : []),
+    ...(target.kind === "cloudflare_worker_secret" ? ["Worker environment: " + target.environment, "Cloudflare mode: " + target.mode] : []),
+    ...(target.name ? [(target.kind === "task_process" ? "Input name: " : "Name: ") + target.name] : []),
+  ].join("\\n");
 }
 function showState(value) {
-  text("state", value.state);
-  text("error-code", value.error_code);
+  if (reviewed) reviewed.state = value.state;
+  text("error-code", value.error_code || "");
+  document.getElementById("error-code").hidden = !value.error_code;
   const pending = value.state === "pending";
   form.hidden = !pending;
   submit.disabled = !pending || busy || inputAttempted;
   cancel.disabled = !pending || busy;
+  document.getElementById("refresh").hidden = !inputAttempted && pending;
+  if (["succeeded", "failed", "cancelled", "expired"].includes(value.state)) document.getElementById("refresh").hidden = true;
   if (pending && !inputAttempted) status.textContent = "Review the exact target before submitting.";
   if (value.state === "accepted" || value.state === "running") status.textContent = "Input submitted once. Waiting for the target Agent.";
   if (value.state === "unknown") status.textContent = "Outcome uncertain. Do not submit again; check the original ChatGPT request.";
@@ -103,14 +139,20 @@ async function details() {
 }
 async function refresh() {
   const value = await details();
-  text("purpose", value.purpose); text("target", JSON.stringify(value.target));
-  const impact = effectAndRecovery(value.target);
-  text("effect", impact.effect); text("recovery", impact.recovery);
-  text("production", value.is_production ? "Production target: separate explicit authorization required" : "Caller marked this non-production. Verify the exact resource; the page does not independently verify that classification.");
+  reviewed = value;
+  text("purpose", value.purpose);
+  text("target", describeTarget(value.target));
+  const execution = value.execution;
+  text("execution", executionLabel(execution, value.device_name));
+  const principal = value.provider_principal;
+  document.getElementById("principal-row").hidden = !principal;
+  text("principal", principal ? principal.identity + (principal.account_name ? " · " + principal.account_name : "") : "");
+  text("effect", effectAndRecovery(value.target));
+  text("scope", value.is_production ? "Production" : "Marked non-production by requester; verify the resource");
   document.getElementById("production-authorization").hidden = !value.is_production;
-  text("execution", JSON.stringify(value.execution));
-  text("principal", value.provider_principal ? JSON.stringify(value.provider_principal) : "Not applicable");
-  text("expires", new Date(value.expires_at).toLocaleString()); showState(value);
+  text("exact-target", exactTarget(value));
+  text("expires", new Date(value.expires_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}));
+  showState(value);
 }
 (async () => {
   try {
@@ -129,19 +171,19 @@ async function refresh() {
 })();
 form.addEventListener("submit", async event => {
   event.preventDefault();
-  if (submit.disabled || busy || inputAttempted) return;
+  if (submit.disabled || busy || inputAttempted || !reviewed || reviewed.state !== "pending") return;
   const value = field.value;
   if (!value.trim()) { status.textContent = "Enter a non-empty value."; return; }
-  const targetConfirmed = document.getElementById("target-confirmed").checked;
-  const productionAuthorized = document.getElementById("production-authorized").checked;
-  if (!targetConfirmed || (document.getElementById("production-authorization").hidden === false && !productionAuthorized)) {
-    status.textContent = "Confirm the exact target and separately authorize the production effect."; return;
+  const productionAuthorized = reviewed.is_production && document.getElementById("production-authorized").checked;
+  if (reviewed.is_production && !productionAuthorized) {
+    status.textContent = "Authorize the production operation before submitting."; return;
   }
   field.value = ""; busy = true; inputAttempted = true;
   submit.disabled = true; cancel.disabled = true;
-  status.textContent = "Submitting once. Do not submit again.";
+  document.getElementById("refresh").hidden = false;
+  status.textContent = "Submitting…";
   try {
-    const response = await ownerPost("submit", { secret: value, target_confirmed: targetConfirmed, production_authorized: productionAuthorized });
+    const response = await ownerPost("submit", { secret: value, target_confirmed: true, production_authorized: productionAuthorized });
     const result = await response.json();
     if (!response.ok) { status.textContent = "Input not accepted or request already consumed. Do not retry."; return; }
     showState(result);
@@ -152,6 +194,7 @@ cancel.addEventListener("click", async () => {
   if (cancel.disabled || busy) return;
   field.value = ""; busy = true; inputAttempted = true;
   submit.disabled = true; cancel.disabled = true;
+  document.getElementById("refresh").hidden = false;
   try {
     const response = await ownerPost("cancel", {});
     if (!response.ok) { status.textContent = "Cancellation not confirmed. Check the original request."; return; }
@@ -165,7 +208,7 @@ document.getElementById("refresh").addEventListener("click", async () => {
   try { await refresh(); } catch { status.textContent = "Status is temporarily unavailable."; }
   finally { busy = false; }
   // Re-enable only controls permitted by the latest known state.
-  if (document.getElementById("state").textContent === "pending") {
+  if (reviewed?.state === "pending") {
     submit.disabled = inputAttempted; cancel.disabled = false;
   }
 });
@@ -174,40 +217,39 @@ document.getElementById("refresh").addEventListener("click", async () => {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="no-referrer"><title>RCA Secure Input</title>
 <style nonce="${token}">
-body{font:16px system-ui,sans-serif;max-width:760px;margin:32px auto;padding:0 18px;color:#17202a}
-section{border:1px solid #ccd3da;border-radius:12px;padding:18px;margin:16px 0}
-pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f7;padding:10px;border-radius:8px}
-textarea{box-sizing:border-box;width:100%;min-height:110px;font:14px ui-monospace,monospace;-webkit-text-security:disc}
-button,a{font:inherit;padding:9px 14px}button{cursor:pointer}
-.warning{color:#8a3100;font-weight:600}
+body{font:16px system-ui,sans-serif;max-width:460px;margin:36px auto;padding:0 20px;color:#17202a}
+h1{font-size:1.6rem;margin:0 0 8px}h2{font-size:1.15rem;margin:0 0 16px;overflow-wrap:anywhere}
+section{border:1px solid #d6dbe0;border-radius:12px;padding:20px;margin:18px 0}
+[hidden]{display:none!important}
+dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px 16px;margin:0 0 14px}
+dt,small,summary{color:#58636f;font-size:.875rem}dd{margin:0;overflow-wrap:anywhere}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.8rem}
+textarea{box-sizing:border-box;width:100%;min-height:76px;font:16px system-ui,sans-serif;-webkit-text-security:disc;border:1px solid #aeb8c3;border-radius:8px;padding:10px;margin:8px 0}
+button,a{font:inherit;padding:10px 14px}button{cursor:pointer;border:1px solid #aeb8c3;border-radius:8px;background:white}
+button[type=submit]{background:#17202a;color:white;border:0;width:100%;margin:12px 0}
+button:disabled{opacity:.5}#cancel,#refresh{border:0;background:transparent}
+.warning{color:#8a3100;font-size:.875rem}
+#effect,#status{font-size:.9rem}
 </style></head><body>
 <h1>RCA Secure Input</h1>
-<p>This link is not authorization. Sign in with the configured Clerk Owner account before viewing or submitting.</p>
-<section id="signin-panel"><p>Owner sign-in required.</p><a id="signin" href="${clerkOwnerSignInUrl("/secure-input/" + requestId)}">Sign in with Clerk</a></section>
+<section id="signin-panel"><p>Sign in to continue.</p><a id="signin" href="${clerkOwnerSignInUrl("/secure-input/" + requestId)}">Sign in with Clerk</a></section>
 <p id="status" role="status" aria-live="polite">Checking Owner session…</p>
 <section id="details" hidden>
-<h2>Review the exact target</h2>
-<p><strong>Purpose</strong></p><pre id="purpose"></pre>
-<p><strong>Target resource and operation</strong></p><pre id="target"></pre>
-<p><strong>Effect</strong></p><pre id="effect"></pre>
-<p><strong>Recovery</strong></p><pre id="recovery"></pre>
-<p><strong>Execution location</strong></p><pre id="execution"></pre>
-<p><strong>Provider principal</strong></p><pre id="principal"></pre>
-<p><strong>Expires</strong> <span id="expires"></span></p>
-<p><strong>Request state</strong> <span id="state">loading</span></p>
-<p><strong>Failure classification</strong> <span id="error-code">—</span></p>
+<h2 id="purpose"></h2>
+<dl><dt>Target</dt><dd id="target"></dd><dt>Device</dt><dd id="execution"></dd></dl>
+<p id="principal-row" hidden><small>Account: </small><span id="principal"></span></p>
+<details><summary>Exact target details</summary><pre id="exact-target"></pre></details>
+<p id="effect"></p>
+<small><span id="scope"></span> · Expires at <span id="expires"></span></small>
 <form id="secure-form" hidden>
-<label for="secret">Credential value</label>
+<label for="secret">Value</label>
 <textarea id="secret" autocomplete="off" autocapitalize="off" spellcheck="false" required></textarea>
-<p id="production" class="warning"></p>
-<label><input id="target-confirmed" type="checkbox" required> I verified the exact target and authorize this one-time delivery.</label>
-<div id="production-authorization" hidden><p class="warning">Production writes may persist a secret and may deploy a Worker version. Recovery may require replacing the value or reverting a separate deployment.</p>
-<label><input id="production-authorized" type="checkbox"> I separately authorize this production write/deployment.</label></div>
-<p class="warning">Submitted once to the bound Agent. Never paste this value into ChatGPT.</p>
-<button id="submit" type="submit">Submit once</button>
-<button id="cancel" type="button">Cancel request</button>
+<div id="production-authorization" hidden><label class="warning"><input id="production-authorized" type="checkbox"> I authorize this production operation.</label></div>
+<button id="submit" type="submit" disabled>Confirm &amp; submit</button>
+<button id="cancel" type="button">Cancel</button>
 </form>
-<button id="refresh" type="button">Refresh status</button>
+<p id="error-code" hidden></p>
+<button id="refresh" type="button" hidden>Check status</button>
 </section>
 <script src="${clerkBrowserSdk}" crossorigin="anonymous" data-clerk-publishable-key="${config.CLERK_PUBLISHABLE_KEY}"></script>
 <script nonce="${token}">${script}</script>
