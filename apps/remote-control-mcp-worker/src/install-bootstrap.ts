@@ -12,7 +12,11 @@ export function renderAgentInstallPowerShell(origin: string): string {
   if (!validInstallerOrigin(origin)) {
     throw Error("Unapproved Windows installer pin or origin");
   }
-  return windowsInstallerSource.endsWith("\n") ? windowsInstallerSource : `${windowsInstallerSource}\n`;
+  // Invoke the shared installer in a child scope even when the downloaded
+  // text is evaluated by Invoke-Expression. Keep its parameter validation,
+  // explicit arguments and exact inner source intact.
+  const source = windowsInstallerSource.endsWith("\n") ? windowsInstallerSource : `${windowsInstallerSource}\n`;
+  return `& {${source}} @args\n`;
 }
 
 export { validInstallerOrigin } from "./installer-origin.ts";

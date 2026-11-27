@@ -74,7 +74,7 @@ li strong{color:var(--fg);display:block;font-size:14px;margin-bottom:3px}
 <ol role="list"><li><strong>1 · Install</strong>Choose permanent or temporary mode on macOS</li><li><strong>2 · Approve if new</strong>For first pairing, review the fingerprint and grant in your browser</li><li><strong>3 · Verify</strong>Confirm online status with a safe read</li></ol>
 </main>
 <script>
-(()=>{'use strict';const cmds={windows:'irm https://rca.lirtual.dpdns.org/install.ps1 | iex',linux:'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh',macos:${JSON.stringify(macosCommand())}};
+(()=>{'use strict';const cmds={windows:'& ([scriptblock]::Create((irm https://rca.lirtual.dpdns.org/install.ps1)))',linux:'curl -fsSL https://rca.lirtual.dpdns.org/install.sh | sh',macos:${JSON.stringify(macosCommand())}};
 const ready={windows:${readiness.windows},linux:${readiness.linux},macos:${readiness.macos===true}};
 const tabs={windows:document.getElementById('windows'),linux:document.getElementById('linux'),macos:document.getElementById('macos')};
 const field=document.getElementById('command'),shellLabel=document.getElementById('shell-label'),message=document.getElementById('message'),copy=document.getElementById('copy');
