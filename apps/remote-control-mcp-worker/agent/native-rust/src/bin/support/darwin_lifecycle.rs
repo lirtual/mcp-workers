@@ -179,7 +179,7 @@ pub(super) fn record_update_event(event: &str) {
         if let Ok(message) = std::ffi::CString::new(format!("RCA_UPDATE:{event}")) {
             // Fixed format string; event names come only from the allowlist above.
             unsafe {
-                libc::syslog(libc::LOG_NOTICE, b"%s\0".as_ptr().cast(), message.as_ptr());
+                libc::syslog(libc::LOG_NOTICE, c"%s".as_ptr(), message.as_ptr());
             }
         }
     }
