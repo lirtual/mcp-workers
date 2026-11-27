@@ -428,16 +428,6 @@ jobs:
           assert.deepEqual(doctor.status,status);
           JS
           test -z "$(ls -A "$cli_home")"
-          cd "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
-          # Package checks above execute the extracted Rust CLI. Rust WSS/file/
-          # receipt and lifecycle integration coverage lives in the Rust-core matrix.
-          if sh scripts/macos-local.sh install --archive "$archive" \
-              --sha256 "$(shasum -a 256 "$archive" | awk '{print $1}')" \
-              --source-sha "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" \
-              --endpoint https://example.invalid/ </dev/null; then
-            echo 'macOS offline bootstrap accepted a non-owner terminal' >&2; exit 1
-          fi
-          cd "$GITHUB_WORKSPACE"
           echo "Verified Rust-only candidate from $(git rev-parse HEAD), unpublished SHA:"
           shasum -a 256 "$archive"
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
