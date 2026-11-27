@@ -71,7 +71,7 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
     assert.ok(candidates.includes(marker), marker);
   }
 
-  const agent = selectionDetails(['apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+  const agent = selectionDetails(['apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs']);
   assert.equal(agent.agentNativeChanged, true);
   assert.deepEqual(agent.apps, ['remote-control-mcp-worker']);
 
@@ -116,7 +116,7 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
       BEFORE_SHA: history.worker,
       GITHUB_SHA: history.agent,
     });
-    assert.deepEqual(agentPush.changedFiles, ['apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+    assert.deepEqual(agentPush.changedFiles, ['apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs']);
     assert.equal(selectionDetails(agentPush.changedFiles).agentNativeChanged, true);
   } finally {
     process.chdir(previous);
@@ -146,9 +146,9 @@ function temporaryPushHistory() {
   git(['add', 'apps/remote-control-mcp-worker/src/worker.ts']);
   git(['commit', '-q', '-m', 'worker']);
   const worker = git(['rev-parse', 'HEAD']).toString().trim();
-  mkdirSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/src'), { recursive: true });
-  writeFileSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/src/v2-main.ts'), 'export {}\n');
-  git(['add', 'apps/remote-control-mcp-worker/agent/src/v2-main.ts']);
+  mkdirSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/scripts'), { recursive: true });
+  writeFileSync(path.join(dir, 'apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs'), 'export {}\n');
+  git(['add', 'apps/remote-control-mcp-worker/agent/scripts/build-session-supervisor.mjs']);
   git(['commit', '-q', '-m', 'agent']);
   const agent = git(['rev-parse', 'HEAD']).toString().trim();
   return { dir, base, worker, agent };

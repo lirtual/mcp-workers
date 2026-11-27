@@ -6,7 +6,7 @@ import {generateKeyPairSync,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
 import {chmodSync,existsSync,mkdirSync,readFileSync,readlinkSync,rmSync,symlinkSync,writeFileSync} from "node:fs";
 import path from "node:path";
-import {ReceiptStore} from "../src/operations.ts";
+import {seedUnknownReceipt} from "./fixtures/receipt-ledger.ts";
 
 const source=process.env.RCA_TEST_AGENT_SOURCE;
 const oldArchive=process.env.RCA_TEST_OLD_ARCHIVE;
@@ -89,11 +89,8 @@ writeFileSync(key,privateKey,{mode:0o600});
 writeFileSync(deviceId,id+"\n",{mode:0o600});
 mkdirSync(path.dirname(unitFile),{recursive:true,mode:0o700});
 mkdirSync(path.dirname(cli),{recursive:true,mode:0o700});
-const receiptsStore=new ReceiptStore(path.dirname(receipts));
-await receiptsStore.open();
-await receiptsStore.admit("914-prior-unknown","read_file","a".repeat(64));
-await receiptsStore.update("914-prior-unknown","unknown","unresolved before cutover");
-await receiptsStore.close();
+seedUnknownReceipt(receipts,"914-prior-unknown","read_file","a".repeat(64),
+  new Date().toISOString(),"unresolved before cutover");
 
 const renderCode=[
   "import importlib.util,pathlib,sys",

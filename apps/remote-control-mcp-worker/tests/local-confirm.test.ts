@@ -3,9 +3,8 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { newEnrollment, saveNewPrivateKey } from "../agent/src/v2-enrollment.ts";
-import { beginDeviceEnrollment, PendingIdentityConflictError } from "../agent/src/pair-device.ts";
-import { recoverDeviceId } from "../agent/src/v2-session-client.ts";
+import { newEnrollment, saveNewPrivateKey } from "./fixtures/device-protocol.ts";
+import { recoverDeviceId } from "./fixtures/device-protocol.ts";
 import { approvalArgs, lookupOwnerPairing, approveOwnerPairing } from "../src/pairing-owner.ts";
 import worker from "../src/worker.ts";
 import { OwnerCoordinator } from "../src/pairing.ts";
@@ -103,21 +102,31 @@ test("#97 revoked ID can only be replaced after distinct explicit owner approval
     assert.equal(approved.status,"approved");
     return String(approved.device_id);
   };
+  // Submit synthetic pending material to the Worker. No second installer.
+  async function pending(keyPath: string, reuse = false) {
+    const material = newEnrollment("office-linux", reuse ? await readFile(keyPath, "utf8") : undefined);
+    if (!reuse) await saveNewPrivateKey(keyPath, material.privateKeyPem);
+    const response = await send(site + "agent/pair/start", {
+      method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(material.request),
+    });
+    assert.equal(response.status, 202);
+    return material;
+  }
   try {
-    const first=await beginDeviceEnrollment("office-linux",site,oldKey,send);
+    const first=await pending(oldKey);
     const oldGrant=await approve(first.code);
     assert.equal(await recoverDeviceId(site,oldKey,send),oldGrant);
     assert.equal(await recoverDeviceId(site,oldKey,send),oldGrant);
     assert.equal(value(await rpc("revoke_device",{device_id:oldGrant})).status,"revoked");
     assert.equal(rows.has("device:"+oldGrant),false);
     assert.equal(rows.has("device:"+oldGrant),false);
-    const stale=await beginDeviceEnrollment("office-linux",site,oldKey,send,true);
+    const stale=await pending(oldKey,true);
     assert.match(stale.code,/^[A-Z2-7]{10}$/);
     assert.equal(rows.has("device:"+oldGrant),false);
     // New key goes into a staging file; uncertain response must not rotate it.
-    const original=await beginDeviceEnrollment("office-linux",site,stage,send);
+    const original=await pending(stage);
     const stagedPem=await readFile(stage,"utf8");
-    const retry=await beginDeviceEnrollment("office-linux",site,stage,send,true);
+    const retry=await pending(stage,true);
     assert.notEqual(retry.code,original.code);
     assert.equal(await readFile(stage,"utf8"),stagedPem);
     assert.equal((await lookup(original.code)).status,404);

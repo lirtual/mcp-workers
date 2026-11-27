@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import {createPrivateKey,sign} from "node:crypto";
+import {createHash,createPrivateKey,sign} from "node:crypto";
 import {mkdtemp, readFile, rm} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {exportJWK,generateKeyPair,SignJWT} from "jose";
-import {newEnrollment, saveNewPrivateKey} from "../agent/src/v2-enrollment.ts";
-import {recoverDeviceId, signedSessionProof} from "../agent/src/v2-session-client.ts";
-import {ReceiptStore, operationDigest} from "../agent/src/operations.ts";
+import {newEnrollment, saveNewPrivateKey} from "./fixtures/device-protocol.ts";
+import {recoverDeviceId, signedSessionProof} from "./fixtures/device-protocol.ts";
+import {seedUnknownReceipt} from "../agent/tests/fixtures/receipt-ledger.ts";
+import {DatabaseSync} from "node:sqlite";
 import worker from "../src/worker.ts";
 import { OwnerCoordinator } from "../src/pairing.ts";
 import {approvalArgs, lookupOwnerPairing, approveOwnerPairing} from "../src/pairing-owner.ts";
@@ -316,17 +317,13 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
   const f=fixture(),material=newEnrollment("receipt-preserving-permanent");
   const directory=await mkdtemp(path.join(os.tmpdir(),"one-code-receipt-"));
   const keyPath=path.join(directory,"identity.pem");
-  const databasePath=path.join(directory,"state");
-  const receipts=new ReceiptStore(databasePath);
+  const databasePath=path.join(directory,"state","operation-receipts.sqlite");
   const operationId="one-code-unknown-receipt-97";
-  const digest=operationDigest("write_file",{path:"/tmp/rc-one-code-readonly-fixture"});
+  const digest=createHash("sha256").update('{"arguments":{"path":"/tmp/rc-one-code-readonly-fixture"},"tool":"write_file"}').digest("hex");
   try{
     await saveNewPrivateKey(keyPath,material.privateKeyPem);
-    await receipts.open();
-    assert.equal((await receipts.admit(operationId,"write_file",digest)).kind,"new");
-    await receipts.update(operationId,"unknown","effect is uncertain");
-    const before=await receipts.get(operationId);
-    assert.equal(before?.state,"unknown");
+    seedUnknownReceipt(databasePath,operationId,"write_file",digest,new Date().toISOString(),"effect is uncertain");
+    const before=await readFile(databasePath);
     const originalPem=await readFile(keyPath,"utf8");
     assert.equal((await f.register(material.request)).status,202);
     const looked=await f.lookup({code:material.code});
@@ -358,7 +355,7 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
     assert.equal(dropped,true);
     assert.equal(await readFile(keyPath,"utf8"),originalPem);
     await assert.rejects(readFile(keyPath+".device-id","utf8"),{code:"ENOENT"});
-    assert.deepEqual(await receipts.get(operationId),before);
+    assert.deepEqual(await readFile(databasePath),before);
     const withoutLease = (row: Record<string,unknown>) => (({ idle_expires_at, idle_window_ms, ...rest }) => rest)(row);
     assert.deepEqual(withoutLease(f.rows.get(grantKey) as Record<string,unknown>), withoutLease(originalGrant as Record<string,unknown>));
     assert.ok(Number.isSafeInteger((f.rows.get(grantKey) as {idle_expires_at:number}).idle_expires_at));
@@ -372,18 +369,16 @@ test("#97 lost signed claim response preserves same Agent key, grant, ID and rea
     assert.deepEqual(withoutLease(f.rows.get(grantKey) as Record<string,unknown>), withoutLease(originalGrant as Record<string,unknown>));
     assert.ok(Number.isSafeInteger((f.rows.get(grantKey) as {idle_expires_at:number}).idle_expires_at));
     assert.equal([...f.rows.keys()].filter(key=>key.startsWith("device:")).length,1);
-    assert.deepEqual(await receipts.get(operationId),before);
-    await receipts.close();
-    const reopened=new ReceiptStore(databasePath);
+    assert.deepEqual(await readFile(databasePath),before);
+    // The Worker fixture cannot execute an Agent operation. Verify that the
+    // historical guarded row is intact; native receipt_contract tests prove
+    // same-intent deduplication and restart behavior in the actual runtime.
+    const reopened=new DatabaseSync(databasePath,{readOnly:true});
     try{
-      await reopened.open();
-      assert.deepEqual(await reopened.get(operationId),before);
-      const guard=await reopened.admit(operationId,"write_file",digest);
-      assert.equal(guard.kind,"same");
-      assert.equal(guard.receipt?.state,"unknown","an uncertain effect must never be re-executed by pairing retries");
-    }finally{await reopened.close();}
+      assert.deepEqual({...reopened.prepare("SELECT state,argument_digest,guarded FROM receipts WHERE operation_id=?").get(operationId)},
+        {state:"unknown",argument_digest:digest,guarded:1});
+    }finally{reopened.close();}
   }finally{
-    await receipts.close();
     await rm(directory,{recursive:true,force:true});
   }
 });

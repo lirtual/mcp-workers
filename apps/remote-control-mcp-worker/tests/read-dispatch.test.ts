@@ -1,36 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { executeReadTool } from "../agent/src/read-execution.ts";
-import { monitorDeviceSocket } from "../agent/src/v2-connection-lifecycle.ts";
-import { SearchSessions } from "../agent/src/search.ts";
 import worker from "../src/worker.ts";
 import { OwnerCoordinator } from "../src/pairing.ts";
 import { TEMPORARY_GRANT_MS } from "../src/session.ts";
 
-class ClientSocket extends EventTarget {
-  readyState: number = WebSocket.OPEN;
-  sent: string[] = [];
-  private readonly respond: (data: string) => void;
-  constructor(respond: (data: string) => void) { super(); this.respond = respond; }
-  send(text: string) { this.sent.push(text); this.respond(text); }
-  close() { this.readyState = WebSocket.CLOSED; }
-  receive(data: string) {
-    const event = new Event("message");
-    Object.defineProperty(event, "data", { value: data });
-    this.dispatchEvent(event);
-  }
-}
-
 test("MCP read_file with explicit device_id routes through DO WSS only to the approved current device", async () => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "remote-dispatch-"));
+  const dir = "/tmp/dispatch-fixture";
   const file = path.join(dir, "marker.txt");
-  await writeFile(file, "private-A-marker\n", { mode: 0o600 });
-  await Promise.all(Array.from({ length: 45 }, (_, i) =>
-    writeFile(path.join(dir, `walk-${i.toString().padStart(2, "0")}.txt`), "match", { mode: 0o600 })));
   const a = randomUUID(), b = randomUUID(), unknown = randomUUID();
   const rows = new Map<string, unknown>([
     ["device:" + a, { device_id: a, name: "a", revoked: false, last_verified_online_at: Date.now(), idle_window_ms: 14 * 86_400_000 }],
@@ -39,37 +17,58 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
   ]);
   const storage = { get: async <T>(key: string) => rows.get(key) as T | undefined };
   let owner!: OwnerCoordinator;
-  const controllers = [new AbortController(), new AbortController()];
-  const monitors: Promise<unknown>[] = [];
+  // Scripted wire replies test Worker routing and public error mapping, not
+  // a second file/search executor. Native behavior lives in native_read,
+  // native_browse and native_file_wss Rust tests.
   const sentToServer: string[] = [];
   const fromServer: string[] = [];
-  const createSocket = (device_id: string, epoch: string, index: number) => {
-    let client!: ClientSocket;
+  const searchId = randomUUID();
+  const page = (offset: number) => JSON.stringify({
+    session_id: searchId, has_more: true,
+    results: Array.from({ length: 20 }, (_, i) => ({ path: `walk-${offset + i}.txt` })),
+  });
+  const expected = [
+    [a, "read_file", { path: file, offset: 0, length: 1 }, { status: "completed", text: "private-A-marker" }],
+    [a, "read_multiple_files", { paths: [file] }, { status: "completed", text: "private-A-marker" }],
+    [a, "list_directory", { path: dir, depth: 1 }, { status: "completed", text: "file marker.txt" }],
+    [a, "get_file_info", { path: file }, { status: "completed", text: "size: 17" }],
+    [b, "get_file_info", { path: file }, { status: "completed", text: "size: 29" }],
+    [a, "start_search", { path: dir, pattern: "walk-", search_type: "filename" }, { status: "completed", text: page(0) }],
+    [b, "get_more_search_results", { session_id: searchId }, { status: "failed" }],
+    [a, "get_more_search_results", { session_id: searchId }, { status: "completed", text: page(20) }],
+    [a, "stop_search", { session_id: searchId }, { status: "completed", text: '{"stopped":true}' }],
+    [a, "list_directory", { path: path.join(dir, "does-not-exist"), depth: 1 }, { status: "failed" }],
+    [a, "list_sessions", {}, { status: "failed" }],
+    [a, "read_file", { path: path.join(dir, "escaping-budget.txt") }, { status: "failed", error: "result_too_large" }],
+    [a, "read_file", { path: path.join(dir, "batch-budget.txt") }, { status: "completed", text: "bounded reply" }],
+    [a, "read_multiple_files", { paths: [path.join(dir, "batch-budget.txt"), path.join(dir, "batch-budget.txt")] }, { status: "failed", error: "result_too_large" }],
+  ] as const;
+  const createSocket = (device_id: string, epoch: string) => {
     const server = {
       readyState: WebSocket.OPEN,
       deserializeAttachment: () => ({ device_id, epoch }),
       send(message: string) {
+        const item = expected[fromServer.length];
         fromServer.push(device_id);
-        queueMicrotask(() => client.receive(message));
+        const frame = JSON.parse(message);
+        assert.ok(item, "unexpected dispatch");
+        const [device, tool, args, reply] = item;
+        assert.equal(device_id, device);
+        assert.match(frame.request_id, /^[a-f0-9-]{36}$/);
+        assert.deepEqual(frame, { kind: "read", request_id: frame.request_id, tool, arguments: args });
+        queueMicrotask(() => {
+          sentToServer.push(device_id);
+          void owner.webSocketMessage(server, JSON.stringify({
+            kind: "read_result", request_id: frame.request_id, ...reply,
+          }));
+        });
       },
-      close() { client.close(); },
+      close() { assert.fail("valid fixture reply closed the socket"); },
     } as unknown as WebSocket;
-    client = new ClientSocket(message => {
-      sentToServer.push(device_id);
-      queueMicrotask(() => { void owner.webSocketMessage(server, message); });
-    });
-    const searches = new SearchSessions();
-    const monitor = monitorDeviceSocket(client as unknown as WebSocket, controllers[index]!.signal,
-      { intervalMs: 60_000, timeoutMs: 10_000 },
-      async (tool, args, signal) => {
-        const reply = await executeReadTool(tool, args, searches, signal);
-        return reply.kind === "completed" ? reply.text : null;
-      });
-    monitors.push(monitor.finally(() => searches.close()));
     return server;
   };
-  const serverA = createSocket(a, "epoch-a", 0);
-  const serverB = createSocket(b, "epoch-b", 1);
+  const serverA = createSocket(a, "epoch-a");
+  const serverB = createSocket(b, "epoch-b");
   const state = {
     storage,
     getWebSockets(tag: string) {
@@ -105,7 +104,7 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
   }
   const call = (device_id: unknown, token = "portal-test") =>
     callTool("read_file", { device_id, path: file, offset: 0, length: 1 }, token);
-  try {
+  {
     const forbidden = await call(a, "wrong");
     assert.equal(forbidden.http, 401);
     assert.equal(doCalls, 0);
@@ -176,42 +175,20 @@ test("MCP read_file with explicit device_id routes through DO WSS only to the ap
 
     // The signed WSS frame budget includes JSON escaping, not just text.length.
     const escapingFile = path.join(dir, "escaping-budget.txt");
-    await writeFile(escapingFile, (String.fromCharCode(92).repeat(45) + "\n").repeat(1000), "utf8");
     const oversizedRead = await callTool("read_file", { device_id: a, path: escapingFile });
     assert.match(oversizedRead.body, /response budget/i);
     assert.doesNotMatch(oversizedRead.body, /escaping-budget\.txt/);
     assert.doesNotMatch(oversizedRead.body, /device is unavailable/i);
 
     const batchFile = path.join(dir, "batch-budget.txt");
-    await writeFile(batchFile, (String.fromCharCode(92).repeat(20) + "\n").repeat(1000), "utf8");
     const single = await callTool("read_file", { device_id: a, path: batchFile });
     assert.equal(JSON.parse(single.body).result.isError, false);
     const oversizedBatch = await callTool("read_files", { device_id: a, paths: [batchFile, batchFile] });
     assert.match(oversizedBatch.body, /response budget/i);
     assert.doesNotMatch(oversizedBatch.body, /batch-budget\.txt/);
-  } finally {
-    controllers.forEach(c => c.abort());
-    await Promise.all(monitors);
-    await rm(dir, { recursive: true, force: true });
+    assert.equal(fromServer.length, expected.length);
+    assert.deepEqual(sentToServer, fromServer);
   }
-});
-
-test("Agent only accepts bounded read-only frames when explicitly enabled", async () => {
-  const controller = new AbortController();
-  const client = new ClientSocket(() => {});
-  let called = 0;
-  const monitored = monitorDeviceSocket(client as unknown as WebSocket, controller.signal,
-    { intervalMs: 60_000, timeoutMs: 10_000 }, async () => { called++; return "data"; });
-  client.receive(JSON.stringify({ kind: "read", request_id: randomUUID(),
-    tool: "start_process", arguments: { command: "exit 0" } }));
-  assert.equal(await monitored, "policy");
-  assert.equal(called, 0);
-  const disabled = new ClientSocket(() => {});
-  const stopped = monitorDeviceSocket(disabled as unknown as WebSocket, new AbortController().signal,
-    { intervalMs: 60_000, timeoutMs: 10_000 });
-  disabled.receive(JSON.stringify({ kind: "read", request_id: randomUUID(),
-    tool: "read_file", arguments: { path: "/tmp/not-authorized" } }));
-  assert.equal(await stopped, "policy");
 });
 
 test("a second device cannot spoof a read reply and a superseded epoch cannot return stale content", async () => {

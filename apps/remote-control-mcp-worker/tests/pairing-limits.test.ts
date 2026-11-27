@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { newEnrollment } from "../agent/src/v2-enrollment.ts";
+import { newEnrollment } from "./fixtures/device-protocol.ts";
 import { lookupPending, registerPending } from "../src/pairing.ts";
 
 // Same transaction/storage contract as SQLite-backed DO's async KV API.

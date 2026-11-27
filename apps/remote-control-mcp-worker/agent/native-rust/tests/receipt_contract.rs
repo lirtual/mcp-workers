@@ -122,7 +122,10 @@ fn historical_sqlite_receipts_keep_identity_and_replay_guards() {
             'completed','2026-10-01T00:00:00.000Z','2026-10-01T00:00:01.000Z','Done.',NULL,0),
            ('node-interrupted','delete_file',
             'b3ab10d444b4c5b017d225aa3186d493fecca623f2b3956ce13aff94c58916f2',
-            'running','2026-10-01T00:00:00.000Z','2026-10-01T00:00:01.000Z','Dispatched.',NULL,1);",
+            'running','2026-10-01T00:00:00.000Z','2026-10-01T00:00:01.000Z','Dispatched.',NULL,1),
+           ('old-gui','browser_navigate',
+            'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'unknown','2026-10-01T00:00:00.000Z','2026-10-01T00:00:01.000Z',NULL,NULL,1);",
     )
     .unwrap();
     drop(db);
@@ -158,8 +161,14 @@ fn historical_sqlite_receipts_keep_identity_and_replay_guards() {
             Admission::Conflict(_)
         ));
     }
+    assert_eq!(store.get("old-gui").unwrap().unwrap().state, "unknown");
+    assert!(matches!(
+        store.admit("old-gui", "browser_navigate", &json!({})),
+        Err(ReceiptError::InvalidOperation)
+    ));
     drop(store);
     let reopened = ReceiptStore::open(&directory).unwrap();
+    assert_eq!(reopened.get("old-gui").unwrap().unwrap().state, "unknown");
     assert_eq!(
         reopened.get("node-interrupted").unwrap().unwrap().state,
         "unknown"
