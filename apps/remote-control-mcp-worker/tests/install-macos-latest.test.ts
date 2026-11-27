@@ -100,6 +100,84 @@ test("#809 latest lookup fails closed on 404, 403, 429, and unusable releases", 
 
 });
 
+test("Rust-only packaged macOS updater validates a local archive and invokes only the verified Rust manager", () => {
+  const generated = renderPackagedMacUpdateShell({ nativeOnly: true });
+  const syntax = spawnSync("sh", ["-n"], { input: generated, encoding: "utf8", timeout: 5000 });
+  assert.equal(syntax.status, 0, syntax.stderr);
+  assert.match(generated, /rca-standard-darwin-candidate/);
+  assert.match(generated, /--verify-bundle/);
+  assert.match(generated, /--upgrade-local/);
+  assert.match(generated, /--automatic/);
+  assert.match(generated, /shasum -a 256/);
+  assert.match(generated, /tar -tzf/);
+  assert.doesNotMatch(generated, /bin\/node|macos-local\.mjs|macos-remote-upgrade\.mjs|curl/);
+});
+
+test("Rust-only updater verifies the exact archive before dispatching manual or automatic upgrade", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "rca-native-updater-test-"));
+  try {
+    const app = "apps/remote-control-agent";
+    const candidatePath = path.join(root, app, ".build", "rca-standard-darwin-candidate");
+    const helperPath = path.join(root, app, ".build", "darwin-session-supervisor");
+    const updaterPath = path.join(root, app, "scripts", "macos-update.sh");
+    const shim = path.join(root, "shim");
+    mkdirSync(path.dirname(candidatePath), { recursive: true, mode: 0o700 });
+    mkdirSync(path.dirname(updaterPath), { recursive: true, mode: 0o700 });
+    mkdirSync(shim, { mode: 0o700 });
+    writeFileSync(path.join(root, "bundle.json"), "{}\n", { mode: 0o600 });
+    writeFileSync(helperPath, "native helper\n", { mode: 0o700 });
+    writeFileSync(candidatePath, "#!/bin/sh\nif [ \"$1\" = --verify-bundle ]; then printf '%s\\n' \"$RCA_SOURCE\"; exit 0; fi\necho \"$*\" >> \"$RCA_CANDIDATE_LOG\"\n", { mode: 0o700 });
+    chmodSync(candidatePath, 0o700);
+    writeFileSync(updaterPath, "#!/bin/sh\nexit 0\n", { mode: 0o600 });
+    writeFileSync(path.join(shim, "uname"), "#!/bin/sh\n[ \"$1\" = -s ] && echo Darwin || echo arm64\n", { mode: 0o700 });
+    writeFileSync(path.join(shim, "id"), "#!/bin/sh\necho 501\n", { mode: 0o700 });
+    const archive = path.join(root, "candidate.tar.gz");
+    const makeArchive = (extra: string[] = []) => {
+      for (const file of extra) writeFileSync(path.join(root, file), "untrusted\n");
+      const tar = spawnSync("tar", ["-czf", archive, "-C", root, "bundle.json", "apps", ...extra], { encoding: "utf8" });
+      assert.equal(tar.status, 0, tar.stderr);
+      return readFileSync(archive);
+    };
+    const bytes = makeArchive();
+    const digest = sha256(bytes);
+    const log = path.join(root, "candidate.log");
+    const generated = renderPackagedMacUpdateShell({ nativeOnly: true });
+    const manual = spawnSync("sh", ["-c", generated, "native-updater", archive, digest, String(bytes.length), TAG, "darwin-arm64", "https://rca.example.test/", "a".repeat(64)], {
+      encoding: "utf8", timeout: 10000,
+      env: { ...process.env, PATH: shim + path.delimiter + (process.env.PATH ?? "/usr/bin:/bin"), TMPDIR: root,
+        RCA_SOURCE: NEW_COMMIT, RCA_CANDIDATE_LOG: log },
+    });
+    assert.equal(manual.status, 0, manual.stderr);
+    assert.match(readFileSync(log, "utf8"), /--upgrade-local https:\/\/rca\.example\.test\/ v0\.2\.0 /);
+    const automatic = spawnSync("sh", ["-c", generated, "native-updater", archive, digest, String(bytes.length), TAG, "darwin-arm64", "https://rca.example.test/", "a".repeat(64), "--automatic"], {
+      encoding: "utf8", timeout: 10000,
+      env: { ...process.env, PATH: shim + path.delimiter + (process.env.PATH ?? "/usr/bin:/bin"), TMPDIR: root,
+        RCA_SOURCE: NEW_COMMIT, RCA_CANDIDATE_LOG: log },
+    });
+    assert.equal(automatic.status, 0, automatic.stderr);
+    assert.match(readFileSync(log, "utf8"), /--upgrade-local https:\/\/rca\.example\.test\/ v0\.2\.0 .* --automatic/);
+    const before = readFileSync(log, "utf8");
+    const wrongDigest = spawnSync("sh", ["-c", generated, "native-updater", archive, "0".repeat(64), String(bytes.length), TAG, "darwin-arm64", "https://rca.example.test/", "a".repeat(64)], {
+      encoding: "utf8", timeout: 10000,
+      env: { ...process.env, PATH: shim + path.delimiter + (process.env.PATH ?? "/usr/bin:/bin"), TMPDIR: root,
+        RCA_SOURCE: NEW_COMMIT, RCA_CANDIDATE_LOG: log },
+    });
+    assert.notEqual(wrongDigest.status, 0);
+    assert.equal(readFileSync(log, "utf8"), before);
+    const hostileBytes = makeArchive(["foreign.txt"]);
+    writeFileSync(archive, hostileBytes, { mode: 0o600 });
+    const hostile = spawnSync("sh", ["-c", generated, "native-updater", archive, sha256(hostileBytes), String(hostileBytes.length), TAG, "darwin-arm64", "https://rca.example.test/", "a".repeat(64)], {
+      encoding: "utf8", timeout: 10000,
+      env: { ...process.env, PATH: shim + path.delimiter + (process.env.PATH ?? "/usr/bin:/bin"), TMPDIR: root,
+        RCA_SOURCE: NEW_COMMIT, RCA_CANDIDATE_LOG: log },
+    });
+    assert.notEqual(hostile.status, 0);
+    assert.equal(readFileSync(log, "utf8"), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("#809 macOS route reports lookup failures without a script or old repository", async () => {
   const staticRoute = handleLatestMacInstallRequest(
     new Request(ORIGIN + "/install-macos.sh"), ORIGIN);

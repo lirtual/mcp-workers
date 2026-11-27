@@ -5,6 +5,86 @@ use std::path::Path;
 
 pub(super) const LABEL: &str = "org.mcp-workers.remote-control-agent";
 
+pub(super) fn parse_automatic_result(
+    raw: &str,
+    device_id: &str,
+) -> Result<Option<serde_json::Value>, ()> {
+    if raw.len() > 1024 || !valid_device_id(device_id) {
+        return Err(());
+    }
+    let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| ())?;
+    let object = value.as_object().ok_or(())?;
+    let fields = [
+        "device_id",
+        "operation_id",
+        "installed_version",
+        "target_version",
+        "status",
+        "updated_at_unix_ms",
+    ];
+    if object.len() != fields.len() || fields.iter().any(|field| !object.contains_key(*field)) {
+        return Err(());
+    }
+    let recorded_id = value["device_id"].as_str().ok_or(())?;
+    if !valid_device_id(recorded_id) {
+        return Err(());
+    }
+    if recorded_id != device_id {
+        return Ok(None);
+    }
+    let operation = value["operation_id"].as_str().ok_or(())?;
+    let installed = value["installed_version"].as_str().ok_or(())?;
+    let target = value["target_version"].as_str().ok_or(())?;
+    let status = value["status"].as_str().ok_or(())?;
+    if operation.len() != 32
+        || !operation.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || super::agent_release::stable_version(installed).is_none()
+        || super::agent_release::stable_version(target).is_none()
+        || value["updated_at_unix_ms"].as_u64().is_none()
+        || !matches!(status, "success" | "failed_recovered" | "waiting_idle")
+        || (status == "success") != (installed == target)
+    {
+        return Err(());
+    }
+    Ok(Some(value))
+}
+
+pub(super) fn mac_upgrade_binding_digest(
+    plist: Option<&str>,
+    cli: Option<&str>,
+    endpoint: Option<&str>,
+    stop: Option<&str>,
+    key: &[u8],
+    id: &[u8],
+) -> Result<String, ()> {
+    // Match macBindingDigest(JSON.stringify(macUpgradeBinding(...))) exactly:
+    // property order is part of the existing cross-runtime contract.
+    use sha2::{Digest, Sha256};
+    let key_hash = format!("{:x}", Sha256::digest(key));
+    let id_hash = format!("{:x}", Sha256::digest(id));
+    let raw = format!(
+        "{{\"plist\":{},\"cli\":{},\"endpoint\":{},\"stop\":{},\"keyHash\":{},\"idHash\":{}}}",
+        serde_json::to_string(&plist).map_err(|_| ())?,
+        serde_json::to_string(&cli).map_err(|_| ())?,
+        serde_json::to_string(&endpoint).map_err(|_| ())?,
+        serde_json::to_string(&stop).map_err(|_| ())?,
+        serde_json::to_string(&key_hash).map_err(|_| ())?,
+        serde_json::to_string(&id_hash).map_err(|_| ())?,
+    );
+    Ok(format!("{:x}", Sha256::digest(raw.as_bytes())))
+}
+
+pub(super) fn automatic_result_admits(
+    prior: Option<&serde_json::Value>,
+    target: &str,
+    action: &str,
+) -> bool {
+    !prior.is_some_and(|result| {
+        result["status"] == "failed_recovered"
+            && (action == "waiting_idle" || result["target_version"] == target)
+    })
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Registration {
     Absent,
@@ -269,7 +349,7 @@ pub(super) fn default_diagnostics(arch: &str) -> serde_json::Value {
         "platform":"darwin","arch":arch,"device_id":null,"identity_present":null,
         "local_service":"unconfirmed","signed_wss":"unconfirmed","cloud_authorization":"unconfirmed",
         "cloud_approval":"unconfirmed","last_online":"unconfirmed","automatic_update":"unknown",
-        "automatic_update_activity":"unknown","receipts":"preserved_unverified"})
+        "automatic_update_activity":"unknown","automatic_update_result":null,"receipts":"preserved_unverified"})
 }
 
 pub(super) fn apply_policy_observation(
@@ -333,7 +413,7 @@ pub(super) fn native_cli(executable: &Path) -> Result<String, ()> {
         return Err(());
     }
     let quoted = format!("'{}'", path.replace('\'', "'\"'\"'"));
-    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|doctor) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && [ \"$2\" = --json ]; }} || exit 2 ;;\n\"\") [ \"$#\" -eq 0 ] || exit 2 ;;\nlogs|stop|start|restart|pair|recover|uninstall|--help|--version|version) [ \"$#\" -eq 1 ] || exit 2 ;;\nupdate|upgrade) {{ [ \"$#\" -eq 2 ] && {{ [ \"$2\" = --auto ] || [ \"$2\" = --check ]; }}; }} || {{ [ \"$#\" -eq 3 ] && [ \"$2\" = --auto ] && {{ [ \"$3\" = on ] || [ \"$3\" = off ]; }}; }} || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
+    Ok(format!("#!/bin/sh\nset -eu\ncase \"${{1:-}}\" in\nstatus|doctor) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && [ \"$2\" = --json ]; }} || exit 2 ;;\n\"\") [ \"$#\" -eq 0 ] || exit 2 ;;\nlogs|stop|start|restart|pair|recover|uninstall|--help|--version|version) [ \"$#\" -eq 1 ] || exit 2 ;;\nupdate|upgrade) [ \"$#\" -eq 1 ] || {{ [ \"$#\" -eq 2 ] && {{ [ \"$2\" = --auto ] || [ \"$2\" = --check ]; }}; }} || {{ [ \"$#\" -eq 3 ] && [ \"$2\" = --auto ] && {{ [ \"$3\" = on ] || [ \"$3\" = off ]; }}; }} || exit 2 ;;\nsecure-input) [ \"$#\" -eq 2 ] || exit 2; case \"$2\" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case \"$2\" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\nesac\nexec {quoted} \"$@\"\n"))
 }
 
 pub(super) fn new_generation() -> Result<String, ()> {
@@ -495,6 +575,7 @@ impl UninstallRecord {
                     && inventory.iter().all(|(name, files)| {
                         name.strip_suffix(&format!("-{target}"))
                             .is_some_and(super::darwin_package::valid_version)
+                            && (files.len() == 3 || files.len() == 4)
                             && files.iter().all(|digest| valid_digest(digest))
                     })
             }
@@ -689,15 +770,38 @@ mod tests {
         );
         record.inventory = Some(std::collections::BTreeMap::from([(
             record.version.clone(),
-            ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+            vec![
+                "a".repeat(64),
+                "b".repeat(64),
+                "c".repeat(64),
+                "d".repeat(64),
+            ],
         )]));
         assert!(
             UninstallRecord::parse(&serde_json::to_string(&record).unwrap(), "darwin-arm64")
                 .is_ok()
         );
         record.inventory.as_mut().unwrap().insert(
+            "v0.1.59-darwin-arm64".into(),
+            vec!["e".repeat(64), "f".repeat(64), "0".repeat(64)],
+        );
+        assert!(
+            UninstallRecord::parse(&serde_json::to_string(&record).unwrap(), "darwin-arm64")
+                .is_ok()
+        );
+        record
+            .inventory
+            .as_mut()
+            .unwrap()
+            .remove("v0.1.59-darwin-arm64");
+        record.inventory.as_mut().unwrap().insert(
             "../foreign-darwin-arm64".into(),
-            ["a".repeat(64), "b".repeat(64), "c".repeat(64)],
+            vec![
+                "a".repeat(64),
+                "b".repeat(64),
+                "c".repeat(64),
+                "d".repeat(64),
+            ],
         );
         assert!(
             UninstallRecord::parse(&serde_json::to_string(&record).unwrap(), "darwin-arm64")
@@ -1231,6 +1335,8 @@ mod tests {
             &["doctor"],
             &["doctor", "--json"],
             &["logs"],
+            &["update"],
+            &["upgrade"],
             &["update", "--check"],
             &["upgrade", "--check"],
             &["update", "--auto"],
@@ -1261,7 +1367,6 @@ mod tests {
             &["status", "--repair"][..],
             &["doctor", "--repair"],
             &["logs", "--repair"],
-            &["update"],
             &["update", "--auto", "yes"],
             &["update", "--auto", "on", "extra"],
             &["update", "--automatic"],
@@ -1420,5 +1525,74 @@ mod tests {
             ),
             Registration::Unknown
         );
+    }
+}
+
+#[cfg(test)]
+mod automatic_result_tests {
+    use super::{automatic_result_admits, parse_automatic_result};
+    use serde_json::json;
+
+    const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+    fn result(status: &str, installed: &str, target: &str) -> String {
+        json!({
+            "device_id": ID,
+            "operation_id": "0123456789abcdef0123456789abcdef",
+            "installed_version": installed,
+            "target_version": target,
+            "status": status,
+            "updated_at_unix_ms": 1_795_700_000_000u64,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn automatic_result_is_exact_identity_bound_and_semantically_consistent() {
+        let valid = result("success", "v0.1.61", "v0.1.61");
+        assert!(parse_automatic_result(&valid, ID).unwrap().is_some());
+        assert_eq!(
+            parse_automatic_result(&valid, "123e4567-e89b-42d3-a456-426614174002"),
+            Ok(None)
+        );
+        assert!(parse_automatic_result(&result("success", "v0.1.60", "v0.1.61"), ID).is_err());
+        assert!(
+            parse_automatic_result(&result("failed_recovered", "v0.1.61", "v0.1.61"), ID).is_err()
+        );
+        let mut extra: serde_json::Value = serde_json::from_str(&valid).unwrap();
+        extra["extra"] = json!(true);
+        assert!(parse_automatic_result(&extra.to_string(), ID).is_err());
+    }
+
+    #[test]
+    fn mac_upgrade_binding_digest_matches_the_existing_node_json_contract() {
+        assert_eq!(
+            super::mac_upgrade_binding_digest(
+                Some("plist-content\n"),
+                Some("#!/bin/sh\nexec \"/path/rca\" \"$@\"\n"),
+                Some("https://example.test/"),
+                None,
+                b"key bytes\n",
+                b"id bytes\n",
+            )
+            .unwrap(),
+            "3dbf8ffad5e20a7f1ddcc66bdc7575a6982d55ead3c7753e4a20af19fc495e5c"
+        );
+    }
+
+    #[test]
+    fn verified_rollback_suppresses_only_the_same_target_and_no_idle_retry() {
+        let failed: serde_json::Value =
+            serde_json::from_str(&result("failed_recovered", "v0.1.60", "v0.1.61")).unwrap();
+        assert!(!automatic_result_admits(Some(&failed), "v0.1.61", "admit"));
+        assert!(!automatic_result_admits(
+            Some(&failed),
+            "v0.1.62",
+            "waiting_idle"
+        ));
+        assert!(automatic_result_admits(Some(&failed), "v0.1.62", "admit"));
+        let waiting: serde_json::Value =
+            serde_json::from_str(&result("waiting_idle", "v0.1.60", "v0.1.61")).unwrap();
+        assert!(automatic_result_admits(Some(&waiting), "v0.1.61", "admit"));
     }
 }

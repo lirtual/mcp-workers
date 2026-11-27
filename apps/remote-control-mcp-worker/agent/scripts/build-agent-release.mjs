@@ -305,7 +305,7 @@ export function build(args) {
     mkdirSync(path.join(work, "bin"), {recursive:true,mode:0o700});
     mkdirSync(path.join(work, "apps/remote-control-agent/src"), {recursive:true,mode:0o700});
   }
-  if (!darwin || !nativeOnly) mkdirSync(path.join(work, "apps/remote-control-agent/scripts"), {recursive:true,mode:0o700});
+  mkdirSync(path.join(work, "apps/remote-control-agent/scripts"), {recursive:true,mode:0o700});
   mkdirSync(path.join(work, "apps/remote-control-agent/.build"), {recursive:true,mode:0o700});
   if (!nativeOnly) copyFileSync(args.nodeBin, path.join(work, "bin/node"));
   const helperFile=darwin ? "darwin-session-supervisor" : "session-supervisor";
@@ -344,6 +344,10 @@ export function build(args) {
     if(errors.length) throw new Error("TS compilation error in "+file);
     writeFileSync(path.join(work,"apps/remote-control-agent/src",file.replace(/\.ts$/,".js")),
       rewriteExtensions(compiled.outputText),{mode:0o600});
+  }
+  if (darwin && nativeOnly) {
+    writeFileSync(path.join(work,"apps/remote-control-agent/scripts/macos-update.sh"),
+      renderPackagedMacUpdateShell({nativeOnly:true}),{mode:0o600});
   }
   if (darwin && !nativeOnly) {
     const local=path.join(root,"scripts/macos-local.mjs");

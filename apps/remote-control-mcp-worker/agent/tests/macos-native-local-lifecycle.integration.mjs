@@ -1,7 +1,7 @@
 // Two unpublished native-only packages, synthetic STOP state, real launchctl.
 // No pairing, network activation or real crash is claimed.
 import assert from "node:assert/strict";
-import {generateKeyPairSync, randomUUID} from "node:crypto";
+import {createHash, generateKeyPairSync, randomUUID} from "node:crypto";
 import {spawnSync} from "node:child_process";
 import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
 import {DatabaseSync} from "node:sqlite";
@@ -11,7 +11,8 @@ import test from "node:test";
 
 const baseline = process.env.RCA_MACOS_NATIVE_BASELINE_ARCHIVE;
 const candidate = process.env.RCA_MACOS_NATIVE_CANDIDATE_ROOT;
-if (process.platform !== "darwin" || !baseline || !candidate)
+const candidateArchive = process.env.RCA_MACOS_NATIVE_CANDIDATE_ARCHIVE;
+if (process.platform !== "darwin" || !baseline || !candidate || !candidateArchive)
   throw Error("Requires two native-only packages on a disposable macOS runner.");
 const label = "org.mcp-workers.remote-control-agent";
 const endpoint = "https://127.0.0.1/";
@@ -44,7 +45,7 @@ function launcher(exe) {
     'status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n' +
     '"") [ "$#" -eq 0 ] || exit 2 ;;\n' +
     'logs|stop|start|restart|pair|recover|uninstall|--help|--version|version) [ "$#" -eq 1 ] || exit 2 ;;\n' +
-    'update|upgrade) { [ "$#" -eq 2 ] && { [ "$2" = --auto ] || [ "$2" = --check ]; }; } || { [ "$#" -eq 3 ] && [ "$2" = --auto ] && { [ "$3" = on ] || [ "$3" = off ]; }; } || exit 2 ;;\n' +
+    'update|upgrade) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && { [ "$2" = --auto ] || [ "$2" = --check ]; }; } || { [ "$#" -eq 3 ] && [ "$2" = --auto ] && { [ "$3" = on ] || [ "$3" = off ]; }; } || exit 2 ;;\n' +
     'secure-input) [ "$#" -eq 2 ] || exit 2; case "$2" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case "$2" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n' +
     "*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\n" +
     "esac\nexec '" + exe + "' \"$@\"\n";
@@ -129,7 +130,19 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
     assert.deepEqual(await readFile(receipts),before);
   };
   const noJournal=()=>assert.rejects(readFile(journal),{code:"ENOENT"});
-  const args=["--upgrade-local",endpoint,meta.version,meta.source_commit];
+  // Reproduce the existing Node management binding, including key/id SHA-256,
+  // JSON property order and the original intentional STOP marker. The Rust
+  // manager must reject any change to this exact installation after admission.
+  const digest = bytes => createHash("sha256").update(bytes).digest("hex");
+  const binding = digest(JSON.stringify({
+    plist:previous, cli:oldCli, endpoint, stop:"stopped\n",
+    keyHash:digest(key), idHash:digest(device),
+  }));
+  const args=["--upgrade-local",endpoint,meta.version,meta.source_commit,binding];
+  const refusedBinding=owner("y",exe,["--upgrade-local",endpoint,meta.version,meta.source_commit,"0".repeat(64)]);
+  assert.equal(refusedBinding.status,1,refusedBinding.stdout+refusedBinding.stderr);
+  assert.doesNotMatch(refusedBinding.stdout,/Confirm \[y\/N\]/);
+  await noJournal();
   const refused=owner("n",exe,args);
   assert.equal(refused.status,1,refused.stdout+refused.stderr);
   assert.match(refused.stdout,/Confirm \[y\/N\]/,refused.stdout+refused.stderr);
@@ -138,7 +151,22 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
   await noJournal();
   await assert.rejects(readFile(path.join(nextRoot,"bundle.json")),{code:"ENOENT"});
   await preserved();
-  const upgraded=ok(owner("y",exe,args));
+  // Exercise the exact packaged shell, archive checksum and Rust manager on
+  // the disposable macOS runner. A corrupted archive must be refused before
+  // any state change or owner prompt.
+  const bytes=await readFile(candidateArchive);
+  const updater=path.join(candidate,"apps/remote-control-agent/scripts/macos-update.sh");
+  const shellArgs=[updater,candidateArchive,digest(bytes),String(bytes.length),
+    meta.version,meta.target,endpoint,binding];
+  const corrupt=owner("y","/bin/sh",[
+    updater,candidateArchive,"0".repeat(64),String(bytes.length),
+    meta.version,meta.target,endpoint,binding,
+  ]);
+  assert.equal(corrupt.status,1,corrupt.stdout+corrupt.stderr);
+  assert.doesNotMatch(corrupt.stdout,/Confirm \[y\/N\]/);
+  assert.equal(await readFile(config,"utf8"),previous);
+  await noJournal();
+  const upgraded=ok(owner("y","/bin/sh",shellArgs));
   assert.match(upgraded,/Confirm \[y\/N\]/);
   assert.match(upgraded,/"status":"stopped_preserved"/);
   const installed=await readFile(config,"utf8");

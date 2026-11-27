@@ -7,9 +7,11 @@ use std::path::{Path, PathBuf};
 
 const APP: &str = "apps/remote-control-agent";
 const BUILD: &str = "apps/remote-control-agent/.build";
+const SCRIPTS: &str = "apps/remote-control-agent/scripts";
 pub(super) const ENTRY: &str = "apps/remote-control-agent/.build/rca-standard-darwin-candidate";
 const HELPER: &str = "apps/remote-control-agent/.build/darwin-session-supervisor";
-const FILES: [&str; 3] = ["bundle.json", ENTRY, HELPER];
+const UPDATER: &str = "apps/remote-control-agent/scripts/macos-update.sh";
+const FILES: [&str; 4] = ["bundle.json", ENTRY, HELPER, UPDATER];
 
 pub(super) fn private_dir(path: &Path) -> Result<(), ()> {
     let info = fs::symlink_metadata(path).map_err(|_| ())?;
@@ -115,12 +117,24 @@ pub(super) struct Package {
     pub version: String,
     pub source: String,
     pub target: String,
+    pub updater: bool,
 }
 
 pub(super) fn verify(root: &Path, target: &str) -> Result<Package, ()> {
     exact_children(root, &["bundle.json", "apps"])?;
     exact_children(&root.join("apps"), &["remote-control-agent"])?;
-    exact_children(&root.join(APP), &[".build"])?;
+    let has_updater = match fs::symlink_metadata(root.join(SCRIPTS)) {
+        Ok(info) if info.is_dir() && !info.file_type().is_symlink() => {
+            exact_children(&root.join(APP), &[".build", "scripts"])?;
+            exact_children(&root.join(SCRIPTS), &["macos-update.sh"])?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            exact_children(&root.join(APP), &[".build"])?;
+            false
+        }
+        _ => return Err(()),
+    };
     exact_children(
         &root.join(BUILD),
         &["darwin-session-supervisor", "rca-standard-darwin-candidate"],
@@ -186,10 +200,21 @@ pub(super) fn verify(root: &Path, target: &str) -> Result<Package, ()> {
             return Err(());
         }
     }
+    if has_updater {
+        let mut updater = String::new();
+        open_file(&root.join(UPDATER), 0o600, 65536)?
+            .take(65537)
+            .read_to_string(&mut updater)
+            .map_err(|_| ())?;
+        if updater.len() > 65536 || !updater.is_ascii() || !updater.starts_with("#!/bin/sh\n") {
+            return Err(());
+        }
+    }
     Ok(Package {
         version: version.to_owned(),
         source: source.to_owned(),
         target: target.to_owned(),
+        updater: has_updater,
     })
 }
 
@@ -209,14 +234,24 @@ pub(super) fn stage(root: &Path, programs: &Path, package: &Package) -> Result<P
         .create(&stage)
         .map_err(|_| ())?;
     let result = (|| {
-        for directory in ["apps", APP, BUILD] {
+        let mut directories = vec!["apps", APP, BUILD];
+        if package.updater {
+            directories.push(SCRIPTS);
+        }
+        for directory in directories {
             fs::DirBuilder::new()
                 .mode(0o700)
                 .create(stage.join(directory))
                 .map_err(|_| ())?;
         }
-        for path in FILES {
-            let (mode, max) = if path == "bundle.json" {
+        let file_count = if package.updater {
+            FILES.len()
+        } else {
+            FILES.len() - 1
+        };
+        for path in FILES.iter().take(file_count) {
+            let path = *path;
+            let (mode, max) = if path == "bundle.json" || path == UPDATER {
                 (0o600, 65536)
             } else {
                 (0o700, 180_000_000)
@@ -238,7 +273,11 @@ pub(super) fn stage(root: &Path, programs: &Path, package: &Package) -> Result<P
         if verify(&stage, &package.target)? != *package {
             return Err(());
         }
-        for directory in [BUILD, APP, "apps", ""] {
+        let mut sync_directories = vec![BUILD, APP, "apps", ""];
+        if package.updater {
+            sync_directories.insert(1, SCRIPTS);
+        }
+        for directory in sync_directories {
             File::open(stage.join(directory))
                 .and_then(|f| f.sync_all())
                 .map_err(|_| ())?;
@@ -258,7 +297,12 @@ pub(super) fn same_package(left: &Path, right: &Path, package: &Package) -> Resu
     if verify(left, &package.target)? != *package || verify(right, &package.target)? != *package {
         return Ok(false);
     }
-    for index in 0..FILES.len() {
+    let file_count = if package.updater {
+        FILES.len()
+    } else {
+        FILES.len() - 1
+    };
+    for index in 0..file_count {
         if file_digest(left, index)? != file_digest(right, index)? {
             return Ok(false);
         }
@@ -283,11 +327,12 @@ pub(super) fn reviewed_programs(programs: &Path, target: &str) -> Result<Vec<Pat
     Ok(roots)
 }
 
-pub(super) type RemovalInventory = [String; 3];
+pub(super) type RemovalInventory = Vec<String>;
 
 fn file_digest(root: &Path, index: usize) -> Result<String, ()> {
     use sha2::{Digest, Sha256};
-    let (mode, max) = if index == 0 {
+    let path = FILES[index];
+    let (mode, max) = if path == "bundle.json" || path == UPDATER {
         (0o600, 65536)
     } else {
         (0o700, 180_000_000)
@@ -302,12 +347,15 @@ fn file_digest(root: &Path, index: usize) -> Result<String, ()> {
 }
 
 pub(super) fn removal_inventory(root: &Path, target: &str) -> Result<RemovalInventory, ()> {
-    verify(root, target)?;
-    Ok([
-        file_digest(root, 0)?,
-        file_digest(root, 1)?,
-        file_digest(root, 2)?,
-    ])
+    let package = verify(root, target)?;
+    let file_count = if package.updater {
+        FILES.len()
+    } else {
+        FILES.len() - 1
+    };
+    (0..file_count)
+        .map(|index| file_digest(root, index))
+        .collect()
 }
 
 fn present(path: &Path) -> Result<bool, ()> {
@@ -321,15 +369,33 @@ fn present(path: &Path) -> Result<bool, ()> {
 // Missing reviewed entries are permitted during removal; new or changed
 // entries are not. Check each ancestor before visiting its children.
 pub(super) fn verify_remaining(root: &Path, inventory: &RemovalInventory) -> Result<(), ()> {
-    for (relative, allowed) in [
-        ("", &["bundle.json", "apps"][..]),
-        ("apps", &["remote-control-agent"][..]),
-        (APP, &[".build"][..]),
+    if inventory.len() != FILES.len() && inventory.len() != FILES.len() - 1 {
+        return Err(());
+    }
+    let has_updater = inventory.len() == FILES.len();
+    let root_allowed = ["bundle.json", "apps"];
+    let apps_allowed = ["remote-control-agent"];
+    let app_with_updater = [".build", "scripts"];
+    let app_legacy = [".build"];
+    let build_allowed = ["rca-standard-darwin-candidate", "darwin-session-supervisor"];
+    let scripts_allowed = ["macos-update.sh"];
+    let mut directories: Vec<(&str, &[&str])> = vec![
+        ("", &root_allowed),
+        ("apps", &apps_allowed),
         (
-            BUILD,
-            &["rca-standard-darwin-candidate", "darwin-session-supervisor"][..],
+            APP,
+            if has_updater {
+                &app_with_updater
+            } else {
+                &app_legacy
+            },
         ),
-    ] {
+        (BUILD, &build_allowed),
+    ];
+    if has_updater {
+        directories.push((SCRIPTS, &scripts_allowed));
+    }
+    for (relative, allowed) in directories {
         let directory = if relative.is_empty() {
             root.to_path_buf()
         } else {
@@ -349,7 +415,7 @@ pub(super) fn verify_remaining(root: &Path, inventory: &RemovalInventory) -> Res
             }
         }
     }
-    for (index, file) in FILES.iter().enumerate() {
+    for (index, file) in FILES.iter().take(inventory.len()).enumerate() {
         if present(&root.join(file))? && file_digest(root, index)? != inventory[index] {
             return Err(());
         }
@@ -361,7 +427,7 @@ pub(super) fn verify_remaining(root: &Path, inventory: &RemovalInventory) -> Res
 // resume after interruption, not permission to recursively remove a tree.
 pub(super) fn remove_remaining(root: &Path, inventory: &RemovalInventory) -> Result<(), ()> {
     verify_remaining(root, inventory)?;
-    for (index, path) in FILES.iter().enumerate() {
+    for (index, path) in FILES.iter().take(inventory.len()).enumerate() {
         let path = root.join(path);
         if present(&path)? {
             if file_digest(root, index)? != inventory[index] {
@@ -373,7 +439,12 @@ pub(super) fn remove_remaining(root: &Path, inventory: &RemovalInventory) -> Res
                 .map_err(|_| ())?;
         }
     }
-    for path in [BUILD, APP, "apps", ""] {
+    let directories: &[&str] = if inventory.len() == FILES.len() {
+        &[BUILD, SCRIPTS, APP, "apps", ""]
+    } else {
+        &[BUILD, APP, "apps", ""]
+    };
+    for path in directories {
         let path = if path.is_empty() {
             root.to_path_buf()
         } else {
@@ -401,11 +472,25 @@ mod tests {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn fixture(root: &Path, target: &str) {
+        fixture_with_updater(root, target, true);
+    }
+
+    fn fixture_legacy(root: &Path, target: &str) {
+        fixture_with_updater(root, target, false);
+    }
+
+    fn fixture_with_updater(root: &Path, target: &str, updater: bool) {
         fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
         for path in ["apps", APP, BUILD] {
             fs::DirBuilder::new()
                 .mode(0o700)
                 .create(root.join(path))
+                .unwrap();
+        }
+        if updater {
+            fs::DirBuilder::new()
+                .mode(0o700)
+                .create(root.join(SCRIPTS))
                 .unwrap();
         }
         let m = serde_json::json!({"name":"remote-control-agent","version":"v0.1.60",
@@ -427,6 +512,10 @@ mod tests {
         for path in [ENTRY, HELPER] {
             fs::write(root.join(path), bytes).unwrap();
             fs::set_permissions(root.join(path), fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        if updater {
+            fs::write(root.join(UPDATER), b"#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(root.join(UPDATER), fs::Permissions::from_mode(0o600)).unwrap();
         }
     }
 
@@ -495,6 +584,24 @@ mod tests {
     }
 
     #[test]
+    fn historical_three_file_packages_remain_verifiable_stageable_and_removable() {
+        let root = tempfile::tempdir().unwrap();
+        let programs = tempfile::tempdir().unwrap();
+        fs::set_permissions(programs.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        fixture_legacy(root.path(), "darwin-arm64");
+        let package = verify(root.path(), "darwin-arm64").unwrap();
+        assert!(!package.updater);
+        let inventory = removal_inventory(root.path(), "darwin-arm64").unwrap();
+        assert_eq!(inventory.len(), 3);
+        let staged = stage(root.path(), programs.path(), &package).unwrap();
+        assert!(!staged.join(SCRIPTS).exists());
+        assert_eq!(verify(&staged, "darwin-arm64").unwrap(), package);
+        assert!(same_package(root.path(), &staged, &package).unwrap());
+        remove_remaining(root.path(), &inventory).unwrap();
+        assert!(!root.path().exists());
+    }
+
+    #[test]
     fn upgrade_requires_strict_forward_version() {
         for (old, new, expected) in [
             ("v0.1.60", "v0.1.61", true),
@@ -535,7 +642,8 @@ mod tests {
                 Ok(Package {
                     version: package.version.clone(),
                     source: package.source.clone(),
-                    target: package.target.clone()
+                    target: package.target.clone(),
+                    updater: true
                 })
             );
             assert!(same_package(root.path(), &staged, &package).unwrap());

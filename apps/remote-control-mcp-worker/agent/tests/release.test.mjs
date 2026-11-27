@@ -259,7 +259,7 @@ test("#914 Windows packaging accepts only reviewed native Rust inputs",()=>{
   assert.throws(()=>parseWindowsReleaseBuildArgs(native.map(x=>x==="c".repeat(64)?"wrong":x)));
 });
 
-test("#914 native-only Darwin archive has only the two native binaries and manifest",()=>{
+test("#914 native-only Darwin archive contains only the native binaries, manifest and Rust updater",()=>{
   const version="v0.1.60";
   const app="apps/remote-control-agent/.build/";
   for(const [target,cpu] of [["darwin-arm64",0x0100000c],["darwin-x64",0x01000007]]) {
@@ -271,11 +271,12 @@ test("#914 native-only Darwin archive has only the two native binaries and manif
     const fixture=(changes={},extra=[],binary=macho(cpu),modes={})=>tar([
       {name:"bundle.json",data:Buffer.from(JSON.stringify({...manifest,...changes})),mode:modes.manifest??0o600},
       {name:app+"darwin-session-supervisor",data:macho(cpu),mode:modes.helper??0o700},
-      {name:app+"rca-standard-darwin-candidate",data:binary,mode:modes.agent??0o700},...extra,
+      {name:app+"rca-standard-darwin-candidate",data:binary,mode:modes.agent??0o700},
+      {name:"apps/remote-control-agent/scripts/macos-update.sh",data:Buffer.from("#!/bin/sh\nexit 0\n"),mode:modes.updater??0o600},...extra,
     ]);
     const opts={tag:version,target};
-    assert.equal(inspectTarGzip(fixture(),opts).size,3);
-    for(const modes of [{manifest:0o644},{helper:0o600},{agent:0o4755},{agent:0o755}]) {
+    assert.equal(inspectTarGzip(fixture(),opts).size,4);
+    for(const modes of [{manifest:0o644},{helper:0o600},{agent:0o4755},{agent:0o755},{updater:0o700}]) {
       assert.throws(()=>inspectTarGzip(fixture({},[],macho(cpu),modes),opts),/permission/);
     }
     assert.throws(()=>inspectTarGzip(fixture({},[{name:"apps",type:"5",mode:0o755}]),opts),/permission/);

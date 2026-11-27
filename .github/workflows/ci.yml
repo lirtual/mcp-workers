@@ -372,6 +372,7 @@ jobs:
             --out "$native_old_out"
           RCA_MACOS_NATIVE_BASELINE_ARCHIVE="$native_old_out/remote-control-agent-v0.1.59-$target.tar.gz" \
             RCA_MACOS_NATIVE_CANDIDATE_ROOT="$native_unpacked" \
+            RCA_MACOS_NATIVE_CANDIDATE_ARCHIVE="$native_archive" \
             node --test "$source_root/tests/macos-native-local-lifecycle.integration.mjs"
           archive="$out/remote-control-agent-v0.1.57-rust-candidate.1-$target.tar.gz"
           unpacked="$out/unpacked"

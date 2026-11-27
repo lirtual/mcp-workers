@@ -11,7 +11,7 @@ const NATIVE_FILES=new Set(["bundle.json",APP+"/.build/session-supervisor",
   APP+"/scripts/manage-v2.py",APP+"/scripts/rca.sh"]);
 const SESSION_ENTRY=APP+"/.build/rca-session-linux-candidate";
 const DARWIN_FILES=new Set(["bundle.json",APP+"/.build/darwin-session-supervisor",
-  APP+"/.build/rca-standard-darwin-candidate"]);
+  APP+"/.build/rca-standard-darwin-candidate",APP+"/scripts/macos-update.sh"]);
 function octal(bytes) {
   const s=Buffer.from(bytes).toString("ascii").replace(/\0.*$/,"").trim();
   if(!/^[0-7]+$/.test(s)) throw new Error("Invalid tar numeric field.");
@@ -30,7 +30,7 @@ function safePath(name,directory,darwin) {
     !/^[A-Za-z0-9._/-]+$/.test(n)) throw new Error("Unsafe tar entry path.");
   if(!directory && !(darwin ? DARWIN_FILES.has(n) : NATIVE_FILES.has(n) || n===SESSION_ENTRY))
     throw new Error("Native-only archive contains an unreviewed runtime file.");
-  if(directory && !(darwin ? ["apps",APP,APP+"/.build"] : ["apps",APP,APP+"/scripts",APP+"/.build"]).includes(n))
+  if(directory && !(darwin ? ["apps",APP,APP+"/.build",APP+"/scripts"] : ["apps",APP,APP+"/scripts",APP+"/.build"]).includes(n))
     throw new Error("Unreviewed archive directory.");
   return n;
 }
@@ -64,11 +64,14 @@ export function inspectTarGzip(gzip,{tag,target}) {
     if(directory && size!==0) throw new Error("Directory contains payload.");
     if(darwin) {
       // Match the native package verifier and deterministic Darwin builder.
-      if(octal(header.subarray(100,108))!==(safe==="bundle.json"?0o600:0o700))
+      const privateFile=safe==="bundle.json"||safe===APP+"/scripts/macos-update.sh";
+      if(octal(header.subarray(100,108))!==(directory||!privateFile?0o700:0o600))
         throw Error("Unexpected native Darwin archive permission.");
       if(safe==="bundle.json" && (size===0 || size>65536))
         throw Error("Unexpected native Darwin manifest size.");
-      if(!directory && safe!=="bundle.json" && size>180_000_000)
+      if(safe===APP+"/scripts/macos-update.sh" && (size===0 || size>65536))
+        throw Error("Unexpected native Darwin updater size.");
+      if(!directory && safe!=="bundle.json" && safe!==APP+"/scripts/macos-update.sh" && size>180_000_000)
         throw Error("Unexpected native Darwin executable size.");
     }
     if(size>MAX_TAR || cursor+512+size>tar.length) throw new Error("Truncated tar entry.");
@@ -101,7 +104,7 @@ export function inspectTarGzip(gzip,{tag,target}) {
       throw Error("Incomplete native Darwin release artifact.");
     const cpu=target==="darwin-arm64" ? 0x0100000c : 0x01000007;
     for(const file of DARWIN_FILES) {
-      if(file==="bundle.json")continue;
+      if(file==="bundle.json"||file===APP+"/scripts/macos-update.sh")continue;
       const b=entries.get(file).data;
       if(b.length<32||b.readUInt32LE(0)!==0xfeedfacf||b.readUInt32LE(4)!==cpu||b.readUInt32LE(12)!==2)
         throw Error("Release binary architecture mismatch.");

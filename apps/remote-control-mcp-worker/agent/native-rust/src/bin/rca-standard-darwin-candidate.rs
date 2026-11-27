@@ -281,6 +281,7 @@ mod darwin {
         directory_present, identity_directory, lock_identity_directory, owner_stopped,
         pairing_store, record_connection,
     };
+    use rca_native_agent::automatic_update::{automatic_jitter, AutomaticCheckSchedule};
     use rca_native_agent::darwin_managed::DarwinManagedSessions;
     use rca_native_agent::identity::{signed_session_proof, valid_device_id};
     use rca_native_agent::native_file::{
@@ -294,7 +295,7 @@ mod darwin {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
     extern "C" fn request_stop(_: libc::c_int) {
@@ -740,6 +741,27 @@ mod darwin {
         state["version"] = serde_json::json!(current.version);
         state["installed_version"] = state["version"].clone();
         apply_connection_observation(&mut state, stopped, observed, evidence);
+        let device_id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        match read_automatic_result(&key, device_id.trim()) {
+            Ok(Some(mut result)) => {
+                let current_result = result["installed_version"] == state["installed_version"];
+                result["current"] = serde_json::json!(current_result);
+                if current_result {
+                    state["automatic_update_activity"] =
+                        serde_json::json!(if result["status"] == "failed_recovered" {
+                            "recovered"
+                        } else {
+                            result["status"].as_str().unwrap_or("unknown")
+                        });
+                }
+                state["automatic_update_result"] = result;
+            }
+            Ok(None) => (),
+            Err(_) => {
+                state["automatic_update_activity"] = serde_json::json!("unknown");
+                state["automatic_update_result"] = serde_json::json!({"status":"unknown"});
+            }
+        }
         Ok(state)
     }
 
@@ -1319,11 +1341,17 @@ mod darwin {
         Ok(())
     }
 
-    fn upgrade_local(endpoint: &str, version: &str, source: &str) -> Result<(), ()> {
+    fn upgrade_local(
+        endpoint: &str,
+        version: &str,
+        source: &str,
+        expected_binding: &str,
+        automatic: bool,
+    ) -> Result<(), ()> {
         use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
         let bundle = current_bundle()?;
         let package = darwin_package::verify(&bundle, native_target())?;
-        if package.version != version || package.source != source {
+        if !package.updater || package.version != version || package.source != source {
             return Err(());
         }
         let _supervisor = checked_supervisor()?;
@@ -1366,15 +1394,59 @@ mod darwin {
         let pem = read_private(&key, 8192)?.ok_or(())?;
         let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
         signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        let cli_value = read_executable(&cli)?.ok_or(())?;
+        if cli_value != old_cli {
+            return Err(());
+        }
+        let stop = read_private(&base.join("macos/stopped"), 8)?;
+        let actual_binding = darwin_lifecycle::mac_upgrade_binding_digest(
+            Some(&previous),
+            Some(&cli_value),
+            Some(stored.trim()),
+            stop.as_deref(),
+            pem.as_bytes(),
+            id.as_bytes(),
+        )?;
+        if expected_binding.len() != 64
+            || !expected_binding
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || actual_binding != expected_binding
+        {
+            return Err(());
+        }
+        let automatic_operation = if automatic {
+            let policy = read_private(&sidecar(&key, ".automatic-update"), 256)?.ok_or(())?;
+            if stopped
+                || agent_release::stable_version(&old.version).is_none()
+                || agent_release::stable_version(version).is_none()
+                || rca_native_agent::device_pairing::parse_auto_policy(&policy, id.trim()) != "on"
+            {
+                return Err(());
+            }
+            let previous_result = read_automatic_result(&key, id.trim())?;
+            if !darwin_lifecycle::automatic_result_admits(
+                previous_result.as_ref(),
+                version,
+                "admit",
+            ) {
+                return Err(());
+            }
+            Some(new_operation_id()?)
+        } else {
+            None
+        };
         if let Registration::Present(Some(pid)) = &prior {
             if !connection_evidence(&old, &key, *pid).is_some_and(|(_, _, online)| online) {
                 return Err(());
             }
         }
-        owner_confirm(&format!(
-            "Upgrade {} to {version}, retaining identity and receipts?",
-            old.version
-        ))?;
+        if !automatic {
+            owner_confirm(&format!(
+                "Upgrade {} to {version}, retaining identity and receipts?",
+                old.version
+            ))?;
+        }
         let destination = programs.join(format!("{}-{}", package.version, package.target));
         if exists_owned_path(&destination)? {
             if !darwin_package::same_package(&bundle, &destination, &package)? {
@@ -1430,8 +1502,28 @@ mod darwin {
         if !stopped {
             // Busy is a confirmed refusal; an uncertain freeze retains the journal.
             if !gate(&key, Gate::Freeze)? {
-                if read_private(&journal, 65536)?.as_deref() == Some(raw.as_str()) {
-                    sync_remove(&journal)?;
+                if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
+                    return Err(());
+                }
+                if automatic
+                    && !write_automatic_result(
+                        &key,
+                        id.trim(),
+                        &old.version,
+                        version,
+                        "waiting_idle",
+                        automatic_operation.as_deref().ok_or(())?,
+                    )?
+                {
+                    return Err(());
+                }
+                sync_remove(&journal)?;
+                if automatic {
+                    println!(
+                        "{}",
+                        serde_json::json!({"status":"waiting_idle","target_version":version})
+                    );
+                    return Ok(());
                 }
                 return Err(());
             }
@@ -1463,6 +1555,18 @@ mod darwin {
             if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
                 return Err(());
             }
+            if automatic
+                && !write_automatic_result(
+                    &key,
+                    id.trim(),
+                    &old.version,
+                    version,
+                    "failed_recovered",
+                    automatic_operation.as_deref().ok_or(())?,
+                )?
+            {
+                return Err(());
+            }
             sync_remove(&journal)?;
             eprintln!("Replacement activation failed; original version is confirmed online.");
             return Err(());
@@ -1473,6 +1577,18 @@ mod darwin {
         identity_unchanged()?;
         replace_owned(&cli, &old_cli, &next_cli, 0o700)?;
         if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
+            return Err(());
+        }
+        if automatic
+            && !write_automatic_result(
+                &key,
+                id.trim(),
+                version,
+                version,
+                "success",
+                automatic_operation.as_deref().ok_or(())?,
+            )?
+        {
             return Err(());
         }
         sync_remove(&journal)?;
@@ -2225,14 +2341,358 @@ mod darwin {
         .map_err(|_| ())
     }
 
+    fn update_binding(
+        home: &Path,
+        base: &Path,
+        key: &Path,
+        current: &Installed,
+    ) -> Result<String, ()> {
+        let (plist, cli) = startup_paths(home)?;
+        let pem = read_private(key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(key, ".device-id"), 128)?.ok_or(())?;
+        let endpoint = read_private(&base.join("macos/endpoint"), 2048)?.ok_or(())?;
+        let previous = read_private(&plist, 65536)?.ok_or(())?;
+        let old_cli = native_cli(&current.executable)?;
+        let cli_value = read_executable(&cli)?.ok_or(())?;
+        if cli_value != old_cli {
+            return Err(());
+        }
+        let stop = read_private(&base.join("macos/stopped"), 8)?;
+        darwin_lifecycle::mac_upgrade_binding_digest(
+            Some(&previous),
+            Some(&cli_value),
+            Some(endpoint.trim()),
+            stop.as_deref(),
+            pem.as_bytes(),
+            id.as_bytes(),
+        )
+    }
+
+    fn read_automatic_result(key: &Path, device_id: &str) -> Result<Option<serde_json::Value>, ()> {
+        match read_private(&sidecar(key, ".native-upgrade-result"), 1024)? {
+            Some(raw) => darwin_lifecycle::parse_automatic_result(&raw, device_id),
+            None => Ok(None),
+        }
+    }
+
+    fn new_operation_id() -> Result<String, ()> {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).map_err(|_| ())?;
+        Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    }
+
+    fn write_automatic_result(
+        key: &Path,
+        device_id: &str,
+        installed: &str,
+        target: &str,
+        status: &str,
+        operation_id: &str,
+    ) -> Result<bool, ()> {
+        if !matches!(status, "success" | "failed_recovered" | "waiting_idle")
+            || agent_release::stable_version(installed).is_none()
+            || agent_release::stable_version(target).is_none()
+            || (status == "success") != (installed == target)
+            || operation_id.len() != 32
+            || !operation_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(());
+        }
+        let pem = read_private(key, 8192)?.ok_or(())?;
+        let current_id = read_private(&sidecar(key, ".device-id"), 128)?.ok_or(())?;
+        if current_id.trim() != device_id {
+            return Err(());
+        }
+        signed_session_proof(&pem, device_id, "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        let path = sidecar(key, ".native-upgrade-result");
+        let previous = read_private(&path, 1024)?;
+        let prior = previous
+            .as_deref()
+            .map(|raw| darwin_lifecycle::parse_automatic_result(raw, device_id))
+            .transpose()?
+            .flatten();
+        if !darwin_lifecycle::automatic_result_admits(prior.as_ref(), target, status) {
+            return Ok(false);
+        }
+        let updated_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| ())?
+            .as_millis();
+        let updated_at = u64::try_from(updated_at).map_err(|_| ())?;
+        let value = serde_json::json!({
+            "device_id":device_id,
+            "operation_id":operation_id,
+            "installed_version":installed,
+            "target_version":target,
+            "status":status,
+            "updated_at_unix_ms":updated_at
+        });
+        let raw = format!("{}\n", value);
+        if let Some(previous) = previous {
+            replace_owned(&path, &previous, &raw, 0o600)?;
+        } else {
+            write_new(&path, raw.as_bytes())?;
+        }
+        if read_private(&path, 1024)?.as_deref() != Some(raw.as_str()) {
+            return Err(());
+        }
+        Ok(true)
+    }
+
+    fn private_update_directory() -> Result<PathBuf, ()> {
+        use std::os::unix::fs::DirBuilderExt;
+        let parent = fs::canonicalize(std::env::temp_dir()).map_err(|_| ())?;
+        if !parent.is_absolute() {
+            return Err(());
+        }
+        for _ in 0..3 {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).map_err(|_| ())?;
+            let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            let directory = parent.join(format!("rca-native-update-{suffix}"));
+            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => {
+                    let info = fs::symlink_metadata(&directory).map_err(|_| ())?;
+                    if !info.is_dir()
+                        || info.file_type().is_symlink()
+                        || info.uid() != unsafe { libc::geteuid() }
+                        || info.permissions().mode() & 0o7777 != 0o700
+                        || fs::canonicalize(&directory).ok().as_deref() != Some(directory.as_path())
+                    {
+                        let _ = fs::remove_dir(&directory);
+                        return Err(());
+                    }
+                    return Ok(directory);
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(_) => return Err(()),
+            }
+        }
+        Err(())
+    }
+
     fn check_update() -> Result<(), ()> {
         let state = diagnostic_state()?;
         let installed = state["installed_version"].as_str();
-        let latest = super::agent_release::latest().ok();
+        let latest = agent_release::latest().ok();
+        let latest_version = latest.as_ref().map(|release| release.tag.as_str());
+        let updater_available = current_bundle()
+            .ok()
+            .and_then(|bundle| darwin_package::verify(&bundle, native_target()).ok())
+            .map(|package| package.updater);
+        let status = match (installed, latest_version, updater_available) {
+            (Some(current), Some(next), _) if current == next => "up_to_date",
+            (Some(current), Some(next), Some(false))
+                if darwin_package::forward_version(current, next) =>
+            {
+                "updater_required"
+            }
+            (Some(current), Some(next), Some(true))
+                if darwin_package::forward_version(current, next) =>
+            {
+                "update_available"
+            }
+            (Some(current), Some(next), Some(_))
+                if darwin_package::forward_version(next, current) =>
+            {
+                "older_latest"
+            }
+            _ => "unknown",
+        };
         println!(
             "{}",
-            super::agent_release::observation(installed, latest.as_ref())
+            serde_json::json!({
+                "installed_version":installed,
+                "latest_version":latest_version,
+                "status":status
+            })
         );
+        Ok(())
+    }
+
+    fn update_latest(automatic: bool) -> Result<(), ()> {
+        use std::io::{IsTerminal, Write};
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::process::{Command, Stdio};
+
+        if !automatic && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()) {
+            return Err(());
+        }
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        let base = identity_directory(&home, false)?;
+        let _lock = lock_identity_directory(&base)?;
+        let key = base.join("v2-identity.pem");
+        for path in [
+            base.join("macos/switch.json"),
+            base.join("macos/remote-upgrades/active.json"),
+            sidecar(&key, ".re-pair-transition"),
+        ] {
+            if exists_owned_path(&path)? {
+                return Err(());
+            }
+        }
+        let stopped = owner_stopped(&key)?;
+        if automatic && stopped {
+            return Err(());
+        }
+        let current = installed(&home, &base)?;
+        if automatic && agent_release::stable_version(&current.version).is_none() {
+            return Err(());
+        }
+        let pem = read_private(&key, 8192)?.ok_or(())?;
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        signed_session_proof(&pem, id.trim(), "ABCDEFGHIJKLMNOPQRSTUVWX").map_err(|_| ())?;
+        if automatic {
+            let policy = read_private(&sidecar(&key, ".automatic-update"), 256)?.ok_or(())?;
+            if rca_native_agent::device_pairing::parse_auto_policy(&policy, id.trim()) != "on" {
+                return Err(());
+            }
+        }
+        if !stopped {
+            let Registration::Present(Some(pid)) = observe_registration(&current.executable) else {
+                return Err(());
+            };
+            if !connection_evidence(&current, &key, pid).is_some_and(|(_, _, online)| online) {
+                return Err(());
+            }
+        }
+        let binding = update_binding(&home, &base, &key, &current)?;
+        let bundle = current_bundle()?;
+        let current_package = darwin_package::verify(&bundle, native_target())?;
+        if !current_package.updater {
+            if !automatic {
+                eprintln!("This historical package predates the embedded Rust updater; no local changes were made. Re-run the approved installer once to obtain an updater-bearing package.");
+            }
+            return Err(());
+        }
+        let updater = bundle.join("apps/remote-control-agent/scripts/macos-update.sh");
+        let script = read_private(&updater, 65536)?.ok_or(())?;
+        if !script.starts_with("#!/bin/sh\n") {
+            return Err(());
+        }
+        // The exact local target is now bound. Release the lifecycle lock
+        // before network I/O; the next Rust manager reacquires it and rejects
+        // any installation, STOP or consent change made during the download.
+        drop(_lock);
+        if !automatic {
+            eprintln!("Checking the immutable Stable release and its five-platform manifest...");
+        }
+        let release = agent_release::latest().map_err(|_| {
+            if !automatic {
+                eprintln!("Latest release could not be verified; no local changes were made.");
+            }
+        })?;
+        if !darwin_package::forward_version(&current.version, &release.tag) {
+            if current.version == release.tag {
+                println!(
+                    "{}",
+                    serde_json::json!({"status":"up_to_date","version":current.version})
+                );
+                return Ok(());
+            }
+            if !automatic {
+                eprintln!("Latest is not a strictly newer version; refusing downgrade.");
+            }
+            return Err(());
+        }
+        if automatic {
+            let previous_result = read_automatic_result(&key, id.trim())?;
+            if !darwin_lifecycle::automatic_result_admits(
+                previous_result.as_ref(),
+                &release.tag,
+                "admit",
+            ) {
+                println!(
+                    "{}",
+                    serde_json::json!({"status":"failed_recovered","target_version":release.tag})
+                );
+                return Ok(());
+            }
+        }
+        let asset = release.asset_for_target(native_target()).ok_or(())?;
+        if !automatic {
+            eprintln!(
+                "Verified release {} for {}; downloading its pinned asset...",
+                release.tag,
+                native_target()
+            );
+        }
+        let bytes = agent_release::download_asset(asset).map_err(|_| {
+            if !automatic {
+                eprintln!("Pinned release asset failed size or SHA-256 verification; no local changes were made.");
+            }
+        })?;
+        if !automatic {
+            eprintln!(
+                "Archive digest and size verified; preparing the native upgrade transaction."
+            );
+        }
+        let directory = private_update_directory()?;
+        let archive = directory.join("agent.tar.gz");
+        let updater_copy = directory.join("macos-update.sh");
+        let result = (|| {
+            let mut updater_file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&updater_copy)
+                .map_err(|_| ())?;
+            updater_file.write_all(script.as_bytes()).map_err(|_| ())?;
+            updater_file.sync_all().map_err(|_| ())?;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&archive)
+                .map_err(|_| ())?;
+            file.write_all(&bytes).map_err(|_| ())?;
+            file.sync_all().map_err(|_| ())?;
+            fs::File::open(&directory)
+                .and_then(|parent| parent.sync_all())
+                .map_err(|_| ())?;
+            let mut command = Command::new("/bin/sh");
+            command
+                .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+                .env("LC_ALL", "C")
+                .env("TMPDIR", &directory)
+                .arg(&updater_copy)
+                .arg(&archive)
+                .arg(&asset.digest)
+                .arg(asset.size.to_string())
+                .arg(&release.tag)
+                .arg(native_target())
+                .arg(current.endpoint.trim())
+                .arg(binding);
+            if automatic {
+                command
+                    .arg("--automatic")
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+            } else {
+                command
+                    .stdin(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::inherit());
+            }
+            let status = command.status().map_err(|_| {
+                if !automatic {
+                    eprintln!(
+                        "Could not start the native update helper; no completion was reported."
+                    );
+                }
+            })?;
+            if !status.success() {
+                if !automatic {
+                    eprintln!("Native upgrade did not report completion; inspect `rca status` before retrying.");
+                }
+                return Err(());
+            }
+            Ok(())
+        })();
+        let cleanup = fs::remove_dir_all(&directory).map_err(|_| ());
+        result?;
+        cleanup?;
         Ok(())
     }
 
@@ -2243,7 +2703,8 @@ mod darwin {
                 "{}",
                 serde_json::json!({
                     "automatic_update":state["automatic_update"],
-                    "automatic_update_activity":state["automatic_update_activity"]
+                    "automatic_update_activity":state["automatic_update_activity"],
+                    "automatic_update_result":state["automatic_update_result"]
                 })
             );
             return Ok(());
@@ -2253,6 +2714,14 @@ mod darwin {
             Some("off") => false,
             _ => return Err(()),
         };
+        if enabled {
+            let bundle = current_bundle()?;
+            let package = darwin_package::verify(&bundle, native_target())?;
+            if !package.updater || agent_release::stable_version(&package.version).is_none() {
+                eprintln!("Automatic updates require an updater-bearing Stable package.");
+                return Err(());
+            }
+        }
         let home = fs::canonicalize(home()?).map_err(|_| ())?;
         let base = identity_directory(&home, false)?;
         let _lock = lock_identity_directory(&base)?;
@@ -2283,7 +2752,7 @@ mod darwin {
 
     fn public_help() {
         println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|pair|recover|uninstall|update [--check|--auto [on|off]]|secure-input REQUEST_ID|--version|--help]");
-        println!("Use the reviewed installer for installation and upgrade. Use pair to reconcile the existing approved identity. Use update --auto [on|off] to inspect or change identity-bound consent; automatic installation is not yet available.");
+        println!("Use rca update to install the newest verified Stable release, or rca update --check to inspect it. Use rca update --auto [on|off] to inspect or change identity-bound automatic-update consent.");
     }
 
     fn interactive_menu() -> Result<Option<String>, ()> {
@@ -2304,6 +2773,7 @@ mod darwin {
             "pair",
             "recover",
             "uninstall",
+            "update",
         ];
         for (index, action) in actions.iter().enumerate() {
             println!("{}. {action}", index + 1);
@@ -2351,6 +2821,9 @@ mod darwin {
             if action == "uninstall" {
                 return uninstall_local();
             }
+            if matches!(action.as_str(), "update" | "upgrade") {
+                return update_latest(false);
+            }
             if action == "recover" {
                 return recover_switch();
             }
@@ -2368,6 +2841,9 @@ mod darwin {
             }
         }
         if let [action, option] = arguments.as_slice() {
+            if action == "update" && option == "--automatic-check" {
+                return update_latest(true);
+            }
             if matches!(action.as_str(), "update" | "upgrade") && option == "--check" {
                 return check_update();
             }
@@ -2393,15 +2869,20 @@ mod darwin {
                 return install_local(endpoint, name, version, source);
             }
         }
-        if let [action, endpoint, version, source] = arguments.as_slice() {
+        if let [action, endpoint, version, source, binding] = arguments.as_slice() {
             if action == "--upgrade-local" {
-                return upgrade_local(endpoint, version, source);
+                return upgrade_local(endpoint, version, source, binding, false);
+            }
+        }
+        if let [action, endpoint, version, source, binding, mode] = arguments.as_slice() {
+            if action == "--upgrade-local" && mode == "--automatic" {
+                return upgrade_local(endpoint, version, source, binding, true);
             }
         }
         if let [action, endpoint, name] = arguments.as_slice() {
             if action == "--verify-bundle" {
                 let package = darwin_package::verify(&current_bundle()?, native_target())?;
-                if package.version != *endpoint || package.target != *name {
+                if !package.updater || package.version != *endpoint || package.target != *name {
                     return Err(());
                 }
                 println!("{}", package.source);
@@ -2424,6 +2905,27 @@ mod darwin {
         let home = home()?;
         let key = key_path(&home)?;
         run_agent(&arguments[2], &home, &key, Some(&arguments[4]))
+    }
+
+    fn automatic_manager(home: &Path, key: &Path, generation: &str) -> Option<PathBuf> {
+        let executable = fs::canonicalize(std::env::current_exe().ok()?).ok()?;
+        let bundle = current_bundle().ok()?;
+        let package = darwin_package::verify(&bundle, native_target()).ok()?;
+        if !package.updater {
+            return None;
+        }
+        agent_release::stable_version(&package.version)?;
+        let base = key.parent()?;
+        let current = installed(home, base).ok()?;
+        if current.generation != generation
+            || current.version != package.version
+            || fs::canonicalize(&current.executable).ok().as_ref() != Some(&executable)
+        {
+            return None;
+        }
+        let updater = bundle.join("apps/remote-control-agent/scripts/macos-update.sh");
+        let script = read_private(&updater, 65536).ok()??;
+        script.starts_with("#!/bin/sh\n").then_some(executable)
     }
 
     fn run_agent(
@@ -2455,11 +2957,71 @@ mod darwin {
         install_stop_signals()?;
         let stop = Arc::new(AtomicBool::new(false));
         let watch_stop = Arc::clone(&stop);
+        let automatic_manager = generation.and_then(|value| automatic_manager(home, key, value));
+        let automatic_key = key.to_path_buf();
+        let automatic_id = device_id.to_owned();
         let monitor = std::thread::spawn(move || {
+            let mut schedule = automatic_manager
+                .as_ref()
+                .map(|_| AutomaticCheckSchedule::new(Instant::now(), automatic_jitter(240)));
+            let mut checker: Option<std::process::Child> = None;
             while !watch_stop.load(Ordering::Acquire) {
                 if SIGNAL_STOP.load(Ordering::Acquire) {
                     watch_stop.store(true, Ordering::Release);
                     break;
+                }
+                if let Some(child) = checker.as_mut() {
+                    match child.try_wait() {
+                        Ok(None) => (),
+                        Ok(Some(status)) => {
+                            if !status.success() {
+                                eprintln!(
+                                    r#"{{"service":"remote-control-agent","event":"automatic_check_refused"}}"#
+                                );
+                            }
+                            checker = None;
+                        }
+                        Err(_) => {
+                            checker = None;
+                            eprintln!(
+                                r#"{{"service":"remote-control-agent","event":"automatic_check_unconfirmed"}}"#
+                            );
+                        }
+                    }
+                }
+                if let (Some(manager), Some(schedule)) =
+                    (automatic_manager.as_ref(), schedule.as_mut())
+                {
+                    let now = Instant::now();
+                    if checker.is_none()
+                        && schedule.is_due(now)
+                        && schedule.take_due(now, automatic_jitter(1800))
+                    {
+                        let enabled =
+                            read_private(&sidecar(&automatic_key, ".automatic-update"), 256)
+                                .ok()
+                                .flatten()
+                                .is_some_and(|raw| {
+                                    rca_native_agent::device_pairing::parse_auto_policy(
+                                        &raw,
+                                        &automatic_id,
+                                    ) == "on"
+                                });
+                        if enabled {
+                            match std::process::Command::new(manager)
+                                .args(["update", "--automatic-check"])
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn()
+                            {
+                                Ok(child) => checker = Some(child),
+                                Err(_) => eprintln!(
+                                    r#"{{"service":"remote-control-agent","event":"automatic_check_launch_failed"}}"#
+                                ),
+                            }
+                        }
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
