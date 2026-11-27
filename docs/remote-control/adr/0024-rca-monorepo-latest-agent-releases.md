@@ -16,7 +16,7 @@ See [Spec #803](https://github.com/lirtual/mcp-workers/issues/803) and [Spec #81
 
 ## 2026-11-24: retired Node compatibility (#914)
 
-Owner explicitly waived Linux/Windows Node and hybrid upgrade/rollback compatibility. Existing old installations may be manually removed and replaced by Rust. Retire the dedicated old runtime, installers, build fixtures and migration-only tests; keep native enrollment, signatures, upgrade/recovery and existing security contracts. macOS retains its current Node implementation until separately migrated. Historical releases remain immutable. No production change is authorized by this decision.
+Owner explicitly waived Node and hybrid upgrade/rollback compatibility for Linux/Windows on 2026-11-24 and extended the same decision to macOS on 2026-11-27 ([Spec #914](https://github.com/lirtual/mcp-workers/issues/914#issuecomment-7207376137)). Across all five platform targets, old Node installations may be manually replaced by Rust; direct Node-to-Rust upgrade and Rust-to-Node rollback are not supported delivery requirements. Retire the dedicated old runtime, installers, build fixtures and migration-only tests with the completed native-only replacement. Preserve native enrollment, signatures, supported Rust-to-Rust upgrade/recovery, identity, authorization, intentional STOP and receipt safety. Keep historical immutable releases and evidence, including failed tests; an obsolete compatibility test is not a passed native acceptance. This decision authorizes neither production changes nor device-data deletion.
 
 
 ## 2026-11-25: accepted evolution — automatic update (#1035)
