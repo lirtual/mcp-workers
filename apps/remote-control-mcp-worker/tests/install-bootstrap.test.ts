@@ -144,7 +144,7 @@ test('public installation home is isolated from authentication and shows the two
   assert.match(html,/Not available/);
   assert.match(html,/navigator\.userAgentData/);
   assert.match(html,/clipboard\.writeText/);
-  assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html,/& \(\[scriptblock\]::Create\(\(irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1\)\)\)/);
   assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
   assert.doesNotMatch(html,/api\/devices|Bearer |secret|Remote Desktop/);
   assert.equal(requestInstall(new Request(custom+'/',{method:'POST'}),custom).status,405);
@@ -170,6 +170,52 @@ test('Windows installer resolves one mcp-workers latest Release and does not fet
   assert.equal(resp.status,200);
   assert.match(await resp.text(),/lirtual\/mcp-workers\/releases\/latest/);
   assert.throws(()=>renderAgentInstallPowerShell('https://unknown.example/path'),/Unapproved/);
+});
+
+test('served Windows installer isolates parameter validation and repeated invocation in PowerShell', async (t) => {
+  const { renderAgentInstallPowerShell } = await import('../src/install-bootstrap.ts');
+  // Keep the actual rendered wrapper, parameters and complete script syntax.
+  // Return before the first installer action; no download, identity or Task mutation.
+  const marker = 'Set-StrictMode -Version Latest';
+  const script = renderAgentInstallPowerShell(origin);
+  assert.equal(script.split(marker).length, 2);
+  const fixture = script.replace(marker, String.raw`
+if (-not $MyInvocation.MyCommand.ScriptBlock.ToString().StartsWith('# Native Windows x64 bootstrap.')) {
+  throw 'Installer source identity changed'
+}
+Write-Output ("PROBE:{0}:{1}" -f $Version, $StageOnly)
+$Version = 'v0.1.61'
+return
+`);
+  const probe = String.raw`
+$ErrorActionPreference = 'Stop'
+$fixture = [Console]::In.ReadToEnd()
+$Version = ''
+$fixture | Invoke-Expression
+$fixture | Invoke-Expression
+if ($Version -cne '') { throw 'Installer changed caller Version' }
+& ([scriptblock]::Create($fixture)) -Version v0.1.60 -StageOnly
+if ($Version -cne '') { throw 'Installer changed caller Version' }
+try {
+  & ([scriptblock]::Create($fixture)) -Version invalid
+  throw 'Invalid version accepted'
+} catch {
+  if ($_.FullyQualifiedErrorId -notmatch 'ParameterArgumentValidationError') { throw }
+}
+Write-Output 'ISOLATION_OK'
+`;
+  const result = spawnSync(process.platform === 'win32' ? 'powershell.exe' : 'pwsh',
+    ['-NoProfile', '-NonInteractive', '-Command', probe],
+    { input: fixture, encoding: 'utf8', timeout: 15000 });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT' && !process.env.CI) {
+    t.skip('PowerShell is unavailable outside CI');
+    return;
+  }
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(result.stdout.trim().split(/\r?\n/), [
+    'PROBE::False', 'PROBE::False', 'PROBE:v0.1.60:True', 'ISOLATION_OK',
+  ]);
 });
 
 test('homepage copy state follows the separately verified platform pins',async()=>{
@@ -288,7 +334,7 @@ test('mobile home stays compact, uses semantic numbered steps and follows OS the
   assert.match(html, /copy\.disabled=!ready\[value\]/);
   assert.match(html, /aria-selected/);
   assert.match(html, /clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
-  assert.match(html, /irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html, /& \(\[scriptblock\]::Create\(\(irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1\)\)\)/);
   assert.match(html, /curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
   assert.doesNotMatch(html, /localStorage|sessionStorage|document\.cookie|api\/devices/);
 });
@@ -314,7 +360,7 @@ test('mobile install card uses compact proportional sizes and wraps complete com
   assert.match(html,/Command copied/);
   assert.match(html,/Copy failed\. Select the command manually\./);
   assert.match(html,/clipboard\.writeText\(cmds\[requestedPlatform\]\)/);
-  assert.match(html,/irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1 \| iex/);
+  assert.match(html,/& \(\[scriptblock\]::Create\(\(irm https:\/\/rca\.lirtual\.dpdns\.org\/install\.ps1\)\)\)/);
   assert.match(html,/curl -fsSL https:\/\/rca\.lirtual\.dpdns\.org\/install\.sh \| sh/);
 });
 
@@ -372,10 +418,10 @@ test('narrow install commands break only at URL path while copied text stays exa
     setTimeout:()=>1,clearTimeout:()=>{},
   });
   assert.deepEqual(codeNodes.map(n=>n.tagName??n.data),[
-    'irm https://rca.lirtual.dpdns.org/','WBR','install.ps1 | iex',
+    '& ([scriptblock]::Create((irm https://rca.lirtual.dpdns.org/','WBR','install.ps1)))',
   ]);
   await (copy.handlers.click as ()=>Promise<void>)();
-  assert.equal(copied[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
+  assert.equal(copied[0],'& ([scriptblock]::Create((irm https://rca.lirtual.dpdns.org/install.ps1)))');
   linux.handlers.click!();
   assert.deepEqual(codeNodes.map(n=>n.tagName??n.data),[
     'curl -fsSL https://rca.lirtual.dpdns.org/','WBR','install.sh | sh',
@@ -446,7 +492,7 @@ test('icon-copy feedback resets correctly and retains SVG children', async () =>
   assert.equal(els.windows.attributes['aria-selected'],'true','unknown/mobile defaults to first Windows tab');
   assert.equal(els.copy.attributes['aria-label'],'Copy install command');
   await els.copy.handlers.click!();
-  assert.equal(clipboard[0],'irm https://rca.lirtual.dpdns.org/install.ps1 | iex');
+  assert.equal(clipboard[0],'& ([scriptblock]::Create((irm https://rca.lirtual.dpdns.org/install.ps1)))');
   assert.equal(els.copy.attributes['data-copied'],'true');
   assert.equal(els.copy.textContent,'','state must preserve the inline SVGs');
   assert.equal(els.copy.attributes['aria-label'],'Command copied');
