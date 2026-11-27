@@ -267,9 +267,9 @@ mod darwin {
     use super::darwin_lifecycle::{
         self, apply_connection_observation, apply_policy_observation, connection_time,
         default_diagnostics, diagnostic_response, installed_generation, native_cli, native_plist,
-        new_generation, no_other_programs, registration, resume_owned, stop_owned, switch_outcome,
-        unregister_owned, Registration, RestartRecord, SwitchOutcome, SwitchRecord,
-        UninstallRecord, UninstallRecovery, LABEL,
+        new_generation, no_other_programs, parse_update_events, record_update_event, registration,
+        resume_owned, stop_owned, switch_outcome, unregister_owned, Registration, RestartRecord,
+        SwitchOutcome, SwitchRecord, UninstallRecord, UninstallRecovery, LABEL,
     };
     use super::darwin_package;
     use super::unix_pairing::{
@@ -765,14 +765,39 @@ mod darwin {
         Ok(state)
     }
 
+    fn read_update_events() -> serde_json::Value {
+        match bounded_command(
+            "/usr/bin/log",
+            &[
+                "show",
+                "--last",
+                "1d",
+                "--style",
+                "compact",
+                "--predicate",
+                "process == \"rca-standard-darwin-candidate\" AND eventMessage BEGINSWITH \"RCA_UPDATE:\"",
+            ],
+            65536,
+        ) {
+            Ok((Some(0), output, _)) => serde_json::json!({
+                "status":"available",
+                "events":parse_update_events(&output)
+            }),
+            _ => serde_json::json!({"status":"unavailable","events":[]}),
+        }
+    }
+
     fn diagnose(action: &str, compact: bool) -> Result<(), ()> {
-        let state = diagnostic_state().unwrap_or_else(|_| {
+        let mut state = diagnostic_state().unwrap_or_else(|_| {
             default_diagnostics(if cfg!(target_arch = "aarch64") {
                 "arm64"
             } else {
                 "x64"
             })
         });
+        if action == "logs" {
+            state["update_events"] = read_update_events();
+        }
         let response = diagnostic_response(action, &state);
         println!(
             "{}",
@@ -1505,20 +1530,32 @@ mod darwin {
                 if read_private(&journal, 65536)?.as_deref() != Some(raw.as_str()) {
                     return Err(());
                 }
-                if automatic
-                    && !write_automatic_result(
-                        &key,
-                        id.trim(),
-                        &old.version,
+                if automatic {
+                    let previous_result = read_automatic_result(&key, id.trim())?;
+                    match darwin_lifecycle::busy_result_disposition(
+                        previous_result.as_ref(),
                         version,
-                        "waiting_idle",
-                        automatic_operation.as_deref().ok_or(())?,
-                    )?
-                {
-                    return Err(());
+                    ) {
+                        darwin_lifecycle::BusyResultDisposition::RecordWaitingIdle => {
+                            if !write_automatic_result(
+                                &key,
+                                id.trim(),
+                                &old.version,
+                                version,
+                                "waiting_idle",
+                                automatic_operation.as_deref().ok_or(())?,
+                            )? {
+                                return Err(());
+                            }
+                        }
+                        // A previously verified failure is intentionally retained.
+                        // Busy is not a failed attempt and must not strand this journal.
+                        darwin_lifecycle::BusyResultDisposition::PreservePriorFailure => (),
+                    }
                 }
                 sync_remove(&journal)?;
                 if automatic {
+                    record_update_event("waiting_idle");
                     println!(
                         "{}",
                         serde_json::json!({"status":"waiting_idle","target_version":version})
@@ -1568,6 +1605,9 @@ mod darwin {
                 return Err(());
             }
             sync_remove(&journal)?;
+            if automatic {
+                record_update_event("failed_recovered");
+            }
             eprintln!("Replacement activation failed; original version is confirmed online.");
             return Err(());
         }
@@ -1592,6 +1632,9 @@ mod darwin {
             return Err(());
         }
         sync_remove(&journal)?;
+        if automatic {
+            record_update_event("update_succeeded");
+        }
         println!(
             "{}",
             serde_json::json!({"status":if stopped {"stopped_preserved"}else{"connected_observed"},"version":version})
@@ -2561,7 +2604,9 @@ mod darwin {
             eprintln!("Checking the immutable Stable release and its five-platform manifest...");
         }
         let release = agent_release::latest().map_err(|_| {
-            if !automatic {
+            if automatic {
+                record_update_event("latest_unavailable");
+            } else {
                 eprintln!("Latest release could not be verified; no local changes were made.");
             }
         })?;
@@ -2601,7 +2646,9 @@ mod darwin {
             );
         }
         let bytes = agent_release::download_asset(asset).map_err(|_| {
-            if !automatic {
+            if automatic {
+                record_update_event("asset_download_or_verification_failed");
+            } else {
                 eprintln!("Pinned release asset failed size or SHA-256 verification; no local changes were made.");
             }
         })?;
@@ -2610,9 +2657,18 @@ mod darwin {
                 "Archive digest and size verified; preparing the native upgrade transaction."
             );
         }
-        let directory = private_update_directory()?;
+        let directory = match private_update_directory() {
+            Ok(directory) => directory,
+            Err(()) => {
+                if automatic {
+                    record_update_event("update_staging_failed");
+                }
+                return Err(());
+            }
+        };
         let archive = directory.join("agent.tar.gz");
         let updater_copy = directory.join("macos-update.sh");
+        let mut failure_event = "update_staging_failed";
         let result = (|| {
             let mut updater_file = fs::OpenOptions::new()
                 .write(true)
@@ -2658,6 +2714,7 @@ mod darwin {
                     .stdout(Stdio::inherit())
                     .stderr(Stdio::inherit());
             }
+            failure_event = "upgrade_helper_start_failed";
             let status = command.status().map_err(|_| {
                 if !automatic {
                     eprintln!(
@@ -2665,6 +2722,7 @@ mod darwin {
                     );
                 }
             })?;
+            failure_event = "upgrade_helper_nonzero_exit";
             if !status.success() {
                 if !automatic {
                     eprintln!("Native upgrade did not report completion; inspect `rca status` before retrying.");
@@ -2674,7 +2732,13 @@ mod darwin {
             Ok(())
         })();
         let cleanup = fs::remove_dir_all(&directory).map_err(|_| ());
+        if automatic && result.is_err() {
+            record_update_event(failure_event);
+        }
         result?;
+        if automatic && cleanup.is_err() {
+            record_update_event("update_cleanup_unconfirmed");
+        }
         cleanup?;
         Ok(())
     }
@@ -2958,6 +3022,7 @@ mod darwin {
                         Ok(None) => (),
                         Ok(Some(status)) => {
                             if !status.success() {
+                                record_update_event("automatic_check_refused");
                                 eprintln!(
                                     r#"{{"service":"remote-control-agent","event":"automatic_check_refused"}}"#
                                 );
@@ -2966,6 +3031,7 @@ mod darwin {
                         }
                         Err(_) => {
                             checker = None;
+                            record_update_event("automatic_check_unconfirmed");
                             eprintln!(
                                 r#"{{"service":"remote-control-agent","event":"automatic_check_unconfirmed"}}"#
                             );
@@ -3004,9 +3070,12 @@ mod darwin {
                                 .spawn()
                             {
                                 Ok(child) => checker = Some(child),
-                                Err(_) => eprintln!(
-                                    r#"{{"service":"remote-control-agent","event":"automatic_check_launch_failed"}}"#
-                                ),
+                                Err(_) => {
+                                    record_update_event("automatic_check_launch_failed");
+                                    eprintln!(
+                                        r#"{{"service":"remote-control-agent","event":"automatic_check_launch_failed"}}"#
+                                    );
+                                }
                             }
                         }
                     }

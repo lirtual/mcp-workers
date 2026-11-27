@@ -86,6 +86,106 @@ pub(super) fn automatic_result_admits(
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub(super) enum BusyResultDisposition {
+    RecordWaitingIdle,
+    PreservePriorFailure,
+}
+
+pub(super) fn busy_result_disposition(
+    prior: Option<&serde_json::Value>,
+    target: &str,
+) -> BusyResultDisposition {
+    if automatic_result_admits(prior, target, "waiting_idle") {
+        BusyResultDisposition::RecordWaitingIdle
+    } else {
+        BusyResultDisposition::PreservePriorFailure
+    }
+}
+
+fn known_update_event(event: &str) -> bool {
+    matches!(
+        event,
+        "automatic_check_refused"
+            | "automatic_check_unconfirmed"
+            | "automatic_check_launch_failed"
+            | "latest_unavailable"
+            | "asset_download_or_verification_failed"
+            | "update_staging_failed"
+            | "update_cleanup_unconfirmed"
+            | "upgrade_helper_start_failed"
+            | "upgrade_helper_nonzero_exit"
+            | "waiting_idle"
+            | "failed_recovered"
+            | "update_succeeded"
+    )
+}
+
+fn normalized_log_timestamp(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 19
+        || !bytes[..19]
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                4 | 7 => *byte == b'-',
+                10 => *byte == b' ',
+                13 | 16 => *byte == b':',
+                _ => byte.is_ascii_digit(),
+            })
+    {
+        return None;
+    }
+    let suffix = &value[19..];
+    if suffix.len() > 16
+        || !suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'.' | b'+' | b'-'))
+    {
+        return None;
+    }
+    Some(value.to_owned())
+}
+
+pub(super) fn parse_update_events(raw: &str) -> serde_json::Value {
+    let events: Vec<_> = raw
+        .lines()
+        .filter_map(|line| {
+            let (prefix, message) = line.split_once("RCA_UPDATE:")?;
+            let timestamp = prefix
+                .split_whitespace()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ");
+            let event = message.trim();
+            let at = normalized_log_timestamp(&timestamp)?;
+            if !known_update_event(event) {
+                return None;
+            }
+            Some(serde_json::json!({"at":at,"event":event}))
+        })
+        .rev()
+        .take(80)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    serde_json::Value::Array(events)
+}
+
+#[cfg_attr(all(test, not(target_os = "macos")), allow(dead_code))]
+pub(super) fn record_update_event(event: &str) {
+    if known_update_event(event) {
+        #[cfg(target_os = "macos")]
+        if let Ok(message) = std::ffi::CString::new(format!("RCA_UPDATE:{event}")) {
+            // Fixed format string; event names come only from the allowlist above.
+            unsafe {
+                libc::syslog(libc::LOG_NOTICE, b"%s\0".as_ptr().cast(), message.as_ptr());
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub(super) enum Registration {
     Absent,
     Present(Option<u32>),
@@ -375,10 +475,11 @@ pub(super) fn apply_policy_observation(
 pub(super) fn diagnostic_response(action: &str, state: &serde_json::Value) -> serde_json::Value {
     match action {
         "logs" => serde_json::json!({
-            "source":"retained_local_connection_and_update_evidence",
+            "source":"retained_local_connection_update_evidence_and_macos_unified_log",
             "connection":state["signed_wss"],"last_online":state["last_online"],
             "update_activity":state["automatic_update_activity"],
-            "update_result":state["automatic_update_result"],"transaction":state["update_transaction"]
+            "update_result":state["automatic_update_result"],"transaction":state["update_transaction"],
+            "update_events":state["update_events"]
         }),
         "doctor" => {
             let mut findings = Vec::new();
@@ -1277,6 +1378,68 @@ mod tests {
     }
 
     #[test]
+    fn update_events_only_expose_allowlisted_system_log_messages() {
+        let raw = concat!(
+            "2026-11-27 09:00:00.000000-0800 Df rca-standard-darwin-candidate[123]: RCA_UPDATE:latest_unavailable\n",
+            "2026-11-27 09:01:00.000000-0800 Df rca-standard-darwin-candidate[123]: RCA_UPDATE:asset_download_or_verification_failed\n",
+            "2026-11-27 09:02:00.000000-0800 Df rca-standard-darwin-candidate[123]: RCA_UPDATE:update_succeeded\n",
+            "2026-11-27 09:03:00.000 Df rca-standard-darwin-candidate[123]: RCA_UPDATE:token=secret\n",
+            "unrelated process event\n"
+        );
+        assert_eq!(
+            super::parse_update_events(raw),
+            serde_json::json!([
+                {"at":"2026-11-27 09:00:00.000000-0800","event":"latest_unavailable"},
+                {"at":"2026-11-27 09:01:00.000000-0800","event":"asset_download_or_verification_failed"},
+                {"at":"2026-11-27 09:02:00.000000-0800","event":"update_succeeded"}
+            ])
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn update_events_are_visible_in_macos_unified_log() {
+        let pid = std::process::id();
+        record_update_event("latest_unavailable");
+        let predicate =
+            format!("processIdentifier == {pid} AND eventMessage BEGINSWITH \"RCA_UPDATE:\"");
+        let mut found = false;
+        for _ in 0..10 {
+            let output = std::process::Command::new("/usr/bin/log")
+                .args([
+                    "show",
+                    "--last",
+                    "1m",
+                    "--style",
+                    "compact",
+                    "--predicate",
+                    &predicate,
+                ])
+                .output()
+                .expect("macOS unified log command must be available");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let events = super::parse_update_events(&String::from_utf8_lossy(&output.stdout));
+            if events.as_array().is_some_and(|events| {
+                events
+                    .iter()
+                    .any(|event| event["event"] == "latest_unavailable")
+            }) {
+                found = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(
+            found,
+            "allowlisted update event was not visible in unified log"
+        );
+    }
+
+    #[test]
     fn diagnostics_share_status_without_claiming_unobserved_connection() {
         let state = serde_json::json!({"installed":true,"local_service":"not_running",
             "signed_wss":"unconfirmed","last_online":"unconfirmed","cloud_authorization":"unconfirmed",
@@ -1292,9 +1455,17 @@ mod tests {
                 "signed_wss_unconfirmed"
             ])
         );
-        let logs = diagnostic_response("logs", &state);
+        let mut log_state = state.clone();
+        log_state["update_events"] = serde_json::json!({"status":"available","events":[
+            {"at":"2026-11-27 09:00:00.000000-0800","event":"latest_unavailable"}
+        ]});
+        let logs = diagnostic_response("logs", &log_state);
         assert_eq!(logs["connection"], "unconfirmed");
         assert_eq!(logs["update_activity"], "disabled");
+        assert_eq!(
+            logs["update_events"]["events"][0]["event"],
+            "latest_unavailable"
+        );
         let absent = serde_json::json!({"installed":false,"local_service":"not_installed","signed_wss":"unconfirmed","cloud_authorization":"unconfirmed"});
         assert_eq!(
             diagnostic_response("doctor", &absent)["findings"][0],
@@ -1530,7 +1701,10 @@ mod tests {
 
 #[cfg(test)]
 mod automatic_result_tests {
-    use super::{automatic_result_admits, parse_automatic_result};
+    use super::{
+        automatic_result_admits, busy_result_disposition, parse_automatic_result,
+        BusyResultDisposition,
+    };
     use serde_json::json;
 
     const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
@@ -1594,5 +1768,26 @@ mod automatic_result_tests {
         let waiting: serde_json::Value =
             serde_json::from_str(&result("waiting_idle", "v0.1.60", "v0.1.61")).unwrap();
         assert!(automatic_result_admits(Some(&waiting), "v0.1.61", "admit"));
+    }
+
+    #[test]
+    fn busy_newer_target_preserves_prior_failure_without_refusing_busy_cleanup() {
+        let failed: serde_json::Value =
+            serde_json::from_str(&result("failed_recovered", "v0.1.60", "v0.1.61")).unwrap();
+        assert!(automatic_result_admits(Some(&failed), "v0.1.62", "admit"));
+        assert_eq!(
+            busy_result_disposition(Some(&failed), "v0.1.62"),
+            BusyResultDisposition::PreservePriorFailure
+        );
+        assert_eq!(
+            busy_result_disposition(None, "v0.1.62"),
+            BusyResultDisposition::RecordWaitingIdle
+        );
+        let waiting: serde_json::Value =
+            serde_json::from_str(&result("waiting_idle", "v0.1.60", "v0.1.61")).unwrap();
+        assert_eq!(
+            busy_result_disposition(Some(&waiting), "v0.1.62"),
+            BusyResultDisposition::RecordWaitingIdle
+        );
     }
 }
