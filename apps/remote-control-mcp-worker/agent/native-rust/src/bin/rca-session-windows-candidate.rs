@@ -56,7 +56,7 @@ mod windows {
         let _ = record_candidate_stage(source, "pending", true);
         let _child = spawn_credential_free_transport(&executable, &grant, &identity, source)
             .map_err(|_| ())?;
-        println!("Session RCA Windows Candidate transport spawned after signed Worker recovery.");
+        println!("Session RCA Windows transport started after signed Worker recovery.");
         Ok(())
     }
 
@@ -165,13 +165,13 @@ mod windows {
 #[cfg(windows)]
 fn main() {
     if windows::run().is_err() {
-        eprintln!("Windows Session RCA Candidate unavailable or stopped.");
+        eprintln!("Windows Session RCA unavailable or stopped.");
         std::process::exit(1);
     }
 }
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("Windows Session RCA Candidate requires Windows x64.");
+    eprintln!("Session RCA requires Windows x64.");
     std::process::exit(1);
 }

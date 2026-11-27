@@ -845,7 +845,7 @@ try {
     }
     $oldVersion = if ($task) { Get-ExistingAgentVersion $programs ([string]$task.Actions[0].Execute) } else { $Version }
     if ($detachedUpgrade -and $oldVersion -cnotmatch '^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$') {
-      throw 'Detached candidate promotion refused; use attended upgrade'
+      throw 'Detached upgrade refused for this package; use attended upgrade'
     }
     if ($oldVersion -cne $Version) {
       $oldNumber = [version](($oldVersion.Substring(1) -split '-')[0])

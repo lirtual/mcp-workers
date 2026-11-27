@@ -1139,13 +1139,13 @@ mod windows {
 #[cfg(windows)]
 fn main() {
     if windows::run().is_err() {
-        eprintln!("Windows Rust candidate refused or session failed.");
+        eprintln!("RCA operation did not complete.");
         std::process::exit(1);
     }
 }
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("Windows Rust candidate requires Windows x64.");
+    eprintln!("RCA requires Windows x64.");
     std::process::exit(1);
 }

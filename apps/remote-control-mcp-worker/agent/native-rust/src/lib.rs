@@ -1,5 +1,4 @@
-//! Nonproduction RCA Rust candidate. No production entrypoint or release integration.
-//! Only publish after #914 Gate 0–3, independently authorized per platform.
+//! Native RCA Agent shared implementation.
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub mod automatic_update;
 #[cfg(target_os = "macos")]
@@ -33,6 +32,7 @@ pub mod native_process;
 pub mod native_read;
 mod native_search;
 pub mod native_write;
+pub mod owner_prompt;
 mod receipt_boundary;
 pub mod receipts;
 pub mod secure_input;
