@@ -1,4 +1,4 @@
-//! Shared low-frequency cadence for the managed Linux and Windows Agent.
+//! Shared low-frequency cadence for permanent native Standard Agents.
 use std::time::{Duration, Instant};
 
 pub struct AutomaticCheckSchedule {

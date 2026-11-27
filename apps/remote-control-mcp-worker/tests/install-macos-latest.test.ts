@@ -256,6 +256,50 @@ printf '%s\\n' '{"status":"launched","operation_id":"aaaaaaaa-bbbb-cccc-dddd-eee
   }
 }
 
+function packNativeArchive(target: "darwin-arm64" | "darwin-x64", extra: string[] = []): Buffer {
+  const root = mkdtempSync(path.join(tmpdir(), "rca-native-bootstrap-test-"));
+  try {
+    const app = "apps/remote-control-agent";
+    for (const dir of [app + "/.build", app + "/scripts"]) {
+      mkdirSync(path.join(root, dir), {recursive: true, mode: 0o700});
+    }
+    writeFileSync(path.join(root, "bundle.json"), JSON.stringify({
+      name: "remote-control-agent", version: TAG, target,
+      source_commit: NEW_COMMIT, artifact_schema: 1, device_protocol: 2,
+      receipt_schema: 1, artifact_profile: "rust-native-only-v1",
+      agent_runtime: "rust-standard-darwin-v1",
+      runtime_profile: "standard-darwin-rust-runtime-v1",
+      candidate_profile: "darwin-permanent-local-v1",
+      native_supervisor: "darwin-owned-group-v1", modules: [],
+    }) + "\n", {mode: 0o600});
+    const candidate = path.join(root, app, ".build", "rca-standard-darwin-candidate");
+    writeFileSync(candidate, [
+      "#!/bin/sh",
+      'if [ "$1" = --verify-bundle ]; then',
+      `  [ "$2" = ${TAG} ] && [ "$3" = ${target} ] || exit 2`,
+      `  echo ${NEW_COMMIT}`,
+      "  exit 0",
+      "fi",
+      'printf "%s\\n" "$*" >> "$RCA_NODE_LOG"',
+      'exit "${RCA_NATIVE_EXIT:-0}"',
+      "",
+    ].join("\n"), {mode: 0o700});
+    chmodSync(candidate, 0o700);
+    const supervisor = path.join(root, app, ".build", "darwin-session-supervisor");
+    writeFileSync(supervisor, "fixture\n", {mode: 0o700});
+    chmodSync(supervisor, 0o700);
+    writeFileSync(path.join(root, app, "scripts", "macos-update.sh"),
+      renderPackagedMacUpdateShell({nativeOnly: true}), {mode: 0o600});
+    for (const file of extra) writeFileSync(path.join(root, file), "unreviewed\n");
+    const archive = path.join(root, "native.tar.gz");
+    const tar = spawnSync("tar", ["-czf", archive, "-C", root, "apps", "bundle.json", ...extra], {encoding: "utf8"});
+    assert.equal(tar.status, 0, tar.stderr);
+    return readFileSync(archive);
+  } finally {
+    rmSync(root, {recursive: true, force: true});
+  }
+}
+
 function shellFor(bytes: { arm: Buffer; intel: Buffer }, body?: string): string {
   const release = releaseBody();
   release.assets = [
@@ -323,11 +367,15 @@ echo Darwin
   const scriptFile = path.join(root, "test-installer.sh");
   writeFileSync(scriptFile, script, {mode:0o700});
   const result = spawnSync(tty ? "script" : "sh", tty
-    ? ["-q","-e","-c",packagedVersion===undefined?'sh "$RCA_TEST_SCRIPT" --upgrade':
+    ? ["-q","-e","-c",extra.RCA_TEST_NATIVE_TTY === "1" ? 'sh "$RCA_TEST_SCRIPT"' :
+      packagedVersion===undefined?'sh "$RCA_TEST_SCRIPT" --upgrade':
       'sh "$RCA_TEST_SCRIPT" "$RCA_TEST_ENDPOINT" "$RCA_TEST_INSTALLED" "$RCA_TEST_BINDING"',"/dev/null"]
     : ["-c", script, "macos-script", action], {
     encoding: "utf8",
     timeout: 15000,
+    input: extra.RCA_TEST_NATIVE_TTY === "1"
+      ? (extra.RCA_TEST_NATIVE_MODE === "temporary" ? "2\nNative Test Device\n" : "1\nNative Test Device\n")
+      : undefined,
     env: {
       ...process.env,
       PATH: bin + ":" + process.env.PATH,
@@ -385,6 +433,42 @@ test("#809 installer shell picks one arch asset from the snapshot and does not u
   assert.notEqual(noTty.result.status, 0);
   assert.match(noTty.result.stderr, /Ordinary interactive Terminal required/);
   assert.deepEqual(noTty.curls, []);
+});
+
+test("#914 public macOS installer dispatches exact Rust-only package and refuses unsafe cross-runtime upgrade", {skip:process.platform!=="linux"}, () => {
+  const bytes = {arm: packNativeArchive("darwin-arm64"), intel: packNativeArchive("darwin-x64")};
+  const script = shellFor(bytes);
+  assert.equal(spawnSync("sh", ["-n"], {input: script, encoding: "utf8"}).status, 0);
+  const fresh = runInstaller(script, "arm64", bytes, {RCA_TEST_NATIVE_TTY: "1"}, "", true);
+  assert.equal(fresh.result.status, 0, fresh.result.stdout + fresh.result.stderr);
+  assert.match(fresh.nodes, new RegExp("--install-local " + ORIGIN + "/ Native Test Device " + TAG.replaceAll(".", "\\.") + " " + NEW_COMMIT));
+  assert.equal(fresh.curls.length, 2);
+  assert.deepEqual(fresh.left, []);
+  const temporary = runInstaller(script, "x86_64", bytes,
+    {RCA_TEST_NATIVE_TTY: "1", RCA_TEST_NATIVE_MODE: "temporary"}, "", true);
+  assert.equal(temporary.result.status, 0, temporary.result.stdout + temporary.result.stderr);
+  assert.match(temporary.nodes, new RegExp("--temporary-local " + ORIGIN + "/ Native Test Device"));
+  assert.deepEqual(temporary.left, []);
+  const refused = runInstaller(script, "arm64", bytes, {}, "--upgrade", true);
+  assert.notEqual(refused.result.status, 0);
+  assert.match(refused.result.stdout, /old Node requires manual replacement/);
+  assert.equal(refused.nodes, "");
+  const failed = runInstaller(script, "arm64", bytes,
+    {RCA_TEST_NATIVE_TTY: "1", RCA_NATIVE_EXIT: "1"}, "", true);
+  assert.notEqual(failed.result.status, 0);
+  assert.match(failed.result.stdout, /Native installation failed/);
+  assert.equal((failed.nodes.match(/--install-local/g) ?? []).length, 1);
+  const malformed = {arm: packNativeArchive("darwin-arm64", ["foreign.txt"]), intel: bytes.intel};
+  const hostile = runInstaller(shellFor(malformed), "arm64", malformed, {}, "--upgrade", true);
+  assert.notEqual(hostile.result.status, 0);
+  assert.match(hostile.result.stdout, /Untrusted native archive member/);
+  assert.equal(hostile.nodes, "");
+  const crossed = {arm: bytes.intel, intel: bytes.arm};
+  const wrongArch = runInstaller(shellFor(crossed), "arm64", crossed,
+    {RCA_TEST_NATIVE_TTY: "1"}, "", true);
+  assert.notEqual(wrongArch.result.status, 0);
+  assert.match(wrongArch.result.stdout, /Untrusted native package/);
+  assert.equal(wrongArch.nodes, "");
 });
 
 test("#1035 attended macOS installer preserves both owner terminal streams", {skip:process.platform!=="linux"}, () => {
@@ -470,7 +554,7 @@ test("#809 hostile archive members never reach the bundled Agent", () => {
     const script = shellFor({ arm: hostile, intel: bytes.intel });
     const ran = runInstaller(script, "arm64", { arm: hostile, intel: bytes.intel });
     assert.notEqual(ran.result.status, 0);
-    assert.match(ran.result.stderr, /Untrusted archive member/);
+    assert.match(ran.result.stderr, /Untrusted (?:native )?archive member/);
     assert.equal(ran.nodes, "");
     assert.equal(ran.curls.length, 2);
   } finally {

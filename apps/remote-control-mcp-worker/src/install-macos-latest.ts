@@ -40,8 +40,7 @@ export function renderPackagedMacUpdateShell(options: { nativeOnly?: boolean } =
  * Rust manager. This script only validates/extracts that exact local archive
  * and dispatches the verified Rust candidate; it never runs Node or fetches.
  */
-function renderNativeMacUpdateShell(): string {
-  const archiveAwk = String.raw`{
+const NATIVE_ARCHIVE_AWK = String.raw`{
   name=$0
   if (substr(name,length(name),1)=="/") name=substr(name,1,length(name)-1)
   n=split(name,parts,"/")
@@ -54,6 +53,8 @@ function renderNativeMacUpdateShell(): string {
     name=="apps/remote-control-agent/scripts/macos-update.sh")) bad=1
 }
 END {exit bad}`;
+
+function renderNativeMacUpdateShell(): string {
   return [
     "#!/bin/sh",
     "set -eu",
@@ -81,7 +82,7 @@ END {exit bad}`;
     'members="$stage/members"; types="$stage/types"',
     'tar -tzf "$archive" > "$members"',
     'tar -tvzf "$archive" > "$types"',
-    "awk '" + archiveAwk + "' \"$members\" || { echo 'Untrusted native archive member.' >&2; exit 1; }",
+    "awk '" + NATIVE_ARCHIVE_AWK + "' \"$members\" || { echo 'Untrusted native archive member.' >&2; exit 1; }",
     '[ "$(sort "$members" | uniq -d | wc -l | tr -d " ")" -eq 0 ] || { echo "Duplicate native archive member." >&2; exit 1; }',
     "awk '{if (substr($1,1,1)!=\"-\" && substr($1,1,1)!=\"d\") exit 1}' \"$types\" || { echo \"Unsafe native archive member type.\" >&2; exit 1; }",
     'mkdir "$stage/unpacked"; chmod 700 "$stage/unpacked"',
@@ -155,12 +156,46 @@ function renderMacInstaller(origin: string | null): string {
     "types=\"$stage/types\"",
     "tar -tzf \"$archive\" > \"$members\"",
     "tar -tvzf \"$archive\" > \"$types\"",
-    "awk '" + ARCHIVE_AWK + "' \"$members\" || { echo 'Untrusted archive member.' >&2; exit 1; }",
+    ...(packaged ? [
+      "awk '" + ARCHIVE_AWK + "' \"$members\" || { echo 'Untrusted archive member.' >&2; exit 1; }",
+    ] : [
+      "if awk '$0==\"bin/node\"{found=1} END {exit !found}' \"$members\"; then",
+      "  runtime=node",
+      "  awk '" + ARCHIVE_AWK + "' \"$members\" || { echo 'Untrusted Node archive member.' >&2; exit 1; }",
+      "else",
+      "  runtime=rust",
+      "  awk '" + NATIVE_ARCHIVE_AWK + "' \"$members\" || { echo 'Untrusted native archive member.' >&2; exit 1; }",
+      "fi",
+    ]),
     "[ \"$(sort \"$members\" | uniq -d | wc -l | tr -d ' ')\" -eq 0 ] || { echo 'Untrusted archive member.' >&2; exit 1; }",
     "awk '{if (substr($1,1,1)!=\"-\" && substr($1,1,1)!=\"d\") exit 1}' \"$types\" || { echo 'Unsafe archive member type.' >&2; exit 1; }",
     "mkdir \"$stage/unpacked\"",
     "chmod 700 \"$stage/unpacked\"",
     "tar -xzf \"$archive\" -C \"$stage/unpacked\"",
+    ...(!packaged ? [
+      'if [ "$runtime" = rust ]; then',
+      '  case "$mode" in upgrade|remote-upgrade) echo "Use installed rca update for Rust-to-Rust upgrades; old Node requires manual replacement. No cross-runtime change made." >&2; exit 1 ;; esac',
+      '  candidate="$stage/unpacked/apps/remote-control-agent/.build/rca-standard-darwin-candidate"',
+      '  [ -f "$candidate" ] && [ -x "$candidate" ] && [ ! -L "$candidate" ] || exit 1',
+      '  if ! identity=$("$candidate" --verify-bundle "$tag" "$target"); then echo "Untrusted native package." >&2; exit 1; fi',
+      '  case "$identity" in *[!a-f0-9]*|"") exit 1 ;; esac',
+      '  [ "${#identity}" -eq 40 ] || exit 1',
+      '  if [ -z "$mode" ]; then',
+      '    printf "Install mode: [1] Permanent (login LaunchAgent), [2] Temporary (24h foreground): " > /dev/tty',
+      '    IFS= read -r choice < /dev/tty || { echo "Owner selection cancelled" >&2; exit 1; }',
+      '    case "$choice" in 1) mode=install ;; 2) mode=temporary ;; *) echo "No mode selected" >&2; exit 1 ;; esac',
+      '  fi',
+      '  printf "Device name: " > /dev/tty',
+      '  IFS= read -r device_name < /dev/tty || { echo "Device name cancelled" >&2; exit 1; }',
+      '  [ -n "$device_name" ] || { echo "Device name required" >&2; exit 1; }',
+      '  if [ "$mode" = temporary ]; then',
+      '    "$candidate" --temporary-local ' + endpoint + ' "$device_name" < /dev/tty > /dev/tty || { echo "Native temporary session failed; inspect local state." >&2; exit 1; }',
+      '  else',
+      '    "$candidate" --install-local ' + endpoint + ' "$device_name" "$tag" "$identity" < /dev/tty > /dev/tty || { echo "Native installation failed; inspect local state." >&2; exit 1; }',
+      '  fi',
+      '  exit 0',
+      'fi',
+    ] : []),
     "node=\"$stage/unpacked/bin/node\"",
     "[ -x \"$node\" ] && [ -f \"$node\" ] && [ ! -L \"$node\" ] || exit 1",
     "if ! identity=$(\"$node\" -e '" + IDENTITY_PROGRAM + "' \"$stage/unpacked/bundle.json\" \"$tag\" \"$target\"); then",

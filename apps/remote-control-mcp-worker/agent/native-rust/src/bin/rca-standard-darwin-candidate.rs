@@ -265,7 +265,7 @@ fn record_connection(
 mod darwin {
     use super::agent_release;
     use super::darwin_lifecycle::{
-        apply_connection_observation, apply_policy_observation, connection_time,
+        self, apply_connection_observation, apply_policy_observation, connection_time,
         default_diagnostics, diagnostic_response, installed_generation, native_cli, native_plist,
         new_generation, no_other_programs, registration, resume_owned, stop_owned, switch_outcome,
         unregister_owned, Registration, RestartRecord, SwitchOutcome, SwitchRecord,
