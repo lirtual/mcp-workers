@@ -1,4 +1,4 @@
-//! Independent Node reference: no Worker, live identity or actual pairing.
+//! Independent Node crypto reference for the published pairing transcript; no live pairing.
 use rca_native_agent::device_pairing::{
     generate_private_pem, new_pending_enrollment, PairingClient,
 };
@@ -21,7 +21,11 @@ fn pending_material_matches_node_for_both_grant_modes_and_retries() {
     let mut child = Command::new("node")
         .args(["--experimental-strip-types", "--input-type=module", "-e", r#"
           import {createPrivateKey,createPublicKey,createHash,sign} from 'node:crypto';
-          import {pairingVerifier,ENROLLMENT_DOMAIN} from './src/v2-enrollment.ts';
+          const ENROLLMENT_DOMAIN='remote-control:v2:pending:';
+          function pairingVerifier(code){
+            if(!/^[A-Z2-7]{10}$/.test(code))throw Error('Invalid pairing code');
+            return createHash('sha256').update(ENROLLMENT_DOMAIN+code).digest('hex');
+          }
           let raw=''; for await(const x of process.stdin) raw+=x;
           const {pem,rows}=JSON.parse(raw);
           const key=createPrivateKey(pem);

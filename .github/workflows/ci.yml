@@ -183,7 +183,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Match the existing Node candidate's Standard physical runners.
+        # Cover the five supported native Standard targets.
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, macos-15-intel, windows-2025]
     steps:
       - uses: actions/checkout@v4
