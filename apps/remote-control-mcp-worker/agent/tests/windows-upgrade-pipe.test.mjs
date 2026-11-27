@@ -148,7 +148,7 @@ windows("activation proof polling rejects pending proof without a misleading run
   try {
     const {writeFile}=await import("node:fs/promises");
     const fixture=path.join(dir,"probe.cmd");
-    await writeFile(fixture,'@echo off\r\nif "%2"=="ready" (\r\n echo {"state":"connected"}\r\n exit /b 0\r\n)\r\necho Windows Rust candidate refused or session failed. 1>&2\r\nexit /b 1\r\n');
+    await writeFile(fixture,'@echo off\r\nif "%2"=="ready" (\r\n echo {"state":"connected"}\r\n exit /b 0\r\n)\r\necho RCA operation did not complete. 1>&2\r\nexit /b 1\r\n');
     const command="$ErrorActionPreference='Stop'\n$rustEntry='"+fixture.replaceAll("'","''")+"'\n$Generation='pending'\ntry {\n"+probe+"\nthrow 'Pending proof unexpectedly accepted'\n} catch { if ($_.Exception.Message -ne 'Signed WSS activation not confirmed') { throw } }\n$Generation='ready'\n"+probe+"\nif ($proof.state -cne 'connected') { throw 'Successful proof lost' }\nWrite-Output 'activation-probe-pass'";
     const result=spawnSync("powershell.exe",["-NoProfile","-NonInteractive","-Command",command],{windowsHide:true,encoding:"utf8",timeout:10000});
     assert.equal(result.status,0,result.stderr);

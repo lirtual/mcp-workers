@@ -130,13 +130,13 @@ mod ubuntu {
 #[cfg(target_os = "linux")]
 fn main() {
     if ubuntu::run().is_err() {
-        eprintln!("Session RCA candidate unavailable; existing Agent is unchanged.");
+        eprintln!("Session RCA unavailable; existing Agent is unchanged.");
         std::process::exit(1);
     }
 }
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("Session RCA candidate is Linux-only and unshipped.");
+    eprintln!("Session RCA requires Linux.");
     std::process::exit(1);
 }

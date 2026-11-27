@@ -1,4 +1,4 @@
-//! Unshipped Standard macOS RCA entrypoint. No installed Agent path uses it.
+//! Standard macOS RCA entrypoint.
 //! Reuses the permanent and temporary identity storage of the reviewed Unix Agent.
 #[cfg(any(target_os = "macos", all(test, unix)))]
 #[path = "support/darwin_lifecycle.rs"]
@@ -329,7 +329,7 @@ mod darwin {
     }
 
     fn checked_supervisor() -> Result<Arc<DarwinManagedSessions>, ()> {
-        // Candidate bundle layout only. The installed Node release is untouched.
+        // Resolve the installed native bundle layout.
         let helper = fs::canonicalize(std::env::current_exe().map_err(|_| ())?)
             .map_err(|_| ())?
             .with_file_name("darwin-session-supervisor");
@@ -976,15 +976,8 @@ mod darwin {
     }
 
     fn owner_confirm(prompt: &str) -> Result<(), ()> {
-        use std::io::{IsTerminal, Write};
-        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            return Err(());
-        }
-        print!("{prompt} Confirm [y/N]: ");
-        std::io::stdout().flush().map_err(|_| ())?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer).map_err(|_| ())?;
-        matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        rca_native_agent::owner_prompt::confirm(&format!("{prompt} Confirm"))
+            .map_err(|_| ())?
             .then_some(())
             .ok_or(())
     }
@@ -3194,7 +3187,7 @@ fn main() {
 
 #[cfg(not(target_os = "macos"))]
 fn main() {
-    eprintln!("Unshipped Standard macOS Agent is macOS-only.");
+    eprintln!("Standard RCA requires macOS.");
     std::process::exit(1);
 }
 

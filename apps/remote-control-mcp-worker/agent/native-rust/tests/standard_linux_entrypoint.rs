@@ -1,4 +1,4 @@
-//! Real subprocess seam for an unshipped Standard Linux Rust Agent.
+//! Real subprocess seam for the Standard Linux Rust Agent.
 //! Every fixture uses disposable owner-private identity files and no live endpoint.
 #[cfg(target_os = "linux")]
 mod common;

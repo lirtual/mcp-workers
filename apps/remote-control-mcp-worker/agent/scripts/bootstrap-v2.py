@@ -556,7 +556,7 @@ def native_unattended_upgrade(root, *, worker=False, automatic=False):
     info = json.loads((current / "bundle.json").read_text("utf8"))
     if (info.get("artifact_profile") != "rust-native-only-v1"
             or not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", info["version"])):
-        raise ValueError("Detached upgrade requires a stable native Agent; use attended candidate promotion")
+        raise ValueError("Detached upgrade requires a stable native Agent; use attended upgrade")
     key = home / STORE / "v2-identity.pem"
     native_owned_file(key, 8192)
     if native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]:
@@ -720,7 +720,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 if not public_forward_version(installed, tag):
                     raise ValueError("Silent downgrade or same-version replacement refused")
                 if detached_upgrade and not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", installed):
-                    raise ValueError("Detached candidate promotion refused; use attended upgrade")
+                    raise ValueError("Detached upgrade refused for this package; use attended upgrade")
             print("Signed WSS must be proven after switch; identity and SQLite remain unchanged.")
             if detached_upgrade:
                 if not approved_native_detached_worker(expected_binding[1]):
@@ -2233,12 +2233,12 @@ def validated_owned_version(p):
     try:
         candidate_info = candidate.lstat()
     except OSError:
-        raise ValueError("Untrusted Rust Agent candidate")
+        raise ValueError("Untrusted native Agent executable")
     if (not stat.S_ISREG(candidate_info.st_mode)
             or candidate_info.st_uid != os.getuid()
             or candidate_info.st_nlink != 1 or candidate_info.st_mode & 0o077
             or not candidate_info.st_mode & 0o111):
-        raise ValueError("Untrusted Rust Agent candidate")
+        raise ValueError("Untrusted native Agent executable")
     observed = set()
     for parent, dirs, files in os.walk(p, followlinks=False):
         for name in dirs + files:

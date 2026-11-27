@@ -1,4 +1,4 @@
-//! Unshipped Standard Linux RCA entrypoint. No installed Agent path uses it.
+//! Standard Linux RCA entrypoint.
 //! Shares the existing owner-reviewed permanent and temporary v2 identities.
 #[cfg(target_os = "linux")]
 #[path = "support/unix_pairing.rs"]
@@ -216,7 +216,7 @@ mod linux {
     }
 
     fn checked_supervisor() -> Result<Arc<LinuxManagedSessions>, ()> {
-        // Candidate bundle layout only. The installed Node release is untouched.
+        // Resolve the installed native bundle layout.
         let helper = std::env::current_exe()
             .map_err(|_| ())?
             .with_file_name("session-supervisor");
@@ -1001,6 +1001,6 @@ fn main() {
 
 #[cfg(not(target_os = "linux"))]
 fn main() {
-    eprintln!("Unshipped Standard Linux Agent is Linux-only.");
+    eprintln!("Standard RCA requires Linux.");
     std::process::exit(1);
 }

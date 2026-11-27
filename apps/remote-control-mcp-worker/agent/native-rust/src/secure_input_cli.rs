@@ -249,20 +249,6 @@ impl From<()> for SecureInputCliError {
     }
 }
 
-pub fn confirm(prompt: &str, expected: &str) -> Result<bool, SecureInputCliError> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(SecureInputCliError);
-    }
-    print!("{prompt}");
-    io::stdout().flush().map_err(|_| ())?;
-    let mut response = String::new();
-    io::stdin().read_line(&mut response).map_err(|_| ())?;
-    while response.ends_with(['\r', '\n']) {
-        response.pop();
-    }
-    Ok(response == expected)
-}
-
 pub fn read_hidden_secret() -> Result<Zeroizing<String>, SecureInputCliError> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(SecureInputCliError);
@@ -384,19 +370,18 @@ fn run_owner_flow(
             "caller marked non-production; verify the exact resource"
         }
     );
-    if !confirm(
-        "Type CONFIRM TARGET to confirm the exact target above: ",
-        "CONFIRM TARGET",
-    )? {
+    if !crate::owner_prompt::confirm("Confirm the exact target above?")
+        .map_err(|_| SecureInputCliError)?
+    {
+        eprintln!("Target confirmation declined; nothing submitted.");
         return Err(SecureInputCliError);
     }
     let production = challenge["is_production"] == true;
     if production
-        && !confirm(
-            "This is a production write. Type AUTHORIZE PRODUCTION to authorize it: ",
-            "AUTHORIZE PRODUCTION",
-        )?
+        && !crate::owner_prompt::confirm("Authorize this production write?")
+            .map_err(|_| SecureInputCliError)?
     {
+        eprintln!("Production authorization declined; nothing submitted.");
         return Err(SecureInputCliError);
     }
     let secret = read_hidden_secret()?;
@@ -598,15 +583,12 @@ mod terminal_tests {
                     output.extend_from_slice(&buffer[..count]);
                     assert!(output.len() < 64 * 1024);
                     let visible = String::from_utf8_lossy(&output);
-                    if !confirmed
-                        && visible
-                            .contains("Type CONFIRM TARGET to confirm the exact target above: ")
-                    {
+                    if !confirmed && visible.contains("Confirm the exact target above? [y/N]: ") {
                         assert!(visible.contains(OWNER));
                         assert!(visible.contains(TARGET));
                         assert!(visible.contains("SECURE_INPUT_FIXTURE"));
                         assert!(visible.contains("\"session_run_id\":123"));
-                        master.write_all(b"CONFIRM TARGET\n").unwrap();
+                        master.write_all(b"y\n").unwrap();
                         confirmed = true;
                     }
                     if confirmed && !secret_sent && visible.contains("Secret (input hidden): ") {
