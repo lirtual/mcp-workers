@@ -126,7 +126,20 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
     assert.deepEqual(await readFile(receipts),before);
   };
   const noJournal=()=>assert.rejects(readFile(journal),{code:"ENOENT"});
-  // Reproduce the existing Node management binding, including key/id SHA-256,
+  // The phased delivery refuses enablement before any enrollment or update.
+  // Stored prior consent must not make the new package report updates enabled.
+  const policy = keyPath + ".automatic-update";
+  await writeFile(policy,JSON.stringify({device_id:device.trim(),enabled:true})+"\n",{mode:0o600});
+  const deferred = local(exe,["update","--auto","on"]);
+  assert.equal(deferred.status,1,deferred.stdout+deferred.stderr);
+  assert.match(deferred.stderr,/Automatic update is not available on macOS/);
+  const deferredStatus = JSON.parse(ok(local(exe,["update","--auto"])));
+  assert.equal(deferredStatus.automatic_update,"off");
+  assert.equal(deferredStatus.automatic_update_activity,"disabled");
+  assert.equal(JSON.parse(await readFile(policy,"utf8")).enabled,true);
+  await noJournal();
+  await preserved();
+  // Reproduce the existing management binding, including key/id SHA-256,
   // JSON property order and the original intentional STOP marker. The Rust
   // manager must reject any change to this exact installation after admission.
   const digest = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -181,7 +194,6 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
   await writeFile(journal,record,{mode:0o600});
   // Explicit disable is local even when an unresolved journal makes the
   // installed program/configuration untrustworthy. Enabling must refuse.
-  const policy = keyPath + ".automatic-update";
   await writeFile(policy,JSON.stringify({device_id:device.trim(),enabled:true})+"\n",{mode:0o600});
   const deniedPolicy = local(nextExe,["update","--auto","on"]);
   assert.equal(deniedPolicy.status,1,deniedPolicy.stdout+deniedPolicy.stderr);

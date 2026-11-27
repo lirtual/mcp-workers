@@ -297,6 +297,19 @@ mod darwin {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    // #1035: macOS automatic update is deferred until independent lifecycle
+    // acceptance. This is a shipped capability boundary, not Owner consent.
+    const AUTOMATIC_UPDATE_AVAILABLE: bool = false;
+
+    fn require_automatic_update() -> Result<(), ()> {
+        if AUTOMATIC_UPDATE_AVAILABLE {
+            Ok(())
+        } else {
+            eprintln!("Automatic update is not available on macOS in this release.");
+            Err(())
+        }
+    }
+
     static SIGNAL_STOP: AtomicBool = AtomicBool::new(false);
     extern "C" fn request_stop(_: libc::c_int) {
         SIGNAL_STOP.store(true, Ordering::Release);
@@ -687,12 +700,16 @@ mod darwin {
                 {
                     state["device_id"] = serde_json::json!(id.trim());
                     state["identity_present"] = serde_json::json!(true);
-                    let policy = match read_private(&sidecar(&key, ".automatic-update"), 256) {
-                        Ok(Some(raw)) => {
-                            rca_native_agent::device_pairing::parse_auto_policy(&raw, id.trim())
+                    let policy = if !AUTOMATIC_UPDATE_AVAILABLE {
+                        "off"
+                    } else {
+                        match read_private(&sidecar(&key, ".automatic-update"), 256) {
+                            Ok(Some(raw)) => {
+                                rca_native_agent::device_pairing::parse_auto_policy(&raw, id.trim())
+                            }
+                            Ok(None) => "off",
+                            Err(_) => "unknown",
                         }
-                        Ok(None) => "off",
-                        Err(_) => "unknown",
                     };
                     apply_policy_observation(&mut state, policy, false);
                 }
@@ -746,7 +763,7 @@ mod darwin {
             Ok(Some(mut result)) => {
                 let current_result = result["installed_version"] == state["installed_version"];
                 result["current"] = serde_json::json!(current_result);
-                if current_result {
+                if current_result && AUTOMATIC_UPDATE_AVAILABLE {
                     state["automatic_update_activity"] =
                         serde_json::json!(if result["status"] == "failed_recovered" {
                             "recovered"
@@ -1010,7 +1027,9 @@ mod darwin {
         let generation = new_generation()?;
         native_plist(&bundle.join(darwin_package::ENTRY), endpoint, &generation)?;
         let _supervisor = checked_supervisor()?;
-        let notice = if agent_release::stable_version(version).is_some() {
+        let notice = if !AUTOMATIC_UPDATE_AVAILABLE {
+            " Automatic updates are not available on macOS in this release."
+        } else if agent_release::stable_version(version).is_some() {
             " For a new permanent identity, automatic updates are enabled after signed activation; disable with rca update --auto off."
         } else {
             ""
@@ -1117,18 +1136,19 @@ mod darwin {
             return Err(());
         }
         write_executable(&cli, cli_text.as_bytes())?;
-        let automatic_update =
-            if new_identity && !stopped && agent_release::stable_version(version).is_some() {
-                initialize_auto_policy(&key, id.trim())
-            } else {
-                match read_private(&sidecar(&key, ".automatic-update"), 256) {
-                    Ok(Some(raw)) => {
-                        rca_native_agent::device_pairing::parse_auto_policy(&raw, id.trim())
-                    }
-                    Ok(None) => "off",
-                    Err(_) => "unknown",
+        let automatic_update = if !AUTOMATIC_UPDATE_AVAILABLE {
+            "off"
+        } else if new_identity && !stopped && agent_release::stable_version(version).is_some() {
+            initialize_auto_policy(&key, id.trim())
+        } else {
+            match read_private(&sidecar(&key, ".automatic-update"), 256) {
+                Ok(Some(raw)) => {
+                    rca_native_agent::device_pairing::parse_auto_policy(&raw, id.trim())
                 }
-            };
+                Ok(None) => "off",
+                Err(_) => "unknown",
+            }
+        };
         sync_remove(&journal)?;
         println!(
             "{}",
@@ -1374,6 +1394,9 @@ mod darwin {
         automatic: bool,
     ) -> Result<(), ()> {
         use rca_native_agent::upgrade_control::UpgradeCommand as Gate;
+        if automatic {
+            require_automatic_update()?;
+        }
         let bundle = current_bundle()?;
         let package = darwin_package::verify(&bundle, native_target())?;
         if !package.updater || package.version != version || package.source != source {
@@ -2541,6 +2564,9 @@ mod darwin {
         use std::os::unix::fs::OpenOptionsExt;
         use std::process::{Command, Stdio};
 
+        if automatic {
+            require_automatic_update()?;
+        }
         if !automatic && (!std::io::stdin().is_terminal() || !std::io::stdout().is_terminal()) {
             return Err(());
         }
@@ -2762,6 +2788,7 @@ mod darwin {
             _ => return Err(()),
         };
         if enabled {
+            require_automatic_update()?;
             let bundle = current_bundle()?;
             let package = darwin_package::verify(&bundle, native_target())?;
             if !package.updater || agent_release::stable_version(&package.version).is_none() {
@@ -2799,7 +2826,10 @@ mod darwin {
 
     fn public_help() {
         println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|pair|recover|uninstall|update [--check|--auto [on|off]]|secure-input REQUEST_ID|--version|--help]");
-        println!("Use rca update to install the newest verified Stable release, or rca update --check to inspect it. Use rca update --auto [on|off] to inspect or change identity-bound automatic-update consent.");
+        println!("Use rca update to install the newest verified Stable release, or rca update --check to inspect it. Use rca update --auto to inspect automatic-update status.");
+        if !AUTOMATIC_UPDATE_AVAILABLE {
+            println!("Automatic update is not available on macOS in this release.");
+        }
     }
 
     fn interactive_menu() -> Result<Option<String>, ()> {
@@ -2955,6 +2985,9 @@ mod darwin {
     }
 
     fn automatic_manager(home: &Path, key: &Path, generation: &str) -> Option<PathBuf> {
+        if !AUTOMATIC_UPDATE_AVAILABLE {
+            return None;
+        }
         let executable = fs::canonicalize(std::env::current_exe().ok()?).ok()?;
         let bundle = current_bundle().ok()?;
         let package = darwin_package::verify(&bundle, native_target()).ok()?;
