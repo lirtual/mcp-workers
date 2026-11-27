@@ -962,7 +962,7 @@ mod darwin {
         let generation = new_generation()?;
         native_plist(&bundle.join(darwin_package::ENTRY), endpoint, &generation)?;
         let _supervisor = checked_supervisor()?;
-        let notice = if darwin_package::stable_version(version) {
+        let notice = if agent_release::stable_version(version).is_some() {
             " For a new permanent identity, automatic updates are enabled after signed activation; disable with rca update --auto off."
         } else {
             ""
@@ -1070,7 +1070,7 @@ mod darwin {
         }
         write_executable(&cli, cli_text.as_bytes())?;
         let automatic_update =
-            if new_identity && !stopped && darwin_package::stable_version(version) {
+            if new_identity && !stopped && agent_release::stable_version(version).is_some() {
                 initialize_auto_policy(&key, id.trim())
             } else {
                 match read_private(&sidecar(&key, ".automatic-update"), 256) {
