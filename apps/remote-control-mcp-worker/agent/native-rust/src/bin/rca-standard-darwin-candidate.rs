@@ -263,6 +263,7 @@ fn record_connection(
 
 #[cfg(target_os = "macos")]
 mod darwin {
+    use super::agent_release;
     use super::darwin_lifecycle::{
         apply_connection_observation, apply_policy_observation, connection_time,
         default_diagnostics, diagnostic_response, installed_generation, native_cli, native_plist,
