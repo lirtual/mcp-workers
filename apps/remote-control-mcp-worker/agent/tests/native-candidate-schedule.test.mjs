@@ -16,7 +16,7 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   const release = read('.github/workflows/release.yml');
 
   assert.match(ci, /agent_native_changed: \$\{\{ steps\.scope\.outputs\.agent_native_changed \}\}/);
-  assert.match(ci, /needs: checks\n    if: needs\.checks\.outputs\.agent_native_changed == 'true'\n    uses: \.\/\.github\/workflows\/agent-native-candidates\.yml\n    with:\n      candidate_tag: v0\.1\.60/);
+  assert.match(ci, /needs: checks\n    if: needs\.checks\.outputs\.agent_native_changed == 'true'\n    uses: \.\/\.github\/workflows\/agent-native-candidates\.yml\n    with:\n      candidate_tag: v0\.1\.61/);
   assert.doesNotMatch(ci, /\bgh release create\b/);
   assert.doesNotMatch(release, /\bgh release create\b|agent-native-candidates|release-pins/);
   assert.doesNotMatch(candidates, /^  push:/m);
