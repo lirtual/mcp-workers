@@ -2991,7 +2991,12 @@ mod darwin {
                                     ) == "on"
                                 });
                         if enabled {
+                            use std::os::unix::process::CommandExt;
                             match std::process::Command::new(manager)
+                                // launchd tears down remaining members of the Agent job's process
+                                // group during bootout. Keep the admitted updater in its own group
+                                // so an intentional self-replacement cannot kill the transaction.
+                                .process_group(0)
                                 .args(["update", "--automatic-check"])
                                 .stdin(std::process::Stdio::null())
                                 .stdout(std::process::Stdio::null())
