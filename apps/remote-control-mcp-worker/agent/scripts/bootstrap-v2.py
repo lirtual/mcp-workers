@@ -1284,8 +1284,8 @@ def native_wait_proof(path, operation, device_id, version, pid, seconds=90):
 
 
 def native_receipts_compatible(home):
-    # Match the existing Node installer read-only header contract. Do not
-    # acquire a second SQLite writer while the old Agent remains online.
+    # Preserve the existing receipt header contract. Do not acquire a second
+    # SQLite writer while the current Agent remains online.
     directory = home / ".local/state/mcp-workers/remote-control-agent"
     if not directory.exists():
         if directory.is_symlink():
@@ -1769,7 +1769,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automa
     proof = pathlib.Path(str(key) + ".native-upgrade-proof")
     if any(os.path.lexists(item) for item in native_pending_lifecycle(key, unit_file)):
         raise ValueError("Unreconciled previous upgrade; preserve evidence for recovery")
-    # The Node installer owns this existing lock. Never race its pairing/repair.
+    # Pairing, repair and lifecycle changes share this installer lock.
     lock_path = home / STORE / "v2-installer.lock"
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+b") as lock:
@@ -2317,8 +2317,8 @@ def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
             if any(arg.startswith(prefix) for arg in argv for prefix in prefixes):
                 return False
             # On systemd Linux, the exact per-user session managers may have
-            # unreadable /proc/PID/exe and cwd. They cannot run our bundled Node
-            # as their executable. Do not mistake their EACCES for an Agent.
+            # unreadable /proc/PID/exe and cwd. The exact manager identities below
+            # are not Agent executables. Do not mistake their EACCES for an Agent.
             proc_name = re.search(r"^Name:\s*([^\n]+)", status, re.MULTILINE)
             if proc_name and argv and (proc_name.group(1).strip(), argv[0]) in (
                     ("systemd", b"/usr/lib/systemd/systemd"),
@@ -2384,7 +2384,7 @@ def local_uninstall(home, confirm, systemctl=None, process_check=no_running_prog
 
 def _local_uninstall_locked(home, systemctl, process_check):
     programs, versions, unit_file, unit, ids = local_inventory(home)
-    # A cutover interrupted after freezing the Node process can still need
+    # A cutover interrupted after freezing the current Agent can still need
     # both program versions for recovery. Never erase either one while its
     # durable intent, signed proof or original service backup is present.
     key = pathlib.Path(home) / STORE / "v2-identity.pem"
