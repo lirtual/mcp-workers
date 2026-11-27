@@ -63,13 +63,13 @@ function describeTarget(target) {
   return "Unsupported target";
 }
 function effectAndRecovery(target) {
-  if (target.kind === "task_process") return "Deliver once to a trusted process. Its captured output will be hidden; delivery cannot be recalled.";
+  if (target.kind === "task_process") return "Deliver once to a trusted process. All captured output for its session is permanently suppressed; delivery cannot be recalled.";
   if (target.kind.startsWith("github_")) return target.kind.endsWith("_variable")
     ? "Set or replace the Variable. Restore its prior value or remove it to recover."
-    : "Set or replace the Secret. The prior value cannot be read back.";
+    : "Set or replace the Secret. The prior value cannot be read back; recover by replacing or removing it.";
   if (target.kind === "cloudflare_worker_secret") return target.mode === "deploy"
-    ? "Set or replace the Secret and deploy immediately. The prior value cannot be read back."
-    : "Set or replace the Secret in an inactive version. The prior value cannot be read back.";
+    ? "Set or replace the Secret and deploy immediately. The prior value cannot be read back; recovery requires replacing it and, if needed, separately deploying a known-good version."
+    : "Set or replace the Secret in an inactive version. The prior value cannot be read back; replace it to recover. Deployment requires a separate action.";
   return "Unsupported target.";
 }
 function showState(value) {
@@ -116,7 +116,7 @@ async function refresh() {
   document.getElementById("principal-row").hidden = !principal;
   text("principal", principal ? principal.identity + (principal.account_name ? " · " + principal.account_name : "") : "");
   text("effect", effectAndRecovery(value.target));
-  text("scope", value.is_production ? "Production" : "Marked non-production");
+  text("scope", value.is_production ? "Production" : "Marked non-production by requester; verify the resource");
   document.getElementById("production-authorization").hidden = !value.is_production;
   text("exact-target", [
     "Device ID: " + execution.device_id,
