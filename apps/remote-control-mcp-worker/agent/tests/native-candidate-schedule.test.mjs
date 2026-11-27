@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -20,6 +20,13 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   assert.doesNotMatch(ci, /\bgh release create\b/);
   assert.doesNotMatch(release, /\bgh release create\b|agent-native-candidates|release-pins/);
   assert.doesNotMatch(candidates, /^  push:/m);
+  // Explicit Agent test entrypoints must exist after runtime/test retirement.
+  for (const line of candidates.split('\n').filter(line => line.includes('node --experimental-strip-types --test tests/'))) {
+    for (const file of line.trim().split(/\s+/).filter(part => part.startsWith('tests/'))) {
+      assert.ok(existsSync(path.join(root, 'apps/remote-control-mcp-worker/agent', file)), `missing candidate test: ${file}`);
+    }
+  }
+
   assert.match(candidates, /rust_agent="\$RCA_TEST_TEMP\/build\/rca-standard-linux-candidate"/);
   assert.match(candidates, /--out "\$RCA_TEST_TEMP\/native-only"/);
   assert.doesNotMatch(candidates, /RCA_TEST_TEMP\/package|linux-systemd-upgrade-recovery\.integration\.mjs/);

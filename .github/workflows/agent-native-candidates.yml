@@ -334,17 +334,13 @@ jobs:
             apps/remote-control-mcp-worker/agent/scripts/darwin-session-supervisor.c \
             -o apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor
           chmod 700 apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor
-      - name: Typecheck and verify native file/receipt seam (no owner pairing)
+      - name: Verify macOS runner and build fixture types
         run: |
           set -euo pipefail
           test "$(uname -m)" = "${{ matrix.uname_arch }}"
           test "$(node -p process.arch)" = "${{ matrix.arch }}"
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 15
           pnpm --filter remote-control-agent typecheck
-          cd apps/remote-control-mcp-worker/agent
-          node --experimental-strip-types --test tests/pair-device.test.ts
-          # macOS-owned child groups must not hold CI indefinitely when
-          # the helper or a test faults. This is the SAME existing job.
 
       - name: Build, inspect and exercise unpublished Rust-only macOS candidate
         shell: bash
@@ -468,13 +464,13 @@ jobs:
           cache-dependency-path: pnpm-lock.yaml
       - name: Install pinned source dependencies
         run: pnpm install --frozen-lockfile --ignore-scripts
-      - name: Typecheck shared and Windows preview sources
+      - name: Typecheck Agent build and test fixtures
         run: pnpm --filter remote-control-agent typecheck
       - name: Windows helper ACL and lifecycle boundary checks
         shell: pwsh
         run: |
           Set-Location apps/remote-control-mcp-worker/agent
-          node --experimental-strip-types --test tests/shared-execution-boundaries.test.ts tests/windows-acl.test.mjs tests/windows-upgrade-pipe.test.mjs
+          node --experimental-strip-types --test tests/windows-acl.test.mjs tests/windows-upgrade-pipe.test.mjs
           if ($LASTEXITCODE -ne 0) { throw 'Windows helper lifecycle tests failed' }
       - name: New public PowerShell installer parses under Windows without executing
         shell: pwsh
