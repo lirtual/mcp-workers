@@ -17,7 +17,6 @@ export function darwinGitRoot(packageRoot = root) {
   return path.resolve(packageRoot, "../../..");
 }
 const ALLOWED = new Set(["linux-x64-glibc", "linux-arm64-glibc", "darwin-arm64", "darwin-x64"]);
-const source = path.join(root, "src");
 
 export function parseArgs(argv) {
   const params = {};
@@ -183,7 +182,7 @@ function tarballDarwin(dir, file) {
     const data = entry.directory ? Buffer.alloc(0) : readFileSync(path.join(dir,name));
     const header = Buffer.alloc(512);
     header.write(name,0,"ascii");
-    const mode = entry.directory || name === "bin/node" ||
+    const mode = entry.directory ||
       name === "apps/remote-control-agent/.build/darwin-session-supervisor" ||
       name === "apps/remote-control-agent/.build/rca-standard-darwin-candidate" ? 0o700 : 0o600;
     oct(header,100,8,mode);oct(header,108,8,0);oct(header,116,8,0);
