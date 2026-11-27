@@ -16,7 +16,7 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   const release = read('.github/workflows/release.yml');
 
   assert.match(ci, /agent_native_changed: \$\{\{ steps\.scope\.outputs\.agent_native_changed \}\}/);
-  assert.match(ci, /needs: checks\n    if: needs\.checks\.outputs\.agent_native_changed == 'true'\n    uses: \.\/\.github\/workflows\/agent-native-candidates\.yml\n    with:\n      candidate_tag: v0\.0\.0-ci/);
+  assert.match(ci, /needs: checks\n    if: needs\.checks\.outputs\.agent_native_changed == 'true'\n    uses: \.\/\.github\/workflows\/agent-native-candidates\.yml\n    with:\n      candidate_tag: v0\.1\.60/);
   assert.doesNotMatch(ci, /\bgh release create\b/);
   assert.doesNotMatch(release, /\bgh release create\b|agent-native-candidates|release-pins/);
   assert.doesNotMatch(candidates, /^  push:/m);
@@ -35,6 +35,11 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   assert.ok(!candidates.includes('name: ${{ inputs.candidate_tag }}-${{ matrix.os }}'));
   const linuxReview=candidates.slice(candidates.indexOf('      - name: Assemble unpublished Linux Node-free artifact'),candidates.indexOf('  macos-native-candidate:'));
   assert.match(linuxReview,/--artifact-profile rust-native-only-v1/);
+  const macosReview=candidates.slice(candidates.indexOf('  macos-native-candidate:'));
+  assert.match(macosReview,/name: Rust-only native macOS 15/);
+  assert.match(macosReview,/--artifact-profile rust-native-only-v1/);
+  assert.match(macosReview,/--rust-agent-bin/);
+  assert.doesNotMatch(macosReview,/--node-bin|node_archive_sha256|node-v24[.]21[.]0/);
   const windowsReview=candidates.slice(candidates.indexOf('      - name: Assemble verifiable Windows release candidate'));
   assert.match(windowsReview,/'--artifact-profile','rust-native-only-v1'/);
   assert.doesNotMatch(windowsReview,/\$nativeOnly = \$tag/);

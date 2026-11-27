@@ -295,7 +295,7 @@ jobs:
           if-no-files-found: error
           compression-level: 0
   macos-native-candidate:
-    name: Unpublished native macOS 15 / ${{ matrix.arch }} candidate
+    name: Rust-only native macOS 15 / ${{ matrix.arch }} candidate
     if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
@@ -307,12 +307,10 @@ jobs:
             target: darwin-arm64
             uname_arch: arm64
             runner: macos-15
-            node_archive_sha256: 6239d4cf92d864487ec8cd3615038f7b67e7f58b77b21cd2f09ea9fbd68065fe
           - arch: x64
             target: darwin-x64
             uname_arch: x86_64
             runner: macos-15-intel
-            node_archive_sha256: 0ae5a24c24bb7d015cd816c5036b3f90f2945aa872fcf54e58da054753b3a299
     steps:
       - uses: actions/checkout@v4
         with:
@@ -349,90 +347,111 @@ jobs:
           # the helper or a test faults. This is the SAME existing job.
           node -e 'const {spawnSync}=require("node:child_process"); const r=spawnSync(process.execPath,["--experimental-strip-types","--test","tests/macos-managed-sessions.test.ts"],{timeout:45000,stdio:"inherit"}); if(r.error||r.status!==0) {console.error("Native Darwin session tests failed or timed out:",r.error?.code??r.status);process.exit(1)}'
 
-      - name: Build and inspect native unpublished CPU-specific candidate
+      - name: Build, inspect and exercise unpublished Rust-only macOS candidate
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
-            [[ "$RCA_CANDIDATE_TAG" =~ ^v0\.[1-9][0-9]*\.[0-9]+$ ]]
-          fi
-          temp_dir="$(mktemp -d)"
+          [[ "$RCA_CANDIDATE_TAG" =~ ^v0\.[1-9][0-9]*\.[0-9]+$ ]]
+          temp_dir="$(mktemp -d "$RUNNER_TEMP/rca-darwin.XXXXXX")"
           trap 'rm -rf "$temp_dir"' EXIT
-          archive="$temp_dir/node.tar.xz"
-          curl --fail --silent --show-error --location --max-time 90 \
-            --proto '=https' --tlsv1.2 \
-            https://nodejs.org/dist/v24.21.0/node-v24.21.0-${{ matrix.target }}.tar.xz -o "$archive"
-          echo '${{ matrix.node_archive_sha256 }}  '"$archive" | shasum -a 256 --check
-          tar -xJOf "$archive" node-v24.21.0-${{ matrix.target }}/bin/node > "$temp_dir/node"
-          chmod 700 "$temp_dir/node"
-          test "$("$temp_dir/node" --version)" = v24.21.0
+          source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
+          target="${{ matrix.target }}"
+          supervisor="$RUNNER_TEMP/rca-darwin-supervisor"
+          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
+            "$source_root/scripts/darwin-session-supervisor.c" -o "$supervisor"
+          chmod 700 "$supervisor"
+          cargo build --locked --release --manifest-path \
+            "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
+          rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
           for pass in first second; do
-            "$temp_dir/node" apps/remote-control-mcp-worker/agent/scripts/build-agent-release.mjs \
-              --version "$RCA_CANDIDATE_TAG" --target ${{ matrix.target }} \
-              --node-bin "$temp_dir/node" \
-              --node-sha256 "$(shasum -a 256 "$temp_dir/node" | awk '{print $1}')" \
-              --native "$(pwd)/apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor" \
-              --native-sha256 "$(shasum -a 256 apps/remote-control-mcp-worker/agent/.build/darwin-session-supervisor | awk '{print $1}')" \
+            node "$source_root/scripts/build-agent-release.mjs" \
+              --version "$RCA_CANDIDATE_TAG" --target "$target" \
+              --artifact-profile rust-native-only-v1 \
+              --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | awk '{print $1}')" \
+              --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | awk '{print $1}')" \
               --out "$temp_dir/$pass"
           done
-          asset="remote-control-agent-$RCA_CANDIDATE_TAG-${{ matrix.target }}.tar.gz"
+          asset="remote-control-agent-$RCA_CANDIDATE_TAG-$target.tar.gz"
           cmp "$temp_dir/first/$asset" "$temp_dir/second/$asset"
-          mkdir "$temp_dir/unpacked"
-          chmod 700 "$temp_dir/unpacked"
-          tar -xzf "$temp_dir/first/$asset" -C "$temp_dir/unpacked"
-          test "$("$temp_dir/unpacked/bin/node" --version)" = v24.21.0
-          node -e 'const m=require(process.argv[1]); if(m.target!=="darwin-"+process.argv[3] || m.candidate_profile!=="darwin-permanent-local-v1" || m.native_supervisor!=="darwin-owned-group-v1" || m.source_commit!==process.argv[2] || m.upgrade_profile)process.exit(1)' \
-            "$temp_dir/unpacked/bundle.json" "$(git rev-parse HEAD)" "${{ matrix.arch }}"
-          test ! -e "$temp_dir/unpacked/apps/remote-control-agent/.build/session-supervisor"
-          test -x "$temp_dir/unpacked/apps/remote-control-agent/.build/darwin-session-supervisor"
-          test ! -e "$temp_dir/unpacked/apps/remote-control-agent/scripts/install-v2.mjs"
-          for js in "$temp_dir/unpacked"/apps/remote-control-agent/src/*.js; do
-            "$temp_dir/unpacked/bin/node" --check "$js"
-          done
-          home="$temp_dir/unpaired-home"
-          mkdir "$home"
-          chmod 700 "$home"
-          if HOME="$home" "$temp_dir/unpacked/bin/node" \
-              "$temp_dir/unpacked/apps/remote-control-agent/src/macos-temporary.js" \
-              --endpoint https://example.invalid/ </dev/null > "$temp_dir/stdout" 2> "$temp_dir/stderr"; then
-            echo 'Noninteractive candidate unexpectedly enabled a device' >&2; exit 1
+          archive="$temp_dir/first/$asset"
+          node --input-type=module - "$source_root/scripts/verify-agent-release.mjs" "$archive" "$RCA_CANDIDATE_TAG" "$target" <<'JS'
+          import {readFileSync} from 'node:fs';
+          const [verifier,archive,tag,target]=process.argv.slice(2);
+          const {inspectTarGzip}=await import(verifier);
+          inspectTarGzip(readFileSync(archive),{tag,target});
+          JS
+          if tar -tzf "$archive" | grep -E '(^bin/node$|/src/|[.]mjs$|[.]js$)'; then
+            echo 'Node runtime/source slipped into native-only macOS archive' >&2
+            exit 1
           fi
-          test ! -e "$home/.local"
-          grep -q 'interactive owner terminal' "$temp_dir/stderr"
-          python3 apps/remote-control-mcp-worker/agent/tests/packaged-install-mode-pty.py "$temp_dir/unpacked"
-          # Test the extracted native runtime itself: WSS frame adapter, file
-          # effects, permission denial, SQLite receipts and Unknown recovery.
-          RCA_MACOS_BUNDLE_ROOT="$temp_dir/unpacked" \
-            "$temp_dir/unpacked/bin/node" --test \
-            apps/remote-control-mcp-worker/agent/tests/macos-packaged-runtime-smoke.mjs
-          RCA_MACOS_BUNDLE_ROOT="$temp_dir/unpacked" \
-            "$temp_dir/unpacked/bin/node" --experimental-strip-types --test \
-            apps/remote-control-mcp-worker/agent/tests/macos-local.test.mjs \
-            apps/remote-control-mcp-worker/agent/tests/macos-remote-upgrade.test.mjs
-          # Offline first-stage refuses non-owner/noninteractive execution.
-          if sh apps/remote-control-mcp-worker/agent/scripts/macos-local.sh install \
-              --archive "$temp_dir/first/$asset" --sha256 "$(shasum -a 256 "$temp_dir/first/$asset" | awk '{print $1}')" \
-              --source-sha "$(git rev-parse HEAD)" --endpoint https://example.invalid/ \
-              </dev/null; then
+          unpacked="$temp_dir/unpacked"
+          mkdir -m 700 "$unpacked"
+          tar -xzf "$archive" -C "$unpacked"
+          test ! -e "$unpacked/bin/node"
+          test ! -e "$unpacked/apps/remote-control-agent/src"
+          native_cli="$unpacked/apps/remote-control-agent/.build/rca-standard-darwin-candidate"
+          test -x "$native_cli"
+          test -x "$unpacked/apps/remote-control-agent/.build/darwin-session-supervisor"
+          test ! -e "$unpacked/apps/remote-control-agent/scripts/install-v2.mjs"
+          test "$("$native_cli" --verify-bundle "$RCA_CANDIDATE_TAG" "$target")" = "$(git rev-parse HEAD)"
+          node - "$unpacked/bundle.json" "$RCA_CANDIDATE_TAG" "$target" "$(git rev-parse HEAD)" <<'JS'
+          const fs=require('node:fs');
+          const [file,version,target,source]=process.argv.slice(2);
+          const b=JSON.parse(fs.readFileSync(file,'utf8'));
+          if (b.version!==version || b.target!==target || b.source_commit!==source ||
+              b.artifact_profile!=='rust-native-only-v1' ||
+              b.agent_runtime!=='rust-standard-darwin-v1' ||
+              b.runtime_profile!=='standard-darwin-rust-runtime-v1' ||
+              b.native_supervisor!=='darwin-owned-group-v1' ||
+              b.node!==undefined || b.modules?.length!==0) process.exit(1);
+          JS
+          cli_home="$temp_dir/cli-home"
+          mkdir -m 700 "$cli_home"
+          test "$(HOME="$cli_home" "$native_cli" --version)" = "$RCA_CANDIDATE_TAG"
+          HOME="$cli_home" "$native_cli" --help > "$temp_dir/help.txt"
+          grep -q 'status' "$temp_dir/help.txt"
+          grep -q 'uninstall' "$temp_dir/help.txt"
+          grep -q 'pair' "$temp_dir/help.txt"
+          if HOME="$cli_home" "$native_cli" pair </dev/null > "$temp_dir/pair.txt" 2>&1; then
+            echo 'Noninteractive pair unexpectedly accepted' >&2; exit 1
+          fi
+          grep -q 'Pair requires a local owner terminal' "$temp_dir/pair.txt"
+          HOME="$cli_home" "$native_cli" status --json > "$temp_dir/status.json"
+          HOME="$cli_home" "$native_cli" doctor --json > "$temp_dir/doctor.json"
+          node --input-type=module - "$temp_dir/status.json" "$temp_dir/doctor.json" <<'JS'
+          import {readFileSync} from 'node:fs';
+          import assert from 'node:assert/strict';
+          const [status,doctor]=process.argv.slice(2).map(p=>JSON.parse(readFileSync(p,'utf8')));
+          assert.notEqual(status.installed,true);
+          assert.equal(status.signed_wss,'unconfirmed');
+          assert.equal(status.cloud_authorization,'unconfirmed');
+          assert.deepEqual(doctor.status,status);
+          JS
+          test -z "$(ls -A "$cli_home")"
+          cd "$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
+          RCA_MACOS_BUNDLE_ROOT="$unpacked" node --test tests/macos-packaged-runtime-smoke.mjs
+          RCA_MACOS_BUNDLE_ROOT="$unpacked" node --experimental-strip-types --test \
+            tests/macos-local.test.mjs tests/macos-remote-upgrade.test.mjs
+          if sh scripts/macos-local.sh install --archive "$archive" \
+              --sha256 "$(shasum -a 256 "$archive" | awk '{print $1}')" \
+              --source-sha "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" \
+              --endpoint https://example.invalid/ </dev/null; then
             echo 'macOS offline bootstrap accepted a non-owner terminal' >&2; exit 1
           fi
-          echo "Verified native candidate from $(git rev-parse HEAD), unpublished SHA:"
-          shasum -a 256 "$temp_dir/first/$asset"
-          # Save *only* an explicitly dispatched, verified candidate for
-          # owner-Mac E2E. Pull-request CI never publishes/downloads assets.
-          # This is a short-lived Actions artifact, NOT a GitHub Release.
-          if [[ "${{ github.event_name }}" == workflow_dispatch ]]; then
-            mkdir -p "release-candidate/${{ matrix.target }}"
-            cp -- "$temp_dir/first/$asset" "release-candidate/${{ matrix.target }}/"
+          cd "$GITHUB_WORKSPACE"
+          echo "Verified Rust-only candidate from $(git rev-parse HEAD), unpublished SHA:"
+          shasum -a 256 "$archive"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            mkdir -p "release-candidate/$target"
+            cp -- "$archive" "release-candidate/$target/"
             cp -- apps/remote-control-mcp-worker/agent/scripts/macos-local.sh \
-              "release-candidate/${{ matrix.target }}/"
+              "release-candidate/$target/"
             (
-              cd "release-candidate/${{ matrix.target }}"
+              cd "release-candidate/$target"
               shasum -a 256 "$asset" macos-local.sh > SHA256SUMS.txt
               shasum -a 256 -c SHA256SUMS.txt
             )
           fi
-          # CI runner is NOT an owner-paired real Mac. No permanent grant or public Release.
       - name: Save unpublished macOS candidate for owner-native E2E
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
