@@ -2475,38 +2475,21 @@ mod darwin {
         let state = diagnostic_state()?;
         let installed = state["installed_version"].as_str();
         let latest = agent_release::latest().ok();
-        let latest_version = latest.as_ref().map(|release| release.tag.as_str());
-        let updater_available = current_bundle()
-            .ok()
-            .and_then(|bundle| darwin_package::verify(&bundle, native_target()).ok())
-            .map(|package| package.updater);
-        let status = match (installed, latest_version, updater_available) {
-            (Some(current), Some(next), _) if current == next => "up_to_date",
-            (Some(current), Some(next), Some(false))
-                if darwin_package::forward_version(current, next) =>
-            {
-                "updater_required"
-            }
-            (Some(current), Some(next), Some(true))
-                if darwin_package::forward_version(current, next) =>
-            {
-                "update_available"
-            }
-            (Some(current), Some(next), Some(_))
-                if darwin_package::forward_version(next, current) =>
-            {
-                "older_latest"
-            }
-            _ => "unknown",
-        };
-        println!(
-            "{}",
-            serde_json::json!({
-                "installed_version":installed,
-                "latest_version":latest_version,
-                "status":status
-            })
-        );
+        let mut result = agent_release::observation(installed, latest.as_ref());
+        // Release comparison remains owned by agent_release. Only the local
+        // package's ability to execute an attended native update is additional.
+        if result["status"] == "update_available" {
+            let updater_available = current_bundle()
+                .ok()
+                .and_then(|bundle| darwin_package::verify(&bundle, native_target()).ok())
+                .map(|package| package.updater);
+            result["status"] = serde_json::json!(match updater_available {
+                Some(true) => "update_available",
+                Some(false) => "updater_required",
+                None => "unknown",
+            });
+        }
+        println!("{result}");
         Ok(())
     }
 
