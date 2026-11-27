@@ -134,6 +134,32 @@ pub(super) fn replace_owned(path: &Path, expected: &str, value: &str, mode: u32)
     write_owned(path, value.as_bytes(), mode, Some(expected))
 }
 
+// Caller holds the existing identity lifecycle lock and has checked whether
+// enabling is admissible. Consent belongs only to this exact local identity.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn persist_auto_policy(key: &Path, device_id: &str, enabled: bool) -> Result<(), ()> {
+    let id = read_private(&sidecar(key, ".device-id"), 128)?.ok_or(())?;
+    let pem = read_private(key, 8192)?.ok_or(())?;
+    if !valid_device_id(device_id) || id.trim() != device_id {
+        return Err(());
+    }
+    rca_native_agent::identity::signed_session_proof(&pem, device_id, "ABCDEFGHIJKLMNOPQRSTUVWX")
+        .map_err(|_| ())?;
+    let target = sidecar(key, ".automatic-update");
+    let value = format!(
+        "{}\n",
+        serde_json::json!({"device_id":device_id,"enabled":enabled})
+    );
+    match read_private(&target, 256)? {
+        Some(old) => replace_owned(&target, &old, &value, 0o600)?,
+        None => write_new(&target, value.as_bytes())?,
+    }
+    if read_private(&target, 256)?.as_deref() != Some(value.as_str()) {
+        return Err(());
+    }
+    Ok(())
+}
+
 pub(super) fn exists_owned_path(path: &Path) -> Result<bool, ()> {
     match fs::symlink_metadata(path) {
         Ok(_) => Ok(true),
@@ -350,6 +376,65 @@ pub(super) fn repair_identity(
 mod tests {
     use super::*;
     const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+    #[test]
+    fn automatic_policy_rechecks_identity_and_preserves_private_storage() {
+        use rca_native_agent::device_pairing::generate_private_pem;
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("v2-identity.pem");
+        let pem = generate_private_pem().unwrap();
+        write_new(&key, pem.as_bytes()).unwrap();
+        write_new(&sidecar(&key, ".device-id"), ID.as_bytes()).unwrap();
+        let policy = sidecar(&key, ".automatic-update");
+        let receipts = dir.path().join("receipts.sqlite");
+        fs::write(&receipts, b"synthetic historical Unknown").unwrap();
+        persist_auto_policy(&key, ID, true).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&policy).unwrap())
+                .unwrap(),
+            serde_json::json!({"device_id":ID,"enabled":true})
+        );
+        assert_eq!(
+            fs::metadata(&policy).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(persist_auto_policy(&key, "123e4567-e89b-42d3-a456-426614174002", false).is_err());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&policy).unwrap())
+                .unwrap(),
+            serde_json::json!({"device_id":ID,"enabled":true})
+        );
+        persist_auto_policy(&key, ID, false).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&fs::read_to_string(&policy).unwrap())
+                .unwrap(),
+            serde_json::json!({"device_id":ID,"enabled":false})
+        );
+        assert_eq!(fs::read_to_string(&key).unwrap(), pem);
+        assert_eq!(
+            fs::read(&receipts).unwrap(),
+            b"synthetic historical Unknown"
+        );
+        fs::set_permissions(&policy, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(persist_auto_policy(&key, ID, true).is_err());
+        fs::remove_file(&policy).unwrap();
+        let foreign = dir.path().join("foreign");
+        fs::write(&foreign, b"preserve").unwrap();
+        symlink(&foreign, &policy).unwrap();
+        assert!(persist_auto_policy(&key, ID, true).is_err());
+        assert_eq!(fs::read(&foreign).unwrap(), b"preserve");
+        fs::remove_file(&policy).unwrap();
+        fs::write(&key, b"invalid private key").unwrap();
+        assert!(persist_auto_policy(&key, ID, true).is_err());
+        assert!(!policy.exists());
+        assert!(!fs::read_dir(dir.path()).unwrap().any(|e| e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".pair-")));
+    }
+
     const NEW_ID: &str = "123e4567-e89b-42d3-a456-426614174002";
 
     #[test]

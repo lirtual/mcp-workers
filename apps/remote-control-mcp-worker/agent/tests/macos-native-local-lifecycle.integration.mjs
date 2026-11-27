@@ -44,6 +44,7 @@ function launcher(exe) {
     'status|doctor) [ "$#" -eq 1 ] || { [ "$#" -eq 2 ] && [ "$2" = --json ]; } || exit 2 ;;\n' +
     '"") [ "$#" -eq 0 ] || exit 2 ;;\n' +
     'logs|stop|start|restart|pair|recover|uninstall|--help|--version|version) [ "$#" -eq 1 ] || exit 2 ;;\n' +
+    'update|upgrade) { [ "$#" -eq 2 ] && { [ "$2" = --auto ] || [ "$2" = --check ]; }; } || { [ "$#" -eq 3 ] && [ "$2" = --auto ] && { [ "$3" = on ] || [ "$3" = off ]; }; } || exit 2 ;;\n' +
     'secure-input) [ "$#" -eq 2 ] || exit 2; case "$2" in ????????-????-????-????-????????????) ;; *) exit 2 ;; esac; case "$2" in *[!0-9a-f-]*) exit 2 ;; esac ;;\n' +
     "*) echo 'Use the reviewed installer for installation or upgrade.' >&2; exit 2 ;;\n" +
     "esac\nexec '" + exe + "' \"$@\"\n";
@@ -154,6 +155,19 @@ test("native-only STOP upgrade and interrupted-switch recovery", async t => {
   const record=JSON.stringify({version:meta.version+"-"+meta.target,
     previous,generation,stopped:true,phase:"switch_pending"})+"\n";
   await writeFile(journal,record,{mode:0o600});
+  // Explicit disable is local even when an unresolved journal makes the
+  // installed program/configuration untrustworthy. Enabling must refuse.
+  const policy = keyPath + ".automatic-update";
+  await writeFile(policy,JSON.stringify({device_id:device.trim(),enabled:true})+"\n",{mode:0o600});
+  const deniedPolicy = local(nextExe,["update","--auto","on"]);
+  assert.equal(deniedPolicy.status,1,deniedPolicy.stdout+deniedPolicy.stderr);
+  assert.equal(JSON.parse(await readFile(policy,"utf8")).enabled,true);
+  const disabled = JSON.parse(ok(local(nextExe,["update","--auto","off"])));
+  assert.equal(disabled.automatic_update,"off");
+  assert.equal(disabled.automatic_update_activity,"needs_attention");
+  assert.equal(JSON.parse(await readFile(policy,"utf8")).enabled,false);
+  assert.equal(await readFile(journal,"utf8"),record);
+  await preserved();
   await writeFile(cli,oldCli);
   await writeFile(config,"<foreign/>");
   const unknown=owner("y",cli,["recover"]);

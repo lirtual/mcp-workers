@@ -8,6 +8,10 @@ mod darwin_lifecycle;
 #[path = "support/darwin_package.rs"]
 mod darwin_package;
 
+#[cfg(any(target_os = "macos", all(test, unix)))]
+#[path = "support/agent_release.rs"]
+mod agent_release;
+
 #[cfg(target_os = "macos")]
 #[path = "support/unix_pairing.rs"]
 mod unix_pairing;
@@ -268,8 +272,8 @@ mod darwin {
     };
     use super::darwin_package;
     use super::unix_pairing::{
-        exists_owned_path, move_owned_exclusive, pair_or_repair, read_executable, read_private,
-        replace_owned, sidecar, write_executable, write_new,
+        exists_owned_path, move_owned_exclusive, pair_or_repair, persist_auto_policy,
+        read_executable, read_private, replace_owned, sidecar, write_executable, write_new,
     };
     use super::{
         directory_present, identity_directory, lock_identity_directory, owner_stopped,
@@ -2200,9 +2204,65 @@ mod darwin {
         .map_err(|_| ())
     }
 
+    fn check_update() -> Result<(), ()> {
+        let state = diagnostic_state()?;
+        let installed = state["installed_version"].as_str();
+        let latest = super::agent_release::latest().ok();
+        println!(
+            "{}",
+            super::agent_release::observation(installed, latest.as_ref())
+        );
+        Ok(())
+    }
+
+    fn update_policy(action: Option<&str>) -> Result<(), ()> {
+        if action.is_none() {
+            let state = diagnostic_state()?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "automatic_update":state["automatic_update"],
+                    "automatic_update_activity":state["automatic_update_activity"]
+                })
+            );
+            return Ok(());
+        }
+        let enabled = match action {
+            Some("on") => true,
+            Some("off") => false,
+            _ => return Err(()),
+        };
+        let home = fs::canonicalize(home()?).map_err(|_| ())?;
+        let base = identity_directory(&home, false)?;
+        let _lock = lock_identity_directory(&base)?;
+        let key = base.join("v2-identity.pem");
+        let id = read_private(&sidecar(&key, ".device-id"), 128)?.ok_or(())?;
+        if enabled {
+            for path in [
+                base.join("macos/switch.json"),
+                base.join("macos/remote-upgrades/active.json"),
+                sidecar(&key, ".re-pair-transition"),
+                sidecar(&key, ".re-pair-new"),
+                sidecar(&key, ".re-pair-new.device-id"),
+            ] {
+                if exists_owned_path(&path)? {
+                    return Err(());
+                }
+            }
+            let current = installed(&home, &base)?;
+            let client = rca_native_agent::device_pairing::PairingClient::new(&current.endpoint)
+                .map_err(|_| ())?;
+            client.verify_permanent_grant(id.trim()).map_err(|_| ())?;
+        }
+        // Explicit --auto on is migration consent. Disabling remains available
+        // even with a pending transaction; it does not retire its evidence.
+        persist_auto_policy(&key, id.trim(), enabled)?;
+        update_policy(None)
+    }
+
     fn public_help() {
-        println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|pair|recover|uninstall|secure-input REQUEST_ID|--version|--help]");
-        println!("Use the reviewed installer for installation and upgrade. Use pair to reconcile the existing approved identity. Automatic update commands are not yet available.");
+        println!("Usage: rca [status [--json]|doctor [--json]|logs|start|stop|restart|pair|recover|uninstall|update [--check|--auto [on|off]]|secure-input REQUEST_ID|--version|--help]");
+        println!("Use the reviewed installer for installation and upgrade. Use pair to reconcile the existing approved identity. Use update --auto [on|off] to inspect or change identity-bound consent; automatic installation is not yet available.");
     }
 
     fn interactive_menu() -> Result<Option<String>, ()> {
@@ -2284,6 +2344,19 @@ mod darwin {
             }
             if matches!(action.as_str(), "stop" | "start") {
                 return manage(action);
+            }
+        }
+        if let [action, option] = arguments.as_slice() {
+            if matches!(action.as_str(), "update" | "upgrade") && option == "--check" {
+                return check_update();
+            }
+            if matches!(action.as_str(), "update" | "upgrade") && option == "--auto" {
+                return update_policy(None);
+            }
+        }
+        if let [action, option, value] = arguments.as_slice() {
+            if matches!(action.as_str(), "update" | "upgrade") && option == "--auto" {
+                return update_policy(Some(value));
             }
         }
         if let [action, request_id] = arguments.as_slice() {
