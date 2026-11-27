@@ -519,7 +519,7 @@ test("#1018/#1039 actual Worker browser authorization preserves enrollment and c
   assert.equal(rejected.status,409);
   assert.doesNotMatch(await rejected.text(),new RegExp(marker));
   assert.doesNotMatch(JSON.stringify([...f.rows.values()]),new RegExp(marker));
-  assert.match(await inputPage.text(),/Cancel request/);
+  assert.match(await inputPage.text(),/<button id="cancel" type="button">Cancel<\/button>/);
   assert.equal(keyRequests,1);
 
   // Exercise the real configured verifier and jose's existing JWKS cache

@@ -45,9 +45,21 @@ test("secure input request requires the current authenticated target socket and 
   }));
   const response = await creation;
   assert.equal(response.status, 200);
-  const record = await response.json() as { state: string; execution: Record<string, unknown> };
+  const record = await response.json() as { request_id: string; state: string; execution: Record<string, unknown>; device_name?: string };
   assert.equal(record.state, "pending");
   assert.equal("epoch" in record.execution, false);
+  assert.equal(record.device_name, undefined);
+  rows.set("device:" + id, { ...(rows.get("device:" + id) as object), name: "RAY-WORKSPACE" });
+  const status = await owner.fetch(new Request("https://do.internal/secure-input/status", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ owner_user_id: "user_owner", request_id: record.request_id }),
+  }));
+  assert.equal(status.status, 200);
+  const viewed = await status.json() as { device_name?: string; execution: { device_id: string }; target: { repository: string; name: string } };
+  assert.equal(viewed.device_name, "RAY-WORKSPACE");
+  assert.equal(viewed.execution.device_id, id);
+  assert.equal(viewed.target.repository, "lirtual/mcp-workers");
+  assert.equal(viewed.target.name, "DEPLOY_TOKEN");
 });
 
 test("secure task input requires the same live Workflow physical Attempt at creation and dispatch", async () => {
@@ -134,7 +146,14 @@ test("secure task input requires the same live Workflow physical Attempt at crea
   await owner.webSocketMessage(socket, JSON.stringify({ kind: "secure_input_ack", request_id: requestId, status: "accepted" }));
   await owner.webSocketMessage(socket, JSON.stringify({ kind: "secure_input_progress", request_id: requestId, status: "running" }));
   await owner.webSocketMessage(socket, JSON.stringify({ kind: "secure_input_result", request_id: requestId, status: "succeeded" }));
-  assert.equal((await (await post("status", {request_id: requestId})).json() as {state: string}).state, "succeeded");
+  const viewed = await (await post("status", {request_id: requestId})).json() as {
+    state: string; device_name?: string; execution: { device_id: string; session_workflow_name?: string; session_attempt_id?: string };
+  };
+  assert.equal(viewed.state, "succeeded");
+  assert.equal(viewed.device_name, "session-ubuntu");
+  assert.equal(viewed.execution.device_id, id);
+  assert.equal(viewed.execution.session_workflow_name, "ubuntu");
+  assert.equal(viewed.execution.session_attempt_id, attempt);
   assert.equal((await submit(requestId)).status, 409);
   assert.equal(dispatchCount(), 1, "consumed request cannot send twice");
 });

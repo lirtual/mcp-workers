@@ -51,26 +51,59 @@ const cancel = document.getElementById("cancel");
 let busy = false, inputAttempted = false, reviewed = null;
 function text(id, value) { document.getElementById(id).textContent = value == null ? "—" : String(value); }
 function describeTarget(target) {
+  if (!target || typeof target.kind !== "string") return "Unsupported target";
   if (target.kind === "task_process") return "Process input · " + target.name;
-  if (target.kind.startsWith("github_")) {
-    return "GitHub " + (target.kind.endsWith("_variable") ? "Variable" : "Secret") + " · " +
-      target.repository + (target.environment ? " / " + target.environment : "") + " / " + target.name;
+  if (target.kind === "github_repository_secret" || target.kind === "github_repository_variable") {
+    const kind = target.kind.endsWith("_variable") ? "Variable" : "Secret";
+    return "GitHub repository " + kind + " · " + target.repository + " · " + target.name;
+  }
+  if (target.kind === "github_environment_secret" || target.kind === "github_environment_variable") {
+    const kind = target.kind.endsWith("_variable") ? "Variable" : "Secret";
+    return "GitHub environment " + kind + " · " + target.repository + " · " + target.environment + " · " + target.name;
   }
   if (target.kind === "cloudflare_worker_secret") {
-    return "Cloudflare Secret · " + target.worker_name + " / " + target.environment + " / " + target.name +
-      (target.mode === "deploy" ? " (deploy now)" : " (inactive version)");
+    const mode = target.mode === "deploy" ? "deploy now" : target.mode === "version" ? "inactive version" : "unsupported mode";
+    return "Cloudflare Secret · " + target.worker_name + " · " + target.environment + " · " + target.name + " · " + mode;
   }
   return "Unsupported target";
 }
 function effectAndRecovery(target) {
   if (target.kind === "task_process") return "Deliver once to a trusted process. All captured output for its session is permanently suppressed; delivery cannot be recalled.";
-  if (target.kind.startsWith("github_")) return target.kind.endsWith("_variable")
-    ? "Set or replace the Variable. Restore its prior value or remove it to recover."
-    : "Set or replace the Secret. The prior value cannot be read back; recover by replacing or removing it.";
-  if (target.kind === "cloudflare_worker_secret") return target.mode === "deploy"
-    ? "Set or replace the Secret and deploy immediately. The prior value cannot be read back; recovery requires replacing it and, if needed, separately deploying a known-good version."
-    : "Set or replace the Secret in an inactive version. The prior value cannot be read back; replace it to recover. Deployment requires a separate action.";
+  if (target.kind === "github_repository_variable" || target.kind === "github_environment_variable")
+    return "Set or replace the Variable. Restore its prior value or remove it to recover.";
+  if (target.kind === "github_repository_secret" || target.kind === "github_environment_secret")
+    return "Set or replace the Secret. The prior value cannot be read back; recover by replacing or removing it.";
+  if (target.kind === "cloudflare_worker_secret" && target.mode === "deploy")
+    return "Set or replace the Secret and deploy immediately. The prior value cannot be read back; recovery requires replacing it and, if needed, separately deploying a known-good version.";
+  if (target.kind === "cloudflare_worker_secret" && target.mode === "version")
+    return "Set or replace the Secret in an inactive version. The prior value cannot be read back; replace it to recover. Deployment requires a separate action.";
   return "Unsupported target.";
+}
+function executionLabel(execution, deviceName) {
+  const device = deviceName || execution.device_id;
+  const session = [];
+  if (execution.session_workflow_name) session.push(execution.session_workflow_name);
+  if (execution.session_run_id != null) session.push("Run " + execution.session_run_id);
+  if (execution.session_run_attempt != null) session.push("Attempt " + execution.session_run_attempt);
+  return session.length ? device + " · " + session.join(" · ") : device;
+}
+function exactTarget(value) {
+  const target = value.target, execution = value.execution;
+  return [
+    "Device ID: " + execution.device_id,
+    "Grant: " + execution.grant_type,
+    ...(execution.session_workflow_name ? ["Workflow: " + execution.session_workflow_name] : []),
+    ...(execution.session_run_id != null ? ["Run: " + execution.session_run_id] : []),
+    ...(execution.session_run_attempt != null ? ["Run attempt: " + execution.session_run_attempt] : []),
+    ...(execution.session_attempt_id ? ["Workflow attempt ID: " + execution.session_attempt_id] : []),
+    ...(target.session_id ? ["Process session: " + target.session_id] : []),
+    ...(target.repository ? ["Repository: " + target.repository] : []),
+    ...(target.kind === "github_environment_secret" || target.kind === "github_environment_variable" ? ["Environment: " + target.environment] : []),
+    ...(target.account_id ? ["Cloudflare account ID: " + target.account_id] : []),
+    ...(target.worker_name ? ["Worker: " + target.worker_name] : []),
+    ...(target.kind === "cloudflare_worker_secret" ? ["Worker environment: " + target.environment, "Cloudflare mode: " + target.mode] : []),
+    ...(target.name ? [(target.kind === "task_process" ? "Input name: " : "Name: ") + target.name] : []),
+  ].join("\\n");
 }
 function showState(value) {
   if (reviewed) reviewed.state = value.state;
@@ -110,21 +143,14 @@ async function refresh() {
   text("purpose", value.purpose);
   text("target", describeTarget(value.target));
   const execution = value.execution;
-  const device = value.device_name || execution.device_id;
-  text("execution", device + (execution.session_run_id ? " · Run " + execution.session_run_id + " / Attempt " + execution.session_run_attempt : ""));
+  text("execution", executionLabel(execution, value.device_name));
   const principal = value.provider_principal;
   document.getElementById("principal-row").hidden = !principal;
   text("principal", principal ? principal.identity + (principal.account_name ? " · " + principal.account_name : "") : "");
   text("effect", effectAndRecovery(value.target));
   text("scope", value.is_production ? "Production" : "Marked non-production by requester; verify the resource");
   document.getElementById("production-authorization").hidden = !value.is_production;
-  text("exact-target", [
-    "Device ID: " + execution.device_id,
-    ...(value.target.session_id ? ["Process session: " + value.target.session_id] : []),
-    ...(execution.session_attempt_id ? ["Workflow attempt ID: " + execution.session_attempt_id] : []),
-    ...(value.target.account_id ? ["Cloudflare account ID: " + value.target.account_id] : []),
-    "Grant: " + execution.grant_type,
-  ].join("\\n"));
+  text("exact-target", exactTarget(value));
   text("expires", new Date(value.expires_at).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}));
   showState(value);
 }
