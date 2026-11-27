@@ -283,17 +283,6 @@ jobs:
           chmod 700 "$supervisor"
           cargo build --locked --release --manifest-path \
             "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
-          node_bin="$(realpath "$(command -v node)")"
-          rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
-          out="$RUNNER_TEMP/rca-darwin-reference"
-          mkdir -m 700 -p "$out"
-          node "$source_root/scripts/build-agent-release.mjs" \
-            --version v0.1.57-rust-candidate.1 --target "$target" \
-            --node-bin "$node_bin" --node-sha256 "$(shasum -a 256 "$node_bin" | cut -d' ' -f1)" \
-            --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
-            --rust-agent-bin "$rust_agent" \
-            --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
-            --out "$out"
           # Native-only acceptance: build from these same verified native
           # binaries and independently inspect and read the exact inventory.
           native_out="$RUNNER_TEMP/rca-darwin-native"
@@ -375,32 +364,6 @@ jobs:
             RCA_MACOS_NATIVE_CANDIDATE_ROOT="$native_unpacked" \
             RCA_MACOS_NATIVE_CANDIDATE_ARCHIVE="$native_archive" \
             node --test "$source_root/tests/macos-native-local-lifecycle.integration.mjs"
-          archive="$out/remote-control-agent-v0.1.57-rust-candidate.1-$target.tar.gz"
-          unpacked="$out/unpacked"
-          mkdir -m 700 "$unpacked"
-          tar -xzf "$archive" -C "$unpacked"
-          RCA_MACOS_BUNDLE_ROOT="$unpacked" node --test \
-            "$source_root/tests/macos-local.test.mjs" \
-            "$source_root/tests/macos-remote-upgrade.test.mjs"
-          # Unpublished Rust baseline to a newer unpublished Rust candidate.
-          # This does not read GitHub Latest and does not change the release guard.
-          rust_old_out="$RUNNER_TEMP/rca-darwin-rust-old"
-          mkdir -m 700 -p "$rust_old_out"
-          node "$source_root/scripts/build-agent-release.mjs" \
-            --version v0.1.56-rust-candidate.1 --target "$target" \
-            --node-bin "$node_bin" --node-sha256 "$(shasum -a 256 "$node_bin" | cut -d' ' -f1)" \
-            --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
-            --rust-agent-bin "$rust_agent" \
-            --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
-            --out "$rust_old_out"
-          rust_old="$rust_old_out/unpacked"
-          mkdir -m 700 "$rust_old"
-          tar -xzf "$rust_old_out/remote-control-agent-v0.1.56-rust-candidate.1-$target.tar.gz" -C "$rust_old"
-          RCA_MACOS_RUST_BASELINE_ROOT="$rust_old" \
-            RCA_MACOS_RUST_CANDIDATE_ROOT="$unpacked" \
-            node --test \
-            "$source_root/tests/macos-launchd-rust-to-rust-recovery.integration.mjs"
-
   database-integration:
     name: Database integration
     needs: checks

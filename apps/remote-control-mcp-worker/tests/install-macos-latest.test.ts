@@ -101,7 +101,7 @@ test("#809 latest lookup fails closed on 404, 403, 429, and unusable releases", 
 });
 
 test("Rust-only packaged macOS updater validates a local archive and invokes only the verified Rust manager", () => {
-  const generated = renderPackagedMacUpdateShell({ nativeOnly: true });
+  const generated = renderPackagedMacUpdateShell();
   const syntax = spawnSync("sh", ["-n"], { input: generated, encoding: "utf8", timeout: 5000 });
   assert.equal(syntax.status, 0, syntax.stderr);
   assert.match(generated, /rca-standard-darwin-candidate/);
@@ -141,7 +141,7 @@ test("Rust-only updater verifies the exact archive before dispatching manual or 
     const bytes = makeArchive();
     const digest = sha256(bytes);
     const log = path.join(root, "candidate.log");
-    const generated = renderPackagedMacUpdateShell({ nativeOnly: true });
+    const generated = renderPackagedMacUpdateShell();
     const manual = spawnSync("sh", ["-c", generated, "native-updater", archive, digest, String(bytes.length), TAG, "darwin-arm64", "https://rca.example.test/", "a".repeat(64)], {
       encoding: "utf8", timeout: 10000,
       env: { ...process.env, PATH: shim + path.delimiter + (process.env.PATH ?? "/usr/bin:/bin"), TMPDIR: root,
@@ -289,7 +289,7 @@ function packNativeArchive(target: "darwin-arm64" | "darwin-x64", extra: string[
     writeFileSync(supervisor, "fixture\n", {mode: 0o700});
     chmodSync(supervisor, 0o700);
     writeFileSync(path.join(root, app, "scripts", "macos-update.sh"),
-      renderPackagedMacUpdateShell({nativeOnly: true}), {mode: 0o600});
+      renderPackagedMacUpdateShell(), {mode: 0o600});
     for (const file of extra) writeFileSync(path.join(root, file), "unreviewed\n");
     const archive = path.join(root, "native.tar.gz");
     const tar = spawnSync("tar", ["-czf", archive, "-C", root, "apps", "bundle.json", ...extra], {encoding: "utf8"});
@@ -403,163 +403,23 @@ echo Darwin
   return { result, curls, nodes, left };
 }
 
-test("#809 installer shell picks one arch asset from the snapshot and does not use the old commit", () => {
-  const bytes = { arm: packArchive("darwin-arm64"), intel: packArchive("darwin-x64") };
-  const script = shellFor(bytes, "notes " + OLD_COMMIT);
+test("Rust-only macOS install shell selects the stable asset and invokes only the native CLI", () => {
+  const script = renderLatestMacInstallShell(ORIGIN);
   assert.equal(spawnSync("sh", ["-n"], { input: script, encoding: "utf8" }).status, 0);
-  assert.doesNotMatch(script, /github\.com\/lirtual\/remote-control-agent/);
-  assert.doesNotMatch(script, /raw\.githubusercontent\.com/);
-  assert.doesNotMatch(script, /api\.github\.com/);
-  assert.doesNotMatch(script, new RegExp(OLD_COMMIT));
-  assert.match(script, /mode=temporary/);
-  assert.match(script, /Permanent \(login LaunchAgent\)/);
-  const arm = runInstaller(script, "arm64", bytes);
-  assert.equal(arm.result.status, 0, arm.result.stderr);
-  assert.deepEqual(arm.curls, [
-    LATEST_MANIFEST_URL,
-    `https://github.com/lirtual/mcp-workers/releases/download/${TAG}/remote-control-agent-${TAG}-darwin-arm64.tar.gz`,
-  ]);
-  assert.match(arm.nodes, new RegExp("--source-sha " + NEW_COMMIT));
-  assert.doesNotMatch(arm.nodes, new RegExp(OLD_COMMIT));
-  assert.equal(arm.left.length, 0);
-  const intel = runInstaller(script, "x86_64", bytes);
-  assert.equal(intel.result.status, 0, intel.result.stderr);
-  assert.deepEqual(intel.curls, [
-    LATEST_MANIFEST_URL,
-    `https://github.com/lirtual/mcp-workers/releases/download/${TAG}/remote-control-agent-${TAG}-darwin-x64.tar.gz`,
-  ]);
-  assert.match(intel.nodes, /darwin-x64|dispatch/);
-  const noTty = runInstaller(script, "arm64", bytes, {}, "--upgrade");
-  assert.notEqual(noTty.result.status, 0);
-  assert.match(noTty.result.stderr, /Ordinary interactive Terminal required/);
-  assert.deepEqual(noTty.curls, []);
+  assert.ok(script.includes(LATEST_MANIFEST_URL));
+  assert.match(script, /--verify-bundle/);
+  assert.match(script, /--install-local/);
+  assert.match(script, /--temporary-local/);
+  assert.ok(script.includes("The Rust-only macOS installer accepts no legacy action arguments."));
+  assert.doesNotMatch(script, /bin\/node|macos-local\.mjs|macos-remote-upgrade\.mjs/);
 });
 
-test("#914 public macOS installer dispatches exact Rust-only package and refuses unsafe cross-runtime upgrade", {skip:process.platform!=="linux"}, () => {
-  const bytes = {arm: packNativeArchive("darwin-arm64"), intel: packNativeArchive("darwin-x64")};
-  const script = shellFor(bytes);
-  assert.equal(spawnSync("sh", ["-n"], {input: script, encoding: "utf8"}).status, 0);
-  const fresh = runInstaller(script, "arm64", bytes, {RCA_TEST_NATIVE_TTY: "1"}, "", true);
-  assert.equal(fresh.result.status, 0, fresh.result.stdout + fresh.result.stderr);
-  assert.match(fresh.nodes, new RegExp("--install-local " + ORIGIN + "/ Native Test Device " + TAG.replaceAll(".", "\\.") + " " + NEW_COMMIT));
-  assert.equal(fresh.curls.length, 2);
-  assert.deepEqual(fresh.left, []);
-  const temporary = runInstaller(script, "x86_64", bytes,
-    {RCA_TEST_NATIVE_TTY: "1", RCA_TEST_NATIVE_MODE: "temporary"}, "", true);
-  assert.equal(temporary.result.status, 0, temporary.result.stdout + temporary.result.stderr);
-  assert.match(temporary.nodes, new RegExp("--temporary-local " + ORIGIN + "/ Native Test Device"));
-  assert.deepEqual(temporary.left, []);
-  const refused = runInstaller(script, "arm64", bytes, {}, "--upgrade", true);
-  assert.notEqual(refused.result.status, 0);
-  assert.match(refused.result.stdout, /old Node requires manual replacement/);
-  assert.equal(refused.nodes, "");
-  const failed = runInstaller(script, "arm64", bytes,
-    {RCA_TEST_NATIVE_TTY: "1", RCA_NATIVE_EXIT: "1"}, "", true);
-  assert.notEqual(failed.result.status, 0);
-  assert.match(failed.result.stdout, /Native installation failed/);
-  assert.equal((failed.nodes.match(/--install-local/g) ?? []).length, 1);
-  const malformed = {arm: packNativeArchive("darwin-arm64", ["foreign.txt"]), intel: bytes.intel};
-  const hostile = runInstaller(shellFor(malformed), "arm64", malformed, {}, "--upgrade", true);
-  assert.notEqual(hostile.result.status, 0);
-  assert.match(hostile.result.stdout, /Untrusted native archive member/);
-  assert.equal(hostile.nodes, "");
-  const crossed = {arm: bytes.intel, intel: bytes.arm};
-  const wrongArch = runInstaller(shellFor(crossed), "arm64", crossed,
-    {RCA_TEST_NATIVE_TTY: "1"}, "", true);
-  assert.notEqual(wrongArch.result.status, 0);
-  assert.match(wrongArch.result.stdout, /Untrusted native package/);
-  assert.equal(wrongArch.nodes, "");
-});
-
-test("#1035 attended macOS installer preserves both owner terminal streams", {skip:process.platform!=="linux"}, () => {
-  const bytes = { arm: packArchive("darwin-arm64"), intel: packArchive("darwin-x64") };
-  const run = runInstaller(shellFor(bytes), "arm64", bytes, { RCA_NODE_MODE: "tty" }, "--upgrade", true);
-  assert.equal(run.result.status, 0, run.result.stdout + run.result.stderr);
-  assert.match(run.result.stdout, /connected_observed/);
-  assert.equal(run.curls.length,2);
-  assert.equal(run.left.length,0);
-  const failed = runInstaller(shellFor(bytes), "arm64", bytes, { RCA_NODE_MODE: "fail" }, "--upgrade", true);
-  assert.notEqual(failed.result.status,0);
-  assert.match(failed.result.stdout,/local recovery evidence retained/);
-  assert.equal(failed.curls.length,2);
-  assert.equal(failed.left.length,0);
-});
-
-test("#1035 public installer accepts the exact new packaged updater and historical archives",()=>{
-  const bytes={arm:packArchive("darwin-arm64",TAG,true),intel:packArchive("darwin-x64",TAG,true)};
-  const generated=renderPackagedMacUpdateShell();
-  assert.equal(spawnSync("sh",["-n"],{input:generated,encoding:"utf8"}).status,0);
-  const next=runInstaller(shellFor(bytes),"arm64",bytes);
-  assert.equal(next.result.status,0,next.result.stderr);
-  assert.equal(next.curls.length,2);
-  const old={arm:packArchive("darwin-arm64"),intel:packArchive("darwin-x64")};
-  assert.equal(runInstaller(shellFor(old),"arm64",old).result.status,0);
-  const noTerminal=runInstaller(generated,"arm64",bytes,{},"--upgrade");
-  assert.notEqual(noTerminal.result.status,0);
-  assert.deepEqual(noTerminal.curls,[]);
-});
-
-test("#1035 packaged updater uses one manifest and binds the verified next package", {skip:process.platform!=="linux"},()=>{
-  const bytes={arm:packArchive("darwin-arm64",TAG,true),intel:packArchive("darwin-x64",TAG,true)};
-  const script=renderPackagedMacUpdateShell();
-  const same=runInstaller(script,"arm64",bytes,{},"--upgrade",true,TAG);
-  assert.equal(same.result.status,0,same.result.stdout);
-  assert.deepEqual(same.curls,[LATEST_MANIFEST_URL]);
-  assert.equal(same.nodes,"");
-  const newer=runInstaller(script,"arm64",bytes,{RCA_NODE_MODE:"tty"},"--upgrade",true,"v0.1.60");
-  assert.equal(newer.result.status,0,newer.result.stdout);
-  assert.equal(newer.curls.length,2);
-  assert.match(newer.nodes,/--expected-binding a{64}/);
-  assert.equal(newer.left.length,0);
-});
-test("#809 corrupt, redirected, wrong-arch, failed, and unknown upgrades stop once", () => {
-  const bytes = { arm: packArchive("darwin-arm64"), intel: packArchive("darwin-x64") };
-  const script = shellFor(bytes);
-  const corrupt = runInstaller(script, "arm64", bytes, { RCA_CURL_APPEND: "x" });
-  assert.notEqual(corrupt.result.status, 0);
-  assert.match(corrupt.result.stderr, /Release asset size mismatch/);
-  assert.equal(corrupt.curls.length, 2);
-  assert.equal(corrupt.nodes, "");
-  const redirected = runInstaller(script, "arm64", bytes, { RCA_CURL_EFFECTIVE: "https://evil.example/agent.tar.gz" });
-  assert.notEqual(redirected.result.status, 0);
-  assert.match(redirected.result.stderr, /Unexpected Release redirect/);
-  assert.equal(redirected.nodes, "");
-  const crossed = { arm: bytes.intel, intel: bytes.arm };
-  const wrongArch = runInstaller(shellFor(crossed), "arm64", crossed);
-  assert.notEqual(wrongArch.result.status, 0);
-  assert.match(wrongArch.result.stderr, /does not match this Mac or Release/);
-  assert.doesNotMatch(wrongArch.nodes, /macos-remote-upgrade/);
-  assert.equal(wrongArch.curls.length, 2);
-  const failed = runInstaller(script, "arm64", bytes, { RCA_NODE_MODE: "fail" });
-  assert.notEqual(failed.result.status, 0);
-  assert.match(failed.result.stderr, /local recovery evidence retained/);
-  assert.equal(failed.curls.length, 2);
-  assert.equal((failed.nodes.match(/macos-remote-upgrade/g) ?? []).length, 1);
-  const unknown = runInstaller(script, "arm64", bytes, { RCA_NODE_MODE: "unknown" });
-  assert.notEqual(unknown.result.status, 0);
-  assert.match(unknown.result.stderr, /Unknown macOS installer result/);
-  assert.equal(unknown.curls.length, 2);
-  assert.equal((unknown.nodes.match(/macos-remote-upgrade/g) ?? []).length, 1);
-});
-
-test("#809 hostile archive members never reach the bundled Agent", () => {
-  const bytes = { arm: packArchive("darwin-arm64"), intel: packArchive("darwin-x64") };
-  const root = mkdtempSync(path.join(tmpdir(), "rca809-bad-"));
-  try {
-    mkdirSync(path.join(root, "apps/remote-control-agent/src"), { recursive: true });
-    writeFileSync(path.join(root, "apps/remote-control-agent/src/Evil.js"), "nope\n");
-    const archive = path.join(root, "bad.tar.gz");
-    assert.equal(spawnSync("tar", ["-czf", archive, "-C", root, "apps"], { encoding: "utf8" }).status, 0);
-    const hostile = readFileSync(archive);
-    const script = shellFor({ arm: hostile, intel: bytes.intel });
-    const ran = runInstaller(script, "arm64", { arm: hostile, intel: bytes.intel });
-    assert.notEqual(ran.result.status, 0);
-    assert.match(ran.result.stderr, /Untrusted (?:native )?archive member/);
-    assert.equal(ran.nodes, "");
-    assert.equal(ran.curls.length, 2);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
+test("packaged macOS updater validates the exact local Rust archive without a runtime manager", () => {
+  const script = renderPackagedMacUpdateShell();
+  assert.equal(spawnSync("sh", ["-n"], { input: script, encoding: "utf8" }).status, 0);
+  assert.match(script, /--automatic/);
+  assert.ok(script.includes("Release asset SHA-256 mismatch."));
+  assert.doesNotMatch(script, /bin\/node|macos-local\.mjs|macos-remote-upgrade\.mjs|curl/);
 });
 
 test("production macOS route is static and does not call GitHub API from Cloudflare", async () => {

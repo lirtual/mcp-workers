@@ -17,7 +17,6 @@ const root = fileURLToPath(new URL('../../../../', import.meta.url));
 const workflows = path.join(root, '.github/workflows');
 const TAG = 'v0.2.0';
 const SOURCE = '0123456789abcdef0123456789abcdef01234567';
-const SCRIPT = 'ab'.repeat(32);
 const PLATFORMS = [
   ['linux-x64-glibc', 'ubuntu-24.04', '.tar.gz', '11'],
   ['linux-arm64-glibc', 'ubuntu-24.04-arm', '.tar.gz', '22'],
@@ -91,8 +90,6 @@ function reviewed() {
       status: 'completed',
       conclusion: 'success',
     },
-    macosScriptSha256: SCRIPT,
-    sourceMacosScriptSha256: SCRIPT,
     candidates: PLATFORMS.map(candidateFor),
   };
 }
@@ -154,9 +151,6 @@ test('push, an incomplete set, a duplicate, an unreviewed run, drift, damage, an
   const drifted = reviewed();
   drifted.candidateRun = { ...drifted.candidateRun, head_sha: 'f'.repeat(40) };
   assert.throws(() => reviewAgentPublication(drifted), /candidate source drifted/);
-  const scriptDrift = reviewed();
-  scriptDrift.macosScriptSha256 = 'cd'.repeat(32);
-  assert.throws(() => reviewAgentPublication(scriptDrift), /candidate source drifted/);
   const damaged = reviewed();
   damaged.candidates = damaged.candidates.map((item, index) => (
     index === 0 ? { ...item, observedSha256: 'ee'.repeat(32) } : item

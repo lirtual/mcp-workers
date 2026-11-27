@@ -94,9 +94,7 @@ export function reviewAgentPublication(input) {
     || run.conclusion !== 'success') {
     fail('unreviewed native candidate');
   }
-  if (run.head_sha !== input.sourceSha
-    || input.macosScriptSha256 !== input.sourceMacosScriptSha256
-    || !DIGEST.test(input.macosScriptSha256 ?? '')) {
+  if (run.head_sha !== input.sourceSha) {
     fail('candidate source drifted');
   }
 

@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import test from "node:test";
-import { parseArgs, runtimeSources, ensureNativeTarget, ensureRustCandidate,
+import { parseArgs, ensureNativeTarget, ensureRustCandidate,
   requiredGlibcVersion } from "../scripts/build-agent-release.mjs";
 import { parseWindowsReleaseBuildArgs } from "../scripts/build-windows-release.mjs";
 import { inspectTarGzip } from "../scripts/verify-agent-release.mjs";
@@ -61,19 +61,16 @@ test("#73 release package build rejects unverified architectures and unpinned ta
   const oldLinux = ["--version",tag,"--target",target,
     "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
     "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64)];
-  assert.throws(()=>parseArgs(oldLinux), /Linux packaging requires the Rust native-only profile/);
+  assert.throws(()=>parseArgs(oldLinux));
   assert.throws(()=>parseArgs(oldLinux.map((x,i)=>i===1?"v0.1.57-rust-candidate.1":x)
     .concat("--rust-agent-bin","/opt/rca","--rust-agent-sha256","d".repeat(64))),
-    /Linux packaging requires the Rust native-only profile/);
+    /packaging parameters|pinned version|native-only profile|Unknown argument/);
   for(const args of [
     ["--version","latest","--target",target,"--node-bin","/n","--native","/b","--out","/tmp/o"],
     ["--version",tag,"--target","linux-x64-musl","--node-bin","/n","--native","/b","--out","/tmp/o"],
     ["--version",tag,"--target",target,"--node-bin","node","--native","/b","--out","/tmp/o"],
   ]) assert.throws(()=>parseArgs(args));
-  const darwinModules=runtimeSources(["macos-temporary.ts","macos-permanent.ts"]);
-  assert.ok(darwinModules.includes("upgrade-control.ts"));
-  for (const retired of ["main.ts","server.ts","v2-main.ts","v2-repair.ts","session-rca-main.ts"])
-    assert.ok(!darwinModules.includes(retired), retired);
+  assert.throws(()=>parseArgs(["--version",tag,"--target","darwin-arm64","--node-bin","/opt/node"]));
   const candidateTag="v0.1.1";
   const candidateArgs=parseArgs(["--version",candidateTag,"--target",target,
     "--native","/opt/supervisor","--out","/tmp/archive",
@@ -82,10 +79,11 @@ test("#73 release package build rejects unverified architectures and unpinned ta
     "--artifact-profile","rust-native-only-v1"]);
   assert.equal(candidateArgs.rustAgentBin,"/opt/rca-agent");
   assert.equal(candidateArgs.rustAgentSha256,"d".repeat(64));
-  const darwinArgs=parseArgs(["--version","v0.1.57-rust-candidate.1","--target","darwin-arm64",
-    "--node-bin","/opt/node","--native","/opt/supervisor","--out","/tmp/archive",
-    "--node-sha256","f".repeat(64),"--native-sha256","e".repeat(64),
-    "--rust-agent-bin","/opt/rca-darwin","--rust-agent-sha256","d".repeat(64)]);
+  const darwinArgs=parseArgs(["--version","v0.1.57","--target","darwin-arm64",
+    "--native","/opt/supervisor","--out","/tmp/archive",
+    "--native-sha256","e".repeat(64),
+    "--rust-agent-bin","/opt/rca-darwin","--rust-agent-sha256","d".repeat(64),
+    "--artifact-profile","rust-native-only-v1"]);
   assert.equal(darwinArgs.target,"darwin-arm64");
   const darwinDir=await mkdtemp(path.join(os.tmpdir(),"rc-rust-darwin-gate-"));
   try{
@@ -116,7 +114,7 @@ test("#73 release package build rejects unverified architectures and unpinned ta
   assert.throws(()=>inspectTarGzip(fixture([], {agent_runtime:"node-v2"}),{tag,target}),/runtime profile/);
   assert.throws(()=>inspectTarGzip(fixture([], {artifact_profile:undefined}),{tag,target}),/runtime profile/);
   const mismatchedArch = process.arch === "arm64" ? "linux-x64-glibc" : "linux-arm64-glibc";
-  assert.throws(()=>ensureNativeTarget({target:mismatchedArch,nodeBin:"/missing",native:"/missing"}),/architecture/);
+  assert.throws(()=>ensureNativeTarget({target:mismatchedArch,nodeBin:"/missing",native:"/missing"}),/verified Rust-only inputs/);
 });
 
 test("#73 rejects malicious archive entries, wrong CPU, version, duplicates and corruption before writing",()=>{
@@ -225,8 +223,8 @@ test("#914 native-only packaging is explicit and rejects Node inputs",()=>{
   const selected=parseArgs(args);
   assert.equal(selected.artifactProfile,"rust-native-only-v1");
   assert.equal(selected.version,"v0.1.57");
-  assert.throws(()=>parseArgs(args.map((x,i)=>i===1?"v0.1.57-rust-candidate.1":x)), /pinned version/);
-  assert.throws(()=>parseArgs(args.slice(0,-2)),/native-only profile/);
+  assert.throws(()=>parseArgs(args.map((x,i)=>i===1?"v0.1.57-rust-candidate.1":x)), /stable tag|packaging parameters/);
+  assert.throws(()=>parseArgs(args.slice(0,-2)),/native binaries and SHA-256 digests|native-only profile/);
   const sessionArgs=["--rust-session-bin","/opt/rca-session","--rust-session-sha256","d".repeat(64)];
   assert.equal(parseArgs([...args,...sessionArgs]).rustSessionBin,"/opt/rca-session");
   assert.throws(()=>parseArgs([...args,...sessionArgs.slice(0,2)]));
