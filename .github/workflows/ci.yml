@@ -283,6 +283,7 @@ jobs:
           chmod 700 "$supervisor"
           cargo build --locked --release --manifest-path \
             "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
+          rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
           # Native-only acceptance: build from these same verified native
           # binaries and independently inspect and read the exact inventory.
           native_out="$RUNNER_TEMP/rca-darwin-native"
