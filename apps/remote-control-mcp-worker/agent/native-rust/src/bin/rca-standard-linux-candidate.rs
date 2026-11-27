@@ -1,4 +1,4 @@
-//! Unshipped Standard Linux RCA entrypoint. No installed Agent path uses it.
+//! Standard Linux RCA entrypoint.
 //! Shares the existing owner-reviewed permanent and temporary v2 identities.
 #[cfg(target_os = "linux")]
 #[path = "support/unix_pairing.rs"]

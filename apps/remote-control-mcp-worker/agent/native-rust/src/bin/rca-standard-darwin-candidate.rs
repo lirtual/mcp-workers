@@ -1,4 +1,4 @@
-//! Unshipped Standard macOS RCA entrypoint. No installed Agent path uses it.
+//! Standard macOS RCA entrypoint.
 //! Reuses the permanent and temporary identity storage of the reviewed Unix Agent.
 #[cfg(any(target_os = "macos", all(test, unix)))]
 #[path = "support/darwin_lifecycle.rs"]

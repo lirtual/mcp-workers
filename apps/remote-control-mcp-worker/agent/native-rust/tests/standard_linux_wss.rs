@@ -1,4 +1,4 @@
-//! Full unshipped Standard Linux process seam against a disposable loopback Worker.
+//! Full Standard Linux process seam against a disposable loopback Worker.
 //! No installed identity, production endpoint or live Shell operation is used.
 #[cfg(target_os = "linux")]
 mod common;

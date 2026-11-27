@@ -102,7 +102,7 @@ fn malformed_inherited_environment_fails_without_panicking_or_logging_its_value(
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Session RCA candidate unavailable"));
+    assert!(stderr.contains("Session RCA unavailable"));
     assert!(!stderr.contains("panicked"));
     assert!(!root.path().join("session-rca").exists());
 }
@@ -118,7 +118,7 @@ fn malformed_command_line_argument_fails_without_panicking() {
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Session RCA candidate unavailable"));
+    assert!(stderr.contains("Session RCA unavailable"));
     assert!(!stderr.contains("panicked"));
     assert!(!root.path().join("session-rca").exists());
 }
