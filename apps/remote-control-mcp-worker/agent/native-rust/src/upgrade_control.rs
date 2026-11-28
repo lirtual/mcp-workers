@@ -244,13 +244,15 @@ mod online_tests {
             error.kind(),
             ErrorKind::WouldBlock | ErrorKind::TimedOut
         ));
+        // Configure the response timeout while the server is still waiting
+        // for the request; Darwin may reject socket options after peer close.
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         client.write_all(b"verify-online\n").unwrap();
         let request = receiver.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(request.command, UpgradeCommand::VerifyOnline);
         request.reply.send("ready\n".into()).unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
         let mut reply = Vec::new();
         client.read_to_end(&mut reply).unwrap();
         assert_eq!(reply, b"ready\n");
