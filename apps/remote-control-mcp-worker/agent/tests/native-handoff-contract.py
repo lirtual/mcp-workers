@@ -5,8 +5,10 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import sys
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts/bootstrap-v2.py"
@@ -1036,17 +1038,17 @@ def verify_public_native_archive():
                 except ValueError:
                     pass
             assert not pair.called and not temporary.called
-            with patch("builtins.input", side_effect=["1","y"]):
+            with patch("builtins.input", return_value="y"):
                 bootstrap.install(tag, None, ENDPOINT, native_install=True,
                                   asset_sha256=digest, latest_archive=archive)
             dest = bootstrap.program_home(home) / (tag+"-"+target)
             assert (dest / APP / ".build/rca-standard-linux-candidate").is_file()
             assert not (dest / "bin/node").exists()
-            pair.assert_called_once_with(home, dest, ENDPOINT, None)
-            with patch("builtins.input", return_value="2"):
-                bootstrap.install(tag, None, ENDPOINT, native_install=True,
+            pair.assert_called_once_with(home, dest, ENDPOINT, None, root_authorized=False)
+            with patch("builtins.input", return_value="y"):
+                bootstrap.install(tag, None, ENDPOINT, native_install=True, temporary=True,
                                   asset_sha256=digest, latest_archive=archive)
-            temporary.assert_called_once_with(home, dest, ENDPOINT, None)
+            temporary.assert_called_once_with(home, dest, ENDPOINT, None, root_authorized=False)
     for old, new, expected in [
             ("v0.1.56","v0.1.58",True), ("v0.1.58-rust-candidate.5","v0.1.58",True),
             ("v0.1.58","v0.1.58",False), ("v0.1.59","v0.1.58",False),
@@ -2006,6 +2008,215 @@ def verify_native_detached_upgrade():
     print("NATIVE_DETACHED_UPGRADE_CONTRACT_PASS")
 
 
+def verify_root_account_and_manager_contract():
+    def fake_lstat(path):
+        path = Path(path)
+        entries = {
+            Path("/"): (stat.S_IFDIR | 0o755, 0),
+            Path("/run"): (stat.S_IFDIR | 0o755, 0),
+            Path("/run/user"): (stat.S_IFDIR | 0o755, 0),
+            Path("/root"): (stat.S_IFDIR | 0o700, 0),
+            Path("/run/user/0"): (stat.S_IFDIR | 0o700, 0),
+            Path("/run/user/0/bus"): (stat.S_IFSOCK | 0o600, 0),
+        }
+        mode, uid = entries[path]
+        return SimpleNamespace(st_mode=mode, st_uid=uid)
+
+    def manager_run(args, **kwargs):
+        output = b"yes\n" if args[0] == "loginctl" else b""
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
+
+    with patch.object(bootstrap.os, "geteuid", return_value=0), \
+            patch.object(bootstrap.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir="/root")), \
+            patch.object(Path, "lstat", fake_lstat), \
+            patch.dict(os.environ, {"HOME": "/root"}, clear=True):
+        assert bootstrap.root_account_home() == Path("/root")
+        with patch.object(bootstrap.subprocess, "run", manager_run):
+            env = bootstrap.root_user_manager_environment()
+        assert env["HOME"] == "/root"
+        assert env["XDG_RUNTIME_DIR"] == "/run/user/0"
+        assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/0/bus"
+
+        for inherited in (
+            {"HOME": "/home/runner"},
+            {"HOME": "/root", "XDG_RUNTIME_DIR": "/run/user/1001"},
+            {"HOME": "/root", "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1001/bus"},
+        ):
+            with patch.dict(os.environ, inherited, clear=True):
+                try:
+                    bootstrap.root_account_home()
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Root accepted an inherited foreign identity or bus")
+
+        def no_linger(args, **kwargs):
+            return SimpleNamespace(returncode=0, stdout=b"no\n", stderr="")
+
+        with patch.object(bootstrap.subprocess, "run", no_linger):
+            try:
+                bootstrap.root_user_manager_environment()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Permanent root service accepted Linger=no")
+
+        def insecure_runtime(path):
+            if Path(path) == Path("/run/user/0"):
+                return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+            return fake_lstat(path)
+
+        with patch.object(Path, "lstat", insecure_runtime), \
+                patch.object(bootstrap.subprocess, "run", manager_run):
+            try:
+                bootstrap.root_user_manager_environment()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Permanent root service accepted a non-private runtime directory")
+
+        def missing_runtime(path):
+            if Path(path) == Path("/run/user/0"):
+                raise FileNotFoundError("no UID 0 runtime directory")
+            return fake_lstat(path)
+
+        with patch.object(Path, "lstat", missing_runtime):
+            try:
+                bootstrap.root_user_manager_environment()
+            except ValueError as error:
+                assert "Trusted UID 0 systemd --user runtime" in str(error)
+            else:
+                raise AssertionError("Missing UID 0 runtime directory was not explained")
+
+    tty = SimpleNamespace(isatty=lambda: True, write=lambda value: None, flush=lambda: None)
+    with patch.object(bootstrap.os, "geteuid", return_value=0), \
+            patch.object(bootstrap.pwd, "getpwuid", return_value=SimpleNamespace(pw_dir="/root")), \
+            patch.object(Path, "lstat", fake_lstat), \
+            patch.dict(os.environ, {"HOME": "/root"}, clear=True), \
+            patch.object(bootstrap.sys, "stdin", tty), \
+            patch.object(bootstrap.sys, "stdout", tty), \
+            patch.object(bootstrap.subprocess, "run", manager_run), \
+            patch.object(bootstrap, "local_inventory", return_value=([], [], None, None, {})), \
+            patch.object(bootstrap, "confirm_owner", return_value=True) as confirm:
+        assert bootstrap.root_opt_in(True) is True
+        confirm.assert_called_once_with(
+            "Allow the Agent's remote Shell and file operations to run with UID 0 privileges on this device?")
+        for allow_root, stage_only in ((False, False), (True, True)):
+            try:
+                bootstrap.root_opt_in(allow_root, stage_only=stage_only)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Root opt-in accepted missing consent or stage-only mode")
+
+        managed = "# Managed by Remote Control Agent installer.\nExecStart=/root/agent --root-managed\n"
+        for ids in ({"permanent": ID}, {"temporary": ID}):
+            with patch.object(bootstrap, "local_inventory",
+                              return_value=([], [], None, managed if "permanent" in ids else None, ids)):
+                try:
+                    bootstrap.root_opt_in(True, temporary="temporary" in ids)
+                except ValueError as error:
+                    assert "first UID 0 identity" in str(error)
+                else:
+                    raise AssertionError("--allow-root was accepted after a UID 0 identity existed")
+                if "temporary" in ids:
+                    assert bootstrap.root_opt_in(False, temporary=True) is True
+                    assert confirm.call_count == 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        local = home / ".local"
+        share = local / "share"
+        local.mkdir(mode=0o700)
+        share.mkdir(mode=0o775)
+        share.chmod(0o775)
+        original_stat = Path.stat
+
+        def root_owned_stat(path, *args, **kwargs):
+            value = original_stat(path, *args, **kwargs)
+            return SimpleNamespace(st_mode=value.st_mode, st_uid=0, st_size=value.st_size)
+
+        with patch.object(bootstrap.os, "geteuid", return_value=0), \
+                patch.object(Path, "stat", root_owned_stat):
+            try:
+                bootstrap.program_home(home)
+            except ValueError as error:
+                assert "writable installer parent" in str(error)
+            else:
+                raise AssertionError("Root program path accepted a group-writable parent")
+
+    root_env = {"HOME": "/root", "XDG_RUNTIME_DIR": "/run/user/0",
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/0/bus"}
+    with patch.object(bootstrap.os, "geteuid", return_value=0), \
+            patch.object(bootstrap, "root_user_manager_environment", return_value=root_env), \
+            patch.object(bootstrap.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=b"LoadState=not-found\n")) as run:
+        assert bootstrap.native_update_job_state(ID) == "absent"
+        assert run.call_args.kwargs["env"] == root_env
+
+    manager_spec = importlib.util.spec_from_file_location(
+        "rca_manager", SCRIPT.with_name("manage-v2.py"))
+    manager = importlib.util.module_from_spec(manager_spec)
+    manager_spec.loader.exec_module(manager)
+    tty_output = SimpleNamespace(isatty=lambda: True, write=lambda value: None, flush=lambda: None)
+    with patch.object(bootstrap.os, "geteuid", return_value=0), \
+            patch.object(bootstrap, "account_home", return_value=Path("/root")), \
+            patch.object(bootstrap, "root_user_manager_environment", return_value=root_env), \
+            patch.object(bootstrap, "local_inventory", return_value=(None, [], None, "unit", {"permanent": ID})), \
+            patch.object(manager.sys, "stdout", tty_output), \
+            patch.object(manager.subprocess, "run") as run:
+        manager.logs(bootstrap)
+        assert run.call_count == 2
+        assert all(call.kwargs["env"] == root_env for call in run.call_args_list)
+
+    print("NATIVE_ROOT_ACCOUNT_AND_MANAGER_CONTRACT_PASS")
+
+
+def verify_root_pair_command_contract():
+    binary_root = Path("/root/.local/share/mcp-workers/remote-control/programs/v0.1.58-linux-x64-glibc")
+    endpoint = ENDPOINT
+    result = SimpleNamespace(returncode=0)
+    cases = [
+        ({}, ["--root-managed", "--pair-local"]),
+        ({"temporary": True}, ["--root-managed", "--temporary-local"]),
+        ({"repair_phase": "prepare", "lock_fd": 17},
+         ["--root-managed", "--prepare-permanent-repair"]),
+        ({"repair_phase": "promote", "lock_fd": 17},
+         ["--root-managed", "--promote-permanent-repair"]),
+    ]
+    for kwargs, expected in cases:
+        with patch.object(bootstrap.os, "geteuid", return_value=0), \
+                patch.object(bootstrap.subprocess, "run", side_effect=[result, result]) as run:
+            bootstrap.native_pair_local(binary_root, endpoint, "root-test-device", **kwargs)
+        invocation = run.call_args_list[1]
+        command = invocation.args[0]
+        assert command[1:3] == expected, command
+        if "lock_fd" in kwargs:
+            assert command[-1] == "17"
+            assert invocation.kwargs["pass_fds"] == (17,)
+    print("NATIVE_ROOT_PAIR_COMMAND_CONTRACT_PASS")
+
+
+def verify_root_service_and_update_policy():
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        with patch.object(bootstrap.os, "geteuid", return_value=0), \
+                patch.object(bootstrap, "account_home", return_value=Path("/root")):
+            rendered = bootstrap.native_render_unit(old, ENDPOINT, key)
+            assert "ExecStart=" + str(old / APP / ".build/rca-standard-linux-candidate") + " --root-managed" in rendered
+            with patch.object(bootstrap, "local_inventory", return_value=([], [old], unit, rendered, {"permanent": ID})):
+                assert bootstrap.native_update_policy(home, None) == {"automatic_update": "off"}
+                try:
+                    bootstrap.native_update_policy(home, "on")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Root Agent enabled automatic updates")
+    finally:
+        ctx.cleanup()
+    print("NATIVE_ROOT_SERVICE_AND_UPDATE_POLICY_PASS")
+
+
 if __name__ == "__main__":
     os.umask(0o077)  # Exactly the installed Agent's private program directories.
     if sys.argv[1:] == ["--units"]:
@@ -2039,4 +2250,7 @@ if __name__ == "__main__":
         verify_owner_stop_at_cutover_lock()
         verify_native_detached_upgrade()
         verify_automatic_detached_admission()
+        verify_root_account_and_manager_contract()
+        verify_root_pair_command_contract()
+        verify_root_service_and_update_policy()
         verify_isolated()
