@@ -2364,6 +2364,52 @@ def verify_root_resource_guards():
     print("NATIVE_ROOT_RESOURCE_GUARDS_PASS")
 
 
+def verify_root_launcher_lifecycle_integrity():
+    # Isolated local symlinks; no installed Agent or service operations.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        original_stat = Path.stat
+
+        def fixture_stat(path, *args, **kwargs):
+            assert path == home or home in path.parents
+            actual = original_stat(path, *args, **kwargs)
+            return SimpleNamespace(st_mode=actual.st_mode, st_uid=0,
+                                   st_nlink=actual.st_nlink, st_size=actual.st_size)
+
+        def expect_refused(call):
+            before = os.readlink(launcher)
+            try:
+                call()
+            except ValueError as error:
+                assert "Untrusted user-local command directory" in str(error), str(error)
+            else:
+                raise AssertionError("Unsafe Root launcher parent was accepted")
+            assert os.readlink(launcher) == before
+            assert set(launcher.parent.iterdir()) == {launcher}
+
+        with patch.object(bootstrap.os, "geteuid", return_value=0), \
+                patch.object(Path, "stat", fixture_stat), \
+                patch.object(Path, "lstat", lambda path: fixture_stat(path, follow_symlinks=False)):
+            for parent in (launcher.parent, launcher.parent.parent):
+                original_mode = stat.S_IMODE(parent.stat().st_mode)
+                parent.chmod(0o770)
+                expect_refused(lambda: bootstrap.native_launcher(home, old))
+                expect_refused(lambda: bootstrap.native_launcher(home, old, new))
+                expect_refused(lambda: bootstrap.native_restore_launcher(home, old, new))
+                parent.chmod(original_mode)
+            bootstrap.native_launcher(home, old, new)
+            assert os.readlink(launcher) == str(new / APP / "scripts/rca.sh")
+            launcher.parent.chmod(0o770)
+            expect_refused(lambda: bootstrap.native_restore_launcher(home, old, new))
+            launcher.parent.chmod(0o750)
+            bootstrap.native_restore_launcher(home, old, new)
+            assert os.readlink(launcher) == str(old / APP / "scripts/rca.sh")
+            assert bootstrap.owned_manager_launcher(home, [old, new]) == launcher
+    finally:
+        ctx.cleanup()
+    print("NATIVE_ROOT_LAUNCHER_LIFECYCLE_INTEGRITY_PASS")
+
+
 def verify_root_reinstall_keeps_existing_identity():
     home = Path(tempfile.mkdtemp(prefix="rca-root-reinstall-"))
     home.chmod(0o700)
@@ -2529,6 +2575,7 @@ if __name__ == "__main__":
         verify_automatic_detached_admission()
         verify_root_account_and_manager_contract()
         verify_root_resource_guards()
+        verify_root_launcher_lifecycle_integrity()
         verify_root_reinstall_keeps_existing_identity()
         verify_initial_recovery_before_unit_creation()
         verify_public_temporary_archive_dispatch()

@@ -1401,11 +1401,10 @@ def native_consent(key, action):
 
 
 def native_launcher(home, old_root, new_root=None):
-    launcher = home / ".local/bin/rca"
-    previous = old_root / APP / "scripts/rca.sh"
-    # Only the exact reviewed launcher can participate in this transaction.
-    allowed = (str(previous),)
-    if not launcher.is_symlink() or os.readlink(launcher) not in allowed:
+    # Use the same owned launcher and trusted-parent checks as initial install
+    # and uninstall, including after an interrupted lifecycle transition.
+    launcher = owned_manager_launcher(home, [old_root])
+    if launcher is None:
         raise ValueError("Foreign or missing installed Agent launcher")
     if new_root is None:
         return
@@ -1423,10 +1422,10 @@ def native_launcher(home, old_root, new_root=None):
 
 
 def native_restore_launcher(home, old_root, new_root):
-    launcher = home / ".local/bin/rca"
+    launcher = owned_manager_launcher(home, [old_root, new_root])
     original = str(old_root / APP / "scripts/rca.sh")
     next_target = str(new_root / APP / "scripts/rca.sh")
-    if not launcher.is_symlink():
+    if launcher is None:
         raise ValueError("Installed launcher disappeared during rollback")
     current = os.readlink(launcher)
     if current == original:
