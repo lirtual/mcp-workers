@@ -2410,6 +2410,40 @@ def verify_root_launcher_lifecycle_integrity():
     print("NATIVE_ROOT_LAUNCHER_LIFECYCLE_INTEGRITY_PASS")
 
 
+def verify_root_program_directory_integrity():
+    # Use synthetic program files and account metadata only.
+    ctx, home, old, new, unit, launcher, key, receipts = fixture()
+    try:
+        original_stat = Path.stat
+
+        def fixture_stat(path, *args, **kwargs):
+            assert path == home or home in path.parents
+            info = original_stat(path, *args, **kwargs)
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=0,
+                                   st_nlink=info.st_nlink, st_size=info.st_size)
+
+        with patch.object(bootstrap.os, "geteuid", return_value=0), \
+                patch.object(Path, "stat", fixture_stat), \
+                patch.object(Path, "lstat", lambda path: fixture_stat(path, follow_symlinks=False)):
+            for mode in (0o700, 0o500):
+                old.chmod(mode)
+                assert bootstrap.validated_owned_version(old)
+            for mode in (0o770, 0o755, 0o707):
+                old.chmod(mode)
+                try:
+                    bootstrap.validated_owned_version(old)
+                except ValueError as error:
+                    assert "Untrusted Root program directory" in str(error), str(error)
+                else:
+                    raise AssertionError("Nonprivate Root program directory accepted")
+            old.chmod(0o700)
+            assert bootstrap.validated_owned_version(old)
+    finally:
+        old.chmod(0o700)
+        ctx.cleanup()
+    print("NATIVE_ROOT_PROGRAM_DIRECTORY_INTEGRITY_PASS")
+
+
 def verify_root_reinstall_keeps_existing_identity():
     home = Path(tempfile.mkdtemp(prefix="rca-root-reinstall-"))
     home.chmod(0o700)
@@ -2576,6 +2610,7 @@ if __name__ == "__main__":
         verify_root_account_and_manager_contract()
         verify_root_resource_guards()
         verify_root_launcher_lifecycle_integrity()
+        verify_root_program_directory_integrity()
         verify_root_reinstall_keeps_existing_identity()
         verify_initial_recovery_before_unit_creation()
         verify_public_temporary_archive_dispatch()

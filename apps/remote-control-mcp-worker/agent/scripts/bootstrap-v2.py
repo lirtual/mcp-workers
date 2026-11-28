@@ -2455,6 +2455,12 @@ def local_status(home):
 
 
 def validated_owned_version(p):
+    # os.walk validates descendants, not its starting directory.
+    if os.geteuid() == 0:
+        info = p.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0
+                or info.st_mode & 0o077):
+            raise ValueError("Untrusted Root program directory")
     f = p / "bundle.json"
     if f.is_symlink() or not f.is_file():
         raise ValueError("Missing/linked runtime manifest")
