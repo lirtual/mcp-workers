@@ -235,7 +235,7 @@ with tempfile.TemporaryDirectory(prefix="rca-native-only-") as t:
     assert "Detached launch is not upgrade completion" in help_result.stdout
     assert "recover" in help_result.stdout
     assert "browser authorization link" in help_result.stdout
-    assert "rca pair [--temporary] [https://approved-worker-origin/]" in help_result.stdout
+    assert "rca pair [--allow-root] [--temporary] [https://approved-worker-origin/]" in help_result.stdout
     assert "provide the approved HTTPS origin explicitly" in help_result.stdout
     assert "not yet available" not in help_result.stdout
     for command in ["pair","upgrade","uninstall","recover"]:
