@@ -31,6 +31,9 @@ import urllib.request
 OWNER = "lirtual/mcp-workers"
 API = "https://api.github.com/repos/" + OWNER
 APP = "apps/remote-control-agent"
+LEGACY_TARGET = "linux-x64-legacy-glibc"
+STANDARD_LINUX_TARGETS = ("linux-x64-glibc", "linux-arm64-glibc")
+LINUX_TARGETS = STANDARD_LINUX_TARGETS + (LEGACY_TARGET,)
 MAX_ARCHIVE = 180 * 1024 * 1024
 MAX_UNPACK = 240 * 1024 * 1024
 MAX_FILES = 80
@@ -117,7 +120,7 @@ def root_user_manager_environment():
 
 
 def root_managed_unit(unit):
-    commands = [line.removeprefix("ExecStart=") for line in (unit or "").splitlines()
+    commands = [line[len("ExecStart="):] for line in (unit or "").splitlines()
                 if line.startswith("ExecStart=")]
     return len(commands) == 1 and commands[0].endswith(" --root-managed")
 
@@ -250,18 +253,25 @@ def json_api(path):
 
 
 def resolve_pinned(tag, commit, target):
-    if not TAG.fullmatch(tag) or not SHA.fullmatch(commit) or target not in (
-            "linux-x64-glibc", "linux-arm64-glibc"):
+    if not TAG.fullmatch(tag) or not SHA.fullmatch(commit) or target not in LINUX_TARGETS:
         raise ValueError("Pinned tag/commit/target missing or invalid")
-    release = json_api("/releases/tags/" + tag)
+    if target == LEGACY_TARGET and not re.fullmatch(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", tag):
+        raise ValueError("Legacy requires a reviewed numeric version")
+    # Keep the bundle's numeric version independent from the immutable GitHub
+    # prerelease tag; a Legacy publication must not consume the Standard tag.
+    release_tag = tag + "-legacy" if target == LEGACY_TARGET else tag
+    if target != LEGACY_TARGET and tag.endswith("-legacy"):
+        raise ValueError("Legacy Release cannot supply a Standard target")
+    release = json_api("/releases/tags/" + release_tag)
     if (release.get("immutable") is not True
+            or (target == LEGACY_TARGET and release.get("prerelease") is not True)
             or release.get("draft") is not False
             or ("-rust-candidate" in tag and release.get("prerelease") is not True)
-            or release.get("tag_name") != tag
+            or release.get("tag_name") != release_tag
             or not isinstance(release.get("id"), int)):
         raise ValueError("This Release is not published and immutable")
-    reference = json_api("/git/ref/tags/" + tag)
-    if reference.get("ref") != "refs/tags/" + tag:
+    reference = json_api("/git/ref/tags/" + release_tag)
+    if reference.get("ref") != "refs/tags/" + release_tag:
         raise ValueError("Git tag reference mismatch")
     obj = reference["object"]
     if obj.get("type") == "tag":
@@ -276,7 +286,7 @@ def resolve_pinned(tag, commit, target):
         raise ValueError("Missing or duplicate Release asset")
     asset = assets[0]
     digest = HASH.fullmatch(str(asset.get("digest", "")))
-    download = "https://github.com/" + OWNER + "/releases/download/" + tag + "/" + name
+    download = "https://github.com/" + OWNER + "/releases/download/" + release_tag + "/" + name
     if (not digest or asset.get("state") != "uploaded"
             or not isinstance(asset.get("id"), int) or asset["id"] < 1
             or not isinstance(asset.get("size"), int)
@@ -289,6 +299,8 @@ def resolve_pinned(tag, commit, target):
 
 def resolve_latest_native(target):
     """One stable five-platform snapshot; select only the installed Linux target."""
+    if target not in STANDARD_LINUX_TARGETS:
+        raise ValueError("Legacy has no Latest selection; supply a reviewed fixed version")
     release = json_api("/releases/latest")
     if not isinstance(release, dict):
         raise ValueError("Invalid stable Agent Release")
@@ -328,7 +340,7 @@ def resolve_latest_native(target):
             raise ValueError("Invalid or duplicate stable Agent asset")
         selected[platform_target] = {"tag": tag, "download": url, "size": size,
                                      "digest": digest.group(1)}
-    if set(selected) != set(targets) or target not in ("linux-x64-glibc", "linux-arm64-glibc"):
+    if set(selected) != set(targets) or target not in STANDARD_LINUX_TARGETS:
         raise ValueError("Incomplete stable Agent Release")
     return selected[target]
 
@@ -352,11 +364,28 @@ def native_program_files(manifest, target):
              APP + "/.build/rca-standard-linux-candidate",
              APP + "/scripts/bootstrap-v2.py", APP + "/scripts/manage-v2.py",
              APP + "/scripts/rca.sh"}
+    if target == LEGACY_TARGET:
+        if (manifest.get("native_supervisor") != "legacy-live-group-v1"
+                or manifest.get("glibc_min") != "2.28"
+                or manifest.get("session_runtime") != "rust-session-v1"):
+            raise ValueError("Unreviewed Legacy runtime profile")
+    elif "native_supervisor" in manifest:
+        raise ValueError("Unexpected Standard Linux supervisor profile")
     if "session_runtime" in manifest:
-        if target != "linux-x64-glibc" or manifest["session_runtime"] != "rust-session-v1":
+        if target not in ("linux-x64-glibc", LEGACY_TARGET) or manifest["session_runtime"] != "rust-session-v1":
             raise ValueError("Unreviewed packaged Session runtime")
         files.add(APP + "/.build/rca-session-linux-candidate")
     return files
+
+
+def runtime_glibc():
+    # Query the running C library, not strings in the Python executable.
+    try:
+        result = os.confstr("CS_GNU_LIBC_VERSION")
+    except (OSError, ValueError):
+        return "", ""
+    m = re.fullmatch(r"glibc ([0-9]+\.[0-9]+)", result or "")
+    return ("glibc", m.group(1)) if m else ("", "")
 
 
 def inspect_archive(archive, tag, target):
@@ -382,7 +411,7 @@ def inspect_archive(archive, tag, target):
         if (manifest.get("artifact_schema") != 1
                 or manifest.get("name") != "remote-control-agent"
                 or manifest.get("version") != tag or manifest.get("target") != target
-                or target not in ("linux-x64-glibc", "linux-arm64-glibc")
+                or target not in LINUX_TARGETS
                 or manifest.get("artifact_profile") != "rust-native-only-v1"
                 or manifest.get("agent_runtime") != "rust-standard-linux-v1"
                 or manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
@@ -399,7 +428,7 @@ def inspect_archive(archive, tag, target):
         minimum = str(manifest.get("glibc_min", ""))
         if not re.fullmatch(r"[0-9]+\.[0-9]+", minimum):
             raise ValueError("Missing or invalid Release glibc ABI requirement")
-        host_libc, host_version = platform.libc_ver()
+        host_libc, host_version = runtime_glibc()
         if (host_libc != "glibc" or not re.fullmatch(r"[0-9]+\.[0-9]+", host_version)
                 or tuple(map(int, host_version.split("."))) <
                    tuple(map(int, minimum.split(".")))):
@@ -561,11 +590,13 @@ def approved_native_detached_worker(device_id=None):
 
 
 def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False,
-              detached_upgrade=False, allow_root=False, temporary=False, native_upgrade=False):
+              detached_upgrade=False, allow_root=False, temporary=False, native_upgrade=False, legacy=False):
     if detached_upgrade and (stage_only or not latest_archive or not approved_native_detached_worker()):
         raise ValueError("Detached native upgrade requires an admitted systemd worker")
     if sys.platform != "linux":
         raise ValueError("Linux only")
+    if legacy and (latest_archive or detached_upgrade or temporary or (os.geteuid() != 0 and not stage_only)):
+        raise ValueError("Legacy requires a pinned attended Root installation or upgrade")
     root_opt_in(allow_root, stage_only=stage_only, temporary=temporary,
                 upgrade=native_upgrade and not detached_upgrade)
     if (not stage_only and not detached_upgrade and
@@ -575,9 +606,11 @@ def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False,
     if cpu not in ("x86_64", "aarch64"):
         raise ValueError("Only Linux x86_64 and ARM64 are supported")
     kernel = re.match(r"^([0-9]+)\.([0-9]+)", platform.release())
-    if not kernel or (int(kernel[1]), int(kernel[2])) < (6, 9):
+    if legacy and (cpu != "x86_64" or not kernel or (int(kernel[1]), int(kernel[2])) < (4, 18)):
+        raise ValueError("Legacy requires Linux x86_64 kernel 4.18+")
+    if not legacy and (not kernel or (int(kernel[1]), int(kernel[2])) < (6, 9)):
         raise ValueError("Linux kernel 6.9+ is needed for pidfd group safety")
-    libc, ver = platform.libc_ver()
+    libc, ver = runtime_glibc()
     if libc != "glibc" or not re.match(r"^\d+\.\d+$", ver) \
             or tuple(map(int, ver.split("."))) < (2, 28):
         raise ValueError("glibc 2.28+ required; musl is unsupported")
@@ -588,7 +621,7 @@ def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False,
             raise ValueError("Public archive requires the stable Release tag, not a source pin")
     elif not TAG.fullmatch(tag) or not SHA.fullmatch(commit):
         raise ValueError("Pinned Release tag and commit are required")
-    return "linux-" + ("x64" if cpu == "x86_64" else "arm64") + "-glibc"
+    return LEGACY_TARGET if legacy else "linux-" + ("x64" if cpu == "x86_64" else "arm64") + "-glibc"
 
 
 def native_latest_status(installed, target):
@@ -719,7 +752,7 @@ def native_unattended_upgrade(root, *, worker=False, automatic=False):
                pathlib.Path(str(key) + ".owner-stopped"))
     if any(os.path.lexists(path) for path in pending):
         raise ValueError("Owner STOP or unreconciled lifecycle blocks detached upgrade")
-    endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
+    endpoint = next(line[len("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="):]
                     for line in unit.splitlines()
                     if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
     if native_process_executable(native_main_pid()) != current / APP / ".build/rca-standard-linux-candidate":
@@ -770,7 +803,7 @@ def native_unattended_upgrade(root, *, worker=False, automatic=False):
 def install(tag, commit, endpoint, name=None, upgrade=False,
             stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False,
             latest_archive=None, detached_upgrade=False, automatic=False, expected_binding=None,
-            allow_root=False):
+            allow_root=False, legacy=False):
     if automatic and not detached_upgrade:
         raise ValueError("Automatic update requires an admitted detached worker")
     if detached_upgrade and (not native_upgrade or native_install or stage_only
@@ -789,12 +822,16 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         raise ValueError("Public archive requires an attended native install or upgrade")
     target = preflight(tag, commit, endpoint, stage_only=stage_only,
                        latest_archive=latest_archive is not None, detached_upgrade=detached_upgrade,
-                       allow_root=allow_root, temporary=temporary, native_upgrade=native_upgrade)
+                       allow_root=allow_root, temporary=temporary, native_upgrade=native_upgrade, legacy=legacy)
     # The owned service template uses a canonical origin with a trailing slash.
     if not endpoint.endswith("/"):
         endpoint += "/"
     if native_upgrade and expected_binding is None:
-        _, expected_binding = native_latest_context(endpoint)
+        current_info, expected_binding = native_latest_context(endpoint)
+        if current_info["target"] != target:
+            raise ValueError("Cross-target upgrade refused")
+        if legacy and not public_forward_version(current_info["version"], tag):
+            raise ValueError("Legacy upgrade requires a later reviewed version")
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
     location = program_home(account_home())
     version = location / (tag + "-" + target)
@@ -842,7 +879,10 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
                 unpack_verified(archive_path, version, records, tag, target)
         finally:
             if archive_path is not None:
-                archive_path.unlink(missing_ok=True)
+                try:
+                    archive_path.unlink()
+                except FileNotFoundError:
+                    pass
         print("==> Verified runtime staged: " + str(version), flush=True)
         if stage_only:
             # No systemctl, identity mutation, approval or pairing.
@@ -1083,7 +1123,7 @@ def native_write_upgrade_result(key, device_id, operation, target, installed, st
     native_atomic_file(native_upgrade_result_path(key), json.dumps({
         "device_id": device_id, "operation_id": operation, "target_version": target,
         "installed_version": installed, "status": status,
-        "updated_at_unix_ms": time.time_ns() // 1_000_000,
+        "updated_at_unix_ms": (time.time_ns() // 1_000_000 if hasattr(time, "time_ns") else int(time.time() * 1000)),
     }, separators=(",", ":")).encode())
 
 
@@ -1213,7 +1253,7 @@ def native_owner_lifecycle(home, action):
         native_owned_file(key, 8192)
         if native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip() != ids["permanent"]:
             raise ValueError("Existing device identity has changed")
-        endpoint = next(line.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=") for line in unit.splitlines()
+        endpoint = next(line[len("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="):] for line in unit.splitlines()
                         if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="))
         pending = native_pending_lifecycle(key, unit_file)
         if any(os.path.lexists(path) for path in pending):
@@ -1489,7 +1529,10 @@ def native_initial_state(home, root, endpoint, allow_repair=False):
     if root not in versions:
         raise ValueError("Unknown staged Agent version")
     validated_owned_version(root)
-    if json.loads((root / "bundle.json").read_text("utf8")).get("artifact_profile") != "rust-native-only-v1":
+    manifest = json.loads((root / "bundle.json").read_text("utf8"))
+    if manifest.get("target") == LEGACY_TARGET and os.geteuid() != 0:
+        raise ValueError("Legacy permanent service requires the approved UID 0 identity")
+    if manifest.get("artifact_profile") != "rust-native-only-v1":
         raise ValueError("First install needs a reviewed native-only bundle")
     key = home / STORE / "v2-identity.pem"
     for directory in (home, home / ".local", home / ".local/bin", home / ".config",
@@ -1612,8 +1655,9 @@ def native_temporary(home, root, endpoint, name=None, process_check=None, root_a
     if root not in versions:
         raise ValueError("Unknown staged Agent version")
     validated_owned_version(root)
-    if json.loads((root / "bundle.json").read_text("utf8")).get("artifact_profile") != "rust-native-only-v1":
-        raise ValueError("Temporary install needs a reviewed native-only bundle")
+    manifest = json.loads((root / "bundle.json").read_text("utf8"))
+    if manifest.get("target") == LEGACY_TARGET or manifest.get("artifact_profile") != "rust-native-only-v1":
+        raise ValueError("Temporary install needs a reviewed Standard native-only bundle")
     # The existing operation receipt ledger has exactly one writer. Avoid
     # registering a new temporary key when an existing installed Agent is
     # already running; never stop that Agent to make room.
@@ -1923,6 +1967,11 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automa
     validated_owned_version(old_root)
     validated_owned_version(new_root)
     manifest = json.loads((new_root / "bundle.json").read_text("utf8"))
+    old_manifest = json.loads((old_root / "bundle.json").read_text("utf8"))
+    if manifest.get("target") != old_manifest.get("target"):
+        raise ValueError("Cross-target upgrade refused")
+    if manifest.get("target") == LEGACY_TARGET and (os.geteuid() != 0 or automatic):
+        raise ValueError("Legacy upgrade requires the approved attended Root identity")
     if (manifest.get("artifact_profile") != "rust-native-only-v1"
             or manifest.get("agent_runtime") != "rust-standard-linux-v1"):
         raise ValueError("Upgrade target must be the reviewed Node-free Rust archive")
@@ -2324,7 +2373,7 @@ def local_inventory(home):
         for p in programs.iterdir():
             if p.name == "install.lock" or p.name.startswith((".download-", ".unverified-")):
                 continue
-            if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?-linux-(?:x64|arm64)-glibc", p.name) \
+            if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?-linux-(?:x64(?:-legacy)?|arm64)-glibc", p.name) \
                     or p.is_symlink() or not p.is_dir() or p.stat().st_uid != os.geteuid():
                 raise ValueError("Unknown version entry: do not remove")
             versions.append(p)
@@ -2414,7 +2463,7 @@ def validated_owned_version(p):
             or manifest.get("artifact_profile") != "rust-native-only-v1"
             or manifest.get("agent_runtime") != "rust-standard-linux-v1"
             or manifest.get("candidate_profile") != "standard-linux-rust-runtime-v1"
-            or manifest.get("target") not in ("linux-x64-glibc", "linux-arm64-glibc")
+            or manifest.get("target") not in LINUX_TARGETS
             or manifest.get("modules") != [] or "node" in manifest
             or "upgrade_protocol" in manifest
             or manifest.get("upgrade_profile") != "paired-full-v1"
@@ -2476,7 +2525,7 @@ def owned_unit_root(unit, versions):
                       if line.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
     if len(endpoint_lines) != 1:
         raise ValueError("Ambiguous Rust service endpoint")
-    endpoint = endpoint_lines[0].removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")
+    endpoint = endpoint_lines[0][len("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="):]
     home = pathlib.Path(root).parents[5]
     key = home / STORE / "v2-identity.pem"
     if unit != native_render_unit(root, endpoint, key):
@@ -2487,12 +2536,29 @@ def owned_unit_root(unit, versions):
     return root
 
 
-def proc_has_no_live_userspace(status):
-    # Root can see kernel threads, which have no userspace executable or cwd.
-    # Only the kernel-provided Kthread field (not an empty argv or missing
-    # exe) distinguishes them from an uncertain userspace process.
-    return bool(re.search(r"^State:[ \t]*Z\b", status, re.MULTILINE)
-                or re.search(r"^Kthread:[ \t]*1[ \t]*$", status, re.MULTILINE))
+def proc_has_no_live_userspace(status, process=None):
+    if re.search(r"^State:[ \t]*Z\b", status, re.MULTILINE):
+        return True
+    kthread = re.search(r"^Kthread:[ \t]*(.*)$", status, re.MULTILINE)
+    if kthread is not None:
+        return kthread.group(1).strip() == "1"
+    # Legacy kernels lack the status field; use the kernel task flags only.
+    if process is None:
+        return False
+    try:
+        data = (process / "stat").read_bytes()
+        pid, _, tail = data.partition(b" (")
+        if not tail or pid != os.fsencode(process.name):
+            return False
+        _, sep, fields = tail.rpartition(b") ")
+        if not sep:
+            return False
+        flags = fields.split()[6]
+        if not flags.isdigit():
+            return False
+        return bool(int(flags) & 0x00200000)  # Linux PF_KTHREAD
+    except (OSError, ValueError, IndexError):
+        return False
 
 
 def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
@@ -2512,7 +2578,7 @@ def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
             if p.stat().st_uid != os.geteuid():
                 continue
             status = (p / "status").read_text("ascii")
-            if proc_has_no_live_userspace(status):
+            if proc_has_no_live_userspace(status, p):
                 continue  # Kernel thread or exited zombie cannot run the Agent.
             argv = (p / "cmdline").read_bytes().split(b"\0")
             if any(arg.startswith(prefix) for arg in argv for prefix in prefixes):
@@ -2692,7 +2758,8 @@ def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
     # executable as well as argv, and refuse uncertain same-user processes.
     # Old executable names remain negative safety checks, not upgrade support.
     def agent_path(value):
-        value = value.removesuffix(b" (deleted)")
+        if value.endswith(b" (deleted)"):
+            value = value[:-len(b" (deleted)")]
         return (value.rsplit(b"/", 1)[-1] == b"rca-standard-linux-candidate"
                 or b"/remote-control-agent/scripts/bootstrap-v2.py" in value
                 or b"/remote-control-agent/src/v2-main." in value
@@ -2706,7 +2773,7 @@ def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
             if process.stat().st_uid != os.geteuid():
                 continue
             status = (process / "status").read_text("ascii")
-            if proc_has_no_live_userspace(status):
+            if proc_has_no_live_userspace(status, process):
                 continue
             argv = (process / "cmdline").read_bytes().split(b"\0")
             if any(agent_path(arg) for arg in argv):
@@ -2737,6 +2804,7 @@ def systemctl_user(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Verified Remote Control v2 GitHub Release bootstrap")
+    parser.add_argument("--legacy", action="store_true", help="explicit pinned Linux x64 Legacy target")
     parser.add_argument("--tag")
     parser.add_argument("--commit")
     parser.add_argument("--endpoint")
@@ -2762,6 +2830,8 @@ def main():
                         help="explicit local UID 0 first-install opt-in; independent terminal confirmation required")
     args = parser.parse_args()
     try:
+        if args.legacy and (args.latest_archive is not None or not (args.stage_only or args.native_install or args.native_upgrade)):
+            raise ValueError("Legacy requires an explicit pinned action")
         if args.status:
             print(json.dumps(local_status(str(account_home())), indent=2))
         elif args.recover_native:
@@ -2829,7 +2899,7 @@ def main():
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
                     args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install,
-                    args.temporary, allow_root=args.allow_root)
+                    args.temporary, allow_root=args.allow_root, legacy=args.legacy)
     except (EOFError, KeyboardInterrupt):
         print("Local operation cancelled; check status for any already completed effects.", file=sys.stderr)
         return 1

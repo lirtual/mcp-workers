@@ -61,6 +61,64 @@ class LinuxStageOnly(unittest.TestCase):
                 staged_path = unpack.call_args.args[1]
                 self.assertEqual(staged_path.name, TAG + "-" + TARGET)
 
+    def test_legacy_explicit_target_and_no_latest(self):
+        with mock.patch.object(bootstrap, "json_api", side_effect=AssertionError("No Latest request")):
+            with self.assertRaises(ValueError):
+                bootstrap.resolve_latest_native(bootstrap.LEGACY_TARGET)
+        with mock.patch.object(bootstrap, "root_opt_in"), mock.patch.object(bootstrap.platform, "machine", return_value="x86_64"), mock.patch.object(bootstrap.platform, "release", return_value="4.18.0"), mock.patch.object(bootstrap, "runtime_glibc", return_value=("glibc", "2.28")):
+            self.assertEqual(bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True, legacy=True), bootstrap.LEGACY_TARGET)
+            with self.assertRaises(ValueError):
+                bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True)
+            with self.assertRaises(ValueError):
+                bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True, legacy=True, latest_archive=True)
+
+    def test_legacy_release_must_be_non_latest_prerelease(self):
+        with mock.patch.object(bootstrap, "json_api", return_value={"tag_name": TAG + "-legacy", "immutable": True, "draft": False, "prerelease": False, "id": 1}) as api:
+            with self.assertRaises(ValueError):
+                bootstrap.resolve_pinned(TAG, COMMIT, bootstrap.LEGACY_TARGET)
+            api.assert_called_once_with("/releases/tags/" + TAG + "-legacy")
+        with mock.patch.object(bootstrap, "json_api", side_effect=AssertionError("No metadata request")):
+            with self.assertRaises(ValueError):
+                bootstrap.resolve_pinned(TAG + "-rust-candidate.1", COMMIT, bootstrap.LEGACY_TARGET)
+
+    def test_legacy_pin_uses_separate_immutable_tag_and_numeric_asset_version(self):
+        release_tag = TAG + "-legacy"
+        name = "remote-control-agent-" + TAG + "-" + bootstrap.LEGACY_TARGET + ".tar.gz"
+        url = "https://github.com/" + bootstrap.OWNER + "/releases/download/" + release_tag + "/" + name
+        asset = {"name": name, "digest": "sha256:" + "b" * 64,
+                 "state": "uploaded", "id": 9, "size": 1024,
+                 "url": bootstrap.API + "/releases/assets/9", "browser_download_url": url}
+        release = {"tag_name": release_tag, "immutable": True, "draft": False,
+                   "prerelease": True, "id": 1, "assets": [asset]}
+        reference = {"ref": "refs/tags/" + release_tag,
+                     "object": {"type": "commit", "sha": COMMIT}}
+        def metadata(path):
+            return {"/releases/tags/" + release_tag: release,
+                    "/git/ref/tags/" + release_tag: reference}[path]
+        with mock.patch.object(bootstrap, "json_api", side_effect=metadata) as api:
+            self.assertEqual(bootstrap.resolve_pinned(TAG, COMMIT, bootstrap.LEGACY_TARGET),
+                             {"download": url, "size": 1024, "digest": "b" * 64})
+            self.assertEqual(api.call_count, 2)
+            with self.assertRaises(ValueError):
+                bootstrap.resolve_pinned(TAG, "c" * 40, bootstrap.LEGACY_TARGET)
+            self.assertEqual(api.call_count, 4)
+            with self.assertRaises(ValueError):
+                bootstrap.resolve_pinned(release_tag, COMMIT, TARGET)
+            self.assertEqual(api.call_count, 4)
+
+    def test_legacy_kernel_flag_requires_kernel_evidence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            proc = pathlib.Path(folder) / "42"
+            proc.mkdir()
+            status = "State:\tS (sleeping)\n"
+            (proc / "stat").write_text("42 (with ) in name) S 1 2 3 4 5 2097152\n")
+            self.assertTrue(bootstrap.proc_has_no_live_userspace(status, proc))
+            self.assertFalse(bootstrap.proc_has_no_live_userspace(status + "Kthread:\t0\n", proc))
+            (proc / "stat").write_text("99 (wrong pid) S 1 2 3 4 5 2097152\n")
+            self.assertFalse(bootstrap.proc_has_no_live_userspace(status, proc))
+            (proc / "stat").write_text("42 (user) S 1 2 3 4 5 0\n")
+            self.assertFalse(bootstrap.proc_has_no_live_userspace(status, proc))
+
     def test_only_stage_only_bypasses_tty_not_non_root_or_runtime_safety(self):
         with (mock.patch.object(bootstrap.sys, "platform", "linux"),
               mock.patch.object(bootstrap.os, "geteuid", return_value=1001),
@@ -68,14 +126,14 @@ class LinuxStageOnly(unittest.TestCase):
               mock.patch.object(bootstrap.sys, "stdout", mock.Mock(isatty=lambda: False)),
               mock.patch.object(bootstrap.platform, "machine", return_value="x86_64"),
               mock.patch.object(bootstrap.platform, "release", return_value="6.9.0"),
-              mock.patch.object(bootstrap.platform, "libc_ver", return_value=("glibc", "2.39"))):
+              mock.patch.object(bootstrap, "runtime_glibc", return_value=("glibc", "2.39"))):
             self.assertEqual(bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True), TARGET)
             with self.assertRaisesRegex(ValueError, "real interactive terminal"):
                 bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=False)
             with mock.patch.object(bootstrap.os, "geteuid", return_value=0):
                 with self.assertRaisesRegex(ValueError, "non-root"):
                     bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True)
-            with mock.patch.object(bootstrap.platform, "libc_ver", return_value=("glibc", "2.27")):
+            with mock.patch.object(bootstrap, "runtime_glibc", return_value=("glibc", "2.27")):
                 with self.assertRaisesRegex(ValueError, "glibc 2.28"):
                     bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True)
 

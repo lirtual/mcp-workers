@@ -59,6 +59,7 @@ function bundleMatches(spec, bundle, input) {
     return bundle.receipt_schema === 1
       && bundle.agent_runtime === 'rust-standard-linux-v1'
       && bundle.candidate_profile === 'standard-linux-rust-runtime-v1'
+      && absent(bundle.native_supervisor)
       && (spec.target === 'linux-x64-glibc'
         ? bundle.session_runtime === 'rust-session-v1'
         : absent(bundle.session_runtime));

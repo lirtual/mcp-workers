@@ -292,3 +292,14 @@ test("#914 native-only Darwin archive contains only the native binaries, manifes
     assert.throws(()=>inspectTarGzip(fixture({},[{name:"apps",type:"2"}]),opts),/Symlink/);
   }
 });
+
+ test("#911 independent Legacy profile cannot masquerade as Standard",()=>{
+  const legacy="linux-x64-legacy-glibc";
+  const session={name:"apps/remote-control-agent/.build/rca-session-linux-candidate",data:elf(62)};
+  const profile={target:legacy,glibc_min:"2.28",native_supervisor:"legacy-live-group-v1",session_runtime:"rust-session-v1"};
+  assert.doesNotThrow(()=>inspectTarGzip(fixture([session],profile),{tag,target:legacy}));
+  assert.throws(()=>inspectTarGzip(fixture([session],profile),{tag,target}));
+  assert.throws(()=>inspectTarGzip(fixture([session],{...profile,target}),{tag,target}));
+  assert.throws(()=>inspectTarGzip(fixture([session],{...profile,glibc_min:"2.34"}),{tag,target:legacy}));
+  assert.throws(()=>inspectTarGzip(fixture([],profile),{tag,target:legacy}));
+});

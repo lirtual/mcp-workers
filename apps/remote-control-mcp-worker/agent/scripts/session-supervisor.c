@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#ifndef RCA_LEGACY_LIVE_GROUP
 #ifndef SYS_pidfd_open
 #define SYS_pidfd_open __NR_pidfd_open
 #endif
@@ -27,6 +28,8 @@
 #define PIDFD_SIGNAL_PROCESS_GROUP (1U << 2)
 #endif
 
+#endif
+
 static volatile sig_atomic_t signal_seen = 0;
 
 static void handle_term(int signal_number) {
@@ -35,8 +38,15 @@ static void handle_term(int signal_number) {
 }
 
 static int signal_group(int pidfd, int signal_number) {
+#ifdef RCA_LEGACY_LIVE_GROUP
+  (void)pidfd;
+  /* The live leader owns its current process group. Never signal a saved PGID. */
+  if (getpid() != getpgrp()) { errno = EPERM; return -1; }
+  return kill(0, signal_number);
+#else
   return (int)syscall(SYS_pidfd_send_signal, pidfd, signal_number, NULL,
                       PIDFD_SIGNAL_PROCESS_GROUP);
+#endif
 }
 
 static int write_byte(int fd, char value) {
@@ -56,22 +66,35 @@ static int child_exit_code(int status) {
 int main(int argc, char **argv) {
   /* A detached, isolated process group checks the exact required syscall.
    * Signal 0 only checks permission/existence; it never delivers a signal. */
+  if (argc == 2 && strcmp(argv[1], "--profile") == 0) {
+#ifdef RCA_LEGACY_LIVE_GROUP
+    puts("legacy-live-group-v1");
+#else
+    puts("standard-pidfd-group-v1");
+#endif
+    return 0;
+  }
   const int probe = argc == 2 && strcmp(argv[1], "--probe") == 0;
   if ((!probe && argc != 3) || getpid() != getpgrp()) return 125;
 
+#ifdef RCA_LEGACY_LIVE_GROUP
+  int pidfd = -1; /* No pidfd exists on Linux 4.18. */
+  if (signal_group(pidfd, 0) < 0) {
+#else
   int pidfd = (int)syscall(SYS_pidfd_open, getpid(), 0);
   if (pidfd < 0 || signal_group(pidfd, 0) < 0) {
+#endif
     if (pidfd >= 0) close(pidfd);
     if (!probe) write_byte(4, 'E');
     return 125;
   }
   if (probe) {
-    close(pidfd);
+    if (pidfd >= 0) close(pidfd);
     return 0;
   }
 
   if (prctl(PR_SET_CHILD_SUBREAPER, 1) < 0) {
-    close(pidfd);
+    if (pidfd >= 0) close(pidfd);
     write_byte(4, 'E');
     return 125;
   }
@@ -81,26 +104,26 @@ int main(int argc, char **argv) {
   term_action.sa_handler = handle_term;
   sigemptyset(&term_action.sa_mask);
   if (sigaction(SIGTERM, &term_action, NULL) < 0) {
-    close(pidfd);
+    if (pidfd >= 0) close(pidfd);
     write_byte(4, 'E');
     return 125;
   }
 
   int control_flags = fcntl(3, F_GETFD);
   if (control_flags < 0 || fcntl(3, F_SETFD, control_flags | FD_CLOEXEC) < 0) {
-    close(pidfd);
+    if (pidfd >= 0) close(pidfd);
     write_byte(4, 'E');
     return 125;
   }
 
   pid_t shell_pid = fork();
   if (shell_pid < 0) {
-    close(pidfd);
+    if (pidfd >= 0) close(pidfd);
     write_byte(4, 'E');
     return 125;
   }
   if (shell_pid == 0) {
-    close(pidfd);
+    if (pidfd >= 0) close(pidfd);
     close(3);
     close(4);
     char *const shell_argv[] = {argv[1], (char *)"-c", argv[2], NULL};
@@ -133,7 +156,7 @@ int main(int argc, char **argv) {
         break;
       }
       if (!descendants_remain) {
-        close(pidfd);
+        if (pidfd >= 0) close(pidfd);
         return child_exit_code(child_status);
       }
     }
@@ -163,6 +186,6 @@ int main(int argc, char **argv) {
     if (signal_seen) signal_seen = 0;
   }
 
-  close(pidfd);
+  if (pidfd >= 0) close(pidfd);
   return 125;
 }

@@ -44,6 +44,7 @@ jobs:
       database_changed: ${{ steps.scope.outputs.database_changed }}
       remote_control_changed: ${{ steps.scope.outputs.remote_control_changed }}
       agent_native_changed: ${{ steps.scope.outputs.agent_native_changed }}
+      agent_legacy_changed: ${{ steps.scope.outputs.agent_legacy_changed }}
       rust_candidate_changed: ${{ steps.scope.outputs.rust_candidate_changed }}
       canonical_owner_email: ${{ steps.canonical_owner.outputs.email }}
       canonical_workflow_executor_repository: ${{ steps.canonical_workflow_executor.outputs.repository }}
@@ -167,6 +168,16 @@ jobs:
     needs: checks
     if: needs.checks.outputs.agent_native_changed == 'true'
     uses: ./.github/workflows/agent-native-candidates.yml
+    with:
+      candidate_tag: v0.1.61
+    permissions:
+      contents: read
+
+  agent-legacy-candidate:
+    name: Independent Legacy candidate
+    needs: checks
+    if: needs.checks.outputs.agent_legacy_changed == 'true'
+    uses: ./.github/workflows/agent-legacy-candidate.yml
     with:
       candidate_tag: v0.1.61
     permissions:

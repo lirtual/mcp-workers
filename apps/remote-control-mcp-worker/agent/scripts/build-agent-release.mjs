@@ -16,7 +16,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export function darwinGitRoot(packageRoot = root) {
   return path.resolve(packageRoot, "../../..");
 }
-const ALLOWED = new Set(["linux-x64-glibc", "linux-arm64-glibc", "darwin-arm64", "darwin-x64"]);
+const ALLOWED = new Set(["linux-x64-legacy-glibc", "linux-x64-glibc", "linux-arm64-glibc", "darwin-arm64", "darwin-x64"]);
 
 export function parseArgs(argv) {
   const params = {};
@@ -40,7 +40,7 @@ export function parseArgs(argv) {
       !/^[a-f0-9]{64}$/.test(params.nativeSha256) ||
       params.artifactProfile!=="rust-native-only-v1" ||
       !absolute(params.rustAgentBin) || !/^[a-f0-9]{64}$/.test(params.rustAgentSha256) ||
-      (hasSession && (params.target!=="linux-x64-glibc" ||
+      (hasSession && (!["linux-x64-glibc", "linux-x64-legacy-glibc"].includes(params.target) ||
         !absolute(params.rustSessionBin) || !/^[a-f0-9]{64}$/.test(params.rustSessionSha256)))) {
     throw new Error("Rust-only packaging requires a stable tag, supported target, native binaries and SHA-256 digests.");
   }
@@ -67,7 +67,7 @@ export function machOMachine(bytes) {
 export function ensureRustCandidate({target, rustAgentBin, rustAgentSha256, maxGlibcMin,
   invoke = spawnSync}) {
   const darwin = target === "darwin-arm64" || target === "darwin-x64";
-  const linux = target === "linux-x64-glibc" || target === "linux-arm64-glibc";
+  const linux = ["linux-x64-glibc", "linux-arm64-glibc", "linux-x64-legacy-glibc"].includes(target);
   if ((!darwin && !linux) || !path.isAbsolute(rustAgentBin) ||
       !/^[a-f0-9]{64}$/.test(rustAgentSha256) ||
       (linux && !/^[0-9]+\.[0-9]+$/.test(maxGlibcMin ?? ""))) {
@@ -87,7 +87,7 @@ export function ensureRustCandidate({target, rustAgentBin, rustAgentSha256, maxG
     }
     return {};
   }
-  const expected = target === "linux-x64-glibc" ? 62 : 183;
+  const expected = target.startsWith("linux-x64-") ? 62 : 183;
   if (machine(rustAgentBin) !== expected) throw new Error("Rust Agent candidate architecture mismatch.");
   const glibcMin = requiredGlibcVersion(rustAgentBin, invoke);
   const parts = value => value.split(".").map(Number);
@@ -138,7 +138,7 @@ export function ensureNativeTarget({ target, native, nativeSha256, artifactProfi
     }
     return {arch,libc:undefined,glibcMin:undefined};
   }
-  const arch=target==="linux-x64-glibc" ? "x64" : "arm64";
+  const arch=target.startsWith("linux-x64-") ? "x64" : "arm64";
   const id=arch==="x64" ? 62 : 183;
   if (process.platform!=="linux" || process.arch!==arch ||
       !process.report.getReport().header.glibcVersionRuntime) {
@@ -149,8 +149,14 @@ export function ensureNativeTarget({ target, native, nativeSha256, artifactProfi
     throw new Error("Required executable is not a regular file.");
   if (machine(native)!==id || createHash("sha256").update(readFileSync(native)).digest("hex")!==nativeSha256)
     throw new Error("Native supervisor architecture or checksum mismatch.");
+  const legacy=target==="linux-x64-legacy-glibc";
+  const profile=spawnSync(native,["--profile"],{encoding:"utf8",timeout:5000});
+  if (legacy ? profile.status!==0 || profile.stdout.trim()!=="legacy-live-group-v1"
+      : profile.status===0 && profile.stdout.trim()==="legacy-live-group-v1") {
+    throw new Error("Native supervisor profile does not match the release target.");
+  }
   const probe=spawnSync(native,["--probe"],{detached:true,stdio:"ignore",timeout:5000});
-  if (probe.error || probe.status!==0) throw new Error("Native Supervisor pidfd ABI is unavailable.");
+  if (probe.error || probe.status!==0) throw new Error("Native Supervisor group signaling ABI is unavailable.");
   const [major,minor]=requiredGlibcVersion(native).split(".").map(Number);
   if (major>2 || (major===2 && minor>34)) throw new Error("Native supervisor exceeds the supported glibc 2.34 ABI.");
   return {arch,libc:process.report.getReport().header.glibcVersionRuntime,glibcMin:requiredGlibcVersion(native)};
@@ -209,14 +215,18 @@ function tarball(dir, file) {
 
 export function build(args) {
   const {arch,libc,glibcMin}=ensureNativeTarget(args);
-  const rustCandidate=ensureRustCandidate({...args,maxGlibcMin:glibcMin});
+  const legacy = args.target === "linux-x64-legacy-glibc";
+  const abiLimit = legacy ? "2.28" : glibcMin;
+  if (legacy && !/^2\.(?:[0-9]|1[0-9]|2[0-8])$/.test(glibcMin)) throw Error("Legacy helper ABI exceeds 2.28");
+  const rustCandidate=ensureRustCandidate({...args,maxGlibcMin:abiLimit});
   const darwin=args.target==="darwin-arm64" || args.target==="darwin-x64";
   const hasSession=Boolean(args.rustSessionBin || args.rustSessionSha256);
-  if (hasSession && args.target!=="linux-x64-glibc")
+  if (legacy && !hasSession) throw Error("Legacy requires the complete x64 runtime.");
+  if (hasSession && !["linux-x64-glibc", "linux-x64-legacy-glibc"].includes(args.target))
     throw Error("Packaged Session entry is supported only in the Linux x64 Rust archive.");
   const sessionCandidate=hasSession ? ensureRustCandidate({
     target:args.target,rustAgentBin:args.rustSessionBin,
-    rustAgentSha256:args.rustSessionSha256,maxGlibcMin:glibcMin,
+    rustAgentSha256:args.rustSessionSha256,maxGlibcMin:abiLimit,
   }) : null;
   const effectiveGlibcMin=darwin ? undefined :
     [requiredGlibcVersion(args.native),rustCandidate.glibcMin,
@@ -270,7 +280,8 @@ export function build(args) {
       source_commit:sourceCommit.stdout.trim(),
     } : {
       candidate_profile:"standard-linux-rust-runtime-v1",
-      glibc_build:libc,glibc_min:effectiveGlibcMin,
+      ...(legacy ? {native_supervisor:"legacy-live-group-v1"} : {}),
+      ...(!legacy ? {glibc_build:libc} : {}),glibc_min:effectiveGlibcMin,
       upgrade_profile:"paired-full-v1",
     }),
     modules:[],
