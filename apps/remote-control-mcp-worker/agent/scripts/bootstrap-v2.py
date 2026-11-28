@@ -87,14 +87,16 @@ def root_user_manager_environment():
             private_mode = stat.S_IMODE(info.st_mode)
             if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
                     or info.st_uid != 0 or private_mode & 0o022
-                    or (item == runtime and private_mode & 0o077)):
+                    or (item == runtime and private_mode != 0o700)):
                 raise ValueError("Root user-manager runtime directory is not private and UID 0 owned")
         info = bus.lstat()
     except OSError as error:
         raise ValueError("Trusted UID 0 systemd --user runtime is not available") from error
-    if (not stat.S_ISSOCK(info.st_mode) or stat.S_ISLNK(info.st_mode)
-            or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o077):
-        raise ValueError("Root user-manager DBus socket is not private and UID 0 owned")
+    # systemd may expose the bus socket as 0666. Access is bounded by the
+    # UID 0-owned 0700 runtime directory validated above, so socket mode bits
+    # alone do not establish that another UID can reach it.
+    if not stat.S_ISSOCK(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+        raise ValueError("Root user-manager DBus socket is not UID 0 owned")
     env = dict(os.environ)
     env.update({"HOME": str(home), "XDG_RUNTIME_DIR": str(runtime),
                 "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(bus)})
@@ -120,6 +122,45 @@ def root_managed_unit(unit):
     return len(commands) == 1 and commands[0].endswith(" --root-managed")
 
 
+def root_identity_modes(home, ids):
+    """Return only existing UID 0 identities whose private key and ID agree."""
+    base = pathlib.Path(home) / STORE
+    verified = set()
+    for mode, relative in (("permanent", "v2-identity.pem"),
+                           ("temporary", "temporary/v2-identity.pem")):
+        if mode not in ids:
+            continue
+        key = base / relative
+        try:
+            native_owned_file(key, 8192)
+            device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+        except (OSError, ValueError, UnicodeError):
+            raise ValueError("Existing Root device identity is incomplete or untrusted")
+        if device_id != ids[mode]:
+            raise ValueError("Existing Root device identity does not match its private key metadata")
+        verified.add(mode)
+    return verified
+
+
+def root_recovery_preflight(home):
+    """Admit the existing Root service or a protected initial-install intent."""
+    root_user_manager_environment()
+    _, _, _, unit, ids = local_inventory(home)
+    if "permanent" not in root_identity_modes(home, ids):
+        raise ValueError("Root recovery requires a verified UID 0 permanent identity")
+    if root_managed_unit(unit):
+        return
+    key = pathlib.Path(home) / STORE / "v2-identity.pem"
+    intent = pathlib.Path(str(key) + ".native-upgrade-intent")
+    if not os.path.lexists(intent):
+        raise ValueError("Root recovery requires an existing managed service or initial activation intent")
+    record = json.loads(native_owned_file(intent, 512))
+    if not isinstance(record, dict) or not isinstance(record.get("initial_endpoint"), str):
+        raise ValueError("Root recovery has no protected initial activation intent")
+    # native_recover validates the complete transaction proof, service state,
+    # executable ownership and rollback before performing any recovery action.
+
+
 def root_opt_in(allow_root, stage_only=False, temporary=False, upgrade=False):
     if os.geteuid() != 0:
         if allow_root:
@@ -139,12 +180,16 @@ def root_opt_in(allow_root, stage_only=False, temporary=False, upgrade=False):
         root_user_manager_environment()
         return True
     _, _, _, unit, ids = local_inventory(home)
-    if allow_root and (root_managed_unit(unit) or ids):
+    identity_modes = root_identity_modes(home, ids)
+    if allow_root and (root_managed_unit(unit) or identity_modes):
         raise ValueError("--allow-root is only for the first UID 0 identity; omit it for an existing Root Agent")
     if not allow_root:
-        if temporary and ids:
+        if temporary and identity_modes:
             return True
-        if root_managed_unit(unit):
+        if root_managed_unit(unit) or identity_modes:
+            # Uninstall intentionally preserves the private identity and its
+            # original first-use authorization. Reinstall still performs the
+            # ordinary pairing confirmation and signed Owner Grant flow.
             root_user_manager_environment()
             return True
         raise ValueError("Root installation requires --allow-root and local confirmation")
@@ -805,11 +850,11 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
         if native_install:
             if temporary:
                 return native_temporary(account_home(), version, endpoint, name,
-                                        root_authorized=allow_root)
+                                        root_authorized=os.geteuid() == 0)
             if not confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
                 raise ValueError("Native installation not confirmed")
             result = native_pair_or_install(account_home(), version, endpoint, name,
-                                             root_authorized=allow_root)
+                                             root_authorized=os.geteuid() == 0)
             print(json.dumps(result, indent=2))
             if result.get("status") in ("active", "already_installed"):
                 print('Local manager: rca --help; if not on PATH, run "$HOME/.local/bin/rca" --help.',
@@ -1600,7 +1645,11 @@ def native_pair_or_install(home, root, endpoint, name=None,
     if record is not None and pending:
         raise ValueError("Conflicting native activation and identity transaction")
     repaired = False
-    if record is None and (current is not None or pending or ids.get("permanent")):
+    # A preserved key/ID with no installed service is a normal reinstall.
+    # Let the ordinary native pairing path recover that exact identity; the
+    # old/new repair transaction is only for an installed service or an
+    # already durable identity transition.
+    if record is None and (current is not None or pending):
         import socket
         if name is None:
             name = socket.gethostname()
@@ -2704,10 +2753,7 @@ def main():
             if not (sys.stdin.isatty() and sys.stdout.isatty()):
                 raise ValueError("Native recovery requires an owner interactive terminal")
             if os.geteuid() == 0:
-                root_user_manager_environment()
-                _, _, _, unit, _ = local_inventory(account_home())
-                if not root_managed_unit(unit):
-                    raise ValueError("Root recovery requires an existing UID 0 managed service")
+                root_recovery_preflight(account_home())
             print("Recover the previous local Agent service, or remove an interrupted first activation; identity retained.")
             if not confirm_owner("Recover the local Agent service?"):
                 raise ValueError("Native recovery not confirmed")

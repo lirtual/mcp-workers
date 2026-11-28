@@ -2009,6 +2009,8 @@ def verify_native_detached_upgrade():
 
 
 def verify_root_account_and_manager_contract():
+    root_identity_modes = bootstrap.root_identity_modes
+
     def fake_lstat(path):
         path = Path(path)
         entries = {
@@ -2036,6 +2038,30 @@ def verify_root_account_and_manager_contract():
         assert env["HOME"] == "/root"
         assert env["XDG_RUNTIME_DIR"] == "/run/user/0"
         assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/0/bus"
+
+        for socket_mode in (0o600, 0o666):
+            def socket_permissions(path, mode=socket_mode):
+                if Path(path) == Path("/run/user/0/bus"):
+                    return SimpleNamespace(st_mode=stat.S_IFSOCK | mode, st_uid=0)
+                return fake_lstat(path)
+
+            with patch.object(Path, "lstat", socket_permissions), \
+                    patch.object(bootstrap.subprocess, "run", manager_run):
+                bootstrap.root_user_manager_environment()
+
+        def unsafe_socket_parent(path):
+            if Path(path) == Path("/run/user/0"):
+                return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0)
+            return fake_lstat(path)
+
+        with patch.object(Path, "lstat", unsafe_socket_parent), \
+                patch.object(bootstrap.subprocess, "run", manager_run):
+            try:
+                bootstrap.root_user_manager_environment()
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Root manager accepted a world-accessible runtime directory")
 
         for inherited in (
             {"HOME": "/home/runner"},
@@ -2096,6 +2122,7 @@ def verify_root_account_and_manager_contract():
             patch.object(bootstrap.sys, "stdin", tty), \
             patch.object(bootstrap.sys, "stdout", tty), \
             patch.object(bootstrap.subprocess, "run", manager_run), \
+            patch.object(bootstrap, "root_identity_modes", return_value=set()), \
             patch.object(bootstrap, "local_inventory", return_value=([], [], None, None, {})), \
             patch.object(bootstrap, "confirm_owner", return_value=True) as confirm:
         assert bootstrap.root_opt_in(True) is True
@@ -2109,19 +2136,76 @@ def verify_root_account_and_manager_contract():
             else:
                 raise AssertionError("Root opt-in accepted missing consent or stage-only mode")
 
-        managed = "# Managed by Remote Control Agent installer.\nExecStart=/root/agent --root-managed\n"
-        for ids in ({"permanent": ID}, {"temporary": ID}):
-            with patch.object(bootstrap, "local_inventory",
-                              return_value=([], [], None, managed if "permanent" in ids else None, ids)):
-                try:
-                    bootstrap.root_opt_in(True, temporary="temporary" in ids)
-                except ValueError as error:
-                    assert "first UID 0 identity" in str(error)
-                else:
-                    raise AssertionError("--allow-root was accepted after a UID 0 identity existed")
-                if "temporary" in ids:
-                    assert bootstrap.root_opt_in(False, temporary=True) is True
-                    assert confirm.call_count == 1
+        with patch.object(bootstrap, "local_inventory",
+                          return_value=([], [], None, None, {"permanent": ID})), \
+                patch.object(bootstrap, "root_identity_modes", return_value={"permanent"}):
+            assert bootstrap.root_opt_in(False) is True
+            try:
+                bootstrap.root_opt_in(True)
+            except ValueError as error:
+                assert "first UID 0 identity" in str(error)
+            else:
+                raise AssertionError("Existing Root identity required repeated opt-in or was overwritten")
+
+        with patch.object(bootstrap, "local_inventory",
+                          return_value=([], [], None, None, {"temporary": ID})), \
+                patch.object(bootstrap, "root_identity_modes", return_value={"temporary"}):
+            assert bootstrap.root_opt_in(False) is True
+            assert bootstrap.root_opt_in(False, temporary=True) is True
+            assert confirm.call_count == 1
+
+        with patch.object(bootstrap, "local_inventory",
+                          return_value=([], [], None, None, {"permanent": ID})), \
+                patch.object(bootstrap, "root_identity_modes", return_value={"permanent"}), \
+                patch.object(bootstrap, "root_user_manager_environment",
+                             side_effect=ValueError("A trusted UID 0 systemd --user manager is not available")):
+            try:
+                bootstrap.root_opt_in(False)
+            except ValueError as error:
+                assert "systemd --user" in str(error) or "user-manager" in str(error)
+            else:
+                raise AssertionError("Root reinstall bypassed permanent manager validation")
+
+        recovery_record = {"initial_endpoint": ENDPOINT}
+        with patch.object(bootstrap, "root_user_manager_environment", return_value={}), \
+                patch.object(bootstrap, "local_inventory",
+                             return_value=([], [], None, None, {"permanent": ID})), \
+                patch.object(bootstrap, "root_identity_modes", return_value={"permanent"}), \
+                patch.object(bootstrap.os.path, "lexists", return_value=True), \
+                patch.object(bootstrap, "native_owned_file",
+                             return_value=json.dumps(recovery_record).encode()):
+            assert bootstrap.root_recovery_preflight(Path("/root")) is None
+
+        with patch.object(bootstrap, "root_user_manager_environment", return_value={}), \
+                patch.object(bootstrap, "local_inventory",
+                             return_value=([], [], None, None, {"permanent": ID})), \
+                patch.object(bootstrap, "root_identity_modes", return_value={"permanent"}), \
+                patch.object(bootstrap.os.path, "lexists", return_value=False):
+            try:
+                bootstrap.root_recovery_preflight(Path("/root"))
+            except ValueError as error:
+                assert "initial activation intent" in str(error)
+            else:
+                raise AssertionError("Root recovery admitted a missing service without transaction intent")
+
+        def identity_file(path, limit):
+            path = Path(path)
+            if path.name == "v2-identity.pem":
+                return b"existing-private-key"
+            if path.name == "v2-identity.pem.device-id":
+                return (ID + "\n").encode()
+            raise AssertionError("Unexpected identity path: " + str(path))
+
+        with patch.object(bootstrap, "root_identity_modes", root_identity_modes), \
+                patch.object(bootstrap, "native_owned_file", side_effect=identity_file):
+            modes = bootstrap.root_identity_modes(Path("/root"), {"permanent": ID})
+            assert modes == {"permanent"}, (modes, ID)
+            try:
+                bootstrap.root_identity_modes(Path("/root"), {"permanent": "different-id"})
+            except ValueError as error:
+                assert "does not match" in str(error)
+            else:
+                raise AssertionError("Mismatched Root key and device ID were trusted")
 
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
@@ -2170,6 +2254,59 @@ def verify_root_account_and_manager_contract():
         assert all(call.kwargs["env"] == root_env for call in run.call_args_list)
 
     print("NATIVE_ROOT_ACCOUNT_AND_MANAGER_CONTRACT_PASS")
+
+
+def verify_root_reinstall_keeps_existing_identity():
+    home = Path(tempfile.mkdtemp(prefix="rca-root-reinstall-"))
+    home.chmod(0o700)
+    key = home / bootstrap.STORE / "v2-identity.pem"
+    state = ([], None, None, {"permanent": ID}, key, None, None, None, None, None, 0)
+    tty = SimpleNamespace(isatty=lambda: True, write=lambda value: None, flush=lambda: None)
+    result = {"status": "active", "identity_preserved": True}
+    try:
+        with patch.object(bootstrap.os, "geteuid", return_value=0), \
+                patch.object(bootstrap, "root_user_manager_environment", return_value={}), \
+                patch.object(bootstrap, "native_initial_state", return_value=state), \
+                patch.object(bootstrap, "native_first_install", return_value=result) as install, \
+                patch.object(bootstrap.sys, "stdin", tty), \
+                patch.object(bootstrap.sys, "stdout", tty):
+            pair = lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("Uninstalled Root identity was sent through re-pair"))
+            actual = bootstrap.native_pair_or_install(
+                home, Path("/root/program"), ENDPOINT, pair=pair, root_authorized=True)
+            assert actual == result
+            install.assert_called_once()
+    finally:
+        import shutil
+        shutil.rmtree(home)
+    print("NATIVE_ROOT_REINSTALL_IDENTITY_PRESERVED_PASS")
+
+
+def verify_initial_recovery_before_unit_creation():
+    with tempfile.TemporaryDirectory(prefix="rca-initial-recovery-") as tmp:
+        home = Path(tmp)
+        home.chmod(0o700)
+        base = home / bootstrap.STORE
+        base.mkdir(parents=True, mode=0o700)
+        key = base / "v2-identity.pem"
+        intent = Path(str(key) + ".native-upgrade-intent")
+        record = {"operation_id": "a" * 32, "device_id": ID,
+                  "target_version": "v0.1.57-linux-x64-glibc",
+                  "initial_endpoint": ENDPOINT}
+        owned_file(intent, json.dumps(record))
+        root = home / "programs" / record["target_version"]
+        unit_file = home / ".config/systemd/user/remote-control-agent.service"
+        with patch.object(bootstrap, "local_inventory",
+                          return_value=(home / "programs", [root], unit_file, None,
+                                        {"permanent": ID})), \
+                patch.object(bootstrap, "native_recover_initial",
+                             return_value={"status": "initial_service_removed"}) as recover:
+            result = bootstrap.native_recover(home)
+        assert result == {"status": "initial_service_removed"}
+        recover.assert_called_once()
+        assert recover.call_args.args[2] == record
+        assert not unit_file.exists()
+    print("NATIVE_INITIAL_RECOVERY_WITHOUT_UNIT_PASS")
 
 
 def verify_root_pair_command_contract():
@@ -2251,6 +2388,8 @@ if __name__ == "__main__":
         verify_native_detached_upgrade()
         verify_automatic_detached_admission()
         verify_root_account_and_manager_contract()
+        verify_root_reinstall_keeps_existing_identity()
+        verify_initial_recovery_before_unit_creation()
         verify_root_pair_command_contract()
         verify_root_service_and_update_policy()
         verify_isolated()

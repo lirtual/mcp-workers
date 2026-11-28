@@ -48,7 +48,7 @@ test("first-install Linux script is static, no Worker GitHub API or old reposito
 });
 
 
-test("public Linux installer root opt-in is explicit and refused before downloads", async () => {
+test("public Linux installer defers first-use root authorization to the identity-aware bootstrap", async () => {
   const response = await worker.fetch(new Request(origin + "/install.sh"), approvedEnv({calls:0}));
   const script = await response.text();
   const root = mkdtempSync(join(tmpdir(), "rca-root-shell-"));
@@ -64,8 +64,9 @@ test("public Linux installer root opt-in is explicit and refused before download
   try {
     const missing = run(0, []);
     assert.notEqual(missing.status, 0);
-    assert.match(missing.stderr, /Root installation requires --allow-root/);
+    assert.match(missing.stderr, /Root installation requires a real local terminal/);
     assert.doesNotMatch(missing.stderr, /Downloading Remote Control Agent/);
+    assert.doesNotMatch(script, /Root installation requires --allow-root/);
 
     const nonInteractive = run(0, ["--allow-root"]);
     assert.notEqual(nonInteractive.status, 0);
