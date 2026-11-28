@@ -351,10 +351,7 @@ jobs:
           trap 'rm -rf "$temp_dir"' EXIT
           source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
           target="${{ matrix.target }}"
-          supervisor="$RUNNER_TEMP/rca-darwin-supervisor"
-          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
-            "$source_root/scripts/darwin-session-supervisor.c" -o "$supervisor"
-          chmod 700 "$supervisor"
+          supervisor="$source_root/.build/darwin-session-supervisor"
           cargo build --locked --release --manifest-path \
             "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
           rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
@@ -421,8 +418,46 @@ jobs:
           assert.equal(status.signed_wss,'unconfirmed');
           assert.equal(status.cloud_authorization,'unconfirmed');
           assert.deepEqual(doctor.status,status);
+          assert.ok(Array.isArray(doctor.findings));
           JS
+          if HOME="$cli_home" "$native_cli" </dev/null > "$temp_dir/menu.txt" 2>&1; then
+            echo 'Noninteractive menu unexpectedly accepted' >&2; exit 1
+          fi
+          grep -q 'Interactive menu requires a local terminal' "$temp_dir/menu.txt"
+          python3 - "$native_cli" "$cli_home" <<'PYMENU'
+          import os, pty, subprocess, sys
+          for selection, expected in [(b'0\n', 0), (b'\n', 0), (b'99\n', 1)]:
+              master, slave = pty.openpty()
+              child = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=slave,
+                  stderr=slave, env={**os.environ, 'HOME': sys.argv[2]})
+              try:
+                  os.write(master, selection)
+                  assert child.wait(timeout=5) == expected
+              finally:
+                  if child.poll() is None:
+                      child.kill()
+                      child.wait(timeout=5)
+                  os.close(master)
+                  os.close(slave)
+          PYMENU
           test -z "$(ls -A "$cli_home")"
+          # The regular CI tag is newer than the synthetic v0.1.59 baseline.
+          # Manual candidate tags remain governed by their existing release contract.
+          if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+            # Native-only local upgrade/recovery, disposable stopped state.
+            native_old_out="$temp_dir/baseline"
+            node "$source_root/scripts/build-agent-release.mjs" \
+              --version v0.1.59 --target "$target" \
+              --artifact-profile rust-native-only-v1 \
+              --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
+              --rust-agent-bin "$rust_agent" \
+              --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
+              --out "$native_old_out"
+            RCA_MACOS_NATIVE_BASELINE_ARCHIVE="$native_old_out/remote-control-agent-v0.1.59-$target.tar.gz" \
+              RCA_MACOS_NATIVE_CANDIDATE_ROOT="$unpacked" \
+              RCA_MACOS_NATIVE_CANDIDATE_ARCHIVE="$archive" \
+              node --test "$source_root/tests/macos-native-local-lifecycle.integration.mjs"
+          fi
           echo "Verified Rust-only candidate from $(git rev-parse HEAD), unpublished SHA:"
           shasum -a 256 "$archive"
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then

@@ -37,10 +37,10 @@ test('a nested Agent edit selects Remote Control compatibility checks, and a Wor
   assert.equal(ssh.apps.includes('remote-control-mcp-worker'), false);
 });
 
-test('Rust-only candidate changes run Rust CI without rebuilding the five unchanged Node packages', () => {
+test('Rust-only source changes run Rust CI and verify all affected native-only packages', () => {
   const rust = selectionDetails(['apps/remote-control-mcp-worker/agent/native-rust/src/lib.rs']);
   assert.equal(rust.rustCandidateChanged, true);
-  assert.equal(rust.agentNativeChanged, false);
+  assert.equal(rust.agentNativeChanged, true);
   assert.equal(rust.remoteControlChanged, true);
   const mixed = selectionDetails([
     'apps/remote-control-mcp-worker/agent/native-rust/src/lib.rs',

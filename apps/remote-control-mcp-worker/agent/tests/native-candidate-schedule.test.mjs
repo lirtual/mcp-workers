@@ -46,6 +46,17 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   assert.match(macosReview,/name: Rust-only native macOS 15/);
   assert.match(macosReview,/--artifact-profile rust-native-only-v1/);
   assert.match(macosReview,/--rust-agent-bin/);
+  const core=ci.slice(ci.indexOf('  rust-agent-candidate:'),ci.indexOf('  database-integration:'));
+  assert.doesNotMatch(core,/cargo build --locked --release|build-agent-release[.]mjs|macos-native-local-lifecycle[.]integration[.]mjs/);
+  assert.match(core,/Verify Darwin owned-group and signed managed WSS/);
+  const macJob=macosReview.split('  windows-native-preview:')[0];
+  assert.equal((macJob.match(/cargo build --locked --release/g)||[]).length,1);
+  assert.equal((macJob.match(/cc -std=c11/g)||[]).length,1);
+  for (const marker of ['Interactive menu requires a local terminal','pty.openpty()', 'doctor.findings', 'macos-native-local-lifecycle.integration.mjs','cmp "$temp_dir/first/$asset" "$temp_dir/second/$asset"']) {
+    assert.ok(macJob.includes(marker), marker);
+  }
+  assert.equal(selectionDetails(['apps/remote-control-mcp-worker/agent/native-rust/src/lib.rs']).agentNativeChanged,true);
+
   assert.doesNotMatch(macosReview,/--node-bin|node_archive_sha256|node-v24[.]21[.]0/);
   assert.doesNotMatch(macosReview,/macos-packaged-runtime-smoke|macos-local[.]test[.]mjs|macos-remote-upgrade[.]test[.]mjs/);
   assert.doesNotMatch(macosReview,/macos-local[.]sh install/);
