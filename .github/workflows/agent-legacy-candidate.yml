@@ -89,12 +89,15 @@ jobs:
           session_bin="$RCA_TEST_TEMP/build/rca-session-linux-candidate"
           agent=apps/remote-control-mcp-worker/agent
           output="$RCA_TEST_TEMP/legacy"
-          node "$agent/scripts/build-agent-release.mjs" \
-            --version "$version" --target "$target" \
-            --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
-            --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
-            --rust-session-bin "$session_bin" --rust-session-sha256 "$(sha256sum "$session_bin" | cut -d' ' -f1)" \
-            --artifact-profile rust-native-only-v1 --out "$output"
+          build_bundle() {
+            node "$agent/scripts/build-agent-release.mjs" \
+              --version "$1" --target "$target" \
+              --native "$supervisor" --native-sha256 "$(sha256sum "$supervisor" | cut -d' ' -f1)" \
+              --rust-agent-bin "$rust_agent" --rust-agent-sha256 "$(sha256sum "$rust_agent" | cut -d' ' -f1)" \
+              --rust-session-bin "$session_bin" --rust-session-sha256 "$(sha256sum "$session_bin" | cut -d' ' -f1)" \
+              --artifact-profile rust-native-only-v1 --out "$2"
+          }
+          build_bundle "$version" "$output"
           archive="$output/remote-control-agent-$version-$target.tar.gz"
           python3 -B "$agent/scripts/validate-local-archive.py" "$archive" "$version" "$target"
           node --input-type=module -e 'import {readFileSync} from "node:fs"; import {inspectTarGzip} from "./apps/remote-control-mcp-worker/agent/scripts/verify-agent-release.mjs"; inspectTarGzip(readFileSync(process.argv[1]),{tag:process.argv[2],target:process.argv[3]});' \
@@ -103,6 +106,61 @@ jobs:
           cp -- "$archive" legacy-candidate/
           (cd legacy-candidate; sha256sum "$(basename "$archive")" > SHA256SUMS.txt)
           git rev-parse HEAD > legacy-candidate/source-commit.txt
+          # The rollback baseline must itself admit 0550. The previously released
+          # Legacy binary does not. Use a second unpublished label over the same
+          # verified ELF inputs to exercise the real lifecycle without publication.
+          next_version="${version%.*}.$((10#${version##*.}+1))"
+          build_bundle "$next_version" "$RCA_TEST_TEMP/fixture"
+          {
+            echo "RCA_TEST_OLD_ARCHIVE=$archive"
+            echo "RCA_TEST_NATIVE_ARCHIVE=$RCA_TEST_TEMP/fixture/remote-control-agent-$next_version-$target.tar.gz"
+            echo "RCA_TEST_BASELINE_VERSION=$version"
+            echo "RCA_TEST_TARGET_VERSION=$next_version"
+          } >> "$GITHUB_ENV"
+      - name: Exercise Root HOME 0550 on disposable systemd runner (no Owner Grant)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$GITHUB_ACTIONS" = true
+          test "$(getent passwd 0 | cut -d: -f6)" = /root
+          test "$(sudo stat -c %u /root)" = 0
+          for item in /root/.local/share/mcp-workers/remote-control \
+            /root/.local/state/mcp-workers/remote-control-agent /root/.local/bin/rca \
+            /root/.config/systemd/user/remote-control-agent.service{,.d,.upgrade-backup}; do
+            sudo test ! -e "$item"
+            sudo test ! -L "$item"
+          done
+          old_mode="$(sudo stat -c %a /root)"
+          old_linger="$(sudo loginctl show-user 0 -p Linger --value 2>/dev/null || true)"
+          old_manager="$(sudo systemctl is-active user@0.service || true)"
+          manager_env=(env HOME=/root XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus)
+          cleanup() {
+            sudo chmod "$old_mode" /root
+            if [[ "$old_linger" != yes ]]; then sudo loginctl disable-linger root; fi
+            if [[ "$old_manager" != active ]]; then sudo systemctl stop user@0.service; fi
+          }
+          trap cleanup EXIT
+          sudo loginctl enable-linger root
+          sudo systemctl start user@0.service
+          for _ in $(seq 1 50); do
+            sudo test -S /run/user/0/bus && break
+            sleep 0.1
+          done
+          sudo test -S /run/user/0/bus
+          state="$(sudo "${manager_env[@]}" /usr/bin/systemctl --user show remote-control-agent.service -p LoadState --value 2>/dev/null || true)"
+          test "$state" = not-found
+          sudo chmod 0550 /root
+          agent="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
+          # No inherited GitHub token or cloud endpoint is passed to the Root fixture.
+          sudo env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root \
+            XDG_RUNTIME_DIR=/run/user/0 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus \
+            GITHUB_ACTIONS=true RUNNER_ENVIRONMENT=github-hosted RCA_TEST_ROOT_HOME_0550=1 \
+            RCA_TEST_AGENT_SOURCE="$agent" RCA_TEST_OLD_ARCHIVE="$RCA_TEST_OLD_ARCHIVE" \
+            RCA_TEST_NATIVE_ARCHIVE="$RCA_TEST_NATIVE_ARCHIVE" \
+            RCA_TEST_BASELINE_VERSION="$RCA_TEST_BASELINE_VERSION" RCA_TEST_TARGET_VERSION="$RCA_TEST_TARGET_VERSION" \
+            "$(node -p 'process.execPath')" --experimental-strip-types "$agent/tests/linux-native-only-systemd.integration.mjs"
+          test "$(sudo stat -c %a /root)" = 550
       - name: Save independent unpublished Legacy candidate
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4

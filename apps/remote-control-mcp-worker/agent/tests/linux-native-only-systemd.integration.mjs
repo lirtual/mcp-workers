@@ -1,10 +1,10 @@
 // Real systemd safety seam for native Rust upgrade (no Worker grants).
-// Runs only as a disposable user created by agent-native-candidates.yml.
+// Runs only on disposable CI accounts, including the isolated Legacy Root HOME fixture.
 import assert from "node:assert/strict";
 import {spawn,spawnSync} from "node:child_process";
 import {generateKeyPairSync,randomUUID} from "node:crypto";
 import {DatabaseSync} from "node:sqlite";
-import {chmodSync,existsSync,mkdirSync,readFileSync,readlinkSync,rmSync,symlinkSync,writeFileSync} from "node:fs";
+import {chmodSync,existsSync,lstatSync,mkdirSync,readFileSync,readlinkSync,rmSync,statSync,symlinkSync,writeFileSync} from "node:fs";
 import path from "node:path";
 import {seedUnknownReceipt} from "./fixtures/receipt-ledger.ts";
 
@@ -12,12 +12,20 @@ const source=process.env.RCA_TEST_AGENT_SOURCE;
 const oldArchive=process.env.RCA_TEST_OLD_ARCHIVE;
 const nativeArchive=process.env.RCA_TEST_NATIVE_ARCHIVE;
 if(!source||!oldArchive||!nativeArchive)throw Error("Missing isolated native systemd fixture paths");
-if(process.getuid()===0||!process.env.DBUS_SESSION_BUS_ADDRESS||!process.env.XDG_RUNTIME_DIR)
-  throw Error("Disposable unprivileged systemd user bus is required");
+const rootFixture=process.env.RCA_TEST_ROOT_HOME_0550==="1";
+if(!process.env.DBUS_SESSION_BUS_ADDRESS||!process.env.XDG_RUNTIME_DIR||
+    (process.getuid()===0)!==rootFixture)
+  throw Error("Disposable systemd user bus and matching fixture identity required");
+if(rootFixture&&(process.env.GITHUB_ACTIONS!=="true"||
+    process.env.RUNNER_ENVIRONMENT!=="github-hosted"||
+    process.env.HOME!=="/root"||
+    (statSync("/root").mode&0o777)!==0o550))
+  throw Error("Root fixture requires a disposable hosted runner with HOME 0550");
+if(rootFixture)process.umask(0o077);
 
 const UNIT="remote-control-agent.service";
 const home=process.env.HOME;
-const target=process.arch==="arm64"?"linux-arm64-glibc":"linux-x64-glibc";
+const target=rootFixture?"linux-x64-legacy-glibc":process.arch==="arm64"?"linux-arm64-glibc":"linux-x64-glibc";
 const base=path.join(home,".local/share/mcp-workers/remote-control");
 const key=path.join(base,"v2-identity.pem");
 const deviceId=key+".device-id";
@@ -68,14 +76,33 @@ function liveExecutable(expected) {
   assert.equal(result.status,0,result.stdout+"\n"+result.stderr);
   return result.stdout.trim();
 }
-for(const dir of [base,path.dirname(unitFile),path.dirname(receipts),path.dirname(cli)])
-  rmSync(dir,{recursive:true,force:true});
-mkdirSync(oldRoot,{recursive:true,mode:0o700});
-mkdirSync(nativeRoot,{recursive:true,mode:0o700});
+if(rootFixture){
+  // Never remove pre-existing Root resources to make the fixture pass.
+  for(const item of [base,path.dirname(receipts),unitFile,backupFile,unitFile+".d",cli])
+    assert.equal(lstatSync(item,{throwIfNoEntry:false}),undefined,"Root fixture requires absent RCA resources: "+item);
+}else{
+  for(const dir of [base,path.dirname(unitFile),path.dirname(receipts),path.dirname(cli)])
+    rmSync(dir,{recursive:true,force:true});
+  mkdirSync(oldRoot,{recursive:true,mode:0o700});
+  mkdirSync(nativeRoot,{recursive:true,mode:0o700});
+}
 for(const [archive,destination] of [[oldArchive,oldRoot],[nativeArchive,nativeRoot]]){
-  const result=spawnSync("/usr/bin/tar",["-xzf",archive,"-C",destination],{
-    encoding:"utf8",timeout:12000
-  });
+  const tag=destination===oldRoot?oldVersion:nextVersion;
+  const result=rootFixture
+    ?spawnSync("/usr/bin/python3",["-I","-B","-c",[
+      "import importlib.util,pathlib,sys",
+      "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
+      "b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)",
+      "home=b.root_account_home(); programs=b.program_home(home)",
+      "destination=pathlib.Path(sys.argv[3]); assert destination.parent==programs",
+      "records=b.inspect_archive(sys.argv[2],sys.argv[4],sys.argv[5])",
+      "b.unpack_verified(sys.argv[2],destination,records,sys.argv[4],sys.argv[5])",
+      "b.validated_owned_version(destination)",
+    ].join("\n"),path.join(source,"scripts/bootstrap-v2.py"),archive,destination,tag,target],
+    {env,encoding:"utf8",timeout:15000})
+    :spawnSync("/usr/bin/tar",["-xzf",archive,"-C",destination],{
+      encoding:"utf8",timeout:12000
+    });
   assert.equal(result.status,0,result.stderr||String(result.error));
   const bundle=JSON.parse(readFileSync(path.join(destination,"bundle.json"),"utf8"));
   assert.equal(bundle.version,destination===oldRoot?oldVersion:nextVersion);
@@ -156,7 +183,7 @@ try {
   systemctl("enable","--now",UNIT);
   installed=true;
   symlinkSync(path.join(oldRoot,"apps/remote-control-agent/scripts/rca.sh"),cli);
-  assert.equal(liveExecutable(priorExe),priorExe,"real published Rust is active before handoff");
+  assert.equal(liveExecutable(priorExe),priorExe,"prior verified Rust is active before handoff");
 
   // Run the reviewed switch against actual systemd, with a deliberately
   // missing signed Worker WSS proof. This must restore the ORIGINAL Rust.
@@ -297,14 +324,17 @@ try {
       await new Promise(resolve=>child.once("exit",resolve));
     }
   }
+  if(rootFixture)assert.equal(statSync(home).mode&0o777,0o550,"installer changed Root HOME permissions");
   console.log(JSON.stringify({
-    real_systemd:true,real_published_rust_baseline:true,
+    real_systemd:true,real_published_rust_baseline:!rootFixture,
+    root_home_0550_legacy_same_source_fixture:rootFixture,
     native_executable_activated_then_rejected_without_wss:true,
     rollback_rust_active_verified:true,identity_preserved:true,
     unknown_receipt_preserved:true,
     native_upgrader_sigkill_recovery_evidence_preserved:true,
     pending_upgrade_uninstall_refused:true,
-    verified_native_recovery_restored_published_rust:true,
+    verified_native_recovery_restored_prior_rust:true,
+    verified_native_recovery_restored_published_rust:!rootFixture,
     real_rust_to_rust_rejected_without_wss:true,
     original_rust_service_and_unknown_restored:true
   }));
