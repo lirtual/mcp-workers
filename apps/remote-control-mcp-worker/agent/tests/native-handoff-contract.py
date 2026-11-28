@@ -2074,7 +2074,7 @@ def verify_root_account_and_manager_contract():
             Path("/"): (stat.S_IFDIR | 0o755, 0),
             Path("/run"): (stat.S_IFDIR | 0o755, 0),
             Path("/run/user"): (stat.S_IFDIR | 0o755, 0),
-            Path("/root"): (stat.S_IFDIR | 0o700, 0),
+            Path("/root"): (stat.S_IFDIR | 0o550, 0),
             Path("/run/user/0"): (stat.S_IFDIR | 0o700, 0),
             Path("/run/user/0/bus"): (stat.S_IFSOCK | 0o600, 0),
         }
@@ -2090,6 +2090,25 @@ def verify_root_account_and_manager_contract():
             patch.object(Path, "lstat", fake_lstat), \
             patch.dict(os.environ, {"HOME": "/root"}, clear=True):
         assert bootstrap.root_account_home() == Path("/root")
+        for mode in (0o700, 0o550, 0o755):
+            def readable_home(path, accepted_mode=mode):
+                if Path(path) == Path("/root"):
+                    return SimpleNamespace(st_mode=stat.S_IFDIR | accepted_mode, st_uid=0)
+                return fake_lstat(path)
+            with patch.object(Path, "lstat", readable_home):
+                assert bootstrap.root_account_home() == Path("/root")
+        for mode in (0o770, 0o757):
+            def writable_home(path, unsafe_mode=mode):
+                if Path(path) == Path("/root"):
+                    return SimpleNamespace(st_mode=stat.S_IFDIR | unsafe_mode, st_uid=0)
+                return fake_lstat(path)
+            with patch.object(Path, "lstat", writable_home):
+                try:
+                    bootstrap.root_account_home()
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("Root HOME accepted group/other write permission")
         with patch.object(bootstrap.subprocess, "run", manager_run):
             env = bootstrap.root_user_manager_environment()
         assert env["HOME"] == "/root"

@@ -62,13 +62,13 @@ def root_account_home():
     home = pathlib.Path(pwd.getpwuid(0).pw_dir)
     if not home.is_absolute() or os.environ.get("HOME") != str(home):
         raise ValueError("Root HOME must match the UID 0 OS account; use sudo -H")
+    # HOME may expose directory names. RCA-owned identities, programs and
+    # service state are checked at their own private paths.
     for item in reversed((home, *home.parents)):
         info = item.lstat()
         if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
                 or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022):
             raise ValueError("Unsafe or writable UID 0 home parent")
-        if item == home and stat.S_IMODE(info.st_mode) & 0o077:
-            raise ValueError("Root HOME must be private to UID 0")
     if (os.environ.get("XDG_RUNTIME_DIR") not in (None, "/run/user/0")
             or os.environ.get("DBUS_SESSION_BUS_ADDRESS") not in
                (None, "unix:path=/run/user/0/bus")):
