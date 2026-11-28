@@ -48,6 +48,8 @@ const requestId = ${JSON.stringify(requestId)};
 const form = document.getElementById("secure-form"), field = document.getElementById("secret");
 const submit = document.getElementById("submit"), status = document.getElementById("status");
 const cancel = document.getElementById("cancel");
+const hiddenInputSupported = typeof CSS !== "undefined" && typeof CSS.supports === "function" &&
+  CSS.supports("-webkit-text-security", "disc");
 let busy = false, inputAttempted = false, reviewed = null;
 function text(id, value) { document.getElementById(id).textContent = value == null ? "—" : String(value); }
 function describeTarget(target) {
@@ -111,11 +113,17 @@ function showState(value) {
   document.getElementById("error-code").hidden = !value.error_code;
   const pending = value.state === "pending";
   form.hidden = !pending;
-  submit.disabled = !pending || busy || inputAttempted;
+  const canSubmit = pending && !busy && !inputAttempted && hiddenInputSupported;
+  field.disabled = !canSubmit;
+  submit.disabled = !canSubmit;
   cancel.disabled = !pending || busy;
   document.getElementById("refresh").hidden = !inputAttempted && pending;
   if (["succeeded", "failed", "cancelled", "expired"].includes(value.state)) document.getElementById("refresh").hidden = true;
-  if (pending && !inputAttempted) status.textContent = "Review the exact target before submitting.";
+  if (pending && !hiddenInputSupported) {
+    status.textContent = "This browser cannot hide secure input. Use the Owner CLI or a supported browser; no input was sent.";
+  } else if (pending && !inputAttempted) {
+    status.textContent = "Review the exact target before submitting.";
+  }
   if (value.state === "accepted" || value.state === "running") status.textContent = "Input submitted once. Waiting for the target Agent.";
   if (value.state === "unknown") status.textContent = "Outcome uncertain. Do not submit again; check the original ChatGPT request.";
   if (value.state === "succeeded") status.textContent = "The target Agent confirmed completion.";

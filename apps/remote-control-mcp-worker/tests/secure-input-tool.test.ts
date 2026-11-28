@@ -49,7 +49,7 @@ test("request_secure_input forwards explicit production classification and rejec
 async function secureInputPageFixture(
   target: Record<string, unknown> = { kind: "task_process", session_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", name: "API_TOKEN" },
   auth: "signed-in" | "signed-out" | "missing" | "load-failed" | "rejected" = "signed-in",
-  options: { production?: boolean; deviceName?: string; execution?: Record<string, unknown>; principal?: Record<string, unknown> } = {},
+  options: { production?: boolean; deviceName?: string; execution?: Record<string, unknown>; principal?: Record<string, unknown>; hiddenInputSupported?: boolean } = {},
 ) {
   target ??= { kind: "task_process", session_id: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", name: "API_TOKEN" };
   const id = randomUUID();
@@ -71,7 +71,7 @@ async function secureInputPageFixture(
   const handlers = new Map<string, Handler>(), elements = new Map<string, Element>();
   const element = (id: string) => {
     if (!elements.has(id)) elements.set(id, {
-      hidden: id !== "signin-panel" && id !== "status", disabled: true, checked: false, value: "", textContent: "",
+      hidden: id !== "signin-panel" && id !== "status", disabled: id !== "secret", checked: false, value: "", textContent: "",
       addEventListener(type, handler) { handlers.set(id + ":" + type, handler); },
     });
     return elements.get(id)!;
@@ -93,6 +93,8 @@ async function secureInputPageFixture(
   runInNewContext(source, {
     document: { getElementById: element }, location: { href: origin + "/secure-input/" + id + "?untrusted=1#fragment" },
     window: { Clerk: clerk },
+    CSS: { supports: (property: string, value: string) =>
+      property === "-webkit-text-security" && value === "disc" && options.hiddenInputSupported !== false },
     fetch: async (url: string, init: RequestInit) => {
       const action = url.split("/").at(-1)!;
       actions.push(action);
@@ -152,6 +154,21 @@ test("secure input leaves sign-in and failure status visible until Owner verific
   assert.equal(signedIn.element("signin-panel").hidden, true);
   assert.equal(signedIn.element("details").hidden, false);
   assert.deepEqual(signedIn.actions, ["details"]);
+});
+
+test("secure input refuses web submission when the browser cannot mask the secret field", async () => {
+  const marker = "synthetic-unsupported-browser-marker";
+  const { element, invoke, actions, counts } = await secureInputPageFixture(undefined, "signed-in", {
+    hiddenInputSupported: false,
+  });
+  assert.equal(element("secret").disabled, true);
+  assert.equal(element("submit").disabled, true);
+  assert.equal(element("cancel").disabled, false);
+  assert.match(element("status").textContent, /cannot hide secure input/i);
+  element("secret").value = marker;
+  await invoke("secure-form", "submit");
+  assert.equal(counts().submissions, 0);
+  assert.deepEqual(actions, ["details"]);
 });
 
 test("secure input page obtains a current Owner token per action and never re-enables uncertain submission", async () => {
