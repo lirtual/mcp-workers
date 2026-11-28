@@ -184,8 +184,8 @@ jobs:
       contents: read
 
   rust-agent-candidate:
-    # This is only the unshipped Rust core. Native installation, managed process
-    # ownership, WSS Owner pairing, upgrade and Release require separate gates.
+    # Native source checks; packaged CLI and lifecycle checks belong to the
+    # native candidate workflow. Neither path authorizes a Release.
     name: RCA Rust core (nonproduction) / ${{ matrix.os }}
     needs: checks
     if: needs.checks.outputs.rust_candidate_changed == 'true'
@@ -264,118 +264,6 @@ jobs:
           RCA_DARWIN_SUPERVISOR_BIN="$RUNNER_TEMP/rca-darwin-supervisor" \
             cargo test --manifest-path apps/remote-control-mcp-worker/agent/native-rust/Cargo.toml \
             --locked --test darwin_supervisor --test native_process --test native_process_wss --test native_file_wss --test cli_managed -- --ignored --nocapture
-      - uses: pnpm/action-setup@v4
-        if: runner.os == 'macOS'
-        with:
-          version: 10.17.1
-          run_install: false
-      - name: Install pinned macOS package-builder dependencies
-        if: runner.os == 'macOS'
-        run: pnpm install --filter remote-control-agent --frozen-lockfile --ignore-scripts
-      - name: Build and exercise unpublished macOS Rust candidate package
-        if: runner.os == 'macOS'
-        timeout-minutes: 12
-        shell: bash
-        run: |
-          set -euo pipefail
-          case "$(uname -m)" in
-            arm64)
-              target=darwin-arm64
-              ;;
-            x86_64)
-              target=darwin-x64
-              ;;
-            *) echo "Unsupported Darwin architecture" >&2; exit 1 ;;
-          esac
-          source_root="$GITHUB_WORKSPACE/apps/remote-control-mcp-worker/agent"
-          supervisor="$RUNNER_TEMP/rca-darwin-supervisor"
-          cc -std=c11 -O2 -Wall -Wextra -Werror -fstack-protector-strong \
-            "$source_root/scripts/darwin-session-supervisor.c" -o "$supervisor"
-          chmod 700 "$supervisor"
-          cargo build --locked --release --manifest-path \
-            "$source_root/native-rust/Cargo.toml" --bin rca-standard-darwin-candidate
-          rust_agent="$source_root/native-rust/target/release/rca-standard-darwin-candidate"
-          # Native-only acceptance: build from these same verified native
-          # binaries and independently inspect and read the exact inventory.
-          native_out="$RUNNER_TEMP/rca-darwin-native"
-          node "$source_root/scripts/build-agent-release.mjs" \
-            --version v0.1.60 --target "$target" \
-            --artifact-profile rust-native-only-v1 \
-            --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
-            --rust-agent-bin "$rust_agent" \
-            --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
-            --out "$native_out"
-          native_archive="$native_out/remote-control-agent-v0.1.60-$target.tar.gz"
-          node --input-type=module - "$source_root/scripts/verify-agent-release.mjs" "$native_archive" "$target" <<'JS'
-          import {readFileSync} from 'node:fs';
-          const [verifier,archive,target]=process.argv.slice(2);
-          const {inspectTarGzip}=await import(verifier);
-          inspectTarGzip(readFileSync(archive),{tag:'v0.1.60',target});
-          JS
-          native_unpacked="$native_out/unpacked"
-          mkdir -m 700 "$native_unpacked"
-          tar -xzf "$native_archive" -C "$native_unpacked"
-          test "$("$native_unpacked/apps/remote-control-agent/.build/rca-standard-darwin-candidate" \
-            --verify-bundle v0.1.60 "$target")" = "$(git rev-parse HEAD)"
-          # Exercise the extracted Rust executable, not the source or old Node manager.
-          native_cli="$native_unpacked/apps/remote-control-agent/.build/rca-standard-darwin-candidate"
-          cli_home="$native_out/cli-home"
-          mkdir -m 700 "$cli_home"
-          test "$(HOME="$cli_home" "$native_cli" --version)" = v0.1.60
-          HOME="$cli_home" "$native_cli" --help > "$native_out/help.txt"
-          grep -q 'status' "$native_out/help.txt"
-          grep -q 'uninstall' "$native_out/help.txt"
-          grep -q 'pair' "$native_out/help.txt"
-          if HOME="$cli_home" "$native_cli" pair </dev/null > "$native_out/pair.txt" 2>&1; then
-            echo 'Noninteractive pair unexpectedly accepted' >&2; exit 1
-          fi
-          grep -q 'Pair requires a local owner terminal' "$native_out/pair.txt"
-          HOME="$cli_home" "$native_cli" status --json > "$native_out/status.json"
-          HOME="$cli_home" "$native_cli" doctor --json > "$native_out/doctor.json"
-          node --input-type=module - "$native_out/status.json" "$native_out/doctor.json" <<'JS'
-          import {readFileSync} from 'node:fs';
-          import assert from 'node:assert/strict';
-          const [status,doctor]=process.argv.slice(2).map(p=>JSON.parse(readFileSync(p,'utf8')));
-          assert.notEqual(status.installed,true);
-          assert.equal(status.signed_wss,'unconfirmed');
-          assert.equal(status.cloud_authorization,'unconfirmed');
-          assert.deepEqual(doctor.status,status);
-          assert.ok(Array.isArray(doctor.findings));
-          JS
-          if HOME="$cli_home" "$native_cli" </dev/null > "$native_out/menu.txt" 2>&1; then
-            echo 'Noninteractive menu unexpectedly accepted' >&2; exit 1
-          fi
-          grep -q 'Interactive menu requires a local terminal' "$native_out/menu.txt"
-          python3 - "$native_cli" "$cli_home" <<'PYMENU'
-          import os, pty, subprocess, sys
-          for selection, expected in [(b'0\n', 0), (b'\n', 0), (b'99\n', 1)]:
-              master, slave = pty.openpty()
-              child = subprocess.Popen([sys.argv[1]], stdin=slave, stdout=slave,
-                  stderr=slave, env={**os.environ, 'HOME': sys.argv[2]})
-              try:
-                  os.write(master, selection)
-                  assert child.wait(timeout=5) == expected
-              finally:
-                  if child.poll() is None:
-                      child.kill()
-                      child.wait(timeout=5)
-                  os.close(master)
-                  os.close(slave)
-          PYMENU
-          test -z "$(ls -A "$cli_home")"
-          # Native-only local upgrade/recovery, disposable stopped state.
-          native_old_out="$RUNNER_TEMP/rca-darwin-native-old"
-          node "$source_root/scripts/build-agent-release.mjs" \
-            --version v0.1.59 --target "$target" \
-            --artifact-profile rust-native-only-v1 \
-            --native "$supervisor" --native-sha256 "$(shasum -a 256 "$supervisor" | cut -d' ' -f1)" \
-            --rust-agent-bin "$rust_agent" \
-            --rust-agent-sha256 "$(shasum -a 256 "$rust_agent" | cut -d' ' -f1)" \
-            --out "$native_old_out"
-          RCA_MACOS_NATIVE_BASELINE_ARCHIVE="$native_old_out/remote-control-agent-v0.1.59-$target.tar.gz" \
-            RCA_MACOS_NATIVE_CANDIDATE_ROOT="$native_unpacked" \
-            RCA_MACOS_NATIVE_CANDIDATE_ARCHIVE="$native_archive" \
-            node --test "$source_root/tests/macos-native-local-lifecycle.integration.mjs"
   database-integration:
     name: Database integration
     needs: checks

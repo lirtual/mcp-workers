@@ -56,6 +56,7 @@ export function selectionDetails(changedFiles) {
   const apps = selectAffectedApps(changedFiles);
   const checkAll = changedFiles.some(requiresAllApps);
   const remoteControlChanged = checkAll || changedFiles.some(selectsRemoteControl);
+  // Rust is now the packaged runtime on every Standard target.
   // Shared workspace and dependency inputs can change nested Agent builds.
   // Unrelated Worker-only edits still must not schedule five native platforms.
   const rustDir = 'apps/remote-control-mcp-worker/agent/native-rust/';
@@ -63,7 +64,7 @@ export function selectionDetails(changedFiles) {
   const rustCandidateChanged = changedFiles.some(file =>
     file.startsWith(rustDir) || file === '.github/workflows/ci.yml');
   const agentNativeChanged = changedFiles.some(file =>
-    (file.startsWith('apps/remote-control-mcp-worker/agent/') && !file.startsWith(rustDir))
+    file.startsWith('apps/remote-control-mcp-worker/agent/')
     || file === AGENT_NATIVE_WORKFLOW
     || ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'].includes(file));
   return {
@@ -72,7 +73,7 @@ export function selectionDetails(changedFiles) {
     portalAuthChanged: changedFiles.some(file => file.startsWith('packages/portal-auth/')),
     remoteControlChanged,
     agentNativeChanged,
-    agentLegacyChanged: agentNativeChanged || changedFiles.some(file => file.startsWith(rustDir) || file === AGENT_LEGACY_WORKFLOW),
+    agentLegacyChanged: agentNativeChanged || changedFiles.includes(AGENT_LEGACY_WORKFLOW),
     rustCandidateChanged,
   };
 }
