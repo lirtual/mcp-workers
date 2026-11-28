@@ -2379,8 +2379,11 @@ def local_inventory(home):
             versions.append(p)
     unit = None
     if unit_file.exists():
-        if unit_file.stat().st_uid != os.geteuid() or not unit_file.is_file():
+        info = unit_file.lstat()
+        if info.st_uid != os.geteuid() or not stat.S_ISREG(info.st_mode):
             raise ValueError("Unowned v2 user service")
+        if os.geteuid() == 0 and (info.st_mode & 0o077 or info.st_nlink != 1):
+            raise ValueError("Untrusted Root user service")
         unit = unit_file.read_text("utf8")
         if not unit.startswith(MARKER + "\n"):
             raise ValueError("Foreign user service; do not remove")
@@ -2611,7 +2614,8 @@ def owned_manager_launcher(home, versions):
     directory = parent / "bin"
     for path in (parent, directory):
         if path.is_symlink() or (path.exists() and (
-                not path.is_dir() or path.stat().st_uid != os.geteuid())):
+                not path.is_dir() or path.stat().st_uid != os.geteuid()
+                or (os.geteuid() == 0 and path.stat().st_mode & 0o022))):
             raise ValueError("Untrusted user-local command directory")
     launcher = directory / "rca"
     if launcher.is_symlink():
