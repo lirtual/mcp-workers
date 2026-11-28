@@ -1443,13 +1443,20 @@ def native_wait_proof(path, operation, device_id, version, pid, seconds=90):
 
 
 def native_receipts_compatible(home):
-    # Preserve the existing receipt header contract. Do not acquire a second
-    # SQLite writer while the current Agent remains online.
+    # Match Rust standard_receipts(): validate every existing path component
+    # before pairing can write identity or activation state. Do not create
+    # missing directories here; the Agent remains the sole receipt owner.
     directory = home / ".local/state/mcp-workers/remote-control-agent"
-    if not directory.exists():
-        if directory.is_symlink():
-            raise ValueError("Redirected receipt directory")
-        return
+    current = pathlib.Path(home)
+    for component in (".local", "state", "mcp-workers", "remote-control-agent"):
+        current = current / component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022):
+            raise ValueError("Untrusted SQLite receipt directory path")
     info = directory.lstat()
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
             or info.st_mode & 0o077):
@@ -2801,8 +2808,10 @@ def main():
                     raise ValueError("Local identity purge not confirmed")
                 print(json.dumps(local_identity_purge(home, True), indent=2))
         elif args.latest_archive is not None:
-            if not args.tag or not args.endpoint or args.commit or args.temporary or args.name:
+            if not args.tag or not args.endpoint or args.commit or args.name:
                 raise ValueError("Public archive requires stable tag, origin and reviewed SHA-256")
+            if args.temporary and args.upgrade:
+                raise ValueError("Temporary mode is only available for first installation")
             install(args.tag, None, args.endpoint, asset_sha256=args.asset_sha256,
                     native_upgrade=args.upgrade, native_install=not args.upgrade,
                     temporary=args.temporary, latest_archive=args.latest_archive,

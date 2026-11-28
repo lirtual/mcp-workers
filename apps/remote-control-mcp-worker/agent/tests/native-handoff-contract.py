@@ -988,6 +988,63 @@ def verify_isolated():
 
 
 
+def verify_public_temporary_archive_dispatch():
+    from unittest.mock import Mock
+    original_argv = sys.argv
+    try:
+        for extra, expected_temporary in ((["--temporary"], True), ([], False)):
+            install = Mock(return_value=0)
+            sys.argv = [str(bootstrap.__file__), "--latest-archive", "/tmp/verified.tar.gz",
+                        "--tag", "v0.1.58", "--endpoint", ENDPOINT,
+                        "--asset-sha256", "a" * 64, *extra]
+            with patch.object(bootstrap, "install", install):
+                assert bootstrap.main() == 0
+            assert install.call_count == 1
+            assert install.call_args.kwargs["temporary"] is expected_temporary
+            assert install.call_args.kwargs["native_install"] is True
+        sys.argv = [str(bootstrap.__file__), "--latest-archive", "/tmp/verified.tar.gz",
+                    "--tag", "v0.1.58", "--endpoint", ENDPOINT,
+                    "--asset-sha256", "a" * 64, "--temporary", "--upgrade"]
+        with patch.object(bootstrap, "install", side_effect=AssertionError("invalid action reached install")):
+            assert bootstrap.main() == 1
+    finally:
+        sys.argv = original_argv
+    print("PUBLIC_TEMPORARY_ARCHIVE_DISPATCH_PASS")
+
+
+def verify_receipt_parent_path_preflight():
+    with tempfile.TemporaryDirectory(prefix="rca-receipt-parent-") as tmp:
+        home = Path(tmp)
+        bootstrap.native_receipts_compatible(home)  # Missing state is valid and remains absent.
+        assert not (home / ".local").exists()
+        outside = home.parent / (home.name + "-outside")
+        outside.mkdir(mode=0o700)
+        try:
+            (home / ".local").symlink_to(outside, target_is_directory=True)
+            try:
+                bootstrap.native_receipts_compatible(home)
+                raise AssertionError("Receipt parent symlink accepted")
+            except ValueError as error:
+                assert "receipt directory path" in str(error)
+            assert not (outside / "state").exists()
+            (home / ".local").unlink()
+            (home / ".local").mkdir(mode=0o700)
+            (home / ".local/state").mkdir(mode=0o700)
+            (home / ".local/state/mcp-workers").mkdir(mode=0o700)
+            (home / ".local/state/mcp-workers/remote-control-agent").mkdir(mode=0o700)
+            bootstrap.native_receipts_compatible(home)
+            (home / ".local/state").chmod(0o777)
+            try:
+                bootstrap.native_receipts_compatible(home)
+                raise AssertionError("Writable Receipt parent accepted")
+            except ValueError as error:
+                assert "receipt directory path" in str(error)
+        finally:
+            import shutil
+            shutil.rmtree(outside, ignore_errors=True)
+    print("RECEIPT_PARENT_PATH_PREFLIGHT_PASS")
+
+
 def verify_public_native_archive():
     import hashlib
     import struct
@@ -2390,6 +2447,8 @@ if __name__ == "__main__":
         verify_root_account_and_manager_contract()
         verify_root_reinstall_keeps_existing_identity()
         verify_initial_recovery_before_unit_creation()
+        verify_public_temporary_archive_dispatch()
+        verify_receipt_parent_path_preflight()
         verify_root_pair_command_contract()
         verify_root_service_and_update_policy()
         verify_isolated()
