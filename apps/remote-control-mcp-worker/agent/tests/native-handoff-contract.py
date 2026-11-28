@@ -2411,6 +2411,38 @@ def verify_root_service_and_update_policy():
     print("NATIVE_ROOT_SERVICE_AND_UPDATE_POLICY_PASS")
 
 
+
+def verify_root_process_scan_kernel_threads():
+    # The kernel identifies real kthreads independently of cmdline. Empty
+    # cmdline or missing exe alone must not excuse a userspace process.
+    with tempfile.TemporaryDirectory(prefix="rca-proc-contract-") as tmp:
+        base = Path(tmp)
+        proc = base / "proc"
+        proc.mkdir()
+        version = base / "installed"
+        version.mkdir()
+        kernel = proc / "2147483000"
+        kernel.mkdir()
+        (kernel / "status").write_text("Name:\tkthreadd\nState:\tS (sleeping)\nKthread:\t1\n")
+        (kernel / "cmdline").write_bytes(b"")
+        checks = (lambda: bootstrap.no_running_programs([version], proc),
+                  lambda: bootstrap.no_live_v2_identity_processes(proc))
+        assert all(check() for check in checks), "Kernel thread blocked the local lifecycle"
+        (kernel / "status").write_text("Name:\tunknown\nState:\tS (sleeping)\nKthread:\t0\n")
+        assert all(not check() for check in checks), "Unknown userspace process was ignored"
+        (kernel / "status").write_text("Name:\tunknown\nState:\tS (sleeping)\n")
+        assert all(not check() for check in checks), "Missing kernel evidence was treated as safe"
+        (kernel / "status").write_text("Name:\tunknown\nState:\tZ (zombie)\nKthread:\t0\n")
+        assert all(check() for check in checks), "Exited process blocked lifecycle"
+        (kernel / "status").write_text("Name:\tagent\nState:\tS (sleeping)\nKthread:\t0\n")
+        executable = version / "rca-standard-linux-candidate"
+        executable.touch()
+        (kernel / "exe").symlink_to(executable)
+        (kernel / "cwd").symlink_to(version)
+        assert all(not check() for check in checks), "Live Agent with hidden argv was ignored"
+    print("NATIVE_ROOT_KERNEL_THREAD_PROCESS_SCAN_PASS")
+
+
 if __name__ == "__main__":
     os.umask(0o077)  # Exactly the installed Agent's private program directories.
     if sys.argv[1:] == ["--units"]:
@@ -2451,4 +2483,5 @@ if __name__ == "__main__":
         verify_receipt_parent_path_preflight()
         verify_root_pair_command_contract()
         verify_root_service_and_update_policy()
+        verify_root_process_scan_kernel_threads()
         verify_isolated()

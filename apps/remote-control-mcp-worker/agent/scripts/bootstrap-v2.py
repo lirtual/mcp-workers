@@ -2487,6 +2487,14 @@ def owned_unit_root(unit, versions):
     return root
 
 
+def proc_has_no_live_userspace(status):
+    # Root can see kernel threads, which have no userspace executable or cwd.
+    # Only the kernel-provided Kthread field (not an empty argv or missing
+    # exe) distinguishes them from an uncertain userspace process.
+    return bool(re.search(r"^State:[ \t]*Z\b", status, re.MULTILINE)
+                or re.search(r"^Kthread:[ \t]*1[ \t]*$", status, re.MULTILINE))
+
+
 def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
     """Fail closed on owned processes even when argv hides the executable.
 
@@ -2504,8 +2512,8 @@ def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
             if p.stat().st_uid != os.geteuid():
                 continue
             status = (p / "status").read_text("ascii")
-            if re.search(r"^State:\s*Z\b", status, re.MULTILINE):
-                continue  # Exited zombie is not a running Agent.
+            if proc_has_no_live_userspace(status):
+                continue  # Kernel thread or exited zombie cannot run the Agent.
             argv = (p / "cmdline").read_bytes().split(b"\0")
             if any(arg.startswith(prefix) for arg in argv for prefix in prefixes):
                 return False
@@ -2698,7 +2706,7 @@ def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
             if process.stat().st_uid != os.geteuid():
                 continue
             status = (process / "status").read_text("ascii")
-            if re.search(r"^State:\s*Z\b", status, re.MULTILINE):
+            if proc_has_no_live_userspace(status):
                 continue
             argv = (process / "cmdline").read_bytes().split(b"\0")
             if any(agent_path(arg) for arg in argv):
