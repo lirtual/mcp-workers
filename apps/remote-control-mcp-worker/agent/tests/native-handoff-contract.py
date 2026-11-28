@@ -2313,6 +2313,57 @@ def verify_root_account_and_manager_contract():
     print("NATIVE_ROOT_ACCOUNT_AND_MANAGER_CONTRACT_PASS")
 
 
+def verify_root_resource_guards():
+    # Use real temporary files, substituting only the UID/account metadata
+    # within this isolated fixture. No service, pairing or network calls.
+    with tempfile.TemporaryDirectory(prefix="rca-root-resource-guards-") as tmp:
+        home = Path(tmp)
+        unit = home / ".config/systemd/user" / bootstrap.UNIT
+        owned_file(unit, bootstrap.MARKER + "\n[Service]\nExecStart=/test-only --root-managed\n")
+        directory = home / ".local/bin"
+        directory.mkdir(parents=True, mode=0o700)
+        original_stat = Path.stat
+
+        def fixture_stat(path, *args, **kwargs):
+            assert path == home or home in path.parents
+            actual = original_stat(path, *args, **kwargs)
+            return SimpleNamespace(st_mode=actual.st_mode, st_uid=0,
+                                   st_nlink=actual.st_nlink, st_size=actual.st_size)
+
+        def expect_refused(call, expected):
+            try:
+                call()
+            except ValueError as error:
+                assert expected in str(error), str(error)
+            else:
+                raise AssertionError("Unsafe Root resource was accepted: " + expected)
+
+        with patch.object(bootstrap.os, "geteuid", return_value=0), \
+                patch.object(bootstrap, "root_account_home", return_value=home), \
+                patch.object(Path, "stat", fixture_stat), \
+                patch.object(Path, "lstat", lambda path: fixture_stat(path, follow_symlinks=False)):
+            for mode in (0o600, 0o400):
+                unit.chmod(mode)
+                assert bootstrap.local_inventory(home)[3].startswith(bootstrap.MARKER)
+            for mode in (0o640, 0o660, 0o606):
+                unit.chmod(mode)
+                expect_refused(lambda: bootstrap.local_inventory(home), "Untrusted Root user service")
+            unit.chmod(0o600)
+            link = home / "linked-unit"
+            os.link(unit, link)
+            expect_refused(lambda: bootstrap.local_inventory(home), "Untrusted Root user service")
+            link.unlink()
+            assert bootstrap.local_inventory(home)[3].startswith(bootstrap.MARKER)
+            for mode in (0o700, 0o750):
+                directory.chmod(mode)
+                assert bootstrap.owned_manager_launcher(home, []) is None
+            for mode in (0o770, 0o707):
+                directory.chmod(mode)
+                expect_refused(lambda: bootstrap.owned_manager_launcher(home, []),
+                               "Untrusted user-local command directory")
+    print("NATIVE_ROOT_RESOURCE_GUARDS_PASS")
+
+
 def verify_root_reinstall_keeps_existing_identity():
     home = Path(tempfile.mkdtemp(prefix="rca-root-reinstall-"))
     home.chmod(0o700)
@@ -2477,6 +2528,7 @@ if __name__ == "__main__":
         verify_native_detached_upgrade()
         verify_automatic_detached_admission()
         verify_root_account_and_manager_contract()
+        verify_root_resource_guards()
         verify_root_reinstall_keeps_existing_identity()
         verify_initial_recovery_before_unit_creation()
         verify_public_temporary_archive_dispatch()
