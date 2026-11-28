@@ -81,23 +81,59 @@ mod linux {
         Ok(PathBuf::from(OsStr::from_bytes(bytes)))
     }
 
+    fn validate_root_directory_chain(
+        directory: &Path,
+        metadata: impl Fn(&Path) -> Result<(u32, u32), ()>,
+    ) -> Result<(), ()> {
+        if !directory.is_absolute()
+            || directory
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+        {
+            return Err(());
+        }
+        // Establish parent integrity before trusting a descendant's metadata.
+        let ancestors: Vec<_> = directory.ancestors().collect();
+        for path in ancestors.into_iter().rev() {
+            let (uid, mode) = metadata(path)?;
+            if uid != 0 || mode & libc::S_IFMT != libc::S_IFDIR || mode & 0o022 != 0 {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
     fn validate_root_home_path(
         home: &Path,
         account: &Path,
         metadata: impl Fn(&Path) -> Result<(u32, u32), ()>,
     ) -> Result<(), ()> {
-        if !home.is_absolute() || home.as_os_str() != account.as_os_str() {
+        if home.as_os_str() != account.as_os_str() {
             return Err(());
         }
-        for path in home.ancestors() {
-            let (uid, mode) = metadata(path)?;
-            if uid != 0
-                || mode & libc::S_IFMT != libc::S_IFDIR
-                || mode & 0o022 != 0
-                || (path == home && mode & 0o077 != 0)
-            {
-                return Err(());
-            }
+        validate_root_directory_chain(home, &metadata)?;
+        // Keep the existing private HOME contract.
+        if metadata(home)?.1 & 0o077 != 0 {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn verify_root_resource_parent(path: &Path) -> Result<(), ()> {
+        if unsafe { libc::geteuid() } != 0 {
+            return Ok(());
+        }
+        let parent = path.parent().ok_or(())?;
+        validate_root_directory_chain(parent, |dir| {
+            let info = fs::symlink_metadata(dir).map_err(|_| ())?;
+            Ok((info.uid(), info.mode()))
+        })
+    }
+
+    fn verify_root_identity_parent(key: &Path) -> Result<(), ()> {
+        if unsafe { libc::geteuid() } == 0 {
+            verify_root_resource_parent(key)?;
+            rca_native_agent::upgrade_control::verify_upgrade_directory(key).map_err(|_| ())?;
         }
         Ok(())
     }
@@ -143,12 +179,13 @@ mod linux {
 
     fn installed_endpoint(home: &Path) -> Result<String, ()> {
         let directory = home.join(".config/systemd/user");
+        let unit = directory.join("remote-control-agent.service");
+        verify_root_resource_parent(&unit)?;
         if fs::canonicalize(home).ok().as_deref() != Some(home)
             || fs::canonicalize(&directory).ok().as_deref() != Some(directory.as_path())
         {
             return Err(());
         }
-        let unit = directory.join("remote-control-agent.service");
         private_regular(&unit, 16 * 1024)?;
         if fs::symlink_metadata(&unit).map_err(|_| ())?.nlink() != 1 {
             return Err(());
@@ -302,6 +339,7 @@ mod linux {
         let helper = std::env::current_exe()
             .map_err(|_| ())?
             .with_file_name("session-supervisor");
+        verify_root_resource_parent(&helper)?;
         let meta = fs::symlink_metadata(&helper).map_err(|_| ())?;
         if !helper.is_absolute()
             || !meta.is_file()
@@ -544,6 +582,7 @@ mod linux {
         }
         let home = home()?;
         let key = key_path(&home)?;
+        verify_root_identity_parent(&key)?;
         if fs::canonicalize(&home).ok().as_deref() != Some(home.as_path())
             || fs::canonicalize(&key).ok().as_deref() != Some(key.as_path())
         {
@@ -576,6 +615,7 @@ mod linux {
         }
         let home = home()?;
         let key = pairing_key(&home, false);
+        verify_root_identity_parent(&key)?;
         let base = key.parent().ok_or(())?;
         if fs::canonicalize(&home).ok().as_deref() != Some(home.as_path())
             || fs::canonicalize(base).ok().as_deref() != Some(base)
@@ -760,6 +800,7 @@ mod linux {
     }
 
     fn run_agent(endpoint: &str, home: &Path, key: &Path) -> Result<(), ()> {
+        verify_root_identity_parent(key)?;
         private_regular(key, 8192)?;
         private_regular(&sidecar(key, ".device-id"), 128)?;
         if owner_stopped(key)? {
@@ -913,6 +954,37 @@ mod linux {
             assert!(check(home, Some((Path::new("/srv"), 0, libc::S_IFDIR | 0o775))).is_err());
             assert!(check(home, Some((Path::new("/srv"), 0, libc::S_IFLNK | 0o777))).is_err());
             assert!(check(home, Some((home, 0, libc::S_IFDIR | 0o550))).is_err());
+        }
+
+        #[test]
+        fn root_resource_chain_rejects_untrusted_ancestors() {
+            let directory = Path::new("/srv/rca/private");
+            let check = |altered: Option<(&Path, u32, u32)>| {
+                validate_root_directory_chain(directory, |path| {
+                    if let Some((bad, uid, mode)) = altered {
+                        if path == bad {
+                            return Ok((uid, mode));
+                        }
+                    }
+                    Ok((0, libc::S_IFDIR | 0o700))
+                })
+            };
+            assert!(check(None).is_ok());
+            for parent in [Path::new("/srv"), Path::new("/srv/rca"), directory] {
+                assert!(check(Some((parent, 1001, libc::S_IFDIR | 0o700))).is_err());
+                assert!(check(Some((parent, 0, libc::S_IFDIR | 0o770))).is_err());
+                assert!(check(Some((parent, 0, libc::S_IFLNK | 0o777))).is_err());
+            }
+            assert!(validate_root_directory_chain(Path::new("relative"), |_| {
+                Ok((0, libc::S_IFDIR | 0o700))
+            })
+            .is_err());
+            assert!(
+                validate_root_directory_chain(Path::new("/srv/../rca"), |_| {
+                    Ok((0, libc::S_IFDIR | 0o700))
+                })
+                .is_err()
+            );
         }
 
         #[test]
