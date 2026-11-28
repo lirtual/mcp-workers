@@ -12,7 +12,7 @@ import tempfile
 if len(sys.argv) != 4:
     raise SystemExit("usage: validate-local-archive.py <archive> <tag> <target>")
 archive, tag, target = sys.argv[1:]
-if {"x86_64": "linux-x64-glibc", "aarch64": "linux-arm64-glibc"}.get(platform.machine()) != target:
+if target not in {"x86_64": ("linux-x64-glibc", "linux-x64-legacy-glibc"), "aarch64": ("linux-arm64-glibc",)}.get(platform.machine(), ()):
     raise SystemExit("Archive must be verified on its matching native architecture.")
 if os.getuid() == 0:
     raise SystemExit("Use a disposable unprivileged build user.")

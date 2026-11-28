@@ -112,7 +112,7 @@ export function inspectTarGzip(gzip,{tag,target}) {
     return entries;
   }
   if(!manifest || manifest.version!==tag || manifest.target!==target ||
-      !/^linux-(?:x64|arm64)-glibc$/.test(target) ||
+      !/^linux-(?:x64(?:-legacy)?|arm64)-glibc$/.test(target) ||
       !(/^v0\.[1-9][0-9]*\.[0-9]+$/.test(tag) ||
         /-rust-candidate(?:\.|$)/.test(tag)) ||
       manifest.name!=="remote-control-agent" || manifest.artifact_schema!==1 ||
@@ -124,11 +124,13 @@ export function inspectTarGzip(gzip,{tag,target}) {
       !/^\d+\.\d+$/.test(manifest.glibc_min||"")) {
     throw new Error("Unexpected Release version, runtime profile, or architecture.");
   }
+  if(target==="linux-x64-legacy-glibc" && (manifest.native_supervisor!=="legacy-live-group-v1" || manifest.glibc_min!=="2.28" || manifest.session_runtime!=="rust-session-v1")) throw Error("Unreviewed Legacy profile");
+  if(target!=="linux-x64-legacy-glibc" && manifest.native_supervisor!==undefined) throw Error("Unexpected Linux supervisor profile.");
   if(manifest.browser_runtime!==undefined)
     throw Error("Retired GUI runtime is forbidden in RCA releases.");
   const required=new Set(NATIVE_FILES);
   if(manifest.session_runtime!==undefined) {
-    if(target!=="linux-x64-glibc" || manifest.session_runtime!=="rust-session-v1")
+    if(!["linux-x64-glibc", "linux-x64-legacy-glibc"].includes(target) || manifest.session_runtime!=="rust-session-v1")
       throw Error("Unreviewed packaged Session runtime.");
     required.add(SESSION_ENTRY);
   }
@@ -136,7 +138,7 @@ export function inspectTarGzip(gzip,{tag,target}) {
     throw new Error("Incomplete release artifact.");
   if([...entries].some(([name,entry])=>!entry.directory&&!required.has(name)))
     throw new Error("Native-only archive contains an unreviewed runtime file.");
-  const expected=target==="linux-x64-glibc" ? 62 : 183;
+  const expected=target.startsWith("linux-x64-") ? 62 : 183;
   for(const name of [APP+"/.build/session-supervisor",
       APP+"/.build/rca-standard-linux-candidate",
       ...(manifest.session_runtime ? [SESSION_ENTRY] : [])]) {

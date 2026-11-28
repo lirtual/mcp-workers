@@ -44,7 +44,7 @@ def installed_endpoint(bootstrap):
     _, _, _, unit, _ = bootstrap.local_inventory(str(bootstrap.account_home()))
     if not unit:
         return None
-    lines = [s.removeprefix("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=") for s in unit.splitlines()
+    lines = [s[len("Environment=REMOTE_CONTROL_AGENT_ENDPOINT="):] for s in unit.splitlines()
              if s.startswith("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=")]
     if len(lines) != 1:
         raise ValueError("Cannot establish a unique owned Worker endpoint.")
@@ -60,7 +60,7 @@ def status_facts(bootstrap, info):
     state = bootstrap.local_status(str(bootstrap.account_home()))
     state["cli_version"] = info["version"]
     state["platform"] = "linux"
-    state["arch"] = {"linux-x64-glibc": "x64", "linux-arm64-glibc": "arm64"}.get(info["target"])
+    state["arch"] = {"linux-x64-glibc": "x64", "linux-x64-legacy-glibc": "x64", "linux-arm64-glibc": "arm64"}.get(info["target"])
     state["device_id"] = state["device_ids"].get("permanent")
     state["identity_present"] = state["device_id"] is not None
     return state
@@ -156,7 +156,9 @@ def bootstrap_action(bootstrap, arguments):
         sys.argv = old
 
 
-def upgrade(bootstrap, arguments):
+def upgrade(bootstrap, arguments, legacy=False):
+    if legacy and not arguments:
+        raise ValueError("Legacy requires an explicit reviewed tag, commit and asset SHA-256")
     if not arguments:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             raise ValueError("Upgrade requires local interactive confirmation.")
@@ -176,7 +178,7 @@ def upgrade(bootstrap, arguments):
     print("Only immutable verified GitHub Releases are accepted. Identity and receipts are preserved.")
     return bootstrap_action(bootstrap, ["--tag", arguments[0], "--commit", arguments[1],
                                         "--endpoint", endpoint, "--native-upgrade",
-                                        "--asset-sha256", arguments[2]])
+                                        "--asset-sha256", arguments[2]] + (["--legacy"] if legacy else []))
 
 
 def dispatch(command, args, root, info, bootstrap):
@@ -188,6 +190,9 @@ def dispatch(command, args, root, info, bootstrap):
         print("Usage: rca pair [--allow-root] [--temporary] [https://approved-worker-origin/].")
         print("Without an installed permanent service, provide the approved HTTPS origin explicitly.")
         print("Without arguments: open the interactive local Agent manager.")
+        if info["target"] == bootstrap.LEGACY_TARGET:
+            print("Legacy: use an attended fixed-version upgrade with tag, commit and SHA-256; no Latest or automatic updates.")
+            return 0
         print("Check the reviewed stable Latest without installing: rca update --check.")
         print("Automatic update consent: rca update --auto [on|off].")
         print("status [--json] and doctor [--json] inspect local state without changing it.")
@@ -227,6 +232,8 @@ def dispatch(command, args, root, info, bootstrap):
         print(json.dumps(bootstrap.native_owner_lifecycle(bootstrap.account_home(), command)))
         return 0
     if command in ("update", "upgrade"):
+        if info["target"] == bootstrap.LEGACY_TARGET and (not args or args[0].startswith("--")):
+            raise ValueError("Legacy requires an attended fixed-version upgrade with tag, commit and SHA-256")
         if args and args[0] == "--auto":
             if len(args) > 2 or (len(args) == 2 and args[1] not in ("on", "off")):
                 raise ValueError("Usage: rca update --auto [on|off]")
@@ -243,7 +250,7 @@ def dispatch(command, args, root, info, bootstrap):
             return bootstrap.native_unattended_upgrade(root, worker=args == ["--automatic-worker"], automatic=True)
         if args in (["--unattended"], ["--unattended-worker"]):
             return bootstrap.native_unattended_upgrade(root, worker=args == ["--unattended-worker"])
-        return upgrade(bootstrap, args)
+        return upgrade(bootstrap, args, legacy=info["target"] == bootstrap.LEGACY_TARGET)
     if command == "recover":
         if args:
             raise ValueError("recover takes no arguments")
