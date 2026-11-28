@@ -48,6 +48,30 @@ const receipts=path.join(home,".local/state/mcp-workers/remote-control-agent/ope
 const endpoint="https://127.0.0.1:1/";
 const env={...process.env,PATH:"/usr/local/bin:/usr/bin:/bin"};
 
+// Demonstrate the accepted HOME visibility and the retained RCA isolation
+// under the same real DAC identity, without reading or changing owner data.
+function assertRootResourceIsolation(stage, paths) {
+  if(!rootFixture)return;
+  for(const item of paths)assert.ok(lstatSync(item),"missing protected fixture resource: "+item);
+  const probe=[
+    "import os,sys",
+    "assert os.getuid()==os.geteuid()==65534 and os.getgid()==os.getegid()==0 and not os.getgroups()",
+    "assert int(next(line.split()[1] for line in open('/proc/self/status') if line.startswith('CapEff:')),16)==0",
+    "assert '.local' in os.listdir('/root'), 'same-group HOME visibility not exercised'",
+    "assert not os.access('/root',os.W_OK), 'outsider can write HOME'",
+    "for path in sys.argv[1:]:",
+    " assert not os.access(path,os.R_OK), 'outsider can read: '+path",
+    " assert not os.access(path,os.W_OK), 'outsider can write: '+path",
+    " assert not os.access(path,os.X_OK), 'outsider can execute: '+path",
+    " assert not os.access(os.path.dirname(path),os.W_OK), 'outsider can replace: '+path",
+  ].join("\n");
+  const result=spawnSync("/usr/bin/setpriv",["--reuid=65534","--regid=0","--clear-groups",
+    "--no-new-privs","/usr/bin/python3","-I","-B","-c",probe,...paths],{
+    env,encoding:"utf8",timeout:5000
+  });
+  assert.equal(result.status,0,result.stdout+"\n"+result.stderr);
+  console.log("ROOT_HOME_0550_RESOURCE_ISOLATION_PASS "+stage);
+}
 function systemctl(...args) {
   const result=spawnSync("/usr/bin/systemctl",["--user",...args],{
     env,encoding:"utf8",timeout:15000
@@ -159,6 +183,7 @@ try {
   while(!existsSync(firstSocket)&&Date.now()<firstDeadline)
     await new Promise(resolve=>setTimeout(resolve,50));
   assert.ok(existsSync(firstSocket),"first activation must expose the local freeze socket");
+  assertRootResourceIsolation("initial_activation",[key,deviceId,receipts,unitFile,rustExe,firstSocket,"/run/user/0/bus",key+".native-upgrade-intent"]);
   const firstRecover=[
     "import importlib.util,json,pathlib,sys",
     "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
@@ -275,6 +300,7 @@ try {
     assert.ok(existsSync(key+".native-upgrade-intent"));
     assert.equal(readFileSync(key,"utf8"),privateKey);
     assert.equal(readFileSync(deviceId,"utf8"),id+"\n");
+    assertRootResourceIsolation("interrupted_switch",[key,deviceId,receipts,unitFile,backupFile,rustExe,priorExe,cli,key+".native-upgrade-intent"]);
     const blocked=[
       "import importlib.util,sys",
       "spec=importlib.util.spec_from_file_location('b',sys.argv[1])",
@@ -303,6 +329,7 @@ try {
     assert.equal(outcome.status,"previous_service_restored");
     assert.equal(outcome.signed_wss,"unconfirmed");
     assert.equal(liveExecutable(priorExe),priorExe,"original Rust must be restored");
+    assertRootResourceIsolation("restored_service",[key,deviceId,receipts,unitFile,priorExe,cli]);
     assert.equal(readFileSync(unitFile,"utf8"),oldUnit);
     assert.equal(readlinkSync(cli),path.join(oldRoot,
       "apps/remote-control-agent/scripts/rca.sh"));
