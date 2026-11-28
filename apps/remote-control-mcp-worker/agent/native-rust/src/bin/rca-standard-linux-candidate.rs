@@ -48,7 +48,34 @@ mod linux {
 
     fn home() -> Result<PathBuf, ()> {
         let root = PathBuf::from(std::env::var_os("HOME").ok_or(())?);
-        root.is_absolute().then_some(root).ok_or(())
+        if !root.is_absolute() {
+            return Err(());
+        }
+        if unsafe { libc::geteuid() } == 0 {
+            let info = fs::symlink_metadata(&root).map_err(|_| ())?;
+            if !info.is_dir()
+                || info.file_type().is_symlink()
+                || info.uid() != 0
+                || info.permissions().mode() & 0o077 != 0
+                || std::env::var("XDG_RUNTIME_DIR").is_ok_and(|value| value != "/run/user/0")
+                || std::env::var("DBUS_SESSION_BUS_ADDRESS")
+                    .is_ok_and(|value| value != "unix:path=/run/user/0/bus")
+            {
+                return Err(());
+            }
+        }
+        Ok(root)
+    }
+
+    fn validate_root_mode(args: &mut Vec<String>, effective_uid: u32) -> Result<(), ()> {
+        let requested = args.first().is_some_and(|value| value == "--root-managed");
+        if requested {
+            args.remove(0);
+        }
+        if (effective_uid == 0) != requested {
+            return Err(());
+        }
+        Ok(())
     }
 
     fn key_path(home: &Path) -> Result<PathBuf, ()> {
@@ -618,10 +645,11 @@ mod linux {
     }
 
     pub fn run() -> Result<(), ()> {
+        let mut args: Vec<String> = std::env::args().skip(1).collect();
+        validate_root_mode(&mut args, unsafe { libc::geteuid() })?;
         if unsafe { libc::geteuid() } == 0 {
-            return Err(());
+            home()?;
         }
-        let args: Vec<String> = std::env::args().skip(1).collect();
         if let [flag, command, request_id] = args.as_slice() {
             if flag == "--cli" && command == "secure-input" {
                 return secure_input_local(request_id);
@@ -663,7 +691,7 @@ mod linux {
     }
 
     fn automatic_manager(home: &Path, key: &Path, executable: &Path) -> Option<PathBuf> {
-        if key != pairing_key(home, false) {
+        if unsafe { libc::geteuid() } == 0 || key != pairing_key(home, false) {
             return None;
         }
         let app = executable.parent()?.parent()?;
@@ -793,6 +821,22 @@ mod linux {
     mod pairing_tests {
         use super::*;
         const ID: &str = "123e4567-e89b-42d3-a456-426614174001";
+
+        #[test]
+        fn root_mode_requires_the_explicit_managed_entry_flag() {
+            let mut root_args = vec!["--root-managed".to_owned(), "--cli".to_owned()];
+            validate_root_mode(&mut root_args, 0).unwrap();
+            assert_eq!(root_args, vec!["--cli"]);
+
+            let mut missing = vec!["--cli".to_owned()];
+            assert!(validate_root_mode(&mut missing, 0).is_err());
+
+            let mut forged = vec!["--root-managed".to_owned()];
+            assert!(validate_root_mode(&mut forged, 1001).is_err());
+
+            let mut ordinary = vec!["--cli".to_owned()];
+            validate_root_mode(&mut ordinary, 1001).unwrap();
+        }
 
         #[test]
         fn temporary_launcher_is_owner_local_and_never_replaces_existing_command() {

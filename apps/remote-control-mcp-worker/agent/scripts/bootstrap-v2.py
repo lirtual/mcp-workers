@@ -12,6 +12,7 @@ import json
 import os
 import pathlib
 import platform
+import pwd
 import re
 import secrets
 import subprocess
@@ -50,6 +51,154 @@ TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?\Z")
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 HASH = re.compile(r"sha256:([0-9a-f]{64})\Z")
 
+
+
+def root_account_home():
+    if os.geteuid() != 0:
+        raise ValueError("Root account home is available only to UID 0")
+    home = pathlib.Path(pwd.getpwuid(0).pw_dir)
+    if not home.is_absolute() or os.environ.get("HOME") != str(home):
+        raise ValueError("Root HOME must match the UID 0 OS account; use sudo -H")
+    for item in reversed((home, *home.parents)):
+        info = item.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                or info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022):
+            raise ValueError("Unsafe or writable UID 0 home parent")
+        if item == home and stat.S_IMODE(info.st_mode) & 0o077:
+            raise ValueError("Root HOME must be private to UID 0")
+    if (os.environ.get("XDG_RUNTIME_DIR") not in (None, "/run/user/0")
+            or os.environ.get("DBUS_SESSION_BUS_ADDRESS") not in
+               (None, "unix:path=/run/user/0/bus")):
+        raise ValueError("Inherited non-root XDG runtime or DBus session refused")
+    return home
+
+
+def account_home():
+    return root_account_home() if os.geteuid() == 0 else pathlib.Path.home()
+
+
+def root_user_manager_environment():
+    home = root_account_home()
+    runtime = pathlib.Path("/run/user/0")
+    bus = runtime / "bus"
+    try:
+        for item in (pathlib.Path("/run"), pathlib.Path("/run/user"), runtime):
+            info = item.lstat()
+            private_mode = stat.S_IMODE(info.st_mode)
+            if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                    or info.st_uid != 0 or private_mode & 0o022
+                    or (item == runtime and private_mode != 0o700)):
+                raise ValueError("Root user-manager runtime directory is not private and UID 0 owned")
+        info = bus.lstat()
+    except OSError as error:
+        raise ValueError("Trusted UID 0 systemd --user runtime is not available") from error
+    # systemd may expose the bus socket as 0666. Access is bounded by the
+    # UID 0-owned 0700 runtime directory validated above, so socket mode bits
+    # alone do not establish that another UID can reach it.
+    if not stat.S_ISSOCK(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0:
+        raise ValueError("Root user-manager DBus socket is not UID 0 owned")
+    env = dict(os.environ)
+    env.update({"HOME": str(home), "XDG_RUNTIME_DIR": str(runtime),
+                "DBUS_SESSION_BUS_ADDRESS": "unix:path=" + str(bus)})
+    try:
+        linger = subprocess.run(["loginctl", "show-user", "0", "-p", "Linger", "--value"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                env=env, timeout=5, check=False)
+        if linger.returncode or linger.stdout.decode("ascii", errors="replace").strip() != "yes":
+            raise ValueError("Permanent root service requires existing UID 0 linger; enable it explicitly")
+        manager = subprocess.run(["systemctl", "--user", "show-environment"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 env=env, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError("Trusted UID 0 systemd --user manager is not available") from error
+    if manager.returncode:
+        raise ValueError("A trusted UID 0 systemd --user manager is not available")
+    return env
+
+
+def root_managed_unit(unit):
+    commands = [line.removeprefix("ExecStart=") for line in (unit or "").splitlines()
+                if line.startswith("ExecStart=")]
+    return len(commands) == 1 and commands[0].endswith(" --root-managed")
+
+
+def root_identity_modes(home, ids):
+    """Return only existing UID 0 identities whose private key and ID agree."""
+    base = pathlib.Path(home) / STORE
+    verified = set()
+    for mode, relative in (("permanent", "v2-identity.pem"),
+                           ("temporary", "temporary/v2-identity.pem")):
+        if mode not in ids:
+            continue
+        key = base / relative
+        try:
+            native_owned_file(key, 8192)
+            device_id = native_owned_file(pathlib.Path(str(key) + ".device-id"), 128).decode().strip()
+        except (OSError, ValueError, UnicodeError):
+            raise ValueError("Existing Root device identity is incomplete or untrusted")
+        if device_id != ids[mode]:
+            raise ValueError("Existing Root device identity does not match its private key metadata")
+        verified.add(mode)
+    return verified
+
+
+def root_recovery_preflight(home):
+    """Admit the existing Root service or a protected initial-install intent."""
+    root_user_manager_environment()
+    _, _, _, unit, ids = local_inventory(home)
+    if "permanent" not in root_identity_modes(home, ids):
+        raise ValueError("Root recovery requires a verified UID 0 permanent identity")
+    if root_managed_unit(unit):
+        return
+    key = pathlib.Path(home) / STORE / "v2-identity.pem"
+    intent = pathlib.Path(str(key) + ".native-upgrade-intent")
+    if not os.path.lexists(intent):
+        raise ValueError("Root recovery requires an existing managed service or initial activation intent")
+    record = json.loads(native_owned_file(intent, 512))
+    if not isinstance(record, dict) or not isinstance(record.get("initial_endpoint"), str):
+        raise ValueError("Root recovery has no protected initial activation intent")
+    # native_recover validates the complete transaction proof, service state,
+    # executable ownership and rollback before performing any recovery action.
+
+
+def root_opt_in(allow_root, stage_only=False, temporary=False, upgrade=False):
+    if os.geteuid() != 0:
+        if allow_root:
+            raise ValueError("--allow-root is only valid under effective UID 0")
+        return False
+    if stage_only:
+        raise ValueError("Stage-only verification requires a non-root account")
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        raise ValueError("Root installation requires a real local terminal")
+    home = root_account_home()
+    if upgrade:
+        if allow_root:
+            raise ValueError("--allow-root is only for first installation, not upgrades")
+        _, _, _, unit, _ = local_inventory(home)
+        if not root_managed_unit(unit):
+            raise ValueError("Root upgrade requires an existing installer-owned UID 0 service")
+        root_user_manager_environment()
+        return True
+    _, _, _, unit, ids = local_inventory(home)
+    identity_modes = root_identity_modes(home, ids)
+    if allow_root and (root_managed_unit(unit) or identity_modes):
+        raise ValueError("--allow-root is only for the first UID 0 identity; omit it for an existing Root Agent")
+    if not allow_root:
+        if temporary and identity_modes:
+            return True
+        if root_managed_unit(unit) or identity_modes:
+            # Uninstall intentionally preserves the private identity and its
+            # original first-use authorization. Reinstall still performs the
+            # ordinary pairing confirmation and signed Owner Grant flow.
+            root_user_manager_environment()
+            return True
+        raise ValueError("Root installation requires --allow-root and local confirmation")
+    if not temporary:
+        root_user_manager_environment()
+    print("WARNING: this Agent runs as UID 0 and its remote Shell/file operations have root privileges.", flush=True)
+    if not confirm_owner("Allow the Agent's remote Shell and file operations to run with UID 0 privileges on this device?"):
+        raise ValueError("Root installation not confirmed")
+    return True
 
 def https_origin(url):
     parsed = urllib.parse.urlsplit(url)
@@ -269,7 +418,7 @@ def inspect_archive(archive, tag, target):
 def private_dir(path):
     path = pathlib.Path(path)
     if path.is_symlink() or (path.exists() and (not path.is_dir()
-            or path.stat().st_uid != os.getuid()
+            or path.stat().st_uid != os.geteuid()
             or stat.S_IMODE(path.stat().st_mode) & 0o077)):
         raise ValueError("Unsafe installer-owned directory or symlink")
     if not path.exists():
@@ -280,7 +429,7 @@ def private_dir(path):
 def program_home(home):
     # Do not follow a symlink from HOME through a privilege-bearing directory.
     home = pathlib.Path(home)
-    if not home.is_dir() or home.is_symlink() or home.stat().st_uid != os.getuid():
+    if not home.is_dir() or home.is_symlink() or home.stat().st_uid != os.geteuid():
         raise ValueError("Invalid device HOME")
     node = home
     for name in (".local", "share"):
@@ -289,8 +438,10 @@ def program_home(home):
             raise ValueError("Symlink in installer parent path")
         if not node.exists():
             node.mkdir(mode=0o700)
-        if not node.is_dir() or node.stat().st_uid != os.getuid():
-            raise ValueError("Invalid installer parent ownership")
+        info = node.stat()
+        if (not node.is_dir() or info.st_uid != os.geteuid()
+                or (os.geteuid() == 0 and stat.S_IMODE(info.st_mode) & 0o022)):
+            raise ValueError("Invalid or writable installer parent")
     for name in ("mcp-workers", "remote-control", "programs"):
         node = private_dir(node / name)
     return node
@@ -354,7 +505,7 @@ def verify_existing_program(archive, destination, records):
         for name, member in records:
             item = root / name
             st = item.lstat()
-            if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077:
+            if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077:
                 raise ValueError("Existing program has unsafe file permissions")
             if member.isdir():
                 if not stat.S_ISDIR(st.st_mode):
@@ -380,7 +531,7 @@ def clean_orphaned_staging(parent):
         if not entry.name.startswith((".unverified-", ".download-")):
             continue
         st = entry.lstat()
-        if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) & 0o077                 or not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+        if st.st_uid != os.geteuid() or stat.S_IMODE(st.st_mode) & 0o077                 or not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
             raise ValueError("Untrusted leftover staging file needs manual review")
         if stat.S_ISDIR(st.st_mode):
             shutil.rmtree(entry)
@@ -397,7 +548,7 @@ def worker_origin(endpoint):
 
 def approved_native_detached_worker(device_id=None):
     # Same admission boundary as the original one-shot Linux manager.
-    if (sys.platform != "linux" or os.getuid() == 0
+    if (sys.platform != "linux" or os.geteuid() == 0
             or os.environ.get("RCA_UNATTENDED_UPGRADE") != "owner-approved-task-v1"
             or not re.fullmatch(r"[a-f0-9]{32}", os.environ.get("INVOCATION_ID", ""))):
         return False
@@ -409,14 +560,17 @@ def approved_native_detached_worker(device_id=None):
     return bool(match and (device_id is None or match[1] == device_id.replace("-", "")))
 
 
-def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False, detached_upgrade=False):
-    # Only the admitted one-shot user systemd worker may switch without a TTY.
+def preflight(tag, commit, endpoint, stage_only=False, latest_archive=False,
+              detached_upgrade=False, allow_root=False, temporary=False, native_upgrade=False):
     if detached_upgrade and (stage_only or not latest_archive or not approved_native_detached_worker()):
         raise ValueError("Detached native upgrade requires an admitted systemd worker")
-    if (sys.platform != "linux" or os.getuid() == 0
-            or (not stage_only and not detached_upgrade and
-                (not sys.stdin.isatty() or not sys.stdout.isatty()))):
-        raise ValueError("Run as a non-root Linux user in a real interactive terminal")
+    if sys.platform != "linux":
+        raise ValueError("Linux only")
+    root_opt_in(allow_root, stage_only=stage_only, temporary=temporary,
+                upgrade=native_upgrade and not detached_upgrade)
+    if (not stage_only and not detached_upgrade and
+            not (sys.stdin.isatty() and sys.stdout.isatty())):
+        raise ValueError("Run in a real interactive terminal")
     cpu = platform.machine().lower()
     if cpu not in ("x86_64", "aarch64"):
         raise ValueError("Only Linux x86_64 and ARM64 are supported")
@@ -456,7 +610,7 @@ def public_forward_version(installed, target):
 
 def native_latest_context(endpoint, expected_root=None):
     """Validate the same installed service for read-only checks and upgrades."""
-    home = pathlib.Path.home()
+    home = account_home()
     _, versions, _, unit, ids = local_inventory(home)
     root = owned_unit_root(unit, versions)
     if root is None or "permanent" not in ids or (expected_root is not None and root != expected_root):
@@ -510,7 +664,7 @@ def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=Non
     if detached_upgrade and not approved_native_detached_worker(binding[1]):
         raise ValueError("Detached worker belongs to a different device")
     if automatic:
-        key = pathlib.Path.home() / STORE / "v2-identity.pem"
+        key = account_home() / STORE / "v2-identity.pem"
         device_id = binding[1]
         if native_auto_policy(key, device_id) != "on":
             return 0
@@ -545,9 +699,9 @@ def native_upgrade_latest(endpoint, *, detached_upgrade=False, expected_root=Non
 
 def native_unattended_upgrade(root, *, worker=False, automatic=False):
     """Explicit owner-approved remote command; never pair or resume a stopped Agent."""
-    if sys.platform != "linux" or os.getuid() == 0 or (worker and not approved_native_detached_worker()):
+    if sys.platform != "linux" or os.geteuid() == 0 or (worker and not approved_native_detached_worker()):
         raise ValueError("Detached upgrade requires the reviewed owner systemd context")
-    home = pathlib.Path.home()
+    home = account_home()
     _, versions, unit_file, unit, ids = local_inventory(home)
     current = owned_unit_root(unit, versions)
     if current is None or current != root or "permanent" not in ids:
@@ -615,7 +769,8 @@ def native_unattended_upgrade(root, *, worker=False, automatic=False):
 
 def install(tag, commit, endpoint, name=None, upgrade=False,
             stage_only=False, asset_sha256=None, native_upgrade=False, native_install=False, temporary=False,
-            latest_archive=None, detached_upgrade=False, automatic=False, expected_binding=None):
+            latest_archive=None, detached_upgrade=False, automatic=False, expected_binding=None,
+            allow_root=False):
     if automatic and not detached_upgrade:
         raise ValueError("Automatic update requires an admitted detached worker")
     if detached_upgrade and (not native_upgrade or native_install or stage_only
@@ -633,14 +788,15 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
     if latest_archive is not None and (stage_only or not (native_upgrade or native_install)):
         raise ValueError("Public archive requires an attended native install or upgrade")
     target = preflight(tag, commit, endpoint, stage_only=stage_only,
-                       latest_archive=latest_archive is not None, detached_upgrade=detached_upgrade)
+                       latest_archive=latest_archive is not None, detached_upgrade=detached_upgrade,
+                       allow_root=allow_root, temporary=temporary, native_upgrade=native_upgrade)
     # The owned service template uses a canonical origin with a trailing slash.
     if not endpoint.endswith("/"):
         endpoint += "/"
     if native_upgrade and expected_binding is None:
         _, expected_binding = native_latest_context(endpoint)
     print("==> Detected Linux target: " + target + " | Release " + tag, flush=True)
-    location = program_home(os.path.expanduser("~"))
+    location = program_home(account_home())
     version = location / (tag + "-" + target)
     # Existing lock + protected OS state: no new installer state database.
     with open(location / "install.lock", "a+b") as lock:
@@ -692,19 +848,13 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             # No systemctl, identity mutation, approval or pairing.
             return
         if native_install:
-            if latest_archive is not None:
-                home = pathlib.Path.home()
-                _, _, _, current, ids = local_inventory(home)
-                if not (current and "permanent" in ids):
-                    mode = input("Install mode [1] permanent / [2] temporary: ").strip()
-                    if mode not in ("1", "2"):
-                        raise ValueError("Installation not confirmed")
-                    temporary = mode == "2"
             if temporary:
-                return native_temporary(pathlib.Path.home(), version, endpoint, name)
+                return native_temporary(account_home(), version, endpoint, name,
+                                        root_authorized=os.geteuid() == 0)
             if not confirm_owner("Pair/activate the permanent Agent at " + endpoint + "?"):
                 raise ValueError("Native installation not confirmed")
-            result = native_pair_or_install(pathlib.Path.home(), version, endpoint, name)
+            result = native_pair_or_install(account_home(), version, endpoint, name,
+                                             root_authorized=os.geteuid() == 0)
             print(json.dumps(result, indent=2))
             if result.get("status") in ("active", "already_installed"):
                 print('Local manager: rca --help; if not on PATH, run "$HOME/.local/bin/rca" --help.',
@@ -712,7 +862,7 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             return
         if native_upgrade:
             if latest_archive is not None:
-                _, versions, _, current, _ = local_inventory(pathlib.Path.home())
+                _, versions, _, current, _ = local_inventory(account_home())
                 old_root = owned_unit_root(current, versions) if current else None
                 if old_root is None:
                     raise ValueError("No existing paired managed Linux Agent")
@@ -728,46 +878,49 @@ def install(tag, commit, endpoint, name=None, upgrade=False,
             elif not confirm_owner("Switch the local Agent to " + tag + "?"):
                 raise ValueError("Native service switch not confirmed")
             if detached_upgrade:
-                result = native_cutover_when_idle(pathlib.Path.home(), version, endpoint,
+                result = native_cutover_when_idle(account_home(), version, endpoint,
                                                  automatic=automatic, expected_binding=expected_binding)
             else:
-                result = native_cutover(pathlib.Path.home(), version, endpoint,
+                result = native_cutover(account_home(), version, endpoint,
                                         expected_binding=expected_binding)
             print(json.dumps(result, indent=2))
             return
 
 
-def native_render_unit(root, endpoint, key):
-    if not all(re.fullmatch(r"/[A-Za-z0-9_./-]+", str(p))
-               for p in (root, key)):
+def native_render_unit(root, endpoint, key, root_managed=None):
+    if not all(re.fullmatch(r"/[A-Za-z0-9_./-]+", str(p)) for p in (root, key)):
         raise ValueError("Unsupported systemd path character")
     if not re.fullmatch(r"https://[a-zA-Z0-9.-]+(?::[0-9]{1,5})?/", endpoint):
         raise ValueError("Untrusted canonical service endpoint")
     manifest = json.loads((root / "bundle.json").read_text("utf8"))
     if manifest.get("artifact_profile") != "rust-native-only-v1":
         raise ValueError("Only a native Rust installation is supported")
+    if root_managed is None:
+        root_managed = os.geteuid() == 0
     program = root / APP / ".build/rca-standard-linux-candidate"
-    return "\n".join((
-        MARKER, "[Unit]",
-        "Description=Remote Control Agent (signed outbound WSS)",
-        "StartLimitIntervalSec=0", "", "[Service]", "Type=simple",
-        "WorkingDirectory=" + str(root / APP),
-        "Environment=REMOTE_CONTROL_AGENT_ENDPOINT=" + endpoint,
-        "Environment=REMOTE_CONTROL_AGENT_KEY_PATH=" + str(key),
-        "UMask=0077",
-        "ExecStartPre=/usr/bin/test -r " + str(key),
-        "ExecStartPre=/usr/bin/test -r " + str(key) + ".device-id",
-        "ExecStartPre=/usr/bin/test -x " + str(root / APP / ".build/session-supervisor"),
-        "ExecStart=" + str(program), "Restart=on-failure", "RestartSec=15s",
-        "TimeoutStopSec=15s", "", "[Install]", "WantedBy=default.target", ""
-    ))
+    lines = [MARKER, "[Unit]", "Description=Remote Control Agent (signed outbound WSS)",
+             "StartLimitIntervalSec=0", "", "[Service]", "Type=simple",
+             "WorkingDirectory=" + str(root / APP)]
+    if root_managed:
+        lines.extend(("Environment=HOME=" + str(account_home()),
+                      "Environment=XDG_RUNTIME_DIR=/run/user/0",
+                      "Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/0/bus"))
+    lines.extend(("Environment=REMOTE_CONTROL_AGENT_ENDPOINT=" + endpoint,
+                  "Environment=REMOTE_CONTROL_AGENT_KEY_PATH=" + str(key), "UMask=0077",
+                  "ExecStartPre=/usr/bin/test -r " + str(key),
+                  "ExecStartPre=/usr/bin/test -r " + str(key) + ".device-id",
+                  "ExecStartPre=/usr/bin/test -x " + str(root / APP / ".build/session-supervisor"),
+                  "ExecStart=" + str(program) + (" --root-managed" if root_managed else ""),
+                  "Restart=on-failure", "RestartSec=15s", "TimeoutStopSec=15s",
+                  "", "[Install]", "WantedBy=default.target", ""))
+    return "\n".join(lines)
 
 
 def native_owned_file(path, max_bytes=4096):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_nlink != 1 or info.st_mode & 0o777 != 0o600
                 or not 0 < info.st_size <= max_bytes):
             raise ValueError("Unsafe owner-local upgrade evidence")
@@ -856,15 +1009,16 @@ def native_upgrade_result(key, device_id):
 def native_update_job_state(device_id):
     unit = "rca-upgrade-" + device_id.replace("-", "") + ".service"
     try:
+        env = root_user_manager_environment() if os.geteuid() == 0 else None
         observed = subprocess.run([
             "systemctl", "--user", "show", unit, "-p", "LoadState",
             "-p", "ActiveState", "-p", "Transient", "-p", "Description"
-        ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+        ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, timeout=5, check=False)
         if observed.returncode:
             listed = subprocess.run([
                 "systemctl", "--user", "list-units", "--all", "--no-legend",
                 "--plain", "--no-pager", unit
-            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, timeout=5, check=False)
             if listed.returncode or listed.stdout.strip():
                 return "unknown"
             return "absent"
@@ -876,7 +1030,7 @@ def native_update_job_state(device_id):
             listed = subprocess.run([
                 "systemctl", "--user", "list-units", "--all", "--no-legend",
                 "--plain", "--no-pager", unit
-            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False)
+            ], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, timeout=5, check=False)
             if listed.returncode or not isinstance(listed.stdout, bytes):
                 return "unknown"
             return "absent" if not listed.stdout.strip() else "unknown"
@@ -946,8 +1100,8 @@ def native_require_automatic_update(key, device_id, installed, target):
 
 def native_update_policy(home, action=None):
     """Read or explicitly change continuing consent, not the device Grant."""
-    if action not in (None, "on", "off") or os.getuid() == 0:
-        raise ValueError("Invalid owner-local automatic update policy action")
+    if action not in (None, "on", "off") or (os.geteuid() == 0 and action == "on"):
+        raise ValueError("Root automatic updates are disabled; use an attended upgrade")
     home = pathlib.Path(home)
     _, versions, _, unit, ids = local_inventory(home)
     root = owned_unit_root(unit, versions)
@@ -955,12 +1109,12 @@ def native_update_policy(home, action=None):
         raise ValueError("Existing managed permanent service required")
     key = home / STORE / "v2-identity.pem"
     if action is None:
-        return {"automatic_update": native_auto_policy(key, ids["permanent"])}
+        return {"automatic_update": "off" if os.geteuid() == 0 else native_auto_policy(key, ids["permanent"])}
     base = private_dir(home / STORE)
     fd = os.open(base / "v2-installer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     with os.fdopen(fd, "r+b") as lock:
         info = os.fstat(lock.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
             raise ValueError("Untrusted v2 installer lock")
         try:
@@ -996,9 +1150,10 @@ def native_update_policy(home, action=None):
 
 
 def native_systemctl(*args):
+    env = root_user_manager_environment() if os.geteuid() == 0 else None
     completed = subprocess.run(["systemctl", "--user", *args],
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                               timeout=20, check=False)
+                               env=env, timeout=20, check=False)
     if completed.returncode:
         raise ValueError("Agent systemd action failed; inspect the preserved upgrade backup")
     return completed.stdout.decode("ascii", errors="strict")
@@ -1006,8 +1161,10 @@ def native_systemctl(*args):
 
 def native_signed_owner_intent(root, endpoint, action, lock):
     entry = root / APP / ".build/rca-standard-linux-candidate"
-    result = subprocess.run([str(entry), "--owner-intent", endpoint, action,
-                             str(lock.fileno())], pass_fds=(lock.fileno(),),
+    args = [str(entry), "--owner-intent", endpoint, action, str(lock.fileno())]
+    if os.geteuid() == 0:
+        args.insert(1, "--root-managed")
+    result = subprocess.run(args, pass_fds=(lock.fileno(),),
                             timeout=45, check=False)
     if result.returncode != 0:
         raise ValueError("Signed owner intent not confirmed")
@@ -1024,9 +1181,11 @@ def native_verify_stopped():
 
 def native_owner_lifecycle(home, action):
     """Retain the signed owner STOP/Resume and systemd lifecycle contract."""
-    if action not in ("stop", "start", "restart") or os.getuid() == 0 or not (
+    if action not in ("stop", "start", "restart") or not (
             sys.stdin.isatty() and sys.stdout.isatty()):
         raise ValueError("Owner-local lifecycle requires a real terminal")
+    if os.geteuid() == 0:
+        root_user_manager_environment()
     home = pathlib.Path(home)
     _, _, _, unit, ids = local_inventory(home)
     if not unit or "permanent" not in ids:
@@ -1035,7 +1194,7 @@ def native_owner_lifecycle(home, action):
     fd = os.open(base / "v2-installer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+b") as lock:
         info = os.fstat(lock.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
             raise ValueError("Untrusted v2 installer lock")
         try:
@@ -1177,7 +1336,7 @@ def native_consent(key, action):
     import socket
     endpoint = key.with_name("upgrade.sock")
     info = endpoint.lstat()
-    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid()
+    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.geteuid()
             or info.st_mode & 0o077):
         raise ValueError("Untrusted Agent freeze socket")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
@@ -1187,7 +1346,7 @@ def native_consent(key, action):
             # Bind signed-transport evidence to the owned systemd process.
             peer_pid, peer_uid, _ = struct.unpack("3i", client.getsockopt(
                 socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i")))
-            if peer_uid != os.getuid() or peer_pid != native_main_pid():
+            if peer_uid != os.geteuid() or peer_pid != native_main_pid():
                 raise ValueError("Online evidence is not from the active Agent")
         client.sendall((action + "\n").encode("ascii"))
         answer = bytearray()
@@ -1284,15 +1443,22 @@ def native_wait_proof(path, operation, device_id, version, pid, seconds=90):
 
 
 def native_receipts_compatible(home):
-    # Preserve the existing receipt header contract. Do not acquire a second
-    # SQLite writer while the current Agent remains online.
+    # Match Rust standard_receipts(): validate every existing path component
+    # before pairing can write identity or activation state. Do not create
+    # missing directories here; the Agent remains the sole receipt owner.
     directory = home / ".local/state/mcp-workers/remote-control-agent"
-    if not directory.exists():
-        if directory.is_symlink():
-            raise ValueError("Redirected receipt directory")
-        return
+    current = pathlib.Path(home)
+    for component in (".local", "state", "mcp-workers", "remote-control-agent"):
+        current = current / component
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+                or info.st_mode & 0o022):
+            raise ValueError("Untrusted SQLite receipt directory path")
     info = directory.lstat()
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
             or info.st_mode & 0o077):
         raise ValueError("Untrusted existing SQLite receipt directory")
     file = directory / "operation-receipts.sqlite"
@@ -1306,7 +1472,7 @@ def native_receipts_compatible(home):
     try:
         metadata = os.fstat(fd)
         if (not stat.S_ISREG(metadata.st_mode) or
-                metadata.st_uid != os.getuid() or
+                metadata.st_uid != os.geteuid() or
                 metadata.st_nlink != 1 or metadata.st_mode & 0o077):
             raise ValueError("Untrusted SQLite receipt file")
         header = os.read(fd, 100)
@@ -1329,7 +1495,7 @@ def native_initial_state(home, root, endpoint, allow_repair=False):
     for directory in (home, home / ".local", home / ".local/bin", home / ".config",
                       unit.parent.parent, unit.parent):
         if directory.is_symlink() or (directory.exists() and (
-                not directory.is_dir() or directory.stat().st_uid != os.getuid()
+                not directory.is_dir() or directory.stat().st_uid != os.geteuid()
                 or directory.stat().st_mode & 0o022)):
             raise ValueError("Unsafe initial service or launcher directory")
     rendered = native_render_unit(root, endpoint, key)
@@ -1416,22 +1582,28 @@ def native_pair_local(root, endpoint, name, temporary=False, repair_phase=None, 
     if probe.returncode:
         raise ValueError("Required native supervisor safety probe failed")
     command = "--temporary-local" if temporary else "--pair-local"
-    args = [str(binary), command, endpoint, label]
     pass_fds = ()
     if repair_phase is not None:
         if temporary or repair_phase not in ("prepare", "promote") or lock_fd is None:
             raise ValueError("Invalid permanent re-pair phase")
-        args[1] = "--" + repair_phase + "-permanent-repair"
-        args.append(str(lock_fd))
+        command = "--" + repair_phase + "-permanent-repair"
         pass_fds = (lock_fd,)
+    args = [str(binary)]
+    if os.geteuid() == 0:
+        args.append("--root-managed")
+    args.extend((command, endpoint, label))
+    if repair_phase is not None:
+        args.append(str(lock_fd))
     if subprocess.run(args, check=False, pass_fds=pass_fds).returncode:
         raise ValueError("Native pairing or foreground session not completed; identity retained")
 
 
-def native_temporary(home, root, endpoint, name=None, process_check=None):
+def native_temporary(home, root, endpoint, name=None, process_check=None, root_authorized=False):
     """Owner-local foreground only; no permanent service or identity mutation."""
-    if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
-        raise ValueError("Temporary Agent requires a real non-root local terminal")
+    if ((os.geteuid() == 0 and not root_authorized)
+            or (os.geteuid() != 0 and root_authorized)
+            or not (sys.stdin.isatty() and sys.stdout.isatty())):
+        raise ValueError("Temporary Agent requires its matching owner identity and a real local terminal")
     if not worker_origin(endpoint):
         raise ValueError("Supply the reviewed HTTPS Worker origin")
     home = pathlib.Path(home)
@@ -1462,10 +1634,15 @@ def native_temporary(home, root, endpoint, name=None, process_check=None):
 
 
 def native_pair_or_install(home, root, endpoint, name=None,
-                           pair=native_pair_local, verify=native_wait_proof, process_check=None):
+                           pair=native_pair_local, verify=native_wait_proof, process_check=None,
+                           root_authorized=False):
     """Use the existing identity transaction, then the signed activation path."""
-    if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
-        raise ValueError("Permanent pairing requires a real non-root local terminal")
+    if ((os.geteuid() == 0 and not root_authorized)
+            or (os.geteuid() != 0 and root_authorized)
+            or not (sys.stdin.isatty() and sys.stdout.isatty())):
+        raise ValueError("Permanent pairing requires its matching owner identity and a real local terminal")
+    if os.geteuid() == 0:
+        root_user_manager_environment()
     home, root = pathlib.Path(home), pathlib.Path(root)
     process_check = process_check or no_running_programs
     _, _, current, ids, key, _, _, record, _, _, _ = native_initial_state(home, root, endpoint, allow_repair=True)
@@ -1475,7 +1652,11 @@ def native_pair_or_install(home, root, endpoint, name=None,
     if record is not None and pending:
         raise ValueError("Conflicting native activation and identity transaction")
     repaired = False
-    if record is None and (current is not None or pending or ids.get("permanent")):
+    # A preserved key/ID with no installed service is a normal reinstall.
+    # Let the ordinary native pairing path recover that exact identity; the
+    # old/new repair transaction is only for an installed service or an
+    # already durable identity transition.
+    if record is None and (current is not None or pending):
         import socket
         if name is None:
             name = socket.gethostname()
@@ -1483,7 +1664,7 @@ def native_pair_or_install(home, root, endpoint, name=None,
                      os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
         with os.fdopen(fd, "r+b") as lock:
             info = os.fstat(lock.fileno())
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                     or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
                 raise ValueError("Unsafe installer lock")
             try:
@@ -1566,7 +1747,7 @@ def native_first_install(home, root, endpoint, name=None,
     # Only a genuinely new identity may receive the disclosed default.
     # An interrupted activation, re-pair or existing install never migrates
     # missing consent implicitly.
-    new_stable_policy = (current is None and record is None
+    new_stable_policy = (os.geteuid() != 0 and current is None and record is None
                          and not os.path.lexists(key)
                          and "permanent" not in state[3])
     manifest = json.loads((root / "bundle.json").read_text("utf8"))
@@ -1586,7 +1767,7 @@ def native_first_install(home, root, endpoint, name=None,
                  os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     with os.fdopen(fd, "r+b") as lock:
         info = os.fstat(lock.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_nlink != 1 or info.st_mode & 0o777 != 0o600):
             raise ValueError("Unsafe installer lock")
         try:
@@ -1774,7 +1955,7 @@ def native_cutover(home, new_root, endpoint, verify=native_wait_proof, *, automa
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+b") as lock:
         info = os.fstat(lock.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_mode & 0o777 != 0o600):
             raise ValueError("Untrusted v2 installer lock")
         try:
@@ -1948,7 +2129,7 @@ def native_recover(home, process_check=None):
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+b") as lock:
         info = os.fstat(lock.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
             raise ValueError("Untrusted owner installer lock")
         try:
@@ -2118,7 +2299,9 @@ STORE = pathlib.Path(".local/share/mcp-workers/remote-control")
 
 def local_inventory(home):
     home = pathlib.Path(home)
-    if home.is_symlink() or not home.is_dir() or home.stat().st_uid != os.getuid():
+    if os.geteuid() == 0 and home != root_account_home():
+        raise ValueError("UID 0 installation must use the UID 0 OS account home")
+    if home.is_symlink() or not home.is_dir() or home.stat().st_uid != os.geteuid():
         raise ValueError("Untrusted account home")
     base = home / STORE
     # Never follow a link in any trusted uninstall root component.
@@ -2126,31 +2309,35 @@ def local_inventory(home):
                      str(STORE), str(STORE / "programs"),
                      ".config", ".config/systemd", ".config/systemd/user"):
         item = home / relative
-        if item.is_symlink() or (item.exists() and
-                (not item.is_dir() or item.stat().st_uid != os.getuid())):
-            raise ValueError("Linked or unowned path in v2 install tree")
+        if item.is_symlink() or (item.exists() and (
+                not item.is_dir() or item.stat().st_uid != os.geteuid()
+                or (os.geteuid() == 0 and stat.S_IMODE(item.stat().st_mode) & 0o022))):
+            raise ValueError("Linked, unowned or writable path in v2 install tree")
     programs = base / "programs"
     unit_file = home / ".config/systemd/user" / UNIT
     if programs.is_symlink() or unit_file.is_symlink():
         raise ValueError("Untrusted v2 installation symlink")
     versions = []
     if programs.exists():
-        if not programs.is_dir() or programs.stat().st_uid != os.getuid():
+        if not programs.is_dir() or programs.stat().st_uid != os.geteuid():
             raise ValueError("Untrusted program directory")
         for p in programs.iterdir():
             if p.name == "install.lock" or p.name.startswith((".download-", ".unverified-")):
                 continue
             if not re.fullmatch(r"v\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?-linux-(?:x64|arm64)-glibc", p.name) \
-                    or p.is_symlink() or not p.is_dir() or p.stat().st_uid != os.getuid():
+                    or p.is_symlink() or not p.is_dir() or p.stat().st_uid != os.geteuid():
                 raise ValueError("Unknown version entry: do not remove")
             versions.append(p)
     unit = None
     if unit_file.exists():
-        if unit_file.stat().st_uid != os.getuid() or not unit_file.is_file():
+        if unit_file.stat().st_uid != os.geteuid() or not unit_file.is_file():
             raise ValueError("Unowned v2 user service")
         unit = unit_file.read_text("utf8")
         if not unit.startswith(MARKER + "\n"):
             raise ValueError("Foreign user service; do not remove")
+        if (os.geteuid() == 0 and not root_managed_unit(unit)) or (
+                os.geteuid() != 0 and root_managed_unit(unit)):
+            raise ValueError("User service belongs to a different Agent OS identity")
     ids = {}
     for mode, relative in (("permanent", "v2-identity.pem"),
                            ("temporary", "temporary/v2-identity.pem")):
@@ -2159,7 +2346,7 @@ def local_inventory(home):
             raise ValueError("Linked identity ID")
         if f.exists():
             st = f.stat()
-            if not f.is_file() or st.st_uid != os.getuid() or st.st_mode & 0o077:
+            if not f.is_file() or st.st_uid != os.geteuid() or st.st_mode & 0o077:
                 raise ValueError("Unsafe identity metadata")
             value = f.read_text("utf8").strip()
             if not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", value):
@@ -2172,12 +2359,16 @@ def local_status(home):
     programs, versions, unit_file, unit, ids = local_inventory(home)
     service = "not_installed"
     if unit:
-        result = subprocess.run(["systemctl", "--user", "is-active", "--quiet", UNIT],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                timeout=5, check=False)
-        service = "active" if result.returncode == 0 else "inactive_or_unconfirmed"
+        try:
+            env = root_user_manager_environment() if os.geteuid() == 0 else None
+            result = subprocess.run(["systemctl", "--user", "is-active", "--quiet", UNIT],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    env=env, timeout=5, check=False)
+            service = "active" if result.returncode == 0 else "inactive_or_unconfirmed"
+        except (OSError, ValueError, subprocess.SubprocessError):
+            service = "inactive_or_unconfirmed"
     key = pathlib.Path(home) / STORE / "v2-identity.pem"
-    policy = native_auto_policy(key, ids["permanent"]) if "permanent" in ids else "off"
+    policy = ("off" if os.geteuid() == 0 else native_auto_policy(key, ids["permanent"])) if "permanent" in ids else "off"
     update_result = None
     activity = "disabled"
     installed_version = None
@@ -2235,7 +2426,7 @@ def validated_owned_version(p):
     except OSError:
         raise ValueError("Untrusted native Agent executable")
     if (not stat.S_ISREG(candidate_info.st_mode)
-            or candidate_info.st_uid != os.getuid()
+            or candidate_info.st_uid != os.geteuid()
             or candidate_info.st_nlink != 1 or candidate_info.st_mode & 0o077
             or not candidate_info.st_mode & 0o111):
         raise ValueError("Untrusted native Agent executable")
@@ -2244,7 +2435,7 @@ def validated_owned_version(p):
         for name in dirs + files:
             file = pathlib.Path(parent) / name
             st = file.lstat()
-            if st.st_uid != os.getuid() or st.st_mode & 0o077 or not (
+            if st.st_uid != os.geteuid() or st.st_mode & 0o077 or not (
                     stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
                 raise ValueError("Untrusted file in v2 program")
             if stat.S_ISREG(st.st_mode):
@@ -2277,6 +2468,8 @@ def owned_unit_root(unit, versions):
     if manifest.get("artifact_profile") != "rust-native-only-v1":
         raise ValueError("Unsupported installed Linux Agent; reinstall native Rust")
     expected = str(root / APP / ".build/rca-standard-linux-candidate")
+    if os.geteuid() == 0:
+        expected += " --root-managed"
     if start[0] != expected:
         raise ValueError("Current v2 service runtime does not match its manifest")
     endpoint_lines = [line for line in lines
@@ -2294,6 +2487,14 @@ def owned_unit_root(unit, versions):
     return root
 
 
+def proc_has_no_live_userspace(status):
+    # Root can see kernel threads, which have no userspace executable or cwd.
+    # Only the kernel-provided Kthread field (not an empty argv or missing
+    # exe) distinguishes them from an uncertain userspace process.
+    return bool(re.search(r"^State:[ \t]*Z\b", status, re.MULTILINE)
+                or re.search(r"^Kthread:[ \t]*1[ \t]*$", status, re.MULTILINE))
+
+
 def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
     """Fail closed on owned processes even when argv hides the executable.
 
@@ -2308,11 +2509,11 @@ def no_running_programs(versions, proc_root=pathlib.Path("/proc")):
         if not p.name.isdigit() or int(p.name) == os.getpid():
             continue
         try:
-            if p.stat().st_uid != os.getuid():
+            if p.stat().st_uid != os.geteuid():
                 continue
             status = (p / "status").read_text("ascii")
-            if re.search(r"^State:\s*Z\b", status, re.MULTILINE):
-                continue  # Exited zombie is not a running Agent.
+            if proc_has_no_live_userspace(status):
+                continue  # Kernel thread or exited zombie cannot run the Agent.
             argv = (p / "cmdline").read_bytes().split(b"\0")
             if any(arg.startswith(prefix) for arg in argv for prefix in prefixes):
                 return False
@@ -2344,13 +2545,13 @@ def owned_manager_launcher(home, versions):
     directory = parent / "bin"
     for path in (parent, directory):
         if path.is_symlink() or (path.exists() and (
-                not path.is_dir() or path.stat().st_uid != os.getuid())):
+                not path.is_dir() or path.stat().st_uid != os.geteuid())):
             raise ValueError("Untrusted user-local command directory")
     launcher = directory / "rca"
     if launcher.is_symlink():
         info = launcher.lstat()
         expected = [str(v / APP / "scripts/rca.sh") for v in versions]
-        if info.st_uid != os.getuid() or os.readlink(launcher) not in expected:
+        if info.st_uid != os.geteuid() or os.readlink(launcher) not in expected:
             raise ValueError("Foreign Agent manager launcher: refuse uninstall")
         return launcher
     if launcher.exists():
@@ -2359,8 +2560,14 @@ def owned_manager_launcher(home, versions):
 
 
 def local_uninstall(home, confirm, systemctl=None, process_check=no_running_programs):
-    if os.getuid() == 0 or not confirm:
+    if not confirm:
         raise ValueError("Owner-only explicit local uninstall required")
+    if os.geteuid() == 0:
+        _, _, _, unit, _ = local_inventory(home)
+        if unit:
+            if not root_managed_unit(unit):
+                raise ValueError("Refusing to uninstall a non-root-managed service as UID 0")
+            root_user_manager_environment()
     # Native upgrades already hold this installer lock. Checking only durable
     # intent would race with an upgrade about to create that intent.
     local_inventory(home)
@@ -2372,7 +2579,7 @@ def local_uninstall(home, confirm, systemctl=None, process_check=no_running_prog
                  os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "r+b") as lock:
         info = os.fstat(lock.fileno())
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
             raise ValueError("Untrusted v2 installer lock")
         try:
@@ -2431,12 +2638,12 @@ def local_identity_purge_plan(home):
     if not base.exists():
         return [], ids
     info = base.stat()
-    if not base.is_dir() or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    if not base.is_dir() or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o077:
         raise ValueError("Untrusted v2 identity directory")
     for relative in ("temporary",):
         directory = base / relative
         if directory.is_symlink() or (directory.exists() and (
-                not directory.is_dir() or directory.stat().st_uid != os.getuid()
+                not directory.is_dir() or directory.stat().st_uid != os.geteuid()
                 or stat.S_IMODE(directory.stat().st_mode) & 0o077)):
             raise ValueError("Unsafe v2 identity subdirectory")
     # A re-pair transaction or archived key requires deliberate operator
@@ -2457,7 +2664,7 @@ def local_identity_purge_plan(home):
         if not file.exists():
             continue
         info = file.lstat()
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or stat.S_IMODE(info.st_mode) != 0o600):
             raise ValueError("Untrusted v2 identity file; purge blocked")
         files.append(file)
@@ -2465,8 +2672,8 @@ def local_identity_purge_plan(home):
 
 
 def local_identity_purge(home, confirm, process_check=None):
-    if os.getuid() == 0 or not confirm:
-        raise ValueError("Non-root explicit v2 identity purge confirmation required")
+    if not confirm:
+        raise ValueError("Explicit v2 identity purge confirmation required")
     files, ids = local_identity_purge_plan(home)
     if process_check is None:
         process_check = no_live_v2_identity_processes
@@ -2496,10 +2703,10 @@ def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
         if not process.name.isdigit() or int(process.name) == os.getpid():
             continue
         try:
-            if process.stat().st_uid != os.getuid():
+            if process.stat().st_uid != os.geteuid():
                 continue
             status = (process / "status").read_text("ascii")
-            if re.search(r"^State:\s*Z\b", status, re.MULTILINE):
+            if proc_has_no_live_userspace(status):
                 continue
             argv = (process / "cmdline").read_bytes().split(b"\0")
             if any(agent_path(arg) for arg in argv):
@@ -2521,8 +2728,9 @@ def no_live_v2_identity_processes(proc_root=pathlib.Path("/proc")):
 
 
 def systemctl_user(args):
+    env = root_user_manager_environment() if os.geteuid() == 0 else None
     result = subprocess.run(["systemctl"] + args, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL, timeout=15, check=False)
+                            stderr=subprocess.DEVNULL, env=env, timeout=15, check=False)
     if result.returncode:
         raise ValueError("Owned v2 systemd user service action failed")
 
@@ -2550,34 +2758,38 @@ def main():
     parser.add_argument("--name")
     parser.add_argument("--upgrade", action="store_true", help="manual owned v2 program upgrade only")
     parser.add_argument("--asset-sha256", help="independently reviewed SHA-256 for native staging, install or switch")
+    parser.add_argument("--allow-root", action="store_true",
+                        help="explicit local UID 0 first-install opt-in; independent terminal confirmation required")
     args = parser.parse_args()
     try:
         if args.status:
-            print(json.dumps(local_status(os.path.expanduser("~")), indent=2))
+            print(json.dumps(local_status(str(account_home())), indent=2))
         elif args.recover_native:
-            if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
                 raise ValueError("Native recovery requires an owner interactive terminal")
+            if os.geteuid() == 0:
+                root_recovery_preflight(account_home())
             print("Recover the previous local Agent service, or remove an interrupted first activation; identity retained.")
             if not confirm_owner("Recover the local Agent service?"):
                 raise ValueError("Native recovery not confirmed")
-            print(json.dumps(native_recover(pathlib.Path.home()), indent=2))
+            print(json.dumps(native_recover(account_home()), indent=2))
         elif args.uninstall:
-            if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
-                raise ValueError("Local uninstall requires a non-root interactive terminal")
-            _, versions, _, _, ids = local_inventory(os.path.expanduser("~"))
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise ValueError("Local uninstall requires an interactive terminal")
+            _, versions, _, _, ids = local_inventory(str(account_home()))
             print("Owned local v2 versions:", ", ".join(v.name for v in versions))
             print("Device IDs (cloud grants will NOT be revoked):", ids)
             print("Private keys and SQLite receipts will be retained; use MCP revoke_device separately.")
             if not confirm_owner("Remove the listed local Agent installations?"):
                 raise ValueError("Local uninstall not confirmed")
-            print(json.dumps(local_uninstall(os.path.expanduser("~"), True, systemctl_user), indent=2))
+            print(json.dumps(local_uninstall(str(account_home()), True, systemctl_user), indent=2))
         elif args.purge_local_identity:
-            if os.getuid() == 0 or not (sys.stdin.isatty() and sys.stdout.isatty()):
-                raise ValueError("Local identity purge requires a non-root interactive terminal")
-            home = os.path.expanduser("~")
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                raise ValueError("Local identity purge requires an interactive terminal")
+            home = str(account_home())
             local_inventory(home)  # Reject unowned path components before opening lock.
             base = pathlib.Path(home) / STORE
-            if not base.is_dir() or base.is_symlink() or base.stat().st_uid != os.getuid() \
+            if not base.is_dir() or base.is_symlink() or base.stat().st_uid != os.geteuid() \
                     or stat.S_IMODE(base.stat().st_mode) & 0o077:
                 raise ValueError("No safe v2 identity directory to purge")
             # Existing v2 installer flock: avoid racing local pairing or re-pair.
@@ -2585,7 +2797,7 @@ def main():
                          os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "r+b") as lock:
                 info = os.fstat(lock.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() \
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() \
                         or stat.S_IMODE(info.st_mode) != 0o600:
                     raise ValueError("Untrusted v2 installer lock")
                 try:
@@ -2604,16 +2816,20 @@ def main():
                     raise ValueError("Local identity purge not confirmed")
                 print(json.dumps(local_identity_purge(home, True), indent=2))
         elif args.latest_archive is not None:
-            if not args.tag or not args.endpoint or args.commit or args.temporary or args.name:
+            if not args.tag or not args.endpoint or args.commit or args.name:
                 raise ValueError("Public archive requires stable tag, origin and reviewed SHA-256")
+            if args.temporary and args.upgrade:
+                raise ValueError("Temporary mode is only available for first installation")
             install(args.tag, None, args.endpoint, asset_sha256=args.asset_sha256,
                     native_upgrade=args.upgrade, native_install=not args.upgrade,
-                    latest_archive=args.latest_archive)
+                    temporary=args.temporary, latest_archive=args.latest_archive,
+                    allow_root=args.allow_root)
         else:
             if not args.tag or not args.commit or not args.endpoint:
                 raise ValueError("Pinned --tag, --commit, and --endpoint are required")
             install(args.tag, args.commit, args.endpoint, args.name, args.upgrade,
-                    args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install, args.temporary)
+                    args.stage_only, args.asset_sha256, args.native_upgrade, args.native_install,
+                    args.temporary, allow_root=args.allow_root)
     except (EOFError, KeyboardInterrupt):
         print("Local operation cancelled; check status for any already completed effects.", file=sys.stderr)
         return 1

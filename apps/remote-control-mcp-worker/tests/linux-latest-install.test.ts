@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, chmodSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -45,6 +45,48 @@ test("first-install Linux script is static, no Worker GitHub API or old reposito
   assert.ok(script.indexOf("tar -xOzf") < script.indexOf("bootstrap-v2.py >"));
   assert.equal(spawnSync("sh", ["-n"], { input: script, encoding: "utf8", timeout: 3000 }).status, 0);
   assert.ok(Buffer.byteLength(script) < 16384);
+});
+
+
+test("public Linux installer defers first-use root authorization to the identity-aware bootstrap", async () => {
+  const response = await worker.fetch(new Request(origin + "/install.sh"), approvedEnv({calls:0}));
+  const script = await response.text();
+  const root = mkdtempSync(join(tmpdir(), "rca-root-shell-"));
+  const id = join(root, "id");
+  const run = (uid: number, args: string[]) => {
+    writeFileSync(id, `#!/bin/sh\nprintf '%s\\n' '${uid}'\n`);
+    chmodSync(id, 0o755);
+    return spawnSync("sh", ["-s", "--", ...args], {
+      input: script, encoding: "utf8", timeout: 3000,
+      env: {...process.env, PATH: root + ":" + process.env.PATH},
+    });
+  };
+  try {
+    const missing = run(0, []);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /Root installation requires a real local terminal/);
+    assert.doesNotMatch(missing.stderr, /Downloading Remote Control Agent/);
+    assert.doesNotMatch(script, /Root installation requires --allow-root/);
+
+    const nonInteractive = run(0, ["--allow-root"]);
+    assert.notEqual(nonInteractive.status, 0);
+    assert.match(nonInteractive.stderr, /real local terminal/);
+    assert.doesNotMatch(nonInteractive.stderr, /Downloading Remote Control Agent/);
+
+    const mixed = run(0, ["--allow-root", "--upgrade"]);
+    assert.notEqual(mixed.status, 0);
+    assert.match(mixed.stderr, /cannot be combined/);
+
+    const duplicate = run(0, ["--allow-root", "--allow-root"]);
+    assert.notEqual(duplicate.status, 0);
+    assert.match(duplicate.stderr, /Duplicate installer option/);
+
+    const ordinary = run(1001, ["--allow-root"]);
+    assert.notEqual(ordinary.status, 0);
+    assert.match(ordinary.stderr, /only valid for UID 0/);
+  } finally {
+    rmSync(root, {recursive:true, force:true});
+  }
 });
 
 test("cold Worker lookup errors never gate public Linux script or macOS script", async () => {

@@ -63,7 +63,7 @@ class LinuxStageOnly(unittest.TestCase):
 
     def test_only_stage_only_bypasses_tty_not_non_root_or_runtime_safety(self):
         with (mock.patch.object(bootstrap.sys, "platform", "linux"),
-              mock.patch.object(bootstrap.os, "getuid", return_value=1001),
+              mock.patch.object(bootstrap.os, "geteuid", return_value=1001),
               mock.patch.object(bootstrap.sys, "stdin", mock.Mock(isatty=lambda: False)),
               mock.patch.object(bootstrap.sys, "stdout", mock.Mock(isatty=lambda: False)),
               mock.patch.object(bootstrap.platform, "machine", return_value="x86_64"),
@@ -72,7 +72,7 @@ class LinuxStageOnly(unittest.TestCase):
             self.assertEqual(bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True), TARGET)
             with self.assertRaisesRegex(ValueError, "real interactive terminal"):
                 bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=False)
-            with mock.patch.object(bootstrap.os, "getuid", return_value=0):
+            with mock.patch.object(bootstrap.os, "geteuid", return_value=0):
                 with self.assertRaisesRegex(ValueError, "non-root"):
                     bootstrap.preflight(TAG, COMMIT, ENDPOINT, stage_only=True)
             with mock.patch.object(bootstrap.platform, "libc_ver", return_value=("glibc", "2.27")):
