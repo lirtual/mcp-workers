@@ -18,9 +18,10 @@ mod linux {
         run_native_managed_session_with_upgrade, NativeFileError, UpgradeRuntimeOptions,
     };
     use rca_native_agent::session::SessionError;
-    use std::ffi::OsStr;
+    use std::ffi::{CStr, OsStr};
     use std::fs;
     use std::io::{ErrorKind, Write};
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -46,18 +47,72 @@ mod linux {
         Ok(())
     }
 
+    // Resolve the UID 0 account through NSS, not the inherited environment.
+    fn root_account_home() -> Result<PathBuf, ()> {
+        let suggested = unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) };
+        let mut buffer = vec![
+            0u8;
+            usize::try_from(suggested)
+                .ok()
+                .filter(|&size| size > 0)
+                .unwrap_or(16 * 1024)
+        ];
+        let mut record = std::mem::MaybeUninit::<libc::passwd>::uninit();
+        let mut result = std::ptr::null_mut();
+        let status = unsafe {
+            libc::getpwuid_r(
+                0,
+                record.as_mut_ptr(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+                &mut result,
+            )
+        };
+        if status != 0 || result.is_null() {
+            return Err(());
+        }
+        // NSS owns no output storage here: all strings remain valid in buffer
+        // until copied to an owned path.
+        let record = unsafe { record.assume_init() };
+        if record.pw_uid != 0 || record.pw_dir.is_null() {
+            return Err(());
+        }
+        let bytes = unsafe { CStr::from_ptr(record.pw_dir) }.to_bytes();
+        Ok(PathBuf::from(OsStr::from_bytes(bytes)))
+    }
+
+    fn validate_root_home_path(
+        home: &Path,
+        account: &Path,
+        metadata: impl Fn(&Path) -> Result<(u32, u32), ()>,
+    ) -> Result<(), ()> {
+        if !home.is_absolute() || home.as_os_str() != account.as_os_str() {
+            return Err(());
+        }
+        for path in home.ancestors() {
+            let (uid, mode) = metadata(path)?;
+            if uid != 0
+                || mode & libc::S_IFMT != libc::S_IFDIR
+                || mode & 0o022 != 0
+                || (path == home && mode & 0o077 != 0)
+            {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
     fn home() -> Result<PathBuf, ()> {
         let root = PathBuf::from(std::env::var_os("HOME").ok_or(())?);
         if !root.is_absolute() {
             return Err(());
         }
         if unsafe { libc::geteuid() } == 0 {
-            let info = fs::symlink_metadata(&root).map_err(|_| ())?;
-            if !info.is_dir()
-                || info.file_type().is_symlink()
-                || info.uid() != 0
-                || info.permissions().mode() & 0o077 != 0
-                || std::env::var("XDG_RUNTIME_DIR").is_ok_and(|value| value != "/run/user/0")
+            validate_root_home_path(&root, &root_account_home()?, |path| {
+                let info = fs::symlink_metadata(path).map_err(|_| ())?;
+                Ok((info.uid(), info.mode()))
+            })?;
+            if std::env::var("XDG_RUNTIME_DIR").is_ok_and(|value| value != "/run/user/0")
                 || std::env::var("DBUS_SESSION_BUS_ADDRESS")
                     .is_ok_and(|value| value != "unix:path=/run/user/0/bus")
             {
@@ -836,6 +891,28 @@ mod linux {
 
             let mut ordinary = vec!["--cli".to_owned()];
             validate_root_mode(&mut ordinary, 1001).unwrap();
+        }
+
+        #[test]
+        fn root_home_requires_account_match_and_trusted_ancestors() {
+            // Synthetic metadata only; no privileged identity or service.
+            let home = Path::new("/srv/root");
+            let check = |account: &Path, altered: Option<(&Path, u32, u32)>| {
+                validate_root_home_path(home, account, |path| {
+                    if let Some((bad, uid, mode)) = altered {
+                        if path == bad {
+                            return Ok((uid, mode));
+                        }
+                    }
+                    Ok((0, libc::S_IFDIR | if path == home { 0o700 } else { 0o755 }))
+                })
+            };
+            assert!(check(home, None).is_ok());
+            assert!(check(Path::new("/root"), None).is_err());
+            assert!(check(home, Some((Path::new("/srv"), 1001, libc::S_IFDIR | 0o755))).is_err());
+            assert!(check(home, Some((Path::new("/srv"), 0, libc::S_IFDIR | 0o775))).is_err());
+            assert!(check(home, Some((Path::new("/srv"), 0, libc::S_IFLNK | 0o777))).is_err());
+            assert!(check(home, Some((home, 0, libc::S_IFDIR | 0o550))).is_err());
         }
 
         #[test]
