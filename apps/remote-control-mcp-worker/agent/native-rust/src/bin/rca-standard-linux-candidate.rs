@@ -112,10 +112,7 @@ mod linux {
             return Err(());
         }
         validate_root_directory_chain(home, &metadata)?;
-        // Keep the existing private HOME contract.
-        if metadata(home)?.1 & 0o077 != 0 {
-            return Err(());
-        }
+        // HOME may expose directory names; RCA resources retain private paths.
         Ok(())
     }
 
@@ -953,7 +950,9 @@ mod linux {
             assert!(check(home, Some((Path::new("/srv"), 1001, libc::S_IFDIR | 0o755))).is_err());
             assert!(check(home, Some((Path::new("/srv"), 0, libc::S_IFDIR | 0o775))).is_err());
             assert!(check(home, Some((Path::new("/srv"), 0, libc::S_IFLNK | 0o777))).is_err());
-            assert!(check(home, Some((home, 0, libc::S_IFDIR | 0o550))).is_err());
+            assert!(check(home, Some((home, 0, libc::S_IFDIR | 0o550))).is_ok());
+            assert!(check(home, Some((home, 0, libc::S_IFDIR | 0o755))).is_ok());
+            assert!(check(home, Some((home, 0, libc::S_IFDIR | 0o770))).is_err());
         }
 
         #[test]
