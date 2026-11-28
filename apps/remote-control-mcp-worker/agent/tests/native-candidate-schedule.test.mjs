@@ -131,6 +131,29 @@ test('five native candidate jobs are scheduled only by a nested Agent change and
   }
 });
 
+
+test('Legacy candidate is isolated from the Standard release gate and built on shared source changes', () => {
+  const ci = read('.github/workflows/ci.yml');
+  const standard = read('.github/workflows/agent-native-candidates.yml');
+  const legacy = read('.github/workflows/agent-legacy-candidate.yml');
+  const release = read('.github/workflows/agent-release.yml');
+  assert.doesNotMatch(standard, /linux-legacy-candidate|linux-x64-legacy-glibc/);
+  assert.doesNotMatch(release, /agent-legacy-candidate|linux-x64-legacy-glibc/);
+  assert.match(ci, /agent-legacy-candidate:\n    name: Independent Legacy candidate\n    needs: checks\n    if: needs\.checks\.outputs\.agent_legacy_changed == 'true'\n    uses: \.\/\.github\/workflows\/agent-legacy-candidate\.yml/);
+  assert.match(legacy, /Manual Legacy candidates are built from main only/);
+  assert.match(legacy, /Save independent unpublished Legacy candidate\n        if: github.event_name == 'workflow_dispatch'/);
+  assert.match(legacy, /name: \$\{\{ inputs\.candidate_tag \}\}-linux-x64-legacy-glibc/);
+  assert.match(legacy, /source-commit\.txt/);
+  assert.doesNotMatch(legacy, /gh release (?:create|edit|upload|delete)|contents: write|wrangler deploy/);
+  const own = selectionDetails(['.github/workflows/agent-legacy-candidate.yml']);
+  assert.equal(own.agentNativeChanged, false);
+  assert.equal(own.agentLegacyChanged, true);
+  assert.deepEqual(own.apps, ['remote-control-mcp-worker']);
+  assert.equal(selectionDetails(['apps/remote-control-mcp-worker/agent/native-rust/src/lib.rs']).agentLegacyChanged, true);
+  assert.equal(selectionDetails(['apps/remote-control-mcp-worker/agent/scripts/session-supervisor.c']).agentLegacyChanged, true);
+  assert.equal(selectionDetails(['apps/remote-control-mcp-worker/src/worker.ts']).agentLegacyChanged, false);
+});
+
 function temporaryPushHistory() {
   const dir = mkdtempSync(path.join(tmpdir(), 'rca-native-schedule-'));
   const git = (args) => execFileSync('git', args, {

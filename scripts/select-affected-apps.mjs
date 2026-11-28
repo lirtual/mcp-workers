@@ -34,11 +34,13 @@ function requiresAllApps(file) {
 }
 
 const AGENT_NATIVE_WORKFLOW = '.github/workflows/agent-native-candidates.yml';
+const AGENT_LEGACY_WORKFLOW = '.github/workflows/agent-legacy-candidate.yml';
 const AGENT_RELEASE_WORKFLOW = '.github/workflows/agent-release.yml';
 
 function selectsRemoteControl(file) {
   return file.startsWith('apps/remote-control-mcp-worker/')
     || file === AGENT_NATIVE_WORKFLOW
+    || file === AGENT_LEGACY_WORKFLOW
     || file === AGENT_RELEASE_WORKFLOW;
 }
 
@@ -46,7 +48,7 @@ export function selectAffectedApps(changedFiles) {
   if (changedFiles.some(requiresAllApps)) return [...APPLICATIONS];
   return APPLICATIONS.filter(app => changedFiles.some(file =>
     file.startsWith(`apps/${app}/`)
-    || (app === 'remote-control-mcp-worker' && (file === AGENT_NATIVE_WORKFLOW || file === AGENT_RELEASE_WORKFLOW))
+    || (app === 'remote-control-mcp-worker' && (file === AGENT_NATIVE_WORKFLOW || file === AGENT_LEGACY_WORKFLOW || file === AGENT_RELEASE_WORKFLOW))
     || (app === 'browser-mcp-worker' && (file === 'scripts/build-browser-extension.py' || file === 'scripts/browser-extension-manifest.json' || file.startsWith('docs/browser-extension/')))));
 }
 
@@ -70,6 +72,7 @@ export function selectionDetails(changedFiles) {
     portalAuthChanged: changedFiles.some(file => file.startsWith('packages/portal-auth/')),
     remoteControlChanged,
     agentNativeChanged,
+    agentLegacyChanged: agentNativeChanged || changedFiles.some(file => file.startsWith(rustDir) || file === AGENT_LEGACY_WORKFLOW),
     rustCandidateChanged,
   };
 }
@@ -137,6 +140,7 @@ function main(env = process.env) {
       `database_changed=${details.databaseChanged}`,
       `remote_control_changed=${details.remoteControlChanged}`,
       `agent_native_changed=${details.agentNativeChanged}`,
+      `agent_legacy_changed=${details.agentLegacyChanged}`,
       `rust_candidate_changed=${details.rustCandidateChanged}`,
     ].join('\n') + '\n');
   }
